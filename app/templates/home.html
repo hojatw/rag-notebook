@@ -6,11 +6,24 @@
     <h1>Notebooks</h1>
     <p class="muted">Each notebook keeps its own sources, conversations, and notes. Create one per topic, project, or research thread.</p>
   </div>
-  <form action="/notebooks/new" method="post" data-loading-form>
-    <input type="hidden" name="title" value="Untitled notebook">
-    <input type="hidden" name="emoji" value="📓">
-    <button type="submit" data-loading-text="Creating...">+ New notebook</button>
-  </form>
+  <details class="new-notebook-menu" x-data="{ open: false }" :open="open" @toggle="open = $event.target.open">
+    <summary class="new-notebook-trigger">+ New notebook</summary>
+    <form action="/notebooks/new" method="post" class="new-notebook-form" data-loading-form>
+      <label class="new-notebook-emoji">
+        <span>Emoji</span>
+        <input name="emoji" value="📓" maxlength="8">
+      </label>
+      <label class="new-notebook-title">
+        <span>Title</span>
+        <input name="title" value="Untitled notebook" required autocomplete="off">
+      </label>
+      <label class="new-notebook-desc">
+        <span>Description <em class="muted small">(optional)</em></span>
+        <input name="description" placeholder="One-line summary shown on the notebook card" maxlength="280">
+      </label>
+      <button type="submit" class="wide" data-loading-text="Creating...">Create notebook</button>
+    </form>
+  </details>
 </section>
 
 <div class="notebook-grid">

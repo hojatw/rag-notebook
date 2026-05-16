@@ -18,9 +18,10 @@ from .db import UPLOAD_DIR, connect, dumps, encrypt_for_storage, init_db, load_l
 from .ingest import process_source, supported
 import httpx
 
-from .llm import close_http_client, cosine, embed_texts, generate_answer, generate_starter_questions, rerank_chunks, set_http_client, rewrite_search_queries
+from .llm import close_http_client, cosine, embed_texts, generate_answer, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries
 from .security import hash_password, sign_user_id, unsign_user_id, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
+from .vector_store import current_dimension as vector_current_dimension
 from .vector_store import delete_source as delete_source_vectors
 from .vector_store import index_status as vector_index_status
 from .vector_store import query as query_vectors
@@ -283,13 +284,19 @@ def list_notebooks(request: Request, user: Annotated[dict, Depends(require_login
 
 
 @app.post("/notebooks/new")
-def create_notebook(user: Annotated[dict, Depends(require_login)], title: str = Form("Untitled notebook"), emoji: str = Form("📓")):
+def create_notebook(
+    user: Annotated[dict, Depends(require_login)],
+    title: str = Form("Untitled notebook"),
+    emoji: str = Form("📓"),
+    description: str = Form(""),
+):
     """Create a notebook and redirect into its workspace."""
     title = title.strip() or "Untitled notebook"
+    description = description.strip()[:280]
     with connect() as conn:
         cursor = conn.execute(
-            "INSERT INTO notebooks (user_id, title, emoji) VALUES (?, ?, ?)",
-            (user["id"], title, (emoji or "📓").strip()[:8] or "📓"),
+            "INSERT INTO notebooks (user_id, title, emoji, description) VALUES (?, ?, ?, ?)",
+            (user["id"], title, (emoji or "📓").strip()[:8] or "📓", description),
         )
         notebook_id = cursor.lastrowid
     logger.info("notebook_created user_id=%s notebook_id=%s title=%r", user["id"], notebook_id, title)
@@ -386,15 +393,17 @@ def rename_notebook(
     user: Annotated[dict, Depends(require_login)],
     title: str = Form(...),
     emoji: str = Form(""),
+    description: str = Form(""),
 ):
-    """Update a notebook's title and emoji."""
+    """Update a notebook's title, emoji, and description."""
     title = title.strip() or "Untitled notebook"
     emoji = (emoji or "").strip()[:8]
+    description = description.strip()[:280]
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
         conn.execute(
-            "UPDATE notebooks SET title = ?, emoji = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
-            (title, emoji, notebook_id, user["id"]),
+            "UPDATE notebooks SET title = ?, emoji = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+            (title, emoji, description, notebook_id, user["id"]),
         )
     logger.info("notebook_renamed user_id=%s notebook_id=%s", user["id"], notebook_id)
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
@@ -419,14 +428,17 @@ def delete_notebook(notebook_id: int, user: Annotated[dict, Depends(require_logi
     return RedirectResponse("/notebooks", status_code=303)
 
 
+UPLOAD_BATCH_LIMIT = 5
+
+
 @app.post("/notebooks/{notebook_id}/sources/upload")
 async def upload_source(
     notebook_id: int,
     background: BackgroundTasks,
     user: Annotated[dict, Depends(require_login)],
-    file: UploadFile = File(...),
+    files: list[UploadFile] = File(...),
 ):
-    """Store an uploaded source within a notebook and schedule background ingestion."""
+    """Store up to UPLOAD_BATCH_LIMIT uploaded sources and schedule background ingestion for each."""
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
         llm_status = llm_settings_status(conn)
@@ -439,31 +451,43 @@ async def upload_source(
             status_code=400,
             detail="LLM is not configured. An admin must set the embedding model and chat model at /settings before sources can be indexed.",
         )
-    if not file.filename or not supported(file.filename):
-        logger.warning("source_upload_rejected user_id=%s notebook_id=%s filename=%s", user["id"], notebook_id, file.filename)
-        raise HTTPException(status_code=400, detail="Unsupported file type.")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files selected.")
+    if len(files) > UPLOAD_BATCH_LIMIT:
+        raise HTTPException(status_code=400, detail=f"Upload at most {UPLOAD_BATCH_LIMIT} files at a time.")
+    for upload in files:
+        if not upload.filename or not supported(upload.filename):
+            logger.warning("source_upload_rejected user_id=%s notebook_id=%s filename=%s", user["id"], notebook_id, upload.filename)
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {upload.filename or '(unnamed)'}")
 
     user_dir = UPLOAD_DIR / str(user["id"])
     user_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = Path(file.filename).name
-    stored_path = user_dir / f"{uuid.uuid4().hex}_{safe_name}"
-    with stored_path.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
 
-    with connect() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO sources (user_id, notebook_id, filename, stored_path, content_type, status)
-            VALUES (?, ?, ?, ?, ?, 'uploaded')
-            """,
-            (user["id"], notebook_id, safe_name, str(stored_path), file.content_type or ""),
+    queued_source_ids: list[int] = []
+    for upload in files:
+        safe_name = Path(upload.filename).name
+        stored_path = user_dir / f"{uuid.uuid4().hex}_{safe_name}"
+        with stored_path.open("wb") as out:
+            shutil.copyfileobj(upload.file, out)
+        with connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO sources (user_id, notebook_id, filename, stored_path, content_type, status)
+                VALUES (?, ?, ?, ?, ?, 'uploaded')
+                """,
+                (user["id"], notebook_id, safe_name, str(stored_path), upload.content_type or ""),
+            )
+            source_id = cursor.lastrowid
+            touch_notebook(conn, notebook_id)
+        background.add_task(process_source, source_id)
+        queued_source_ids.append(source_id)
+        logger.info(
+            "source_uploaded user_id=%s notebook_id=%s source_id=%s filename=%s content_type=%s",
+            user["id"], notebook_id, source_id, safe_name, upload.content_type or "",
         )
-        source_id = cursor.lastrowid
-        touch_notebook(conn, notebook_id)
-    background.add_task(process_source, source_id)
     logger.info(
-        "source_uploaded user_id=%s notebook_id=%s source_id=%s filename=%s content_type=%s",
-        user["id"], notebook_id, source_id, safe_name, file.content_type or "",
+        "source_upload_batch_completed user_id=%s notebook_id=%s files=%s",
+        user["id"], notebook_id, len(queued_source_ids),
     )
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
@@ -677,7 +701,7 @@ def pin_note(
         notebook = get_notebook(conn, notebook_id, user["id"])
         message = conn.execute(
             """
-            SELECT m.id, m.content, c.title, c.notebook_id
+            SELECT m.id, m.content, m.conversation_id, c.title, c.notebook_id
             FROM messages m JOIN conversations c ON c.id = m.conversation_id
             WHERE m.id = ? AND m.user_id = ? AND m.role = 'assistant' AND c.notebook_id = ?
             """,
@@ -691,7 +715,19 @@ def pin_note(
             (notebook_id, message_id),
         ).fetchone()
         if existing is None:
-            title = (message["title"] or "Pinned note")[:80]
+            # Prefer the user question that prompted this assistant reply as
+            # the note title (matches NotebookLM). Falls back to the
+            # conversation title if no preceding user message exists.
+            prompting = conn.execute(
+                """
+                SELECT content FROM messages
+                WHERE conversation_id = ? AND user_id = ? AND role = 'user' AND id < ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (message["conversation_id"], user["id"], message_id),
+            ).fetchone()
+            raw_title = (prompting["content"] if prompting else None) or message["title"] or "Pinned note"
+            title = " ".join(raw_title.split())[:80]
             conn.execute(
                 "INSERT INTO notes (notebook_id, user_id, title, content, source_message_id) VALUES (?, ?, ?, ?, ?)",
                 (notebook_id, user["id"], title, message["content"], message_id),
@@ -1367,11 +1403,12 @@ def settings_page(request: Request, user: Annotated[dict, Depends(require_admin)
 
 
 @app.post("/settings")
-def update_settings(
+async def update_settings(
     request: Request,
     user: Annotated[dict, Depends(require_admin)],
     provider: str = Form("openai_compatible"),
     base_url: str = Form(""),
+    embedding_base_url: str = Form(""),
     api_key: str = Form(""),
     chat_model: str = Form(""),
     embedding_model: str = Form(""),
@@ -1379,28 +1416,87 @@ def update_settings(
     temperature: float = Form(0.2),
     timeout_seconds: float = Form(60),
 ):
-    """Validate and save global LLM provider settings."""
+    """Validate and save global LLM provider settings.
+
+    Probes the embedding endpoint before persisting when embedding-affecting
+    fields changed, so connectivity errors and dim mismatches surface at
+    save time instead of at first ingest.
+    """
     if provider not in {"openai_compatible", "azure_openai"}:
         raise HTTPException(status_code=400, detail="Unsupported LLM provider")
+
     with connect() as conn:
-        existing_row = conn.execute("SELECT api_key FROM llm_settings WHERE id = 1").fetchone()
-        # Existing column is encrypted (or legacy plaintext). Either way the
-        # stored ciphertext is what we keep when the user leaves the field
-        # blank — no need to round-trip through plaintext.
+        existing_row = conn.execute("SELECT * FROM llm_settings WHERE id = 1").fetchone()
+        existing = dict(existing_row) if existing_row else {}
+        # The stored api_key is either Fernet ciphertext or legacy plaintext.
+        # Either way it is opaque to us here; we just keep it if the form
+        # field was left blank (the "keep existing" UX).
         if api_key.strip():
             stored_key = encrypt_for_storage(api_key.strip())
         else:
-            stored_key = existing_row["api_key"]
+            stored_key = existing.get("api_key", "")
+
+        # Decide whether the embedding endpoint changed materially. If it
+        # didn't, skip the probe — admins editing temperature shouldn't be
+        # forced to be online with the LLM service to save settings.
+        embedding_changed = (
+            embedding_model.strip() != (existing.get("embedding_model") or "")
+            or embedding_base_url.strip() != (existing.get("embedding_base_url") or "")
+            or base_url.strip() != (existing.get("base_url") or "")
+            or provider != (existing.get("provider") or "openai_compatible")
+            or bool(api_key.strip())
+        )
+
+    if embedding_changed and embedding_model.strip():
+        # Build a candidate settings dict with the plaintext key so we can
+        # actually call the API. Falls back to the existing decrypted key
+        # when the form field was left blank.
+        with connect() as conn:
+            existing_decrypted = load_llm_settings(conn) or {}
+        probe_settings = {
+            "provider": provider,
+            "base_url": base_url.strip(),
+            "embedding_base_url": embedding_base_url.strip(),
+            "api_key": api_key.strip() or existing_decrypted.get("api_key", ""),
+            "embedding_model": embedding_model.strip(),
+            "api_version": api_version.strip(),
+            "timeout_seconds": timeout_seconds,
+        }
+        try:
+            new_dim = await probe_embedding_dimension(probe_settings)
+        except Exception as exc:
+            logger.warning("settings_probe_failed user_id=%s err=%s", user["id"], exc)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Could not reach the embedding endpoint: {exc}. "
+                    "Verify base URL / embedding base URL, API key, and model name before saving."
+                ),
+            )
+        current_dim = vector_current_dimension()
+        if current_dim is not None and current_dim != new_dim:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Embedding dimension mismatch: existing index is {current_dim}-dim, "
+                    f"new model returns {new_dim}-dim. Open /admin/index, click Clear, "
+                    "then save these settings again and Rebuild."
+                ),
+            )
+
+    with connect() as conn:
         conn.execute(
             """
             UPDATE llm_settings
-            SET provider = ?, base_url = ?, api_key = ?, chat_model = ?, embedding_model = ?,
-                api_version = ?, temperature = ?, timeout_seconds = ?
+            SET provider = ?, base_url = ?, embedding_base_url = ?, api_key = ?,
+                chat_model = ?, embedding_model = ?, api_version = ?,
+                temperature = ?, timeout_seconds = ?
             WHERE id = 1
             """,
             (
                 provider,
                 base_url.strip(),
+                embedding_base_url.strip(),
                 stored_key,
                 chat_model.strip(),
                 embedding_model.strip(),
@@ -1411,10 +1507,11 @@ def update_settings(
         )
         settings = load_llm_settings_for_display(conn)
     logger.info(
-        "settings_updated admin_user_id=%s provider=%s base_url_set=%s chat_model_set=%s embedding_model_set=%s api_version=%s temperature=%s timeout_seconds=%s api_key_changed=%s",
+        "settings_updated admin_user_id=%s provider=%s base_url_set=%s embedding_base_url_set=%s chat_model_set=%s embedding_model_set=%s api_version=%s temperature=%s timeout_seconds=%s api_key_changed=%s",
         user["id"],
         provider,
         bool(base_url.strip()),
+        bool(embedding_base_url.strip()),
         bool(chat_model.strip()),
         bool(embedding_model.strip()),
         api_version.strip(),

@@ -23,6 +23,10 @@
         <input name="base_url" value="{{ settings.base_url }}" placeholder="https://api.openai.com/v1 or https://my-resource.openai.azure.com">
       </label>
       <label>
+        Embedding base URL <span class="muted">(optional &mdash; leave blank to share the chat URL above)</span>
+        <input name="embedding_base_url" value="{{ settings.embedding_base_url or '' }}" placeholder="http://localhost:11434/v1 (Ollama / TEI when split from chat)">
+      </label>
+      <label>
         API key {% if settings.api_key_masked %}<span class="muted">(saved &mdash; leave blank to keep)</span>{% endif %}
         <input name="api_key" type="password" autocomplete="off" placeholder="{% if settings.api_key_masked %}••••••••{% else %}sk-...{% endif %}">
       </label>

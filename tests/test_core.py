@@ -12,7 +12,7 @@ def test_passwords_are_hashed():
     assert not verify_password("wrong", encoded)
 
 
-def test_txt_source_ingestion_and_delete_cascades(fresh_modules, tmp_path):
+def test_txt_source_ingestion_and_delete_cascades(fresh_modules, local_embed, tmp_path):
     """TXT ingestion should index chunks and source deletion should remove them."""
     db, ingest = fresh_modules.db, fresh_modules.ingest
     source_path = tmp_path / "source.txt"
@@ -43,10 +43,10 @@ def test_txt_source_ingestion_and_delete_cascades(fresh_modules, tmp_path):
         assert remaining["count"] == 0
 
 
-def test_txt_source_ingestion_updates_chroma(fresh_modules, tmp_path):
+def test_txt_source_ingestion_updates_chroma(fresh_modules, local_embed, tmp_path):
     """TXT ingestion should write indexed chunks into Chroma for vector search."""
     db, ingest = fresh_modules.db, fresh_modules.ingest
-    from app.llm import local_embedding
+    from tests.conftest import local_embedding
     from app.vector_store import query
 
     source_path = tmp_path / "source.txt"
@@ -73,7 +73,7 @@ def test_txt_source_ingestion_updates_chroma(fresh_modules, tmp_path):
 def test_user_source_queries_are_isolated(fresh_modules):
     """Chunk queries scoped by user id should not return another user's data."""
     db = fresh_modules.db
-    from app.llm import local_embedding
+    from tests.conftest import local_embedding
 
     with db.connect() as conn:
         user_a = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
@@ -108,10 +108,10 @@ def test_user_source_queries_are_isolated(fresh_modules):
     assert rows[0]["text"] == "admin secret"
 
 
-def test_retrieve_prefers_keyword_and_vector_relevant_chunks():
+def test_retrieve_prefers_keyword_and_vector_relevant_chunks(local_embed):
     """Hybrid retrieval should surface exact terms before unrelated chunks."""
     from app.db import dumps
-    from app.llm import local_embedding
+    from tests.conftest import local_embedding
     from app.main import retrieve
 
     rows = [

@@ -46,6 +46,7 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 provider TEXT NOT NULL DEFAULT 'openai_compatible',
                 base_url TEXT NOT NULL DEFAULT '',
+                embedding_base_url TEXT NOT NULL DEFAULT '',
                 api_key TEXT NOT NULL DEFAULT '',
                 chat_model TEXT NOT NULL DEFAULT '',
                 embedding_model TEXT NOT NULL DEFAULT '',
@@ -136,6 +137,10 @@ def init_db() -> None:
         )
         _ensure_column(conn, "llm_settings", "provider", "TEXT NOT NULL DEFAULT 'openai_compatible'")
         _ensure_column(conn, "llm_settings", "api_version", "TEXT NOT NULL DEFAULT '2024-02-15-preview'")
+        # Optional dedicated embedding endpoint — empty string falls back to
+        # ``base_url``. Required when chat and embedding live on different
+        # services (e.g. vLLM for chat + Ollama / TEI for embeddings).
+        _ensure_column(conn, "llm_settings", "embedding_base_url", "TEXT NOT NULL DEFAULT ''")
         # Notebook foreign keys are nullable so existing rows can be migrated in place.
         # Phase 2 routes will populate these on insert; the migration below backfills legacy rows.
         _ensure_column(conn, "sources", "notebook_id", "INTEGER REFERENCES notebooks(id) ON DELETE CASCADE")

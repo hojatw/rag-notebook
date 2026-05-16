@@ -48,19 +48,21 @@
           @drop.prevent="drop($event)"
           :class="{ 'is-dragover': over }">
       <label class="file-picker">
-        <span>Add source</span>
+        <span>Add sources</span>
         <input type="file"
-               name="file"
+               name="files"
                accept=".pdf,.txt,.md,.markdown,.docx,.html,.htm"
+               multiple
                required
                x-ref="input"
                data-file-label="#nb-selected-file"
+               data-max-files="5"
                {% if not llm_status.ready %}disabled{% endif %}>
       </label>
-      <span id="nb-selected-file" class="file-name">Drop a file or browse</span>
+      <span id="nb-selected-file" class="file-name">Drop up to 5 files or browse</span>
       <button type="submit" class="wide" data-loading-text="Uploading..."
               {% if not llm_status.ready %}disabled{% endif %}>Upload</button>
-      <p class="hint">PDF · TXT · Markdown · DOCX · HTML</p>
+      <p class="hint">PDF · TXT · Markdown · DOCX · HTML · up to 5 at once</p>
     </form>
 
     <ul class="source-list">
@@ -85,6 +87,9 @@
         <span class="notebook-emoji">{{ notebook.emoji or "📓" }}</span>
         <div>
           <h1>{{ notebook.title }}</h1>
+          {% if notebook.description %}
+            <p class="notebook-description muted">{{ notebook.description }}</p>
+          {% endif %}
           <details class="conversation-switcher">
             <summary>
               <span class="convo-current">
@@ -122,7 +127,7 @@
         <details class="notebook-menu">
           <summary class="ghost small">Notebook ▾</summary>
           <div class="convo-menu notebook-menu-content">
-            <form action="/notebooks/{{ notebook.id }}/rename" method="post" class="rename-form">
+            <form action="/notebooks/{{ notebook.id }}/rename" method="post" class="rename-form" data-loading-form>
               <label>
                 Emoji
                 <input name="emoji" value="{{ notebook.emoji }}" maxlength="8">
@@ -131,7 +136,12 @@
                 Title
                 <input name="title" value="{{ notebook.title }}" required>
               </label>
-              <button type="submit" class="wide small">Save</button>
+              <label>
+                Description
+                <input name="description" value="{{ notebook.description or '' }}" maxlength="280"
+                       placeholder="One-line summary shown on the notebook card">
+              </label>
+              <button type="submit" class="wide small" data-loading-text="Saving...">Save</button>
             </form>
             <hr>
             <form action="/notebooks/{{ notebook.id }}/delete" method="post" data-confirm="Delete this notebook? Its sources, chunks, conversations, and notes will be removed.">

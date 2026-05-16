@@ -8,10 +8,20 @@ document.addEventListener("alpine:init", () => {
     leave() { this.over = false; },
     drop(event) {
       this.over = false;
-      const files = event.dataTransfer && event.dataTransfer.files;
-      if (!files || !files.length) return;
-      this.$refs.input.files = files;
-      this.$refs.input.dispatchEvent(new Event("change", { bubbles: true }));
+      const dropped = event.dataTransfer && event.dataTransfer.files;
+      if (!dropped || !dropped.length) return;
+      const input = this.$refs.input;
+      const max = parseInt(input.getAttribute("data-max-files") || "0", 10);
+      // DataTransfer is the only cross-browser way to assign a FileList
+      // synthesised from drag-and-drop into <input type=file>.
+      const transfer = new DataTransfer();
+      const cap = max > 0 ? Math.min(dropped.length, max) : dropped.length;
+      for (let i = 0; i < cap; i += 1) transfer.items.add(dropped[i]);
+      input.files = transfer.files;
+      if (max > 0 && dropped.length > max) {
+        window.alert(`Only the first ${max} files will be uploaded.`);
+      }
+      input.dispatchEvent(new Event("change", { bubbles: true }));
     },
   }));
 });
@@ -33,6 +43,37 @@ function bindAll(root) {
   bindProviderNotes();
   renderMarkdown(root);
   bindSuggestionFill(root);
+  bindAskFormThinkingBubble(root);
+}
+
+// Optimistic "thinking" placeholder inside the chat pane. The ask form does
+// a full POST -> redirect; without something visible during the 5-30s LLM
+// call the user can't tell the request was received. We insert an echo of
+// their question + a typing-dots bubble that vanishes when the redirect
+// completes and the page re-renders with the real assistant reply.
+function bindAskFormThinkingBubble(root) {
+  bindOnce(root, "form.ask-form", "askThinking", (form) => {
+    form.addEventListener("submit", () => {
+      const messages = document.querySelector(".messages");
+      const textarea = form.querySelector("textarea[name='question']");
+      const question = (textarea && textarea.value || "").trim();
+      if (!messages || !question) return;
+      const wrap = document.createElement("div");
+      wrap.className = "chat-thinking";
+      const q = document.createElement("div");
+      q.className = "thinking-question";
+      q.textContent = question;
+      const bubble = document.createElement("div");
+      bubble.className = "thinking-bubble";
+      bubble.innerHTML =
+        "<span>Thinking</span>" +
+        "<span class=\"thinking-dots\"><span></span><span></span><span></span></span>";
+      wrap.appendChild(q);
+      wrap.appendChild(bubble);
+      messages.appendChild(wrap);
+      wrap.scrollIntoView({ behavior: "smooth", block: "end" });
+    });
+  });
 }
 
 // Idempotent binder: runs `setup(el)` once per element matching `selector`,
@@ -85,9 +126,19 @@ function bindLoadingForms(root) {
 function bindFileLabels(root) {
   bindOnce(root, "input[type='file'][data-file-label]", "file", (input) => {
     const label = document.querySelector(input.getAttribute("data-file-label"));
+    const max = parseInt(input.getAttribute("data-max-files") || "0", 10);
     input.addEventListener("change", () => {
+      if (max > 0 && input.files.length > max) {
+        window.alert(`Please select at most ${max} files.`);
+        const transfer = new DataTransfer();
+        for (let i = 0; i < max; i += 1) transfer.items.add(input.files[i]);
+        input.files = transfer.files;
+      }
       if (!label) return;
-      label.textContent = input.files.length ? input.files[0].name : "No file selected";
+      const count = input.files.length;
+      if (!count) label.textContent = "No file selected";
+      else if (count === 1) label.textContent = input.files[0].name;
+      else label.textContent = `${count} files selected`;
     });
   });
 }

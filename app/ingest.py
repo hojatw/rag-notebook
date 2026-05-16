@@ -19,36 +19,227 @@ def supported(filename: str) -> bool:
 
 
 def extract_sections(path: Path) -> list[tuple[str, str]]:
-    """Extract text sections from a supported source file."""
+    """Extract text sections from a supported source file.
+
+    Dispatches per suffix to a helper. Each helper returns a list of
+    ``(location, text)`` pairs; the location label flows through to chunk
+    citations so users can see whether an answer came from the body, a
+    header, a footnote, etc.
+    """
     suffix = path.suffix.lower()
     logger.info("extract_started path=%s suffix=%s", path.name, suffix)
     if suffix == ".pdf":
-        from pypdf import PdfReader
+        sections = _extract_pdf(path)
+    elif suffix == ".docx":
+        sections = _extract_docx(path)
+    elif suffix in {".html", ".htm"}:
+        sections = _extract_html(path)
+    else:
+        sections = [("document", path.read_text(encoding="utf-8", errors="ignore"))]
+    logger.info("extract_completed path=%s sections=%s", path.name, len(sections))
+    return sections
 
-        reader = PdfReader(str(path))
-        sections = [
-            (f"page {index}", page.extract_text() or "")
-            for index, page in enumerate(reader.pages, start=1)
-        ]
-        logger.info("extract_completed path=%s sections=%s", path.name, len(sections))
-        return sections
-    if suffix == ".docx":
-        from docx import Document
 
-        doc = Document(str(path))
-        text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
-        logger.info("extract_completed path=%s sections=1", path.name)
-        return [("document", text)]
-    if suffix in {".html", ".htm"}:
-        from bs4 import BeautifulSoup
+def _extract_pdf(path: Path) -> list[tuple[str, str]]:
+    """Page-by-page text extraction. Scanned pages return '' (no OCR)."""
+    from pypdf import PdfReader
 
-        soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="ignore"), "html.parser")
-        for element in soup(["script", "style"]):
+    reader = PdfReader(str(path))
+    return [
+        (f"page {index}", page.extract_text() or "")
+        for index, page in enumerate(reader.pages, start=1)
+    ]
+
+
+def _extract_docx(path: Path) -> list[tuple[str, str]]:
+    """Extract paragraphs, tables, headers, footers, text boxes, footnotes.
+
+    The historical implementation only walked ``doc.paragraphs``, silently
+    dropping every cell in every table (which in a typical case-study docx
+    is 99% of the content). This walks the document body in order and
+    flattens tables inline (with nested-table recursion), then emits
+    headers / footers / text boxes / footnotes as their own labelled
+    sections so citations can tell users where evidence came from.
+    """
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(str(path))
+    sections: list[tuple[str, str]] = []
+
+    body_text = _render_docx_container(doc)
+    if body_text.strip():
+        sections.append(("document", body_text))
+
+    # Headers / footers are in their own XML parts, not in doc.element.body.
+    header_chunks, footer_chunks = [], []
+    for section in doc.sections:
+        h = _render_docx_container(section.header)
+        f = _render_docx_container(section.footer)
+        if h.strip():
+            header_chunks.append(h)
+        if f.strip():
+            footer_chunks.append(f)
+    if header_chunks:
+        sections.append(("header", "\n\n".join(header_chunks)))
+    if footer_chunks:
+        sections.append(("footer", "\n\n".join(footer_chunks)))
+
+    # Text boxes (<w:txbxContent>) live inside drawings and are skipped by
+    # the body's CT_P / CT_Tbl iteration. Flatten any w:t runs we find.
+    txbx_chunks = []
+    for txbx in doc.element.iter(qn("w:txbxContent")):
+        text = " ".join(t.text for t in txbx.iter(qn("w:t")) if t.text)
+        if text.strip():
+            txbx_chunks.append(text)
+    if txbx_chunks:
+        sections.append(("text boxes", "\n\n".join(txbx_chunks)))
+
+    # Footnotes / endnotes are stored as separate package parts referenced
+    # from the document part by relationship type. Each w:t inside the part
+    # is a footnote body run; we just concatenate.
+    note_chunks = []
+    for rel in doc.part.rels.values():
+        if "footnote" in rel.reltype or "endnote" in rel.reltype:
+            try:
+                root = rel.target_part.element
+            except AttributeError:
+                continue
+            text = " ".join(t.text for t in root.iter(qn("w:t")) if t.text)
+            if text.strip():
+                note_chunks.append(text)
+    if note_chunks:
+        sections.append(("footnotes", "\n\n".join(note_chunks)))
+
+    return sections
+
+
+def _iter_docx_block_items(parent):
+    """Yield Paragraph and Table children of parent in document order.
+
+    Works for Document (the body), _Cell (cell contents, for nested tables),
+    and _Header / _Footer (their own XML root). Order matters: python-docx's
+    ``parent.paragraphs`` and ``parent.tables`` each return a flat list, so
+    a doc that alternates paragraphs and tables would lose its narrative
+    flow if you combined them naively.
+    """
+    from docx.document import Document as _Document
+    from docx.oxml.table import CT_Tbl
+    from docx.oxml.text.paragraph import CT_P
+    from docx.table import _Cell, Table
+    from docx.text.paragraph import Paragraph
+
+    if isinstance(parent, _Document):
+        parent_elem = parent.element.body
+    elif isinstance(parent, _Cell):
+        parent_elem = parent._tc
+    elif hasattr(parent, "_element"):
+        # _Header / _Footer
+        parent_elem = parent._element
+    else:
+        parent_elem = parent
+
+    for child in parent_elem.iterchildren():
+        if isinstance(child, CT_P):
+            yield Paragraph(child, parent)
+        elif isinstance(child, CT_Tbl):
+            yield Table(child, parent)
+
+
+def _render_docx_container(container) -> str:
+    """Render a Document / _Header / _Footer / _Cell as text with tables inline."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    parts: list[str] = []
+    for block in _iter_docx_block_items(container):
+        if isinstance(block, Paragraph):
+            text = block.text.strip()
+            if text:
+                parts.append(text)
+        elif isinstance(block, Table):
+            rendered = _render_docx_table(block)
+            if rendered:
+                parts.append(rendered)
+    return "\n".join(parts)
+
+
+def _render_docx_table(table) -> str:
+    """Render a table as ``Table:`` plus ' | '-separated cells per row.
+
+    Nested tables (a table inside a cell) are rendered inline by recursing
+    through ``_render_docx_container`` on each cell. Whitespace inside a
+    cell is collapsed to single spaces so the row separator stays
+    unambiguous.
+    """
+    rows: list[str] = []
+    for row in table.rows:
+        cells: list[str] = []
+        for cell in row.cells:
+            cell_text = _render_docx_container(cell)
+            cells.append(" ".join(cell_text.split()))
+        if any(c.strip() for c in cells):
+            rows.append(" | ".join(cells))
+    if not rows:
+        return ""
+    return "Table:\n" + "\n".join(rows)
+
+
+def _extract_html(path: Path) -> list[tuple[str, str]]:
+    """Strip noise + recover alt / title / meta-description text BeautifulSoup
+    would otherwise drop. Returns a single section.
+
+    What changed vs the naive ``soup.get_text``:
+      - script / style / noscript / template removed (noise).
+      - elements with ``hidden`` attribute or inline ``style='display:none'``
+        removed (catches injected honeypots / hidden JSON-LD blocks).
+      - <meta name='description'> and og:description appended (cheap recall).
+      - <img alt> / <a title> / <input value> appended as ``[image: ...]``
+        style sidecar lines so they survive get_text() without polluting
+        the main flow.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="ignore"), "html.parser")
+    for element in soup(["script", "style", "noscript", "template"]):
+        element.decompose()
+    # Hidden via attribute or inline style. We deliberately do NOT touch
+    # aria-hidden, visibility:hidden, or CSS-class-based hiding — those
+    # often mark legitimate collapsed content (tabs, accordions) that the
+    # user can still expand to read.
+    for element in soup.find_all(hidden=True):
+        element.decompose()
+    for element in soup.find_all(style=True):
+        style = element.get("style", "").lower().replace(" ", "")
+        if "display:none" in style:
             element.decompose()
-        logger.info("extract_completed path=%s sections=1", path.name)
-        return [("html", soup.get_text("\n"))]
-    logger.info("extract_completed path=%s sections=1", path.name)
-    return [("document", path.read_text(encoding="utf-8", errors="ignore"))]
+
+    extras: list[str] = []
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    if meta_desc and meta_desc.get("content"):
+        extras.append(meta_desc["content"].strip())
+    og_desc = soup.find("meta", attrs={"property": "og:description"})
+    if og_desc and og_desc.get("content"):
+        extras.append(og_desc["content"].strip())
+    for img in soup.find_all("img", alt=True):
+        alt = (img.get("alt") or "").strip()
+        if alt:
+            extras.append(f"[image: {alt}]")
+    for anchor in soup.find_all("a", title=True):
+        title = (anchor.get("title") or "").strip()
+        if title:
+            extras.append(f"[link: {title}]")
+    for inp in soup.find_all("input", value=True):
+        if inp.get("type") in {"hidden", "password", "submit", "button"}:
+            continue
+        value = (inp.get("value") or "").strip()
+        if value:
+            extras.append(f"[input: {value}]")
+
+    body_text = soup.get_text("\n")
+    if extras:
+        body_text = body_text + "\n\n" + "\n".join(extras)
+    return [("html", body_text)]
 
 
 # Sentence boundary regex. Matches the END position after a terminator:

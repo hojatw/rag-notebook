@@ -12,7 +12,7 @@ Tracked in git from this commit forward (`main` branch).
 
 ## Current state
 
-This POC has gone through a 5-phase NotebookLM-style UI/UX overhaul plus a follow-up cleanup round. See [`README.md`](README.md) for the user-facing description (features, routes, run/test, LLM settings, layout). What this file captures is the **engineering** view: what's done, what's not, what to watch out for.
+This POC has gone through a 5-phase NotebookLM-style UI/UX overhaul plus a follow-up cleanup round. See [`README.md`](README.md) for the user-facing description (features, routes, run/test, LLM settings, layout) and [`RETRIEVAL.md`](RETRIEVAL.md) for the retrieval pipeline (stages, tuning knobs, eval workflow). What this file captures is the **engineering** view: what's done, what's not, what to watch out for.
 
 ### Architecture summary
 
@@ -22,6 +22,8 @@ This POC has gone through a 5-phase NotebookLM-style UI/UX overhaul plus a follo
 - API key encrypted at rest with Fernet (PBKDF2-SHA256 KDF over `NOTEBOOKLM_SECRET`).
 - FastAPI lifespan context manager (no more `@app.on_event`).
 - Defensive list caps (sources 200, conversations 50, messages 200, notes 50) with truncation hints.
+- LLM settings support split chat / embedding endpoints (vLLM-for-chat + Ollama-for-embeddings is a one-form-field setup). Save handler probes the embedding endpoint and rejects dim mismatches against the existing Chroma index.
+- No offline embedding fallback in production code — `embed_texts` raises when settings missing; the test suite stand-in lives in `tests/conftest.py:local_embedding` and is wired through the `local_embed` fixture.
 
 ### Run / test
 
@@ -49,7 +51,7 @@ Last known verification: `pytest` 10 passed; smoke test on all routes including 
 | 17 | API key encryption at rest | `cryptography.Fernet`, derived from `NOTEBOOKLM_SECRET` via PBKDF2-SHA256; legacy plaintext keys pass through unchanged until next save |
 | 20 | Smart Chroma sync | `sync_from_sqlite(mode='diff')` (now the startup default) computes the set diff between SQLite and Chroma, upserts only what's missing and deletes orphans. `mode='full'` re-upserts everything; admin uses it via Rebuild. Aligned-state startups now do zero work (~200ms vs ~600ms before) |
 | 21 | Account management | `/account` (own password), `/admin/users` list + create + reset-password + toggle-admin + delete (refuses self-delete and last-admin demotion) |
-| 22 | (deferred — explained) | No tests added; design lives in this handover. Concrete next step: build a `tests/eval_retrieval.py` with `{question, expected_source, expected_chunk_substring}` JSON fixtures, compute recall@5 + MRR |
+| 22 | Retrieval eval harness | ✅ Landed in the instrumentation round below: `tests/eval_questions.json` (25 Q + ground truth) + `tests/eval_retrieval.py` (recall@k + MRR). See [`RETRIEVAL.md`](RETRIEVAL.md#evaluation-harness) |
 | 23 | Admin vector-index page | `/admin/index` shows SQLite vs Chroma counts + missing/orphan deltas + in-sync verdict; *Rebuild* triggers full sync, *Clear* wipes the collection. New topbar entry "Index" for admins |
 | 24 | Form lock-out | `data-loading-form` now also disables every non-hidden input/textarea/select on the form, not just the submit button |
 
@@ -86,13 +88,15 @@ Seven retrieval-quality / visibility / safety items, all now in. Baseline measur
 
 ### Retrieval — the "original top 3"
 
+Canonical details now live in [`RETRIEVAL.md`](RETRIEVAL.md#open-follow-ups-retrieval-side-only). Headline status:
+
 | Item | Status |
 |---|---|
-| **CJK-aware chunking** | ✅ Landed. Sentence boundaries from `[。！？]+ \| [.!?](?=\s|$) \| \n+`; auto-targets 400 chars for CJK-dominant text, 800 for Latin; soft-break fallback on `[，、；,;]`; hard-cut as last resort. Sentence-level overlap. Reindex of the demo notebook went 117 → 195 chunks; eval shows roughly even MRR vs the old hard-cut splitter (within rerank stochastic noise), but citations now respect sentence boundaries and CJK granularity. |
-| **SQLite FTS5 for keyword search** | Pending. Replace `LIKE '%token%'` in `keyword_candidates_from_sqlite` with an FTS5 virtual table + BM25 ordering. Bigger notebooks (>5K chunks) will see meaningful latency drop; smaller notebooks gain better tokenisation quality. |
-| **Reciprocal Rank Fusion** for hybrid merge | Pending. Replace `0.7×vector + 0.3×keyword` with RRF over the two rankings. Less sensitive to score-scale drift between vector and keyword. |
+| **CJK-aware chunking** | ✅ Landed. Sentence-aware splitter with auto CJK / Latin size targets — see [`RETRIEVAL.md#1-chunking-offline-at-ingest`](RETRIEVAL.md#1-chunking-offline-at-ingest). |
+| **SQLite FTS5 for keyword search** | Pending. Replaces the `LIKE '%token%'` scan in [`keyword_candidates_from_sqlite`](app/main.py:1002). |
+| **Reciprocal Rank Fusion** for hybrid merge | Pending. Replaces the `0.7·vector + 0.3·keyword` blend in [`merge_candidates`](app/main.py:1046). |
 
-Eval harness is wired up (`python -m tests.eval_retrieval`) — change one knob, re-run, compare recall@5 / MRR. Eval semantics use ANY-of substring match so the harness is chunk-size agnostic.
+Eval harness is wired up (`python -m tests.eval_retrieval`) — change one knob, re-run, compare recall@5 / MRR. Eval semantics use ANY-of substring match so the harness is chunk-size agnostic. Current baseline: **Recall@5 = 100 % · MRR 0.933 (with rerank) / 0.883 (no rerank)** — the metric is saturated, so the next change needs a harder eval set before lift can be measured.
 
 ## Important files
 
@@ -108,8 +112,10 @@ app/templates/         Jinja templates: base, home, notebook (with preview modal
                        _source_preview / _suggestions / _notes_section partials.
 app/static/            style.css (design tokens + components + modal + admin-index stats),
                        app.js (binders, Alpine dropzone, Markdown render, citation click, suggestion fill, pin reset).
-tests/                 test_core.py, test_llm.py, test_security.py, test_vector_store.py,
+tests/                 test_core.py, test_chunking.py, test_llm.py, test_security.py, test_vector_store.py,
                        eval_questions.json (retrieval ground truth), eval_retrieval.py (harness).
+RETRIEVAL.md           End-to-end retrieval doc: pipeline diagram, per-stage details, tuning
+                       knobs (with file:line refs), eval workflow, open follow-ups.
 setup.sh               One-shot env bootstrap. New machines / fresh clones should use it.
 data/                  app.sqlite3, uploads/, chroma/. Gitignored.
 logs/app.log           Rotating app log. Gitignored.

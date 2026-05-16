@@ -188,6 +188,26 @@ def _chroma_ids() -> set[str]:
     return set(collection().get(include=[])["ids"])
 
 
+def current_dimension() -> int | None:
+    """Return the dimensionality the Chroma collection is locked to, if any.
+
+    Chroma fixes the vector dim on the first upsert; subsequent upserts
+    with a different length raise. We peek one stored vector and report its
+    length, which lets ``/settings`` reject embedding-model changes that
+    would break the existing index instead of failing at first ingest.
+    Returns ``None`` when the collection is empty (any dim is still legal)
+    or when Chroma is unavailable.
+    """
+    if not chroma_available():
+        return None
+    first = collection().get(limit=1, include=["embeddings"])
+    embeddings = first.get("embeddings")
+    # Chroma sometimes returns a numpy array; len() works on both.
+    if embeddings is None or len(embeddings) == 0:
+        return None
+    return len(embeddings[0])
+
+
 def index_status() -> dict[str, Any]:
     """Compare SQLite indexed chunks against the Chroma collection.
 
@@ -197,6 +217,7 @@ def index_status() -> dict[str, Any]:
         missing_in_chroma  count of SQLite chunks not yet upserted
         orphan_in_chroma   count of Chroma vectors with no matching SQLite chunk
         in_sync            True iff both counts above are zero
+        dimension          locked-in vector dim, or None when collection empty
         chroma_available   False when chromadb cannot be imported
     """
     if not chroma_available():
@@ -207,6 +228,7 @@ def index_status() -> dict[str, Any]:
             "missing_in_chroma": 0,
             "orphan_in_chroma": 0,
             "in_sync": False,
+            "dimension": None,
         }
     chroma_ids = _chroma_ids()
     sqlite_ids = {vector_id(cid) for cid in _indexed_chunk_ids()}
@@ -219,6 +241,7 @@ def index_status() -> dict[str, Any]:
         "missing_in_chroma": len(missing),
         "orphan_in_chroma": len(orphans),
         "in_sync": not missing and not orphans,
+        "dimension": current_dimension(),
     }
 
 

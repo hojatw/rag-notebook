@@ -1,7 +1,5 @@
-import hashlib
 import json
 import logging
-import math
 import time
 from typing import Any
 
@@ -58,19 +56,6 @@ async def close_http_client() -> None:
     _http_client = None
 
 
-def local_embedding(text: str, dimensions: int = 384) -> list[float]:
-    """Create a deterministic local embedding for offline demonstrations."""
-    vector = [0.0] * dimensions
-    tokens = [t for t in "".join(c.lower() if c.isalnum() else " " for c in text).split() if t]
-    for token in tokens:
-        digest = hashlib.sha256(token.encode("utf-8")).digest()
-        bucket = int.from_bytes(digest[:4], "big") % dimensions
-        sign = 1.0 if digest[4] % 2 else -1.0
-        vector[bucket] += sign
-    norm = math.sqrt(sum(v * v for v in vector)) or 1.0
-    return [v / norm for v in vector]
-
-
 def cosine(a: list[float], b: list[float]) -> float:
     """Return cosine similarity for normalized embedding vectors."""
     if not a or not b:
@@ -80,16 +65,35 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 
 async def embed_texts(texts: list[str], settings: dict[str, Any]) -> list[list[float]]:
-    """Embed texts using configured API settings, or a local fallback."""
+    """Embed texts using the configured embedding API.
+
+    Raises RuntimeError when the embedding model or API key is missing — we
+    no longer fall back to a local hash embedder because the resulting
+    vectors are incompatible with whatever real model the index was built
+    against, and silent-fallback masks misconfiguration as poor retrieval.
+    """
     if not settings.get("api_key") or not settings.get("embedding_model"):
-        logger.info("embedding_local_fallback text_count=%s", len(texts))
-        return [local_embedding(text) for text in texts]
+        raise RuntimeError(
+            "Embedding model is not configured. An admin must set the embedding "
+            "model and API key at /settings before embeddings can be generated."
+        )
 
     batch_size = int(settings.get("embedding_batch_size") or EMBEDDING_BATCH_SIZE)
     embeddings: list[list[float]] = []
     for start in range(0, len(texts), batch_size):
         embeddings.extend(await embed_text_batch(texts[start : start + batch_size], settings))
     return embeddings
+
+
+async def probe_embedding_dimension(settings: dict[str, Any]) -> int:
+    """Embed a tiny probe string and return the dimensionality of the result.
+
+    Used by ``/settings`` to validate connectivity and lock-in dimension
+    BEFORE persisting the new configuration, so dim mismatches surface at
+    save time instead of at first ingest.
+    """
+    vectors = await embed_texts(["dim probe"], settings)
+    return len(vectors[0]) if vectors else 0
 
 
 async def embed_text_batch(texts: list[str], settings: dict[str, Any]) -> list[list[float]]:
@@ -322,12 +326,18 @@ def unique_nonempty(values: list[str]) -> list[str]:
 
 
 def build_embedding_request(settings: dict[str, Any], texts: list[str]) -> dict[str, Any]:
-    """Build the provider-specific HTTP request for embeddings."""
+    """Build the provider-specific HTTP request for embeddings.
+
+    When ``embedding_base_url`` is set it overrides ``base_url`` for this
+    call only — needed when chat and embeddings live on different services
+    (typical with vLLM for chat + Ollama / TEI for embeddings, since vLLM's
+    /v1/embeddings only supports encoder-style models).
+    """
     provider = settings.get("provider") or "openai_compatible"
     if provider == "azure_openai":
         return _azure_request(settings, settings["embedding_model"], "embeddings", {"input": texts})
 
-    base_url = settings.get("base_url") or "https://api.openai.com/v1"
+    base_url = settings.get("embedding_base_url") or settings.get("base_url") or "https://api.openai.com/v1"
     return {
         "url": base_url.rstrip("/") + "/embeddings",
         "headers": {"Authorization": f"Bearer {settings['api_key']}"},

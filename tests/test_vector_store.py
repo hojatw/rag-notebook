@@ -22,7 +22,7 @@ def seed_one_indexed_source(db, ingest, tmp_path, text="Alpha project revenue is
     return source_id
 
 
-def test_index_status_reports_in_sync_after_ingest(fresh_modules, tmp_path):
+def test_index_status_reports_in_sync_after_ingest(fresh_modules, local_embed, tmp_path):
     """After a clean ingest, index_status reports zero drift in both directions."""
     db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     seed_one_indexed_source(db, ingest, tmp_path)
@@ -37,7 +37,7 @@ def test_index_status_reports_in_sync_after_ingest(fresh_modules, tmp_path):
     assert status["in_sync"] is True
 
 
-def test_index_status_detects_orphans(fresh_modules, tmp_path):
+def test_index_status_detects_orphans(fresh_modules, local_embed, tmp_path):
     """A row deleted directly from SQLite (skipping the cascade) appears as an orphan."""
     db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     source_id = seed_one_indexed_source(db, ingest, tmp_path)
@@ -54,7 +54,7 @@ def test_index_status_detects_orphans(fresh_modules, tmp_path):
     assert status["in_sync"] is False
 
 
-def test_index_status_detects_missing(fresh_modules, tmp_path):
+def test_index_status_detects_missing(fresh_modules, local_embed, tmp_path):
     """Wiping Chroma but keeping SQLite reports the entire delta as missing."""
     db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     seed_one_indexed_source(db, ingest, tmp_path)
@@ -67,7 +67,7 @@ def test_index_status_detects_missing(fresh_modules, tmp_path):
     assert status["in_sync"] is False
 
 
-def test_diff_sync_is_no_op_when_aligned(fresh_modules, tmp_path):
+def test_diff_sync_is_no_op_when_aligned(fresh_modules, local_embed, tmp_path):
     """When everything matches, diff mode performs zero upserts and zero deletes."""
     db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     seed_one_indexed_source(db, ingest, tmp_path)
@@ -78,7 +78,7 @@ def test_diff_sync_is_no_op_when_aligned(fresh_modules, tmp_path):
     assert vs.index_status()["in_sync"] is True
 
 
-def test_diff_sync_repairs_missing_and_orphan(fresh_modules, tmp_path):
+def test_diff_sync_repairs_missing_and_orphan(fresh_modules, local_embed, tmp_path):
     """Diff mode upserts missing chunks and deletes orphan vectors in one pass."""
     db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     source_id = seed_one_indexed_source(db, ingest, tmp_path)
@@ -107,7 +107,7 @@ def test_diff_sync_repairs_missing_and_orphan(fresh_modules, tmp_path):
     assert vs.index_status()["in_sync"] is True
 
 
-def test_full_sync_reupserts_everything(fresh_modules, tmp_path):
+def test_full_sync_reupserts_everything(fresh_modules, local_embed, tmp_path):
     """Full mode re-upserts every SQLite chunk regardless of current Chroma state."""
     db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     seed_one_indexed_source(db, ingest, tmp_path)
@@ -119,7 +119,7 @@ def test_full_sync_reupserts_everything(fresh_modules, tmp_path):
     assert result["deleted"] == 0
 
 
-def test_clear_all_vectors_removes_everything(fresh_modules, tmp_path):
+def test_clear_all_vectors_removes_everything(fresh_modules, local_embed, tmp_path):
     """clear_all_vectors empties Chroma but leaves SQLite intact."""
     db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     seed_one_indexed_source(db, ingest, tmp_path)

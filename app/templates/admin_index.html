@@ -40,6 +40,11 @@
         <span class="index-stat-value {% if status.orphan_in_chroma %}warn{% endif %}">{{ status.orphan_in_chroma }}</span>
         <span class="muted small">(would be deleted)</span>
       </div>
+      <div class="index-stat">
+        <span class="index-stat-label">Vector dimension</span>
+        <span class="index-stat-value">{{ status.dimension if status.dimension is not none else "—" }}</span>
+        <span class="muted small">{% if status.dimension is not none %}(locked by first upsert){% else %}(empty collection — any dim still legal){% endif %}</span>
+      </div>
     </div>
 
     <div class="index-verdict">

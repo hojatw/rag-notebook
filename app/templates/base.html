@@ -37,12 +37,13 @@
               <a class="{% if request.url.path.startswith('/admin/index') %}active{% endif %}" href="/admin/index">Index</a>
               <a class="{% if request.url.path.startswith('/settings') %}active{% endif %}" href="/settings">Settings</a>
             {% endif %}
-            <a class="{% if request.url.path.startswith('/account') %}active{% endif %}" href="/account">Account</a>
           </nav>
         {% endif %}
         <form action="/logout" method="post" class="session">
           {% if user.is_admin and breadcrumb %}<a href="/settings" class="ghost small">Settings</a>{% endif %}
-          <span class="user-chip">{{ user.username }}</span>
+          <a href="/account"
+             class="user-chip {% if request.url.path.startswith('/account') %}active{% endif %}"
+             title="Account settings">{{ user.username }}</a>
           <button type="submit" class="ghost">Sign out</button>
         </form>
       {% endif %}

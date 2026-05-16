@@ -9,11 +9,11 @@ A single-machine FastAPI proof of concept for a NotebookLM-style workspace: orga
   - **Sources** (left): drag-and-drop upload, automatic indexing-status polling, per-source reindex/delete, **click any indexed source to open a chunk-preview drawer**.
   - **Chat** (centre): grounded chat with conversation switcher (with per-row delete), Markdown-rendered answers, and inline `[1]` `[2]` citation chips that scroll the matching source into view.
   - **Studio** (right): one-click *Generate suggestions* (LLM-authored starter questions from your sources, auto-refreshing as sources finish indexing) and *Pin* assistant answers into collapsible notes (removing a note un-pins the source message automatically).
-- **Hybrid retrieval**: query rewriting, Chroma vector search, SQLite keyword matching, and LLM reranking. Below a configurable confidence threshold the model is asked to abstain rather than hallucinate.
+- **Hybrid retrieval**: query rewriting, Chroma vector search, SQLite keyword matching, and LLM reranking. Below a configurable confidence threshold the model is asked to abstain rather than hallucinate. See [`RETRIEVAL.md`](RETRIEVAL.md) for the full pipeline, tuning knobs, and eval workflow.
 - **Per-message debug pane**: chat answers ship with a collapsible "📊 N chunks · retrieved Xms · generated Yms · top score Z" badge that opens a table of vector / keyword / rerank / final scores per citation.
 - **Retrieval eval harness** (`tests/eval_retrieval.py`) with starter questions for the demo notebook so changes to query rewrite / hybrid scoring / rerank can be measured (recall@k, MRR).
 - **Multi-user** with hashed passwords and strict per-user/per-notebook isolation. Admin can manage user accounts at `/admin/users`; any signed-in user can change their own password at `/account`.
-- **OpenAI-compatible** and **Azure OpenAI** chat + embedding providers, configured by an admin in `/settings`. **API keys are encrypted at rest** with Fernet (PBKDF2-SHA256 over `NOTEBOOKLM_SECRET`).
+- **OpenAI-compatible** (including local Ollama / vLLM / TEI) and **Azure OpenAI** chat + embedding providers, configured by an admin in `/settings`. Chat and embedding endpoints can live on different services via the optional **Embedding base URL** field. **API keys are encrypted at rest** with Fernet (PBKDF2-SHA256 over `NOTEBOOKLM_SECRET`). On save the embedding endpoint is probed once; dim mismatches with the existing Chroma index are rejected with a clear "Clear at /admin/index first" message.
 - **Admin vector-index console** at `/admin/index`: SQLite ↔ Chroma drift report, manual *Rebuild* and *Clear*.
 - **Diff-only Chroma sync on startup**: only missing chunks are upserted and orphan vectors deleted; same-state restarts are near-instant.
 - **Source formats**: PDF, TXT, Markdown, DOCX, HTML.
@@ -46,18 +46,43 @@ On first launch any legacy data is migrated into a default notebook called *My N
 
 ## LLM settings
 
-Set the LLM connection at `/settings` while signed in as admin. Embeddings fall back to a deterministic local hash when no API key is configured (useful for offline demos); chat requires real LLM credentials.
+Set the LLM connection at `/settings` while signed in as admin. Both chat and embeddings require a configured OpenAI-compatible (or Azure OpenAI) endpoint — there is no longer an offline-hash fallback for embeddings. The upload form is disabled until the embedding model is configured. The save handler probes the embedding endpoint once to validate connectivity and detect dimension mismatches against the existing Chroma index.
 
 OpenAI-compatible:
 
 ```text
-Provider: OpenAI-compatible
-Base URL: https://api.openai.com/v1
-API key: sk-...
-Chat model: gpt-4.1-mini
-Embedding model: text-embedding-3-small
-Temperature: 0.2
-Timeout seconds: 60
+Provider:           OpenAI-compatible
+Base URL:           https://api.openai.com/v1
+Embedding base URL: (blank — share the chat URL)
+API key:            sk-...
+Chat model:         gpt-4.1-mini
+Embedding model:    text-embedding-3-small
+Temperature:        0.2
+Timeout seconds:    60
+```
+
+Local-model setup (vLLM for chat + Ollama for embeddings on different ports):
+
+```text
+Provider:           OpenAI-compatible
+Base URL:           http://localhost:8000/v1     (vLLM chat)
+Embedding base URL: http://localhost:11434/v1    (Ollama embeddings)
+API key:            EMPTY                        (any non-empty string)
+Chat model:         meta-llama/Meta-Llama-3.1-8B-Instruct
+Embedding model:    nomic-embed-text
+Timeout seconds:    120                          (cold-load can be slow)
+```
+
+Single-Ollama setup (chat + embeddings both via Ollama):
+
+```text
+Provider:           OpenAI-compatible
+Base URL:           http://localhost:11434/v1
+Embedding base URL: (blank)
+API key:            ollama
+Chat model:         llama3.1:8b
+Embedding model:    nomic-embed-text
+Timeout seconds:    120
 ```
 
 Azure OpenAI:
@@ -158,7 +183,7 @@ POST /settings                                            save LLM settings (API
 .venv/bin/python -m tests.eval_retrieval --top-k 10
 ```
 
-The harness reports per-question hit rank, **Recall@k**, and **MRR**. Edit `tests/eval_questions.json` to add questions about your own indexed sources. The harness skips when no LLM key is configured (the local-fallback embedding is too noisy to be worth measuring).
+The harness reports per-question hit rank, **Recall@k**, and **MRR**. Edit `tests/eval_questions.json` to add questions about your own indexed sources. The harness skips when no LLM key is configured.
 
 ## Layout
 
@@ -187,9 +212,12 @@ app/static/
   app.js               Bindings, Alpine dropzone, Markdown render, citation click, suggestion fill, pin reset.
 tests/
   test_core.py         Hash, ingest, isolation, retrieval, notebook migration, pin idempotency, settings decryption.
+  test_chunking.py     Sentence-aware chunker: CJK detection, splitting, overlap, long-sentence fallback.
   test_llm.py          Provider request shapes, parsing.
   test_security.py     Fernet round-trip + legacy plaintext + wrong-secret behaviour.
   test_vector_store.py Index status + diff/full sync + clear, all against a real Chroma temp dir.
+  eval_questions.json  Ground-truth retrieval Qs for the demo notebook.
+  eval_retrieval.py    Recall@k + MRR harness (see RETRIEVAL.md).
 data/
   app.sqlite3          SQLite metadata (users, notebooks, sources, chunks, conversations, messages, notes, llm_settings).
   uploads/             Per-user original files.
@@ -206,5 +234,6 @@ See [handover.md](handover.md) for the full deferred-work list with context. Hea
 - Background ingest uses FastAPI background tasks rather than a worker queue.
 - No CSRF protection on POST routes.
 - No LLM/embedding HTTP retry / backoff.
-- Local-embedding fallback (when no LLM key is configured) is a deterministic hash — usable for offline demos only, gives poor recall.
-- No retrieval evaluation harness yet.
+- No offline embedding fallback — embedding model must be configured before uploads are accepted.
+- Keyword search uses `LIKE '%token%'` over SQLite; FTS5 + BM25 is on deck (see [`RETRIEVAL.md`](RETRIEVAL.md)).
+- Hybrid merge uses a fixed `0.7·vector + 0.3·keyword` blend; Reciprocal Rank Fusion is on deck.
