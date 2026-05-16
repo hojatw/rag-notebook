@@ -167,9 +167,10 @@ async def rerank_chunks(question: str, candidates: list[dict[str, Any]], setting
         logger.info("rerank_skipped reason=no_chat_settings candidates=%s returned=%s", len(candidates), len(fallback))
         return fallback
 
-    # Pass full chunk text — chunks are bounded at ~1200 chars by chunk_text(),
-    # and earlier truncation at 900 chars sometimes lopped off the answer
-    # evidence in the tail of a chunk. The extra ~6 KB / call is cheap.
+    # Pass full chunk text — chunks are bounded by chunk_text() (~400 chars
+    # CJK / ~800 Latin) and earlier truncation at 900 chars sometimes lopped
+    # off answer evidence in the tail of a chunk. The extra prompt budget is
+    # cheap relative to the rerank call itself.
     excerpts = "\n\n".join(
         f'Candidate {index}\nFile: {chunk["filename"]}\nLocation: {chunk["location"]}\nText: {chunk["text"]}'
         for index, chunk in enumerate(candidates[:20], start=1)

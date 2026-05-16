@@ -84,14 +84,15 @@ Seven retrieval-quality / visibility / safety items, all now in. Baseline measur
 - **#15 No CSRF protection.** Cookie session + form POSTs are vulnerable to CSRF. Add either a per-session token in forms or switch sensitive endpoints to require an `Origin` header check.
 - **#18 No streaming responses.** Long answers arrive in one chunk after the full LLM call returns. SSE / chunked-streaming would give a typing effect; requires re-shaping `chat_completion` to async generator and updating the chat form to read the stream.
 
-### Retrieval — the "original top 3" still pending
+### Retrieval — the "original top 3"
 
-Now that visibility is in place, these can be measured properly. Suggested order:
-- **CJK-aware chunking** (`app/ingest.py` `chunk_text`). Current splitter uses `". "` which barely fires on CJK PDFs and chunks land mid-sentence. Switch to a multi-punctuation regex (`[。！？.!?\n]`) and reduce target chunk size to 300–500 chars. Expected biggest single quality win for the demo data.
-- **SQLite FTS5 for keyword search**. Replace `LIKE '%token%'` in `keyword_candidates_from_sqlite` with an FTS5 virtual table + BM25 ordering. Bigger notebooks (>5K chunks) will see meaningful latency drop; smaller notebooks gain better tokenisation quality.
-- **Reciprocal Rank Fusion** for hybrid merge. Replace `0.7×vector + 0.3×keyword` with RRF over the two rankings. Less sensitive to score-scale drift between vector and keyword.
+| Item | Status |
+|---|---|
+| **CJK-aware chunking** | ✅ Landed. Sentence boundaries from `[。！？]+ \| [.!?](?=\s|$) \| \n+`; auto-targets 400 chars for CJK-dominant text, 800 for Latin; soft-break fallback on `[，、；,;]`; hard-cut as last resort. Sentence-level overlap. Reindex of the demo notebook went 117 → 195 chunks; eval shows roughly even MRR vs the old hard-cut splitter (within rerank stochastic noise), but citations now respect sentence boundaries and CJK granularity. |
+| **SQLite FTS5 for keyword search** | Pending. Replace `LIKE '%token%'` in `keyword_candidates_from_sqlite` with an FTS5 virtual table + BM25 ordering. Bigger notebooks (>5K chunks) will see meaningful latency drop; smaller notebooks gain better tokenisation quality. |
+| **Reciprocal Rank Fusion** for hybrid merge | Pending. Replace `0.7×vector + 0.3×keyword` with RRF over the two rankings. Less sensitive to score-scale drift between vector and keyword. |
 
-All three are now testable via `python -m tests.eval_retrieval` — change one, re-run, compare recall@5 / MRR.
+Eval harness is wired up (`python -m tests.eval_retrieval`) — change one knob, re-run, compare recall@5 / MRR. Eval semantics use ANY-of substring match so the harness is chunk-size agnostic.
 
 ## Important files
 

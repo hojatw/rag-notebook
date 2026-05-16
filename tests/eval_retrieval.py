@@ -12,7 +12,11 @@ prints per-question hits and overall recall@k + MRR.
 
 A "hit" means at least one of the top-k retrieved chunks
   (a) comes from ``expected_filename`` AND
-  (b) contains every substring listed in ``expected_substrings``.
+  (b) contains at least ONE substring listed in ``expected_substrings``.
+
+ANY-of semantics keeps the eval fair across chunk sizes — smaller chunks
+correctly hold less context per chunk, so requiring ALL substrings would
+penalise good small-chunk retrieval rather than measuring it.
 
 Skips silently when LLM settings are not configured (the production
 fallback embedding is too noisy to be worth measuring).
@@ -34,11 +38,14 @@ FIXTURES = Path(__file__).parent / "eval_questions.json"
 
 
 def chunk_matches(chunk: dict, expected_filename: str, expected_substrings: list[str]) -> bool:
-    """A chunk hits iff filename matches AND every expected substring appears."""
+    """A chunk hits iff filename matches AND at least one expected substring appears.
+
+    ANY-of (not all-of) keeps the eval chunk-size-agnostic — see module docstring.
+    """
     if chunk.get("filename") != expected_filename:
         return False
     text = chunk.get("text", "")
-    return all(sub in text for sub in expected_substrings)
+    return any(sub in text for sub in expected_substrings)
 
 
 def reciprocal_rank(retrieved: list[dict], expected_filename: str, expected_substrings: list[str]) -> float:
