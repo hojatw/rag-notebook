@@ -345,6 +345,19 @@ button:disabled {
   box-shadow: none;
 }
 
+/* Visual lock for forms mid-submit. Does NOT use disabled on inputs because
+   browsers exclude disabled controls from form submission — see app.js
+   bindLoadingForms() for the painful lesson. */
+form.is-submitting {
+  pointer-events: none;
+  opacity: 0.8;
+  transition: opacity 120ms var(--ease);
+}
+
+form.is-submitting button[type="submit"] {
+  pointer-events: auto;
+}
+
 .secondary {
   background: var(--surface);
   color: var(--text);

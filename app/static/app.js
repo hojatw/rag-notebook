@@ -62,19 +62,20 @@ function bindConfirms(root) {
 function bindLoadingForms(root) {
   bindOnce(root, "form[data-loading-form]", "loading", (form) => {
     form.addEventListener("submit", () => {
-      // Disable the submit button AND every input/textarea/select so the user
-      // cannot keep typing or change selections while the request is in flight.
+      // CRITICAL: do NOT call .disabled = true on input/textarea/select inside
+      // the submit handler — disabled controls are excluded from form
+      // serialization, which means the browser would POST an empty body and
+      // the server would silently clear every column. We learned this the
+      // hard way with /settings wiping itself on save.
+      // Visual lock comes from the .is-submitting class; the submit button is
+      // disabled here to prevent double-submission.
       const button = form.querySelector("button[type='submit']");
       if (button) {
         button.dataset.originalText = button.textContent;
         button.textContent = button.getAttribute("data-loading-text") || "Working...";
         button.disabled = true;
       }
-      form.querySelectorAll("input, textarea, select").forEach((el) => {
-        if (el.type === "hidden") return;
-        el.dataset.wasDisabled = el.disabled ? "1" : "0";
-        el.disabled = true;
-      });
+      form.classList.add("is-submitting");
     });
   });
 }
