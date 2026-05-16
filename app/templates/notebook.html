@@ -1,5 +1,24 @@
 {% extends "base.html" %}
 {% block content %}
+
+{# Source preview modal. Lives at the workspace level so any source-item
+   click can target #preview-content via HTMX without worrying about scope.
+   Alpine handles open/close state; ESC and backdrop click both close it. #}
+<div id="preview-modal"
+     class="modal"
+     x-data="{ open: false }"
+     x-show="open"
+     x-transition.opacity
+     style="display: none;"
+     @open-preview.window="open = true"
+     @close-preview.window="open = false"
+     @keydown.escape.window="open = false">
+  <div class="modal-backdrop" @click="open = false"></div>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Source preview">
+    <div id="preview-content"></div>
+  </div>
+</div>
+
 <section class="workspace">
 
   {# ---------------- LEFT: Sources ---------------- #}

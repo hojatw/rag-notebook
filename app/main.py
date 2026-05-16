@@ -20,7 +20,9 @@ import httpx
 
 from .llm import close_http_client, cosine, embed_texts, generate_answer, generate_starter_questions, rerank_chunks, set_http_client, rewrite_search_queries
 from .security import hash_password, sign_user_id, unsign_user_id, verify_password
+from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import delete_source as delete_source_vectors
+from .vector_store import index_status as vector_index_status
 from .vector_store import query as query_vectors
 from .vector_store import sync_from_sqlite
 
@@ -527,6 +529,46 @@ def source_partial(
     if dict(row).get("status") in ("indexed", "failed"):
         response.headers["HX-Trigger"] = "sources-changed"
     return response
+
+
+@app.get("/notebooks/{notebook_id}/sources/{source_id}/preview", response_class=HTMLResponse)
+def source_preview(
+    request: Request,
+    notebook_id: int,
+    source_id: int,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Return an HTML fragment listing every chunk that belongs to one source.
+
+    Used by the source preview drawer in the workspace: clicking a source in
+    the left pane HTMX-loads this fragment into the modal panel and Alpine
+    opens it. Chunks are sorted by ``chunk_index`` so they read in document
+    order, regardless of how Chroma decides to lay them out.
+    """
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        source_row = conn.execute(
+            "SELECT * FROM sources WHERE id = ? AND notebook_id = ? AND user_id = ?",
+            (source_id, notebook_id, user["id"]),
+        ).fetchone()
+        if source_row is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        chunks = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, chunk_index, location, text FROM chunks WHERE source_id = ? AND user_id = ? ORDER BY chunk_index ASC",
+                (source_id, user["id"]),
+            ).fetchall()
+        ]
+    logger.info(
+        "source_preview_loaded user_id=%s notebook_id=%s source_id=%s chunks=%s",
+        user["id"], notebook_id, source_id, len(chunks),
+    )
+    return render(
+        request,
+        "_source_preview.html",
+        {"notebook": notebook, "source": dict(source_row), "chunks": chunks},
+    )
 
 
 @app.get("/notebooks/{notebook_id}/_source-picker", response_class=HTMLResponse)
@@ -1124,6 +1166,40 @@ def change_own_password(
         conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), user["id"]))
     logger.info("password_changed user_id=%s", user["id"])
     return render(request, "account.html", {"user": user, "saved": True, "error": ""})
+
+
+@app.get("/admin/index", response_class=HTMLResponse)
+def admin_index(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+    msg: str | None = None,
+):
+    """Render the Chroma index health page (admin only).
+
+    ``msg`` is a small flash code passed via query string after a POST so we
+    can show "Rebuilt" / "Cleared" without introducing a session-flash store.
+    """
+    status = vector_index_status()
+    return render(request, "admin_index.html", {"user": user, "status": status, "msg": msg or ""})
+
+
+@app.post("/admin/index/rebuild")
+def admin_index_rebuild(user: Annotated[dict, Depends(require_admin)]):
+    """Run a full SQLite -> Chroma re-upsert (admin only)."""
+    result = sync_from_sqlite(mode="full")
+    logger.info("admin_index_rebuilt admin_user_id=%s upserted=%s deleted=%s", user["id"], result["upserted"], result["deleted"])
+    return RedirectResponse(f"/admin/index?msg=rebuilt-{result['upserted']}", status_code=303)
+
+
+@app.post("/admin/index/clear")
+def admin_index_clear(user: Annotated[dict, Depends(require_admin)]):
+    """Delete every vector from the Chroma collection (admin only).
+
+    SQLite data is untouched — a subsequent "Rebuild index" re-populates Chroma.
+    """
+    count = clear_all_vectors()
+    logger.info("admin_index_cleared admin_user_id=%s deleted=%s", user["id"], count)
+    return RedirectResponse(f"/admin/index?msg=cleared-{count}", status_code=303)
 
 
 @app.get("/admin/users", response_class=HTMLResponse)

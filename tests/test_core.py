@@ -161,3 +161,136 @@ def test_keyword_score_supports_cjk_terms():
     score = keyword_score(["Azure OpenAI 端點設定"], "這份文件說明 Azure OpenAI endpoint 的端點設定方式。")
 
     assert score > 0
+
+
+def test_default_notebook_migration_backfills_legacy_rows(monkeypatch, tmp_path):
+    """init_db() should create a default notebook per user with orphan rows
+    and backfill notebook_id on every sources / conversations row that
+    pre-existed the notebook schema (follow-up #1, Phase 1)."""
+    import sqlite3
+    monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
+    import app.db as db
+    import importlib
+    importlib.reload(db)
+    db.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # Simulate the pre-notebook schema: no notebooks/notes tables, no
+    # notebook_id column on sources / conversations.
+    conn = sqlite3.connect(db.DB_PATH)
+    conn.executescript(
+        """
+        CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE sources (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL, stored_path TEXT NOT NULL,
+            content_type TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'uploaded',
+            error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE conversations (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title TEXT NOT NULL DEFAULT 'New conversation',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        INSERT INTO users (username, password_hash) VALUES ('legacy_a', 'x'), ('legacy_b', 'y');
+        INSERT INTO sources (user_id, filename, stored_path) VALUES
+            (1, 'a.txt', '/tmp/a.txt'), (1, 'b.txt', '/tmp/b.txt'), (2, 'c.txt', '/tmp/c.txt');
+        INSERT INTO conversations (user_id, title) VALUES (1, 'chat-a'), (2, 'chat-c');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    db.init_db()
+
+    with db.connect() as conn:
+        # Each legacy user with orphan rows gets exactly one default notebook.
+        per_user = {row["user_id"]: row["c"] for row in conn.execute(
+            "SELECT user_id, COUNT(*) c FROM notebooks GROUP BY user_id"
+        ).fetchall()}
+        assert per_user[1] == 1
+        assert per_user[2] == 1
+        # No source / conversation left without a notebook_id.
+        assert conn.execute("SELECT COUNT(*) c FROM sources WHERE notebook_id IS NULL").fetchone()["c"] == 0
+        assert conn.execute("SELECT COUNT(*) c FROM conversations WHERE notebook_id IS NULL").fetchone()["c"] == 0
+    # Idempotency: running init_db a second time must NOT create a second notebook.
+    db.init_db()
+    with db.connect() as conn:
+        per_user = {row["user_id"]: row["c"] for row in conn.execute(
+            "SELECT user_id, COUNT(*) c FROM notebooks GROUP BY user_id"
+        ).fetchall()}
+        assert per_user[1] == 1
+        assert per_user[2] == 1
+
+
+def test_load_llm_settings_decrypts_api_key(monkeypatch, tmp_path):
+    """load_llm_settings() should return the decrypted API key when the row
+    was stored with encrypt_for_storage()."""
+    monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NOTEBOOKLM_SECRET", "unit-test-secret")
+    import app.db as db
+    import importlib
+    importlib.reload(db)
+    db.init_db()
+    with db.connect() as conn:
+        encrypted = db.encrypt_for_storage("sk-real")
+        conn.execute("UPDATE llm_settings SET api_key = ? WHERE id = 1", (encrypted,))
+        loaded = db.load_llm_settings(conn)
+    assert loaded["api_key"] == "sk-real"
+
+
+def test_load_llm_settings_passes_legacy_plaintext(monkeypatch, tmp_path):
+    """Plaintext keys stored before encryption was added still load unchanged."""
+    monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NOTEBOOKLM_SECRET", "unit-test-secret")
+    import app.db as db
+    import importlib
+    importlib.reload(db)
+    db.init_db()
+    with db.connect() as conn:
+        conn.execute("UPDATE llm_settings SET api_key = ? WHERE id = 1", ("sk-legacy-plaintext",))
+        loaded = db.load_llm_settings(conn)
+    assert loaded["api_key"] == "sk-legacy-plaintext"
+
+
+def test_pin_note_is_idempotent(monkeypatch, tmp_path):
+    """Pinning the same assistant message twice must not create two notes
+    (follow-up Phase 4 round 2 #4)."""
+    db, _ = fresh_modules(monkeypatch, tmp_path)
+    with db.connect() as conn:
+        user = conn.execute("SELECT * FROM users WHERE username = 'user'").fetchone()
+        nb_id = conn.execute(
+            "INSERT INTO notebooks (user_id, title) VALUES (?, 'NB')", (user["id"],)
+        ).lastrowid
+        convo_id = conn.execute(
+            "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, 'C')",
+            (user["id"], nb_id),
+        ).lastrowid
+        msg_id = conn.execute(
+            "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'assistant', 'A')",
+            (convo_id, user["id"]),
+        ).lastrowid
+
+        # Emulate the dedupe guard from pin_note: only insert if no note
+        # already references this message_id.
+        def pin(msg_id):
+            existing = conn.execute(
+                "SELECT id FROM notes WHERE notebook_id = ? AND source_message_id = ?",
+                (nb_id, msg_id),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO notes (notebook_id, user_id, title, content, source_message_id) VALUES (?, ?, 'P', 'A', ?)",
+                    (nb_id, user["id"], msg_id),
+                )
+
+        pin(msg_id)
+        pin(msg_id)
+        pin(msg_id)
+
+        count = conn.execute(
+            "SELECT COUNT(*) c FROM notes WHERE notebook_id = ? AND source_message_id = ?",
+            (nb_id, msg_id),
+        ).fetchone()["c"]
+    assert count == 1

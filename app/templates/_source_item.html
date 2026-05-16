@@ -10,10 +10,23 @@
       hx-trigger="every 2s"
       hx-swap="outerHTML"
     {% endif %}>
-  <div class="source-line">
-    <span class="source-name" title="{{ source.filename }}">{{ source.filename }}</span>
+  {# Whole header opens the preview drawer. Reindex/Delete sit below in
+     .source-actions so they don't conflict with this click target. #}
+  <button type="button"
+          class="source-line source-line-btn"
+          {% if source.status == "indexed" %}
+          hx-get="/notebooks/{{ notebook.id }}/sources/{{ source.id }}/preview"
+          hx-target="#preview-content"
+          hx-swap="innerHTML"
+          hx-on::after-request="window.dispatchEvent(new CustomEvent('open-preview'))"
+          title="Click to preview chunks"
+          {% else %}
+          disabled
+          title="Preview available once indexed"
+          {% endif %}>
+    <span class="source-name">{{ source.filename }}</span>
     <span class="status {{ source.status }}">{{ source.status }}</span>
-  </div>
+  </button>
   {% if source.error %}
     <p class="source-error" title="{{ source.error }}">{{ source.error }}</p>
   {% endif %}

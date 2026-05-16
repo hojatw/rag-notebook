@@ -147,15 +147,10 @@ def query(
     return sorted(candidates.values(), key=lambda item: item["vector_score"], reverse=True)
 
 
-def sync_from_sqlite(batch_size: int = 500) -> None:
-    """Backfill Chroma from existing SQLite chunks."""
-    if not chroma_available():
-        logger.warning("vector_sync_skipped reason=chroma_unavailable")
-        return
-    started = time.perf_counter()
-    synced = 0
+def _indexed_chunk_rows() -> list[Any]:
+    """Fetch every chunk belonging to an indexed source, joined with filename."""
     with db.connect() as conn:
-        rows = conn.execute(
+        return conn.execute(
             """
             SELECT chunks.*, sources.filename
             FROM chunks JOIN sources ON sources.id = chunks.source_id
@@ -163,22 +158,119 @@ def sync_from_sqlite(batch_size: int = 500) -> None:
             ORDER BY chunks.id
             """
         ).fetchall()
-    for start in range(0, len(rows), batch_size):
-        batch = []
-        for row in rows[start : start + batch_size]:
-            batch.append(
-                {
-                    "id": row["id"],
-                    "user_id": row["user_id"],
-                    "source_id": row["source_id"],
-                    "chunk_index": row["chunk_index"],
-                    "filename": row["filename"],
-                    "location": row["location"],
-                    "text": row["text"],
-                    "embedding": db.loads(row["embedding_json"]),
-                }
-            )
+
+
+def _chroma_ids() -> set[str]:
+    """Return the set of vector ids currently stored in the Chroma collection."""
+    if not chroma_available():
+        return set()
+    return set(collection().get(include=[])["ids"])
+
+
+def index_status() -> dict[str, Any]:
+    """Compare SQLite indexed chunks against the Chroma collection.
+
+    Returns a dict suitable for the admin index page:
+        sqlite_chunks      total SQLite chunks belonging to indexed sources
+        chroma_chunks      total vectors currently in Chroma
+        missing_in_chroma  count of SQLite chunks not yet upserted
+        orphan_in_chroma   count of Chroma vectors with no matching SQLite chunk
+        in_sync            True iff both counts above are zero
+        chroma_available   False when chromadb cannot be imported
+    """
+    if not chroma_available():
+        return {
+            "chroma_available": False,
+            "sqlite_chunks": 0,
+            "chroma_chunks": 0,
+            "missing_in_chroma": 0,
+            "orphan_in_chroma": 0,
+            "in_sync": False,
+        }
+    chroma_ids = _chroma_ids()
+    sqlite_ids = {vector_id(row["id"]) for row in _indexed_chunk_rows()}
+    missing = sqlite_ids - chroma_ids
+    orphans = chroma_ids - sqlite_ids
+    return {
+        "chroma_available": True,
+        "sqlite_chunks": len(sqlite_ids),
+        "chroma_chunks": len(chroma_ids),
+        "missing_in_chroma": len(missing),
+        "orphan_in_chroma": len(orphans),
+        "in_sync": not missing and not orphans,
+    }
+
+
+def clear_all_vectors() -> int:
+    """Delete every vector from the collection. Returns the number removed."""
+    if not chroma_available():
+        return 0
+    col = collection()
+    ids = list(col.get(include=[])["ids"])
+    if ids:
+        col.delete(ids=ids)
+    logger.info("vector_clear_all_completed count=%s", len(ids))
+    return len(ids)
+
+
+def sync_from_sqlite(batch_size: int = 500, mode: str = "diff") -> dict[str, int]:
+    """Reconcile the Chroma collection with SQLite chunks.
+
+    Modes:
+        diff (default, fast)
+            Upsert only SQLite chunks missing from Chroma; delete Chroma
+            vectors whose chunk id is no longer in SQLite. This is what
+            startup uses — it short-circuits to zero work when in sync.
+        full (slow, repair)
+            Re-upsert every SQLite chunk regardless of current Chroma state.
+            Use from the admin "Rebuild index" button when drift is
+            suspected or after restoring from a backup.
+
+    Returns ``{"upserted": int, "deleted": int}``.
+    """
+    if not chroma_available():
+        logger.warning("vector_sync_skipped reason=chroma_unavailable")
+        return {"upserted": 0, "deleted": 0}
+    started = time.perf_counter()
+    col = collection()
+
+    rows = _indexed_chunk_rows()
+    sqlite_ids = {vector_id(row["id"]) for row in rows}
+    if mode == "diff":
+        chroma_ids = _chroma_ids()
+        pending_rows = [r for r in rows if vector_id(r["id"]) not in chroma_ids]
+        orphan_ids = list(chroma_ids - sqlite_ids)
+    elif mode == "full":
+        pending_rows = list(rows)
+        orphan_ids = []
+    else:
+        raise ValueError(f"Unknown sync mode: {mode!r} (expected 'diff' or 'full')")
+
+    if orphan_ids:
+        col.delete(ids=orphan_ids)
+        logger.info("vector_orphans_deleted count=%s", len(orphan_ids))
+
+    upserted = 0
+    for start in range(0, len(pending_rows), batch_size):
+        batch = [
+            {
+                "id": row["id"],
+                "user_id": row["user_id"],
+                "source_id": row["source_id"],
+                "chunk_index": row["chunk_index"],
+                "filename": row["filename"],
+                "location": row["location"],
+                "text": row["text"],
+                "embedding": db.loads(row["embedding_json"]),
+            }
+            for row in pending_rows[start : start + batch_size]
+        ]
         upsert_chunks(batch)
-        synced += len(batch)
+        upserted += len(batch)
+
     elapsed_ms = (time.perf_counter() - started) * 1000
-    logger.info("vector_sync_completed chunks=%s elapsed_ms=%.1f", synced, elapsed_ms)
+    logger.info(
+        "vector_sync_completed mode=%s upserted=%s deleted=%s sqlite_chunks=%s elapsed_ms=%.1f",
+        mode, upserted, len(orphan_ids), len(sqlite_ids), elapsed_ms,
+    )
+    return {"upserted": upserted, "deleted": len(orphan_ids)}

@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings">
+  <header class="settings-head">
+    <p class="eyebrow">Admin console</p>
+    <h1>Vector index</h1>
+    <p class="muted">Compare the Chroma collection to the SQLite chunks of indexed sources. Use <strong>Rebuild</strong> after restoring from a backup, or <strong>Clear</strong> to wipe Chroma and start fresh.</p>
+  </header>
+
+  {% if msg.startswith('rebuilt-') %}
+    <div class="notice">Index rebuilt — {{ msg.split('-', 1)[1] }} chunks upserted.</div>
+  {% elif msg.startswith('cleared-') %}
+    <div class="notice">Cleared {{ msg.split('-', 1)[1] }} vectors. Run Rebuild to repopulate.</div>
+  {% endif %}
+
+  {% if not status.chroma_available %}
+    <div class="alert">ChromaDB is not importable in this environment. Vector search is disabled until it is installed.</div>
+  {% endif %}
+
+  <section class="settings-section">
+    <h2>Status</h2>
+    <div class="index-stat-grid">
+      <div class="index-stat">
+        <span class="index-stat-label">SQLite chunks</span>
+        <span class="index-stat-value">{{ status.sqlite_chunks }}</span>
+        <span class="muted small">(from indexed sources)</span>
+      </div>
+      <div class="index-stat">
+        <span class="index-stat-label">Chroma vectors</span>
+        <span class="index-stat-value">{{ status.chroma_chunks }}</span>
+        <span class="muted small">(in the persistent collection)</span>
+      </div>
+      <div class="index-stat">
+        <span class="index-stat-label">Missing in Chroma</span>
+        <span class="index-stat-value {% if status.missing_in_chroma %}warn{% endif %}">{{ status.missing_in_chroma }}</span>
+        <span class="muted small">(would be upserted)</span>
+      </div>
+      <div class="index-stat">
+        <span class="index-stat-label">Orphan in Chroma</span>
+        <span class="index-stat-value {% if status.orphan_in_chroma %}warn{% endif %}">{{ status.orphan_in_chroma }}</span>
+        <span class="muted small">(would be deleted)</span>
+      </div>
+    </div>
+
+    <div class="index-verdict">
+      {% if status.in_sync %}
+        <span class="status indexed">In sync</span>
+        <span class="muted small">SQLite and Chroma agree.</span>
+      {% else %}
+        <span class="status failed">Out of sync</span>
+        <span class="muted small">A diff sync runs automatically on next app startup; Rebuild forces it now.</span>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <h2>Actions</h2>
+    <div class="index-actions">
+      <form method="post" action="/admin/index/rebuild"
+            data-confirm="Re-upsert every SQLite chunk into Chroma? This can take several seconds for large notebooks."
+            data-loading-form>
+        <button type="submit" data-loading-text="Rebuilding...">Rebuild index</button>
+      </form>
+      <form method="post" action="/admin/index/clear"
+            data-confirm="Delete EVERY vector from Chroma? SQLite data is untouched, and a follow-up Rebuild restores search."
+            data-loading-form>
+        <button type="submit" class="danger" data-loading-text="Clearing...">Clear vectors</button>
+      </form>
+    </div>
+    <p class="hint muted small">A diff-only sync runs automatically every time the app starts — these buttons are for manual repair when drift is suspected.</p>
+  </section>
+
+  <div class="settings-foot">
+    <a href="/notebooks" class="ghost">Back to notebooks</a>
+  </div>
+</section>
+{% endblock %}

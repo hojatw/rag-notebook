@@ -39,6 +39,7 @@ Last known verification: `pytest` 10 passed; smoke test on all routes including 
 |---|---|---|
 | 1 | Pin button check `successful` | `@htmx:after-request` now guards on `$event.detail.successful` |
 | 4 | Conversation delete | New `POST /notebooks/{nid}/chat/{cid}/delete` + per-row × button in conversation dropdown |
+| 6 | Source preview drawer | Clicking an indexed source opens a modal listing its chunks; `GET /notebooks/{nid}/sources/{sid}/preview` returns the HTML fragment; ESC + backdrop both close. Alpine handles state, HTMX swaps content |
 | 7 | `.venv` shebangs | Rebuilt via `setup.sh`; `.venv/bin/uvicorn` works directly |
 | 8 | `.gitignore` | Adds `data/`, `.venv/`, `__pycache__/`, Claude per-user settings |
 | 9 | Python 3.14 / chromadb dance | `setup.sh` auto-detects `onnxruntime` availability and applies the `--no-deps` fallback when needed |
@@ -46,7 +47,10 @@ Last known verification: `pytest` 10 passed; smoke test on all routes including 
 | 12 | `@app.on_event` deprecation | Migrated to `@asynccontextmanager lifespan` |
 | 16 | Pagination | Defensive caps + `*_truncated` flags + `.truncated-hint` chip in the UI |
 | 17 | API key encryption at rest | `cryptography.Fernet`, derived from `NOTEBOOKLM_SECRET` via PBKDF2-SHA256; legacy plaintext keys pass through unchanged until next save |
+| 20 | Smart Chroma sync | `sync_from_sqlite(mode='diff')` (now the startup default) computes the set diff between SQLite and Chroma, upserts only what's missing and deletes orphans. `mode='full'` re-upserts everything; admin uses it via Rebuild. Aligned-state startups now do zero work (~200ms vs ~600ms before) |
 | 21 | Account management | `/account` (own password), `/admin/users` list + create + reset-password + toggle-admin + delete (refuses self-delete and last-admin demotion) |
+| 22 | (deferred — explained) | No tests added; design lives in this handover. Concrete next step: build a `tests/eval_retrieval.py` with `{question, expected_source, expected_chunk_substring}` JSON fixtures, compute recall@5 + MRR |
+| 23 | Admin vector-index page | `/admin/index` shows SQLite vs Chroma counts + missing/orphan deltas + in-sync verdict; *Rebuild* triggers full sync, *Clear* wipes the collection. New topbar entry "Index" for admins |
 | 24 | Form lock-out | `data-loading-form` now also disables every non-hidden input/textarea/select on the form, not just the submit button |
 
 ## Deferred follow-ups (carried over from previous handovers)
@@ -56,7 +60,6 @@ Last known verification: `pytest` 10 passed; smoke test on all routes including 
 - **#2 Legacy citation `source_id` backfill.** Old assistant messages stored before the `citation_payload` change have no `source_id`. Frontend falls back to filename match — works as long as filenames are unique within the notebook and not renamed. One-shot backfill script welcome.
 - **#3 `<details>` dropdowns don't close on outside click.** Conversation switcher and Notebook ▾ menu need a manual second click to close. Replace native `<details>` with Alpine `x-data="{ open: false }" @click.outside="open = false"`.
 - **#5 Suggestions caching.** Every "Generate suggestions" click hits the LLM. Cache the result in `notebooks` (new `suggestions_json` + `suggestions_at` columns) with a TTL; "Refresh" still forces regeneration.
-- **#6 Source preview drawer.** Clicking a source in the left pane does nothing. NotebookLM-equivalent behaviour is to open a drawer/modal listing that source's chunks with copy/scroll. Needs `GET /notebooks/{nid}/sources/{sid}/preview` + a drawer component.
 - **#10 Pin CDN versions of Alpine/HTMX/marked/DOMPurify.** Already pinned in `base.html`; if the CDN ever ships a breaking patch on those exact paths, the app silently breaks. Document fallback or self-host.
 
 ### Architectural debt (production hardening)
@@ -69,9 +72,7 @@ Last known verification: `pytest` 10 passed; smoke test on all routes including 
 
 ### Discussed but not done
 
-- **#20 Full-sync on startup.** `sync_from_sqlite()` re-upserts every chunk on every boot. Time grows linearly with chunk count. Better: diff SQLite vs Chroma id sets and upsert only the delta, OR drop auto-sync and add a manual "Rebuild index" admin button (pairs with #23).
 - **#22 No retrieval eval set.** Any change to query rewrite / hybrid scoring / rerank is unmeasurable. Build a small `tests/eval_retrieval.py` with `{question, expected_source, expected_chunk_substring}` JSON fixtures using the already-indexed sample documents, compute recall@5 + MRR. Becomes essential the moment anyone tunes retrieval.
-- **#23 Chroma sync admin UI.** No way to see whether SQLite and Chroma agree, or to repair drift. Add a `/admin/index` page: SQLite chunk count vs Chroma vector count, "Rebuild index" button, "Clear vectors" button. Pairs with #20.
 
 ## Important files
 
@@ -80,13 +81,15 @@ app/main.py            Routes, auth, retrieval orchestration, lifespan, logging.
 app/db.py              SQLite schema, default-notebook migration, load_llm_settings (decrypts).
 app/ingest.py          Text extraction, chunking, vector upsert.
 app/llm.py             LLM/embedding HTTP, query rewrite, rerank, starter questions.
-app/vector_store.py    Chroma persistent client wrapper.
-app/security.py        Password hashing, signed sessions, Fernet encryption.
-app/templates/         Jinja templates (base, home, notebook, login, settings, account, admin_users, error,
-                       plus _source_item / _source_picker / _suggestions / _notes_section partials).
-app/static/            style.css (design tokens + components), app.js (binders, Alpine dropzone, citation links).
-tests/                 test_core.py, test_llm.py.
-setup.sh               One-shot env bootstrap. Pin / promote / new admins should use it.
+app/vector_store.py    Chroma persistent client, diff sync, index_status, clear_all_vectors.
+app/security.py        Password hashing, signed sessions, Fernet encryption helpers.
+app/templates/         Jinja templates: base, home, notebook (with preview modal), login, settings,
+                       account, admin_users, admin_index, error, plus _source_item / _source_picker /
+                       _source_preview / _suggestions / _notes_section partials.
+app/static/            style.css (design tokens + components + modal + admin-index stats),
+                       app.js (binders, Alpine dropzone, Markdown render, citation click, suggestion fill, pin reset).
+tests/                 test_core.py, test_llm.py, test_security.py, test_vector_store.py.
+setup.sh               One-shot env bootstrap. New machines / fresh clones should use it.
 data/                  app.sqlite3, uploads/, chroma/. Gitignored.
 logs/app.log           Rotating app log. Gitignored.
 .claude/launch.json    Claude Preview server config. Committed.
@@ -130,3 +133,4 @@ Changing `NOTEBOOKLM_SECRET` invalidates every encrypted API key (you'll need to
 - Python 3.14 + chromadb: `setup.sh` handles. Don't `pip install -r requirements.txt` blindly on 3.14 — `chromadb==1.5.9; python_version < "3.14"` in `requirements.txt` would skip Chroma entirely.
 - Lifespan deprecation: handled (`@app.on_event` removed). FastAPI's own `asyncio.iscoroutinefunction` DeprecationWarning remains (their bug, not ours).
 - API keys live encrypted in `llm_settings.api_key`. Decryption happens in `load_llm_settings()` (db.py) — call it instead of `SELECT * FROM llm_settings` if you need the plaintext.
+- Chroma startup sync is now diff-based. If you suspect index drift, hit `/admin/index` and click *Rebuild*; if you want a clean slate, click *Clear* then *Rebuild*.

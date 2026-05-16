@@ -1,0 +1,39 @@
+{# Source preview fragment loaded into the workspace modal via HTMX when
+   the user clicks a source in the left pane. #}
+<header class="preview-head">
+  <div>
+    <h2>{{ source.filename }}</h2>
+    <p class="preview-meta">
+      <span class="status {{ source.status }}">{{ source.status }}</span>
+      <span class="muted">·</span>
+      <span class="muted">{{ chunks|length }} {% if chunks|length == 1 %}chunk{% else %}chunks{% endif %}</span>
+      {% if source.content_type %}
+        <span class="muted">·</span>
+        <span class="muted">{{ source.content_type }}</span>
+      {% endif %}
+    </p>
+  </div>
+  <button type="button" class="ghost preview-close" @click="$dispatch('close-preview')" aria-label="Close preview">×</button>
+</header>
+
+{% if source.error %}
+  <div class="alert">{{ source.error }}</div>
+{% endif %}
+
+{% if chunks %}
+  <ol class="preview-chunks">
+    {% for chunk in chunks %}
+      <li id="preview-chunk-{{ chunk.id }}" class="preview-chunk">
+        <div class="preview-chunk-head">
+          <span class="chunk-loc">{{ chunk.location }}</span>
+          <span class="muted small">chunk #{{ chunk.chunk_index }}</span>
+        </div>
+        <p class="preview-chunk-text">{{ chunk.text }}</p>
+      </li>
+    {% endfor %}
+  </ol>
+{% else %}
+  <div class="empty">
+    <p class="muted">No chunks yet — this source has not been successfully indexed.</p>
+  </div>
+{% endif %}
