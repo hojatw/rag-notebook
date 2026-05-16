@@ -1,0 +1,45 @@
+# One-command deploy. Bind-mounts ./data and ./logs from the repo root
+# so SQLite, uploads, the Chroma index, and rotating logs all survive
+# `docker compose down` / `docker compose up --build` / image upgrades.
+#
+# Usage:
+#   1. cp .env.example .env  (then fill NOTEBOOKLM_SECRET)
+#   2. docker compose up --build -d
+#   3. docker compose logs -f
+#   4. Open http://127.0.0.1:8000 — default accounts admin/admin123, user/user123
+#
+# Resetting:
+#   docker compose down               (keeps data + logs)
+#   rm -rf data/ logs/                (nukes everything; CAUTION)
+#
+# Upgrade flow (zero data loss):
+#   git pull
+#   docker compose up --build -d      (rebuilds image, keeps mounts)
+
+services:
+  app:
+    build: .
+    image: notebooklm-rag-poc:latest
+    container_name: notebooklm-rag-poc
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    environment:
+      # Required — encrypted at-rest API keys are derived from this. Changing
+      # it invalidates every saved API key (admin re-enters at /settings).
+      NOTEBOOKLM_SECRET: ${NOTEBOOKLM_SECRET:?NOTEBOOKLM_SECRET must be set in .env}
+      NOTEBOOKLM_LOG_LEVEL: ${NOTEBOOKLM_LOG_LEVEL:-INFO}
+    volumes:
+      # SQLite DB + uploads + Chroma persistent index. Single bind-mount
+      # keeps related state together so backups are one `tar czf` away.
+      - ./data:/app/data
+      # Rotating log files. Inspectable from the host with tail -f.
+      - ./logs:/app/logs
+    healthcheck:
+      # Defined in the Dockerfile; restated here so `docker compose ps`
+      # reflects health without poking inside the image.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/', timeout=4); sys.exit(0 if r.status < 400 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3

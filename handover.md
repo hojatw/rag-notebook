@@ -117,8 +117,12 @@ tests/                 test_core.py, test_chunking.py, test_llm.py, test_securit
 RETRIEVAL.md           End-to-end retrieval doc: pipeline diagram, per-stage details, tuning
                        knobs (with file:line refs), eval workflow, open follow-ups.
 setup.sh               One-shot env bootstrap. New machines / fresh clones should use it.
-data/                  app.sqlite3, uploads/, chroma/. Gitignored.
-logs/app.log           Rotating app log. Gitignored.
+Dockerfile             python:3.12-slim image. Single stage. Non-root UID 1000.
+docker-compose.yml     One-command deploy. Bind-mounts ./data and ./logs.
+.env.example           Template for the compose .env (NOTEBOOKLM_SECRET, HOST_PORT).
+.dockerignore          Keeps data/, logs/, .venv/, .git/, __pycache__/ out of the image.
+data/                  app.sqlite3, uploads/, chroma/. Gitignored. Bind-mounted in Docker.
+logs/app.log           Rotating app log. Gitignored. Bind-mounted in Docker.
 .claude/launch.json    Claude Preview server config. Committed.
 ```
 

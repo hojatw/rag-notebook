@@ -1,0 +1,38 @@
+# Build context exclusions. Anything not in here gets shipped into the
+# image — large or sensitive things must be listed.
+
+# Local Python tooling
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Per-user runtime state — gets bind-mounted from the host, must not bake
+# fixtures or DBs into the image
+data/
+logs/
+
+# Git + editor noise
+.git/
+.gitignore
+.github/
+.claude/
+.vscode/
+.idea/
+*.swp
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Misc
+*.md
+!README.md
+!handover.md
+!RETRIEVAL.md
+*.log
+.env
+.env.*

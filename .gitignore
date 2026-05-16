@@ -29,3 +29,6 @@ htmlcov/
 
 # Claude Code per-user local settings (launch.json is committed)
 .claude/settings.local.json
+
+# Docker compose env (.env.example is committed)
+.env

@@ -40,6 +40,32 @@ Open `http://127.0.0.1:8000` and sign in:
 
 On first launch any legacy data is migrated into a default notebook called *My Notebook*. New users start with an empty notebook grid and create their own with **+ New notebook**.
 
+### Docker (recommended for deployment)
+
+```bash
+cp .env.example .env       # then fill NOTEBOOKLM_SECRET
+docker compose up --build -d
+docker compose logs -f
+```
+
+The compose file bind-mounts `./data` (SQLite + uploads + Chroma index) and `./logs` (rotating app log) from the repo root so that `docker compose down && docker compose up --build` preserves all user state. Backup is one `tar czf data-$(date +%F).tar.gz data/` away.
+
+**Upgrade flow** (zero data loss):
+
+```bash
+git pull
+docker compose up --build -d
+```
+
+**Reset** (CAUTION — deletes users, notebooks, vectors, uploads):
+
+```bash
+docker compose down
+rm -rf data/ logs/
+```
+
+The image uses Python 3.12 internally to sidestep the `chromadb`/`onnxruntime` 3.14 wheel gap — your host Python version doesn't matter. Default port is 8000 (override via `HOST_PORT` in `.env`).
+
 ### Python 3.14 + ChromaDB caveat
 
 `chromadb==1.5.9` depends on `onnxruntime`, which currently has no Python 3.14 wheel. The included [`setup.sh`](setup.sh) handles this — it installs Chroma without its embedding-function dependency and then adds the runtime extras Chroma actually needs. `requirements.txt` constrains `chromadb` to Python < 3.14 so a plain `pip install -r requirements.txt` does not break on 3.14; rely on `setup.sh` instead.
