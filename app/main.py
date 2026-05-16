@@ -229,6 +229,24 @@ def touch_notebook(conn, notebook_id: int) -> None:
     )
 
 
+def llm_settings_status(conn) -> dict:
+    """Return a small flag set describing whether the LLM provider is usable.
+
+    Used by routes that should refuse to ingest (no embedding API => useless
+    chunks via the local fallback hash) and by templates that warn the user.
+    """
+    settings = load_llm_settings(conn) or {}
+    has_api_key = bool(settings.get("api_key"))
+    has_chat_model = bool(settings.get("chat_model"))
+    has_embedding_model = bool(settings.get("embedding_model"))
+    return {
+        "ready": has_api_key and has_chat_model and has_embedding_model,
+        "has_api_key": has_api_key,
+        "has_chat_model": has_chat_model,
+        "has_embedding_model": has_embedding_model,
+    }
+
+
 def cleanup_source_artifacts(source: dict) -> None:
     """Best-effort removal of a source's on-disk file and Chroma vectors.
 
@@ -300,6 +318,7 @@ def notebook_view(
 
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
+        llm_status = llm_settings_status(conn)
         sources, sources_truncated = fetch_capped(
             conn,
             "SELECT * FROM sources WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC",
@@ -342,6 +361,7 @@ def notebook_view(
         {
             "user": user,
             "notebook": notebook,
+            "llm_status": llm_status,
             "sources": sources,
             "indexed_sources": indexed_sources,
             "conversations": conversations,
@@ -409,6 +429,16 @@ async def upload_source(
     """Store an uploaded source within a notebook and schedule background ingestion."""
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
+        llm_status = llm_settings_status(conn)
+    if not llm_status["ready"]:
+        # The local hash-based embedding fallback "works" but produces useless
+        # vectors — refusing here prevents users from indexing then wondering
+        # why retrieval is terrible.
+        logger.warning("source_upload_rejected user_id=%s notebook_id=%s reason=llm_not_configured", user["id"], notebook_id)
+        raise HTTPException(
+            status_code=400,
+            detail="LLM is not configured. An admin must set the embedding model and chat model at /settings before sources can be indexed.",
+        )
     if not file.filename or not supported(file.filename):
         logger.warning("source_upload_rejected user_id=%s notebook_id=%s filename=%s", user["id"], notebook_id, file.filename)
         raise HTTPException(status_code=400, detail="Unsupported file type.")
@@ -810,20 +840,37 @@ async def ask(
         history.reverse()
         settings = load_llm_settings(conn)
 
+    metadata: dict = {}
     try:
+        retrieve_started = time.perf_counter()
         retrieved = await retrieve(question, None, settings or {}, history, user["id"], source_ids)
-        if not retrieved:
+        metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
+        metadata["retrieved_chunks"] = len(retrieved)
+        top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
+        if retrieved:
+            metadata["top_score"] = round(top_score, 3)
+
+        if not retrieved or top_score < LOW_CONFIDENCE_THRESHOLD:
             answer = "I cannot determine that from the selected sources."
             citations = []
-            logger.info("chat_no_retrieval_results user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
+            metadata["outcome"] = "low_confidence" if retrieved else "no_retrieval"
+            metadata["threshold"] = LOW_CONFIDENCE_THRESHOLD
+            logger.info(
+                "chat_no_retrieval_results user_id=%s notebook_id=%s conversation_id=%s top_score=%.3f threshold=%.2f",
+                user["id"], notebook_id, conversation_id, top_score, LOW_CONFIDENCE_THRESHOLD,
+            )
         else:
+            generate_started = time.perf_counter()
             answer = await generate_answer(question, retrieved, settings or {})
+            metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
+            metadata["answer_chars"] = len(answer)
             all_citations = citation_payload(retrieved)
-            # Only keep citations the model actually referenced as [N] in the answer.
-            # NotebookLM mirrors this — listing every retrieved chunk under the
-            # answer is overwhelming and misleading about what was used.
+            # Only keep citations the model actually referenced as [N] in the
+            # answer. Listing every retrieved chunk would mislead about what
+            # was actually used. Match NotebookLM behaviour.
             referenced = {int(m.group(1)) for m in re.finditer(r"\[(\d+)\]", answer)}
             citations = [c for c in all_citations if c["index"] in referenced] if referenced else all_citations
+            metadata["outcome"] = "answered"
             logger.info(
                 "chat_answer_generated user_id=%s notebook_id=%s conversation_id=%s retrieved_chunks=%s shown_citations=%s of %s answer_chars=%s",
                 user["id"], notebook_id, conversation_id, len(retrieved), len(citations), len(all_citations), len(answer),
@@ -831,15 +878,17 @@ async def ask(
     except Exception as exc:
         answer = f"Chat error: {exc}"
         citations = []
+        metadata["outcome"] = "error"
+        metadata["error"] = str(exc)[:200]
         logger.exception("chat_failed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
 
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO messages (conversation_id, user_id, role, content, citations_json)
-            VALUES (?, ?, 'assistant', ?, ?)
+            INSERT INTO messages (conversation_id, user_id, role, content, citations_json, metadata_json)
+            VALUES (?, ?, 'assistant', ?, ?, ?)
             """,
-            (conversation_id, user["id"], answer, dumps(citations)),
+            (conversation_id, user["id"], answer, dumps(citations), dumps(metadata)),
         )
         conn.execute(
             """
@@ -852,6 +901,12 @@ async def ask(
         )
         touch_notebook(conn, notebook_id)
     return RedirectResponse(f"/notebooks/{notebook_id}?conversation_id={conversation_id}", status_code=303)
+
+
+# Per-question minimum top-score before we let the answer LLM run. Below this
+# the model is asked to abstain. Lives on the ask() side, not retrieve(), so
+# the eval harness can still observe raw retrieval scores.
+LOW_CONFIDENCE_THRESHOLD = 0.25
 
 
 async def retrieve(
@@ -1088,7 +1143,13 @@ def cjk_ngrams(text: str) -> list[str]:
 
 
 def citation_payload(chunks: list[dict]) -> list[dict]:
-    """Convert retrieved chunks into serializable citation metadata."""
+    """Convert retrieved chunks into serializable citation metadata.
+
+    Includes the hybrid / vector / keyword / rerank scores so the chat
+    "Why these citations?" debug pane can show why each chunk was picked.
+    Scores default to 0.0 — older messages stored before this field existed
+    will simply render no debug numbers, which the template handles.
+    """
     return [
         {
             "index": index,
@@ -1096,15 +1157,24 @@ def citation_payload(chunks: list[dict]) -> list[dict]:
             "filename": chunk["filename"],
             "location": chunk["location"],
             "snippet": chunk["text"][:260],
+            "score": round(float(chunk.get("score", 0.0)), 3),
+            "vector_score": round(float(chunk.get("vector_score", 0.0)), 3),
+            "keyword_score": round(float(chunk.get("keyword_score", 0.0)), 3),
+            "rerank_score": round(float(chunk["rerank_score"]), 3) if chunk.get("rerank_score") is not None else None,
         }
         for index, chunk in enumerate(chunks, start=1)
     ]
 
 
 def message_with_citations(row) -> dict:
-    """Attach decoded citation data to a message row dictionary."""
+    """Attach decoded citation + per-message metadata to a row dictionary."""
     message = dict(row)
     message["citations"] = loads(message["citations_json"])
+    raw_meta = message.get("metadata_json") or "{}"
+    try:
+        message["metadata"] = loads(raw_meta) if isinstance(raw_meta, str) else (raw_meta or {})
+    except Exception:
+        message["metadata"] = {}
     return message
 
 

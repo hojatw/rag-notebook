@@ -1,0 +1,131 @@
+{
+  "_comment": "Ground-truth questions for retrieval evaluation. Each item: question (q), expected_filename, and one or more substrings expected in the retrieved chunk. The harness scores recall@5 and MRR by checking whether ANY retrieved chunk in the top-5 contains the expected substring AND comes from the expected file. Edit freely to match your own indexed sources — current set targets the documents shipped with the demo notebook (id=1).",
+  "notebook_id": 1,
+  "questions": [
+    {
+      "q": "颱風是怎麼形成的？",
+      "expected_filename": "颱風百問.pdf",
+      "expected_substrings": ["熱帶氣旋", "熱帶海洋"]
+    },
+    {
+      "q": "什麼風速可以稱為颱風？",
+      "expected_filename": "颱風百問.pdf",
+      "expected_substrings": ["62", "17.2"]
+    },
+    {
+      "q": "侵襲台灣的颱風主要從哪裡來？",
+      "expected_filename": "颱風百問.pdf",
+      "expected_substrings": ["北太平洋", "加羅林"]
+    },
+    {
+      "q": "颱風一詞的由來",
+      "expected_filename": "颱風百問.pdf",
+      "expected_substrings": ["大風", "風篩"]
+    },
+    {
+      "q": "iCare 提供哪些服務？",
+      "expected_filename": "i Care 檢修項目.pdf",
+      "expected_substrings": ["永久", "免費"]
+    },
+    {
+      "q": "瓦斯熱水器的檢修項目有哪些？",
+      "expected_filename": "i Care 檢修項目.pdf",
+      "expected_substrings": ["瓦斯管路", "排氣管"]
+    },
+    {
+      "q": "儲熱式電熱水器迴路線徑要多大？",
+      "expected_filename": "i Care 檢修項目.pdf",
+      "expected_substrings": ["5.5mm", "迴路"]
+    },
+    {
+      "q": "免費廚房健檢什麼時候可以申請？",
+      "expected_filename": "i Care 檢修項目.pdf",
+      "expected_substrings": ["5 月", "廚房健檢"]
+    },
+    {
+      "q": "熱泵熱水器的安檢服務包含哪些？",
+      "expected_filename": "i Care 檢修項目.pdf",
+      "expected_substrings": ["漏電斷路器", "熱泵"]
+    },
+    {
+      "q": "GenAI Stars 競賽宗旨是什麼？",
+      "expected_filename": "2025GenAI Stars 生成式AI百工百業應用選拔_競賽簡章_F.pdf",
+      "expected_substrings": ["AI2.0", "生成式AI"]
+    },
+    {
+      "q": "iCare 的 CRM 系統有什麼特色？",
+      "expected_filename": "i Care 檢修項目.pdf",
+      "expected_substrings": ["CRM", "履歷"]
+    },
+    {
+      "q": "iCare 的 GPS 系統用途",
+      "expected_filename": "i Care 檢修項目.pdf",
+      "expected_substrings": ["GPS", "行動"]
+    },
+    {
+      "q": "PS115014 報表 demo 是哪一天開的？",
+      "expected_filename": "PS115014_20260424_報表demo會議記錄_v1.0.docx",
+      "expected_substrings": ["4 月 24", "報表demo"]
+    },
+    {
+      "q": "報表 demo 會議的形式是線上還是實體？",
+      "expected_filename": "PS115014_20260424_報表demo會議記錄_v1.0.docx",
+      "expected_substrings": ["線上", "Teams"]
+    },
+    {
+      "q": "需求訪談會議在哪裡舉行？",
+      "expected_filename": "PS115014_20260414_需求訪談會議記錄_v1.0.docx",
+      "expected_substrings": ["802", "會議室"]
+    },
+    {
+      "q": "AP 討論會議是哪一天開的？",
+      "expected_filename": "PS115014_20260420_AP討論會議記錄_v1.0.docx",
+      "expected_substrings": ["4 月 20", "AP討論"]
+    },
+    {
+      "q": "醫材的報表討論會議何時舉行？",
+      "expected_filename": "PS115014_20260429_需求訪談會議記錄_v1.0.docx",
+      "expected_substrings": ["4 月 29", "醫材"]
+    },
+    {
+      "q": "報表優化專案組會議是線上還是實體？",
+      "expected_filename": "PS115014_20260505_需求訪談會議記錄_v1.0.docx",
+      "expected_substrings": ["301", "實體"]
+    },
+    {
+      "q": "CDE 報表需求單位訪談摘要包含哪些日期？",
+      "expected_filename": "CDE 會議記錄_Cray.docx",
+      "expected_substrings": ["4/14", "4/15"]
+    },
+    {
+      "q": "CDE 訪談中提到的報表分類維度有哪些？",
+      "expected_filename": "CDE 會議記錄_Cray.docx",
+      "expected_substrings": ["新案", "申覆案"]
+    },
+    {
+      "q": "CDE 報表需求訪談 4/15 是哪個單位？",
+      "expected_filename": "PS115014_20260415_需求訪談會議記錄_v1.0.docx",
+      "expected_substrings": ["CDE", "4 月 15"]
+    },
+    {
+      "q": "115 年數據科學資料應用管理平台擴增採購案是什麼？",
+      "expected_filename": "PS115014_20260414_需求訪談會議記錄_v1.0.docx",
+      "expected_substrings": ["醫藥品查驗中心", "PS115014"]
+    },
+    {
+      "q": "颱風的旋轉方向在北半球和南半球有什麼不同？",
+      "expected_filename": "颱風百問.pdf",
+      "expected_substrings": ["逆時針", "順時針"]
+    },
+    {
+      "q": "iCare 落水頭是水路系統檢查的一部分嗎？",
+      "expected_filename": "i Care 檢修項目.pdf",
+      "expected_substrings": ["落水頭", "水路"]
+    },
+    {
+      "q": "什麼地區最容易形成颱風？",
+      "expected_filename": "颱風百問.pdf",
+      "expected_substrings": ["北緯", "10", "15"]
+    }
+  ]
+}

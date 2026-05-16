@@ -140,6 +140,9 @@ def init_db() -> None:
         # Phase 2 routes will populate these on insert; the migration below backfills legacy rows.
         _ensure_column(conn, "sources", "notebook_id", "INTEGER REFERENCES notebooks(id) ON DELETE CASCADE")
         _ensure_column(conn, "conversations", "notebook_id", "INTEGER REFERENCES notebooks(id) ON DELETE CASCADE")
+        # Per-message debug metadata: retrieval/generation timings, prompt token
+        # estimates, score of the top citation. Drives the chat cost badge.
+        _ensure_column(conn, "messages", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sources_notebook_created ON sources(notebook_id, created_at DESC)"
         )

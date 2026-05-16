@@ -10,6 +10,7 @@ import httpx
 
 SYSTEM_PROMPT = """You are a source-grounded RAG assistant.
 Answer only from the provided source excerpts.
+Reply in the same language as the user's question (Traditional Chinese question -> Traditional Chinese answer).
 If the excerpts do not contain enough information, say: "I cannot determine that from the selected sources."
 Keep the answer concise and include bracket citations like [1], [2] for the excerpts you used."""
 
@@ -166,8 +167,11 @@ async def rerank_chunks(question: str, candidates: list[dict[str, Any]], setting
         logger.info("rerank_skipped reason=no_chat_settings candidates=%s returned=%s", len(candidates), len(fallback))
         return fallback
 
+    # Pass full chunk text — chunks are bounded at ~1200 chars by chunk_text(),
+    # and earlier truncation at 900 chars sometimes lopped off the answer
+    # evidence in the tail of a chunk. The extra ~6 KB / call is cheap.
     excerpts = "\n\n".join(
-        f'Candidate {index}\nFile: {chunk["filename"]}\nLocation: {chunk["location"]}\nText: {chunk["text"][:900]}'
+        f'Candidate {index}\nFile: {chunk["filename"]}\nLocation: {chunk["location"]}\nText: {chunk["text"]}'
         for index, chunk in enumerate(candidates[:20], start=1)
     )
     user_prompt = f"Question:\n{question}\n\nCandidates:\n{excerpts}"
@@ -243,12 +247,17 @@ async def chat_completion(
         raise
     content = data["choices"][0]["message"]["content"].strip()
     elapsed_ms = (time.perf_counter() - started) * 1000
+    # Token estimates are chars/4 — accurate enough for cost monitoring
+    # without pulling in a tokenizer dependency. Used by the per-message
+    # cost badge in the chat UI.
     logger.info(
-        "chat_completion_completed provider=%s model=%s prompt_chars=%s response_chars=%s elapsed_ms=%.1f",
+        "chat_completion_completed provider=%s model=%s prompt_chars=%s prompt_tokens_est=%s response_chars=%s response_tokens_est=%s elapsed_ms=%.1f",
         settings.get("provider") or "openai_compatible",
         settings.get("chat_model"),
         len(user_prompt),
+        len(user_prompt) // 4,
         len(content),
+        len(content) // 4,
         elapsed_ms,
     )
     return content

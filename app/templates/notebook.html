@@ -28,6 +28,13 @@
       <span class="pane-count">{{ sources|length }}</span>
     </header>
 
+    {% if not llm_status.ready %}
+      <div class="alert llm-not-ready">
+        LLM is not configured. Uploads are disabled until an admin sets the
+        embedding model and chat model at <a href="/settings">/settings</a>.
+      </div>
+    {% endif %}
+
     {# Drag-and-drop upload region (Alpine handles drag state + file injection). #}
     <form action="/notebooks/{{ notebook.id }}/sources/upload"
           method="post"
@@ -47,10 +54,12 @@
                accept=".pdf,.txt,.md,.markdown,.docx,.html,.htm"
                required
                x-ref="input"
-               data-file-label="#nb-selected-file">
+               data-file-label="#nb-selected-file"
+               {% if not llm_status.ready %}disabled{% endif %}>
       </label>
       <span id="nb-selected-file" class="file-name">Drop a file or browse</span>
-      <button type="submit" class="wide" data-loading-text="Uploading...">Upload</button>
+      <button type="submit" class="wide" data-loading-text="Uploading..."
+              {% if not llm_status.ready %}disabled{% endif %}>Upload</button>
       <p class="hint">PDF · TXT · Markdown · DOCX · HTML</p>
     </form>
 
@@ -179,6 +188,49 @@
                 </details>
               {% endfor %}
             </div>
+          {% endif %}
+
+          {% if message.role == "assistant" and (message.metadata or message.citations) %}
+            <details class="debug-pane">
+              <summary>
+                <span class="debug-summary-text">
+                  {% if message.metadata.retrieved_chunks is defined %}
+                    {{ message.metadata.retrieved_chunks }} chunks
+                    {% if message.metadata.retrieval_ms %} · retrieved {{ message.metadata.retrieval_ms }}ms{% endif %}
+                    {% if message.metadata.generation_ms %} · generated {{ message.metadata.generation_ms }}ms{% endif %}
+                    {% if message.metadata.top_score %} · top score {{ message.metadata.top_score }}{% endif %}
+                  {% else %}
+                    Why these citations?
+                  {% endif %}
+                </span>
+              </summary>
+              {% if message.metadata.outcome == "low_confidence" %}
+                <p class="muted small">Top chunk scored {{ message.metadata.top_score }} which is below the {{ message.metadata.threshold|default(0.25) }} confidence threshold — the model was asked to abstain to avoid hallucination.</p>
+              {% elif message.metadata.outcome == "no_retrieval" %}
+                <p class="muted small">No candidate chunks were returned from the indexed sources.</p>
+              {% elif message.metadata.outcome == "error" %}
+                <p class="muted small">Pipeline error: {{ message.metadata.error|default('unknown') }}</p>
+              {% endif %}
+              {% if message.citations and message.citations[0].score is defined %}
+                <table class="debug-scores">
+                  <thead>
+                    <tr><th>#</th><th>file · loc</th><th>vector</th><th>keyword</th><th>rerank</th><th>final</th></tr>
+                  </thead>
+                  <tbody>
+                  {% for c in message.citations %}
+                    <tr>
+                      <td>[{{ c.index }}]</td>
+                      <td class="debug-file">{{ c.filename }} · {{ c.location }}</td>
+                      <td>{{ '%.2f'|format(c.vector_score|default(0)) }}</td>
+                      <td>{{ '%.2f'|format(c.keyword_score|default(0)) }}</td>
+                      <td>{% if c.rerank_score is not none %}{{ '%.2f'|format(c.rerank_score) }}{% else %}—{% endif %}</td>
+                      <td>{{ '%.2f'|format(c.score|default(0)) }}</td>
+                    </tr>
+                  {% endfor %}
+                  </tbody>
+                </table>
+              {% endif %}
+            </details>
           {% endif %}
         </article>
       {% else %}

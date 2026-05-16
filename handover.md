@@ -53,6 +53,21 @@ Last known verification: `pytest` 10 passed; smoke test on all routes including 
 | 23 | Admin vector-index page | `/admin/index` shows SQLite vs Chroma counts + missing/orphan deltas + in-sync verdict; *Rebuild* triggers full sync, *Clear* wipes the collection. New topbar entry "Index" for admins |
 | 24 | Form lock-out | `data-loading-form` now also disables every non-hidden input/textarea/select on the form, not just the submit button |
 
+## Retrieval POC instrumentation round (just landed)
+
+Seven retrieval-quality / visibility / safety items, all now in. Baseline measured against `tests/eval_questions.json` (25 questions, demo notebook): **Recall@5 = 100% · MRR 0.933 (with rerank) / 0.883 (no rerank)**. The +0.05 MRR is the measurable rerank lift.
+
+| Item | Outcome |
+|---|---|
+| Answer language consistency | `SYSTEM_PROMPT` gains "Reply in the same language as the user's question". Stops the Chinese-question-English-answer trap. |
+| Reranker no truncation + cost log | `text[:900]` removed (chunks already bounded at 1200 chars); `chat_completion_completed` log adds `prompt_tokens_est` / `response_tokens_est` (chars/4). |
+| Low-confidence early exit | `LOW_CONFIDENCE_THRESHOLD = 0.25` applied in `ask()` (not `retrieve()`, so eval still sees raw signal). Below it the model is told to abstain; saves the answer-generation LLM call. |
+| `messages.metadata_json` column | Stores `{retrieval_ms, generation_ms, retrieved_chunks, top_score, outcome, ...}`. Backfills with `'{}'` so legacy messages render without numbers. |
+| Per-citation score passthrough | `citation_payload` includes vector / keyword / rerank / final scores. |
+| Debug pane in chat | Collapsible badge under each assistant message: `"N chunks · retrieved Xms · generated Yms · top score Z"`. Opens a per-citation score table. Legacy messages show "Why these citations?" with whatever data is available. |
+| `llm_settings_status` helper + upload block | `/notebooks/{nid}/sources/upload` returns 400 when chat/embedding model + key aren't all configured; notebook page shows a red banner and disables the upload form. Prevents wasted indexing through the hash-fallback. |
+| Eval harness | `tests/eval_questions.json` (25 Q + ground truth) + `tests/eval_retrieval.py` (recall@k + MRR, supports `--no-rerank` and `--top-k`). |
+
 ## Deferred follow-ups (carried over from previous handovers)
 
 ### Known bugs / UX polish
@@ -68,11 +83,15 @@ Last known verification: `pytest` 10 passed; smoke test on all routes including 
 - **#14 LLM / embedding HTTP calls lack retry / backoff.** One 5xx fails the user's whole ask. Wrap `embed_text_batch` and `chat_completion` with tenacity (already in deps via chromadb) — exponential backoff, max 3 attempts.
 - **#15 No CSRF protection.** Cookie session + form POSTs are vulnerable to CSRF. Add either a per-session token in forms or switch sensitive endpoints to require an `Origin` header check.
 - **#18 No streaming responses.** Long answers arrive in one chunk after the full LLM call returns. SSE / chunked-streaming would give a typing effect; requires re-shaping `chat_completion` to async generator and updating the chat form to read the stream.
-- **#19 Local embedding fallback misleading.** When no LLM key is configured, `local_embedding()` (deterministic hash) produces vectors that "work" but give terrible recall. Either disallow uploads with no embedding model, or show a prominent banner in `/settings`.
 
-### Discussed but not done
+### Retrieval — the "original top 3" still pending
 
-- **#22 No retrieval eval set.** Any change to query rewrite / hybrid scoring / rerank is unmeasurable. Build a small `tests/eval_retrieval.py` with `{question, expected_source, expected_chunk_substring}` JSON fixtures using the already-indexed sample documents, compute recall@5 + MRR. Becomes essential the moment anyone tunes retrieval.
+Now that visibility is in place, these can be measured properly. Suggested order:
+- **CJK-aware chunking** (`app/ingest.py` `chunk_text`). Current splitter uses `". "` which barely fires on CJK PDFs and chunks land mid-sentence. Switch to a multi-punctuation regex (`[。！？.!?\n]`) and reduce target chunk size to 300–500 chars. Expected biggest single quality win for the demo data.
+- **SQLite FTS5 for keyword search**. Replace `LIKE '%token%'` in `keyword_candidates_from_sqlite` with an FTS5 virtual table + BM25 ordering. Bigger notebooks (>5K chunks) will see meaningful latency drop; smaller notebooks gain better tokenisation quality.
+- **Reciprocal Rank Fusion** for hybrid merge. Replace `0.7×vector + 0.3×keyword` with RRF over the two rankings. Less sensitive to score-scale drift between vector and keyword.
+
+All three are now testable via `python -m tests.eval_retrieval` — change one, re-run, compare recall@5 / MRR.
 
 ## Important files
 
@@ -88,7 +107,8 @@ app/templates/         Jinja templates: base, home, notebook (with preview modal
                        _source_preview / _suggestions / _notes_section partials.
 app/static/            style.css (design tokens + components + modal + admin-index stats),
                        app.js (binders, Alpine dropzone, Markdown render, citation click, suggestion fill, pin reset).
-tests/                 test_core.py, test_llm.py, test_security.py, test_vector_store.py.
+tests/                 test_core.py, test_llm.py, test_security.py, test_vector_store.py,
+                       eval_questions.json (retrieval ground truth), eval_retrieval.py (harness).
 setup.sh               One-shot env bootstrap. New machines / fresh clones should use it.
 data/                  app.sqlite3, uploads/, chroma/. Gitignored.
 logs/app.log           Rotating app log. Gitignored.

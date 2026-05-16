@@ -9,7 +9,9 @@ A single-machine FastAPI proof of concept for a NotebookLM-style workspace: orga
   - **Sources** (left): drag-and-drop upload, automatic indexing-status polling, per-source reindex/delete, **click any indexed source to open a chunk-preview drawer**.
   - **Chat** (centre): grounded chat with conversation switcher (with per-row delete), Markdown-rendered answers, and inline `[1]` `[2]` citation chips that scroll the matching source into view.
   - **Studio** (right): one-click *Generate suggestions* (LLM-authored starter questions from your sources, auto-refreshing as sources finish indexing) and *Pin* assistant answers into collapsible notes (removing a note un-pins the source message automatically).
-- **Hybrid retrieval**: query rewriting, Chroma vector search, SQLite keyword matching, and LLM reranking.
+- **Hybrid retrieval**: query rewriting, Chroma vector search, SQLite keyword matching, and LLM reranking. Below a configurable confidence threshold the model is asked to abstain rather than hallucinate.
+- **Per-message debug pane**: chat answers ship with a collapsible "📊 N chunks · retrieved Xms · generated Yms · top score Z" badge that opens a table of vector / keyword / rerank / final scores per citation.
+- **Retrieval eval harness** (`tests/eval_retrieval.py`) with starter questions for the demo notebook so changes to query rewrite / hybrid scoring / rerank can be measured (recall@k, MRR).
 - **Multi-user** with hashed passwords and strict per-user/per-notebook isolation. Admin can manage user accounts at `/admin/users`; any signed-in user can change their own password at `/account`.
 - **OpenAI-compatible** and **Azure OpenAI** chat + embedding providers, configured by an admin in `/settings`. **API keys are encrypted at rest** with Fernet (PBKDF2-SHA256 over `NOTEBOOKLM_SECRET`).
 - **Admin vector-index console** at `/admin/index`: SQLite ↔ Chroma drift report, manual *Rebuild* and *Clear*.
@@ -145,6 +147,18 @@ POST /settings                                            save LLM settings (API
 .venv/bin/pytest
 .venv/bin/python -m py_compile app/*.py tests/*.py
 ```
+
+### Retrieval eval
+
+`tests/eval_questions.json` holds ~25 ground-truth questions targeting the demo notebook. Run the harness to score the live retrieval pipeline:
+
+```bash
+.venv/bin/python -m tests.eval_retrieval                # default: top-k=5, rerank on
+.venv/bin/python -m tests.eval_retrieval --no-rerank    # skip LLM rerank for a hybrid-only baseline
+.venv/bin/python -m tests.eval_retrieval --top-k 10
+```
+
+The harness reports per-question hit rank, **Recall@k**, and **MRR**. Edit `tests/eval_questions.json` to add questions about your own indexed sources. The harness skips when no LLM key is configured (the local-fallback embedding is too noisy to be worth measuring).
 
 ## Layout
 
