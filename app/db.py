@@ -250,3 +250,15 @@ def load_llm_settings(conn: sqlite3.Connection) -> dict[str, Any] | None:
 def encrypt_for_storage(plaintext: str) -> str:
     """Encrypt a value for the ``llm_settings.api_key`` column."""
     return encrypt_secret(plaintext, _app_secret())
+
+
+def load_llm_settings_for_display(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return the settings row with the API key blanked, for the admin UI.
+
+    Includes a boolean ``api_key_masked`` so the form can show "saved" hint
+    when there's a key configured. The plaintext key is never sent back.
+    """
+    row = dict(conn.execute("SELECT * FROM llm_settings WHERE id = 1").fetchone())
+    row["api_key_masked"] = bool(row["api_key"])
+    row["api_key"] = ""
+    return row

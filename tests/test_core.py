@@ -2,21 +2,6 @@ import asyncio
 import importlib
 
 
-def fresh_modules(monkeypatch, tmp_path):
-    """Reload database-related modules against an isolated temporary data dir."""
-    monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
-    import app.db as db
-    import app.ingest as ingest
-    import app.vector_store as vector_store
-
-    importlib.reload(db)
-    importlib.reload(vector_store)
-    importlib.reload(ingest)
-    vector_store.reset_client()
-    db.init_db()
-    return db, ingest
-
-
 def test_passwords_are_hashed():
     """Password hashes should not expose plaintext and should verify exactly."""
     from app.security import hash_password, verify_password
@@ -27,9 +12,9 @@ def test_passwords_are_hashed():
     assert not verify_password("wrong", encoded)
 
 
-def test_txt_source_ingestion_and_delete_cascades(monkeypatch, tmp_path):
+def test_txt_source_ingestion_and_delete_cascades(fresh_modules, tmp_path):
     """TXT ingestion should index chunks and source deletion should remove them."""
-    db, ingest = fresh_modules(monkeypatch, tmp_path)
+    db, ingest = fresh_modules.db, fresh_modules.ingest
     source_path = tmp_path / "source.txt"
     source_path.write_text("Alpha project revenue is 42 dollars. Beta is unrelated.", encoding="utf-8")
 
@@ -58,9 +43,9 @@ def test_txt_source_ingestion_and_delete_cascades(monkeypatch, tmp_path):
         assert remaining["count"] == 0
 
 
-def test_txt_source_ingestion_updates_chroma(monkeypatch, tmp_path):
+def test_txt_source_ingestion_updates_chroma(fresh_modules, tmp_path):
     """TXT ingestion should write indexed chunks into Chroma for vector search."""
-    db, ingest = fresh_modules(monkeypatch, tmp_path)
+    db, ingest = fresh_modules.db, fresh_modules.ingest
     from app.llm import local_embedding
     from app.vector_store import query
 
@@ -85,9 +70,9 @@ def test_txt_source_ingestion_updates_chroma(monkeypatch, tmp_path):
     assert results[0]["source_id"] == source_id
 
 
-def test_user_source_queries_are_isolated(monkeypatch, tmp_path):
+def test_user_source_queries_are_isolated(fresh_modules):
     """Chunk queries scoped by user id should not return another user's data."""
-    db, _ = fresh_modules(monkeypatch, tmp_path)
+    db = fresh_modules.db
     from app.llm import local_embedding
 
     with db.connect() as conn:
@@ -254,10 +239,9 @@ def test_load_llm_settings_passes_legacy_plaintext(monkeypatch, tmp_path):
     assert loaded["api_key"] == "sk-legacy-plaintext"
 
 
-def test_pin_note_is_idempotent(monkeypatch, tmp_path):
-    """Pinning the same assistant message twice must not create two notes
-    (follow-up Phase 4 round 2 #4)."""
-    db, _ = fresh_modules(monkeypatch, tmp_path)
+def test_pin_note_is_idempotent(fresh_modules):
+    """Pinning the same assistant message twice must not create two notes."""
+    db = fresh_modules.db
     with db.connect() as conn:
         user = conn.execute("SELECT * FROM users WHERE username = 'user'").fetchone()
         nb_id = conn.execute(

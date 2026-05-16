@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .db import UPLOAD_DIR, connect, dumps, encrypt_for_storage, init_db, load_llm_settings, loads, row_to_dict
+from .db import UPLOAD_DIR, connect, dumps, encrypt_for_storage, init_db, load_llm_settings, load_llm_settings_for_display, loads
 from .ingest import process_source, supported
 import httpx
 
@@ -229,6 +229,20 @@ def touch_notebook(conn, notebook_id: int) -> None:
     )
 
 
+def cleanup_source_artifacts(source: dict) -> None:
+    """Best-effort removal of a source's on-disk file and Chroma vectors.
+
+    Used by both ``delete_source`` and ``delete_notebook``. Vector deletion
+    is wrapped in try/except because failing here would orphan the SQLite
+    state the caller has already committed.
+    """
+    Path(source["stored_path"]).unlink(missing_ok=True)
+    try:
+        delete_source_vectors(source["id"], source["user_id"])
+    except Exception:
+        logger.exception("vector_source_delete_failed source_id=%s user_id=%s", source["id"], source["user_id"])
+
+
 @app.get("/notebooks", response_class=HTMLResponse)
 def list_notebooks(request: Request, user: Annotated[dict, Depends(require_login)]):
     """Render the notebook grid for the current user."""
@@ -271,50 +285,36 @@ def notebook_view(
     user: Annotated[dict, Depends(require_login)],
     conversation_id: int | None = None,
 ):
-    """Render the three-pane notebook workspace: sources, chat, studio.
-
-    Pagination caps (POC defensive limits, not full pagination):
-        sources       LIST_LIMIT   200
-        conversations LIST_LIMIT    50
-        messages      MSG_LIMIT    200  (oldest dropped first)
-        notes         LIST_LIMIT    50
-    Truncated lists pass a *_truncated flag to the template so the UI can
-    show a hint instead of silently hiding rows.
-    """
+    """Render the three-pane notebook workspace: sources, chat, studio."""
+    # Defensive POC caps: rather than paginate, we fetch LIMIT+1 rows and
+    # treat overflow as "show a truncation hint". Avoids a separate COUNT(*).
     SOURCES_LIMIT = 200
     CONVERSATIONS_LIMIT = 50
     MESSAGES_LIMIT = 200
     NOTES_LIMIT = 50
 
+    def fetch_capped(conn, sql, params, limit):
+        """Run sql with LIMIT+1, return (rows[:limit], truncated_bool)."""
+        rows = [dict(r) for r in conn.execute(sql + " LIMIT ?", (*params, limit + 1)).fetchall()]
+        return rows[:limit], len(rows) > limit
+
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
-        sources_total = conn.execute(
-            "SELECT COUNT(*) c FROM sources WHERE notebook_id = ? AND user_id = ?",
-            (notebook_id, user["id"]),
-        ).fetchone()["c"]
-        sources = [
-            dict(row)
-            for row in conn.execute(
-                "SELECT * FROM sources WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?",
-                (notebook_id, user["id"], SOURCES_LIMIT),
-            ).fetchall()
-        ]
-        conversations_total = conn.execute(
-            "SELECT COUNT(*) c FROM conversations WHERE notebook_id = ? AND user_id = ?",
-            (notebook_id, user["id"]),
-        ).fetchone()["c"]
-        conversations = [
-            dict(row)
-            for row in conn.execute(
-                "SELECT * FROM conversations WHERE notebook_id = ? AND user_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?",
-                (notebook_id, user["id"], CONVERSATIONS_LIMIT),
-            ).fetchall()
-        ]
+        sources, sources_truncated = fetch_capped(
+            conn,
+            "SELECT * FROM sources WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC",
+            (notebook_id, user["id"]), SOURCES_LIMIT,
+        )
+        conversations, conversations_truncated = fetch_capped(
+            conn,
+            "SELECT * FROM conversations WHERE notebook_id = ? AND user_id = ? ORDER BY updated_at DESC, id DESC",
+            (notebook_id, user["id"]), CONVERSATIONS_LIMIT,
+        )
         if conversation_id is None and conversations:
             conversation_id = conversations[0]["id"]
         conversation = None
         messages: list[dict] = []
-        messages_total = 0
+        messages_truncated = False
         if conversation_id is not None:
             convo_row = conn.execute(
                 "SELECT * FROM conversations WHERE id = ? AND notebook_id = ? AND user_id = ?",
@@ -323,35 +323,18 @@ def notebook_view(
             if convo_row is None:
                 raise HTTPException(status_code=404, detail="Conversation not found")
             conversation = dict(convo_row)
-            messages_total = conn.execute(
-                "SELECT COUNT(*) c FROM messages WHERE conversation_id = ? AND user_id = ?",
-                (conversation_id, user["id"]),
-            ).fetchone()["c"]
-            # Take the most recent N messages, then sort ascending so the chat
-            # reads top-down. Older messages are silently dropped beyond the cap.
-            recent = conn.execute(
-                "SELECT * FROM messages WHERE conversation_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
-                (conversation_id, user["id"], MESSAGES_LIMIT),
-            ).fetchall()
+            recent, messages_truncated = fetch_capped(
+                conn,
+                "SELECT * FROM messages WHERE conversation_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
+                (conversation_id, user["id"]), MESSAGES_LIMIT,
+            )
             messages = [message_with_citations(row) for row in reversed(recent)]
-        notes_total = conn.execute(
-            "SELECT COUNT(*) c FROM notes WHERE notebook_id = ? AND user_id = ?",
-            (notebook_id, user["id"]),
-        ).fetchone()["c"]
-        notes = [
-            dict(row)
-            for row in conn.execute(
-                "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?",
-                (notebook_id, user["id"], NOTES_LIMIT),
-            ).fetchall()
-        ]
-        pinned_message_ids = {
-            row["source_message_id"]
-            for row in conn.execute(
-                "SELECT source_message_id FROM notes WHERE notebook_id = ? AND user_id = ? AND source_message_id IS NOT NULL",
-                (notebook_id, user["id"]),
-            ).fetchall()
-        }
+        notes, notes_truncated = fetch_capped(
+            conn,
+            "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC",
+            (notebook_id, user["id"]), NOTES_LIMIT,
+        )
+    pinned_message_ids = {n["source_message_id"] for n in notes if n["source_message_id"] is not None}
     indexed_sources = [s for s in sources if s["status"] == "indexed"]
     return render(
         request,
@@ -366,10 +349,10 @@ def notebook_view(
             "messages": messages,
             "notes": notes,
             "pinned_message_ids": pinned_message_ids,
-            "sources_truncated": sources_total > len(sources),
-            "conversations_truncated": conversations_total > len(conversations),
-            "messages_truncated": messages_total > len(messages),
-            "notes_truncated": notes_total > len(notes),
+            "sources_truncated": sources_truncated,
+            "conversations_truncated": conversations_truncated,
+            "messages_truncated": messages_truncated,
+            "notes_truncated": notes_truncated,
             "error": "",
             "wide": True,
             "breadcrumb": notebook["title"],
@@ -403,7 +386,7 @@ def delete_notebook(notebook_id: int, user: Annotated[dict, Depends(require_logi
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
         sources = [
-            dict(row)
+            {"id": row["id"], "stored_path": row["stored_path"], "user_id": user["id"]}
             for row in conn.execute(
                 "SELECT id, stored_path FROM sources WHERE notebook_id = ? AND user_id = ?",
                 (notebook_id, user["id"]),
@@ -411,11 +394,7 @@ def delete_notebook(notebook_id: int, user: Annotated[dict, Depends(require_logi
         ]
         conn.execute("DELETE FROM notebooks WHERE id = ? AND user_id = ?", (notebook_id, user["id"]))
     for source in sources:
-        try:
-            delete_source_vectors(source["id"], user["id"])
-        except Exception:
-            logger.exception("vector_source_delete_failed source_id=%s user_id=%s", source["id"], user["id"])
-        Path(source["stored_path"]).unlink(missing_ok=True)
+        cleanup_source_artifacts(source)
     logger.info("notebook_deleted user_id=%s notebook_id=%s sources=%s", user["id"], notebook_id, len(sources))
     return RedirectResponse("/notebooks", status_code=303)
 
@@ -496,11 +475,7 @@ def delete_source(notebook_id: int, source_id: int, user: Annotated[dict, Depend
             raise HTTPException(status_code=404, detail="Source not found")
         conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         touch_notebook(conn, notebook_id)
-    Path(source["stored_path"]).unlink(missing_ok=True)
-    try:
-        delete_source_vectors(source_id, user["id"])
-    except Exception:
-        logger.exception("vector_source_delete_failed source_id=%s user_id=%s", source_id, user["id"])
+    cleanup_source_artifacts({"id": source_id, "stored_path": source["stored_path"], "user_id": user["id"]})
     logger.info("source_deleted user_id=%s notebook_id=%s source_id=%s filename=%s", user["id"], notebook_id, source_id, source["filename"])
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
@@ -714,17 +689,14 @@ def delete_note(
     """
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
-        existing = conn.execute(
-            "SELECT source_message_id FROM notes WHERE id = ? AND notebook_id = ? AND user_id = ?",
+        # SQLite 3.35+ RETURNING saves a separate SELECT round-trip.
+        deleted = conn.execute(
+            "DELETE FROM notes WHERE id = ? AND notebook_id = ? AND user_id = ? RETURNING source_message_id",
             (note_id, notebook_id, user["id"]),
         ).fetchone()
-        if existing is None:
+        if deleted is None:
             raise HTTPException(status_code=404, detail="Note not found")
-        source_message_id = existing["source_message_id"]
-        conn.execute(
-            "DELETE FROM notes WHERE id = ? AND notebook_id = ? AND user_id = ?",
-            (note_id, notebook_id, user["id"]),
-        )
+        source_message_id = deleted["source_message_id"]
         notes = [dict(r) for r in conn.execute(
             "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
             (notebook_id, user["id"]),
@@ -1320,10 +1292,7 @@ def admin_delete_user(
 def settings_page(request: Request, user: Annotated[dict, Depends(require_admin)]):
     """Render the admin LLM settings page without exposing the API key."""
     with connect() as conn:
-        raw = dict(conn.execute("SELECT * FROM llm_settings WHERE id = 1").fetchone())
-    settings = raw
-    settings["api_key_masked"] = bool(settings["api_key"])
-    settings["api_key"] = ""
+        settings = load_llm_settings_for_display(conn)
     return render(request, "settings.html", {"user": user, "settings": settings, "saved": False})
 
 
@@ -1370,9 +1339,7 @@ def update_settings(
                 timeout_seconds,
             ),
         )
-        settings = dict(conn.execute("SELECT * FROM llm_settings WHERE id = 1").fetchone())
-    settings["api_key_masked"] = bool(settings["api_key"])
-    settings["api_key"] = ""
+        settings = load_llm_settings_for_display(conn)
     logger.info(
         "settings_updated admin_user_id=%s provider=%s base_url_set=%s chat_model_set=%s embedding_model_set=%s api_version=%s temperature=%s timeout_seconds=%s api_key_changed=%s",
         user["id"],

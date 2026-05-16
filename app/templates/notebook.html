@@ -218,7 +218,7 @@
       <h2>Studio</h2>
     </header>
 
-    {% with questions=[], error="", has_indexed=indexed_sources|length > 0 %}
+    {% with questions=[], error="", has_indexed=indexed_sources %}
       {% include "_suggestions.html" %}
     {% endwith %}
 

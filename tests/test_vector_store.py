@@ -1,25 +1,10 @@
-"""Tests for the smart Chroma sync added in follow-up #20.
+"""Tests for the smart Chroma sync.
 
 These touch the real Chroma persistent client by pointing it at a temp data
-dir per test (via fresh_modules), so they exercise the integration end-to-end.
+dir per test (via the fresh_modules fixture), so they exercise the
+integration end-to-end.
 """
 import asyncio
-import importlib
-
-
-def fresh_modules(monkeypatch, tmp_path):
-    """Reload db / vector_store / ingest modules against an isolated data dir."""
-    monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
-    import app.db as db
-    import app.ingest as ingest
-    import app.vector_store as vector_store
-
-    importlib.reload(db)
-    importlib.reload(vector_store)
-    importlib.reload(ingest)
-    vector_store.reset_client()
-    db.init_db()
-    return db, ingest, vector_store
 
 
 def seed_one_indexed_source(db, ingest, tmp_path, text="Alpha project revenue is 42 dollars."):
@@ -37,9 +22,9 @@ def seed_one_indexed_source(db, ingest, tmp_path, text="Alpha project revenue is
     return source_id
 
 
-def test_index_status_reports_in_sync_after_ingest(monkeypatch, tmp_path):
+def test_index_status_reports_in_sync_after_ingest(fresh_modules, tmp_path):
     """After a clean ingest, index_status reports zero drift in both directions."""
-    db, ingest, vs = fresh_modules(monkeypatch, tmp_path)
+    db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     seed_one_indexed_source(db, ingest, tmp_path)
 
     status = vs.index_status()
@@ -52,9 +37,9 @@ def test_index_status_reports_in_sync_after_ingest(monkeypatch, tmp_path):
     assert status["in_sync"] is True
 
 
-def test_index_status_detects_orphans(monkeypatch, tmp_path):
+def test_index_status_detects_orphans(fresh_modules, tmp_path):
     """A row deleted directly from SQLite (skipping the cascade) appears as an orphan."""
-    db, ingest, vs = fresh_modules(monkeypatch, tmp_path)
+    db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     source_id = seed_one_indexed_source(db, ingest, tmp_path)
     # Delete the chunks from SQLite WITHOUT removing the Chroma vectors —
     # the kind of drift that could happen if a manual DB edit slipped through.
@@ -69,9 +54,9 @@ def test_index_status_detects_orphans(monkeypatch, tmp_path):
     assert status["in_sync"] is False
 
 
-def test_index_status_detects_missing(monkeypatch, tmp_path):
+def test_index_status_detects_missing(fresh_modules, tmp_path):
     """Wiping Chroma but keeping SQLite reports the entire delta as missing."""
-    db, ingest, vs = fresh_modules(monkeypatch, tmp_path)
+    db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     seed_one_indexed_source(db, ingest, tmp_path)
     vs.clear_all_vectors()
 
@@ -82,9 +67,9 @@ def test_index_status_detects_missing(monkeypatch, tmp_path):
     assert status["in_sync"] is False
 
 
-def test_diff_sync_is_no_op_when_aligned(monkeypatch, tmp_path):
+def test_diff_sync_is_no_op_when_aligned(fresh_modules, tmp_path):
     """When everything matches, diff mode performs zero upserts and zero deletes."""
-    db, ingest, vs = fresh_modules(monkeypatch, tmp_path)
+    db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     seed_one_indexed_source(db, ingest, tmp_path)
 
     result = vs.sync_from_sqlite(mode="diff")
@@ -93,9 +78,9 @@ def test_diff_sync_is_no_op_when_aligned(monkeypatch, tmp_path):
     assert vs.index_status()["in_sync"] is True
 
 
-def test_diff_sync_repairs_missing_and_orphan(monkeypatch, tmp_path):
+def test_diff_sync_repairs_missing_and_orphan(fresh_modules, tmp_path):
     """Diff mode upserts missing chunks and deletes orphan vectors in one pass."""
-    db, ingest, vs = fresh_modules(monkeypatch, tmp_path)
+    db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     source_id = seed_one_indexed_source(db, ingest, tmp_path)
 
     # Create drift in both directions:
@@ -122,9 +107,9 @@ def test_diff_sync_repairs_missing_and_orphan(monkeypatch, tmp_path):
     assert vs.index_status()["in_sync"] is True
 
 
-def test_full_sync_reupserts_everything(monkeypatch, tmp_path):
+def test_full_sync_reupserts_everything(fresh_modules, tmp_path):
     """Full mode re-upserts every SQLite chunk regardless of current Chroma state."""
-    db, ingest, vs = fresh_modules(monkeypatch, tmp_path)
+    db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     seed_one_indexed_source(db, ingest, tmp_path)
     expected = vs.index_status()["sqlite_chunks"]
 
@@ -134,9 +119,9 @@ def test_full_sync_reupserts_everything(monkeypatch, tmp_path):
     assert result["deleted"] == 0
 
 
-def test_clear_all_vectors_removes_everything(monkeypatch, tmp_path):
+def test_clear_all_vectors_removes_everything(fresh_modules, tmp_path):
     """clear_all_vectors empties Chroma but leaves SQLite intact."""
-    db, ingest, vs = fresh_modules(monkeypatch, tmp_path)
+    db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
     seed_one_indexed_source(db, ingest, tmp_path)
     before = vs.index_status()["chroma_chunks"]
 

@@ -35,11 +35,21 @@ function bindAll(root) {
   bindSuggestionFill(root);
 }
 
+// Idempotent binder: runs `setup(el)` once per element matching `selector`,
+// using a data-* flag to remember which elements have been processed.
+// Lets us safely re-bind after every HTMX swap without double-binding.
+function bindOnce(root, selector, marker, setup) {
+  const flag = `${marker}Bound`;
+  root.querySelectorAll(`${selector}:not([data-${marker}-bound])`).forEach((el) => {
+    el.dataset[flag] = "1";
+    setup(el);
+  });
+}
+
 // ---- Confirm dialogs ------------------------------------------------------
 
 function bindConfirms(root) {
-  root.querySelectorAll("[data-confirm]:not([data-confirm-bound])").forEach((form) => {
-    form.dataset.confirmBound = "1";
+  bindOnce(root, "[data-confirm]", "confirm", (form) => {
     form.addEventListener("submit", (event) => {
       const message = form.getAttribute("data-confirm");
       if (message && !window.confirm(message)) event.preventDefault();
@@ -50,8 +60,7 @@ function bindConfirms(root) {
 // ---- Submit-button loading state -----------------------------------------
 
 function bindLoadingForms(root) {
-  root.querySelectorAll("form[data-loading-form]:not([data-loading-bound])").forEach((form) => {
-    form.dataset.loadingBound = "1";
+  bindOnce(root, "form[data-loading-form]", "loading", (form) => {
     form.addEventListener("submit", () => {
       // Disable the submit button AND every input/textarea/select so the user
       // cannot keep typing or change selections while the request is in flight.
@@ -73,8 +82,7 @@ function bindLoadingForms(root) {
 // ---- File-input labels ----------------------------------------------------
 
 function bindFileLabels(root) {
-  root.querySelectorAll("input[type='file'][data-file-label]:not([data-file-bound])").forEach((input) => {
-    input.dataset.fileBound = "1";
+  bindOnce(root, "input[type='file'][data-file-label]", "file", (input) => {
     const label = document.querySelector(input.getAttribute("data-file-label"));
     input.addEventListener("change", () => {
       if (!label) return;
@@ -89,8 +97,7 @@ function bindSourcePicker() {
   const picker = document.querySelector("[data-source-picker]");
   if (!picker) return;
   const boxes = () => Array.from(picker.querySelectorAll("input[type='checkbox']"));
-  document.querySelectorAll("[data-source-action]:not([data-picker-bound])").forEach((button) => {
-    button.dataset.pickerBound = "1";
+  bindOnce(document, "[data-source-action]", "picker", (button) => {
     button.addEventListener("click", () => {
       const checked = button.getAttribute("data-source-action") === "select";
       boxes().forEach((box) => { box.checked = checked; });
@@ -237,8 +244,7 @@ function scrollToLatestMessage() {
 // NotebookLM-style: clicking a starter question immediately asks it.
 
 function bindSuggestionFill(root) {
-  root.querySelectorAll("[data-fill-question]:not([data-fill-bound])").forEach((button) => {
-    button.dataset.fillBound = "1";
+  bindOnce(root, "[data-fill-question]", "fill", (button) => {
     button.addEventListener("click", () => {
       const textarea = document.getElementById("question-input");
       if (!textarea) return;

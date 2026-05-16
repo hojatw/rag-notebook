@@ -147,16 +147,37 @@ def query(
     return sorted(candidates.values(), key=lambda item: item["vector_score"], reverse=True)
 
 
-def _indexed_chunk_rows() -> list[Any]:
-    """Fetch every chunk belonging to an indexed source, joined with filename."""
+def _indexed_chunk_ids() -> set[int]:
+    """Return SQLite chunk ids for every indexed source. Cheap: id-only scan."""
     with db.connect() as conn:
+        return {row["id"] for row in conn.execute(
+            "SELECT chunks.id FROM chunks JOIN sources ON sources.id = chunks.source_id"
+            " WHERE sources.status = 'indexed'"
+        ).fetchall()}
+
+
+def _indexed_chunk_rows(chunk_ids: set[int] | None = None) -> list[Any]:
+    """Fetch chunk rows joined with their source filename.
+
+    When ``chunk_ids`` is provided, only those chunks are loaded — used by
+    diff sync to skip pulling the embedding_json blob for already-synced
+    rows. When None, every indexed chunk is returned (used by full sync).
+    """
+    with db.connect() as conn:
+        if chunk_ids is None:
+            return conn.execute(
+                "SELECT chunks.*, sources.filename"
+                " FROM chunks JOIN sources ON sources.id = chunks.source_id"
+                " WHERE sources.status = 'indexed' ORDER BY chunks.id"
+            ).fetchall()
+        if not chunk_ids:
+            return []
+        placeholders = ",".join("?" for _ in chunk_ids)
         return conn.execute(
-            """
-            SELECT chunks.*, sources.filename
-            FROM chunks JOIN sources ON sources.id = chunks.source_id
-            WHERE sources.status = 'indexed'
-            ORDER BY chunks.id
-            """
+            f"SELECT chunks.*, sources.filename"
+            f" FROM chunks JOIN sources ON sources.id = chunks.source_id"
+            f" WHERE chunks.id IN ({placeholders}) ORDER BY chunks.id",
+            tuple(chunk_ids),
         ).fetchall()
 
 
@@ -188,7 +209,7 @@ def index_status() -> dict[str, Any]:
             "in_sync": False,
         }
     chroma_ids = _chroma_ids()
-    sqlite_ids = {vector_id(row["id"]) for row in _indexed_chunk_rows()}
+    sqlite_ids = {vector_id(cid) for cid in _indexed_chunk_ids()}
     missing = sqlite_ids - chroma_ids
     orphans = chroma_ids - sqlite_ids
     return {
@@ -234,14 +255,17 @@ def sync_from_sqlite(batch_size: int = 500, mode: str = "diff") -> dict[str, int
     started = time.perf_counter()
     col = collection()
 
-    rows = _indexed_chunk_rows()
-    sqlite_ids = {vector_id(row["id"]) for row in rows}
+    sqlite_chunk_ids = _indexed_chunk_ids()
     if mode == "diff":
         chroma_ids = _chroma_ids()
-        pending_rows = [r for r in rows if vector_id(r["id"]) not in chroma_ids]
-        orphan_ids = list(chroma_ids - sqlite_ids)
+        # Pull full rows (with embeddings) only for chunks Chroma is missing.
+        # Aligned-state startups skip the heavy SELECT entirely.
+        pending_chunk_ids = {cid for cid in sqlite_chunk_ids if vector_id(cid) not in chroma_ids}
+        sqlite_vector_ids = {vector_id(cid) for cid in sqlite_chunk_ids}
+        orphan_ids = list(chroma_ids - sqlite_vector_ids)
+        pending_rows = _indexed_chunk_rows(pending_chunk_ids)
     elif mode == "full":
-        pending_rows = list(rows)
+        pending_rows = _indexed_chunk_rows()
         orphan_ids = []
     else:
         raise ValueError(f"Unknown sync mode: {mode!r} (expected 'diff' or 'full')")
@@ -271,6 +295,6 @@ def sync_from_sqlite(batch_size: int = 500, mode: str = "diff") -> dict[str, int
     elapsed_ms = (time.perf_counter() - started) * 1000
     logger.info(
         "vector_sync_completed mode=%s upserted=%s deleted=%s sqlite_chunks=%s elapsed_ms=%.1f",
-        mode, upserted, len(orphan_ids), len(sqlite_ids), elapsed_ms,
+        mode, upserted, len(orphan_ids), len(sqlite_chunk_ids), elapsed_ms,
     )
     return {"upserted": upserted, "deleted": len(orphan_ids)}
