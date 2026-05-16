@@ -1,0 +1,28 @@
+{# Single source list item. Rendered both inline (notebook.html) and from the
+   /sources/{sid}/_partial endpoint for HTMX polling. When the source is still
+   processing, this fragment polls itself; once indexed/failed, the polling
+   attributes drop and HTMX naturally stops. #}
+<li class="source-item"
+    data-source-id="{{ source.id }}"
+    id="source-{{ source.id }}"
+    {% if source.status in ("uploaded", "processing") %}
+      hx-get="/notebooks/{{ notebook.id }}/sources/{{ source.id }}/_partial"
+      hx-trigger="every 2s"
+      hx-swap="outerHTML"
+    {% endif %}>
+  <div class="source-line">
+    <span class="source-name" title="{{ source.filename }}">{{ source.filename }}</span>
+    <span class="status {{ source.status }}">{{ source.status }}</span>
+  </div>
+  {% if source.error %}
+    <p class="source-error" title="{{ source.error }}">{{ source.error }}</p>
+  {% endif %}
+  <div class="source-actions">
+    <form action="/notebooks/{{ notebook.id }}/sources/{{ source.id }}/reindex" method="post" data-loading-form>
+      <button class="ghost small" type="submit" data-loading-text="...">Reindex</button>
+    </form>
+    <form action="/notebooks/{{ notebook.id }}/sources/{{ source.id }}/delete" method="post" data-confirm="Delete this source and its indexed chunks?">
+      <button class="ghost small danger-link" type="submit">Delete</button>
+    </form>
+  </div>
+</li>

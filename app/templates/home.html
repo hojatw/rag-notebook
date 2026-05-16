@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Workspace</p>
+    <h1>Notebooks</h1>
+    <p class="muted">Each notebook keeps its own sources, conversations, and notes. Create one per topic, project, or research thread.</p>
+  </div>
+  <form action="/notebooks/new" method="post" data-loading-form>
+    <input type="hidden" name="title" value="Untitled notebook">
+    <input type="hidden" name="emoji" value="📓">
+    <button type="submit" data-loading-text="Creating...">+ New notebook</button>
+  </form>
+</section>
+
+<div class="notebook-grid">
+  {% for notebook in notebooks %}
+    <a class="notebook-card" href="/notebooks/{{ notebook.id }}">
+      <div class="notebook-cover">{{ notebook.emoji or "📓" }}</div>
+      <h3>{{ notebook.title }}</h3>
+      <p class="notebook-meta">
+        <span>{{ notebook.source_count }} {% if notebook.source_count == 1 %}source{% else %}sources{% endif %}</span>
+        <span class="dot"></span>
+        <span>{{ notebook.conversation_count }} {% if notebook.conversation_count == 1 %}chat{% else %}chats{% endif %}</span>
+      </p>
+      {% if notebook.description %}
+        <p class="notebook-desc muted">{{ notebook.description }}</p>
+      {% endif %}
+      <small class="muted notebook-time">Updated {{ notebook.updated_at[:10] }}</small>
+    </a>
+  {% else %}
+    <div class="empty notebook-empty">
+      <h2>No notebooks yet</h2>
+      <p>Click <strong>+ New notebook</strong> above to start your first one.</p>
+    </div>
+  {% endfor %}
+</div>
+{% endblock %}

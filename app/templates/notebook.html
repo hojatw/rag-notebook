@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="workspace">
+
+  {# ---------------- LEFT: Sources ---------------- #}
+  <aside class="workspace-pane workspace-sources" aria-label="Sources">
+    <header class="pane-head">
+      <h2>Sources</h2>
+      <span class="pane-count">{{ sources|length }}</span>
+    </header>
+
+    {# Drag-and-drop upload region (Alpine handles drag state + file injection). #}
+    <form action="/notebooks/{{ notebook.id }}/sources/upload"
+          method="post"
+          enctype="multipart/form-data"
+          class="upload-compact panel-strip"
+          data-loading-form
+          x-data="dropzone"
+          @dragenter.prevent="enter"
+          @dragover.prevent="enter"
+          @dragleave.prevent="leave"
+          @drop.prevent="drop($event)"
+          :class="{ 'is-dragover': over }">
+      <label class="file-picker">
+        <span>Add source</span>
+        <input type="file"
+               name="file"
+               accept=".pdf,.txt,.md,.markdown,.docx,.html,.htm"
+               required
+               x-ref="input"
+               data-file-label="#nb-selected-file">
+      </label>
+      <span id="nb-selected-file" class="file-name">Drop a file or browse</span>
+      <button type="submit" class="wide" data-loading-text="Uploading...">Upload</button>
+      <p class="hint">PDF · TXT · Markdown · DOCX · HTML</p>
+    </form>
+
+    <ul class="source-list">
+      {% for source in sources %}
+        {% include "_source_item.html" %}
+      {% else %}
+        <li class="source-empty">
+          <p class="muted">No sources yet.</p>
+          <p class="muted small">Upload a document to ground your conversations.</p>
+        </li>
+      {% endfor %}
+    </ul>
+    {% if sources_truncated %}
+      <p class="truncated-hint muted small">Showing the most recent 200 sources only.</p>
+    {% endif %}
+  </aside>
+
+  {# ---------------- CENTER: Chat ---------------- #}
+  <section class="workspace-pane workspace-chat" aria-label="Chat" id="chat-pane">
+    <header class="chat-head">
+      <div class="chat-title-row">
+        <span class="notebook-emoji">{{ notebook.emoji or "📓" }}</span>
+        <div>
+          <h1>{{ notebook.title }}</h1>
+          <details class="conversation-switcher">
+            <summary>
+              <span class="convo-current">
+                {% if conversation %}{{ conversation.title }}{% else %}New conversation{% endif %}
+              </span>
+              <span class="caret">▾</span>
+            </summary>
+            <div class="convo-menu">
+              <form action="/notebooks/{{ notebook.id }}/chat/new" method="post" data-loading-form>
+                <button type="submit" class="ghost small wide" data-loading-text="Creating...">+ New conversation</button>
+              </form>
+              {% if conversations %}
+                <hr>
+                <ul>
+                  {% for item in conversations %}
+                    <li class="convo-row">
+                      <a class="{% if conversation and item.id == conversation.id %}active{% endif %}"
+                         href="/notebooks/{{ notebook.id }}?conversation_id={{ item.id }}">
+                        {{ item.title }}
+                      </a>
+                      <form action="/notebooks/{{ notebook.id }}/chat/{{ item.id }}/delete" method="post"
+                            data-confirm="Delete this conversation and all of its messages?"
+                            class="convo-del">
+                        <button type="submit" class="ghost small danger-link" title="Delete conversation" aria-label="Delete conversation">×</button>
+                      </form>
+                    </li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+            </div>
+          </details>
+        </div>
+      </div>
+      <div class="chat-head-actions">
+        <details class="notebook-menu">
+          <summary class="ghost small">Notebook ▾</summary>
+          <div class="convo-menu notebook-menu-content">
+            <form action="/notebooks/{{ notebook.id }}/rename" method="post" class="rename-form">
+              <label>
+                Emoji
+                <input name="emoji" value="{{ notebook.emoji }}" maxlength="8">
+              </label>
+              <label>
+                Title
+                <input name="title" value="{{ notebook.title }}" required>
+              </label>
+              <button type="submit" class="wide small">Save</button>
+            </form>
+            <hr>
+            <form action="/notebooks/{{ notebook.id }}/delete" method="post" data-confirm="Delete this notebook? Its sources, chunks, conversations, and notes will be removed.">
+              <button type="submit" class="ghost small danger-link wide">Delete notebook</button>
+            </form>
+          </div>
+        </details>
+      </div>
+    </header>
+
+    <div class="messages">
+      {% if messages_truncated %}
+        <div class="truncated-hint muted small">Showing the most recent 200 messages from this conversation.</div>
+      {% endif %}
+      {% for message in messages %}
+        <article class="message {{ message.role }}" id="msg-{{ message.id }}">
+          <div class="message-head">
+            <div class="role">{{ "You" if message.role == "user" else "Assistant" }}</div>
+            {% if message.role == "assistant" %}
+              <form id="pin-msg-{{ message.id }}"
+                    hx-post="/notebooks/{{ notebook.id }}/notes/pin"
+                    hx-target="#studio-notes"
+                    hx-swap="outerHTML"
+                    class="pin-form"
+                    x-data="{ pinned: {{ 'true' if message.id in pinned_message_ids else 'false' }} }"
+                    @htmx:after-request="if ($event.detail.successful) pinned = true"
+                    @pin-cleared.window="if ($event.detail.message_id === {{ message.id }}) pinned = false">
+                <input type="hidden" name="message_id" value="{{ message.id }}">
+                <button type="submit"
+                        class="ghost small pin-btn"
+                        :class="{ 'pinned': pinned }"
+                        :disabled="pinned"
+                        x-text="pinned ? '📌 Pinned' : '📌 Pin'"
+                        :title="pinned ? 'Already pinned to notes' : 'Pin to notes'">📌 Pin</button>
+              </form>
+            {% endif %}
+          </div>
+
+          {% if message.role == "assistant" %}
+            <div class="message-body markdown-body"
+                 data-markdown
+                 data-citations='{{ message.citations | tojson | safe }}'>{{ message.content }}</div>
+          {% else %}
+            <p class="message-body">{{ message.content }}</p>
+          {% endif %}
+
+          {% if message.citations %}
+            <div class="citations">
+              <div class="citation-title">Citations</div>
+              {% for citation in message.citations %}
+                <details id="msg-{{ message.id }}-cite-{{ citation.index }}">
+                  <summary>[{{ citation.index }}] {{ citation.filename }} · {{ citation.location }}</summary>
+                  <p>{{ citation.snippet }}</p>
+                </details>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </article>
+      {% else %}
+        <div class="empty chat-empty">
+          {% if indexed_sources %}
+            <h2>Ask anything about your sources</h2>
+            <p class="muted">Type a question below. Answers cite the source passages they came from.</p>
+          {% elif sources %}
+            <h2>Indexing in progress</h2>
+            <p class="muted">Wait for sources to finish indexing on the left, then ask away.</p>
+          {% else %}
+            <h2>Add a source to get started</h2>
+            <p class="muted">Upload a document on the left so this notebook has something to ground against.</p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+
+    <form action="/notebooks/{{ notebook.id }}/chat/ask" method="post" class="ask-form" data-loading-form>
+      {% if conversation %}<input type="hidden" name="conversation_id" value="{{ conversation.id }}">{% endif %}
+
+      {% include "_source_picker.html" %}
+
+      <div class="question-row">
+        <textarea name="question" rows="3"
+                  id="question-input"
+                  placeholder="Ask a question about the selected sources"
+                  required></textarea>
+        <button type="submit" data-loading-text="Asking...">Ask</button>
+      </div>
+    </form>
+  </section>
+
+  {# ---------------- RIGHT: Studio ---------------- #}
+  <aside class="workspace-pane workspace-studio" aria-label="Studio">
+    <header class="pane-head">
+      <h2>Studio</h2>
+    </header>
+
+    {% with questions=[], error="", has_indexed=indexed_sources|length > 0 %}
+      {% include "_suggestions.html" %}
+    {% endwith %}
+
+    {% include "_notes_section.html" %}
+  </aside>
+
+</section>
+{% endblock %}

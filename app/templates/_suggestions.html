@@ -1,0 +1,55 @@
+{# Suggested-questions section, returned both inline and as an HTMX swap target. #}
+<section class="studio-section studio-suggestions" id="studio-suggestions"
+         hx-get="/notebooks/{{ notebook.id }}/_suggestions"
+         hx-trigger="sources-changed from:body"
+         hx-swap="outerHTML">
+  <h3>
+    Suggested questions
+    {% if questions %}
+      <button type="button"
+              class="ghost small"
+              hx-post="/notebooks/{{ notebook.id }}/suggestions"
+              hx-target="#studio-suggestions"
+              hx-swap="outerHTML"
+              hx-indicator="#studio-suggestions">
+        Refresh
+      </button>
+    {% endif %}
+  </h3>
+  {% if questions %}
+    <ul class="suggestion-list">
+      {% for q in questions %}
+        <li>
+          <button type="button"
+                  class="suggestion-chip"
+                  data-fill-question
+                  data-text="{{ q }}">
+            {{ q }}
+          </button>
+        </li>
+      {% endfor %}
+    </ul>
+  {% elif error %}
+    <p class="muted small">{{ error }}</p>
+    <button type="button"
+            class="ghost small"
+            hx-post="/notebooks/{{ notebook.id }}/suggestions"
+            hx-target="#studio-suggestions"
+            hx-swap="outerHTML"
+            hx-indicator="#studio-suggestions">
+      Try again
+    </button>
+  {% elif not has_indexed %}
+    <p class="muted small">Index a source first to generate starter questions.</p>
+  {% else %}
+    <p class="muted small">Generate 4 grounded starter questions from your sources.</p>
+    <button type="button"
+            class="ghost small"
+            hx-post="/notebooks/{{ notebook.id }}/suggestions"
+            hx-target="#studio-suggestions"
+            hx-swap="outerHTML"
+            hx-indicator="#studio-suggestions">
+      Generate suggestions
+    </button>
+  {% endif %}
+</section>

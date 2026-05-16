@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# App data (uploaded files, SQLite, Chroma index)
+data/
+
+# Logs
+logs/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test artefacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Claude Code per-user local settings (launch.json is committed)
+.claude/settings.local.json

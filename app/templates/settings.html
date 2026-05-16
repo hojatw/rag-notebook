@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings">
+  <header class="settings-head">
+    <p class="eyebrow">Admin console</p>
+    <h1>LLM settings</h1>
+    <p class="muted">Shared by all users. The API key is masked once saved and never sent back to the browser.</p>
+  </header>
+  {% if saved %}<div class="notice">Settings saved.</div>{% endif %}
+  <form method="post" action="/settings" class="settings-grid" data-loading-form>
+    <section class="settings-section">
+      <h2>Connection</h2>
+      <label>
+        Provider
+        <select name="provider" data-provider-select>
+          <option value="openai_compatible" {% if settings.provider == "openai_compatible" %}selected{% endif %}>OpenAI-compatible</option>
+          <option value="azure_openai" {% if settings.provider == "azure_openai" %}selected{% endif %}>Azure OpenAI</option>
+        </select>
+      </label>
+      <p class="hint" data-provider-note></p>
+      <label>
+        Base URL / Azure endpoint
+        <input name="base_url" value="{{ settings.base_url }}" placeholder="https://api.openai.com/v1 or https://my-resource.openai.azure.com">
+      </label>
+      <label>
+        API key {% if settings.api_key_masked %}<span class="muted">(saved &mdash; leave blank to keep)</span>{% endif %}
+        <input name="api_key" type="password" autocomplete="off" placeholder="{% if settings.api_key_masked %}••••••••{% else %}sk-...{% endif %}">
+      </label>
+    </section>
+
+    <section class="settings-section">
+      <h2>Models</h2>
+      <label>
+        Chat model / Azure chat deployment
+        <input name="chat_model" value="{{ settings.chat_model }}" placeholder="gpt-4.1-mini or my-chat-deployment">
+      </label>
+      <label>
+        Embedding model / Azure embedding deployment
+        <input name="embedding_model" value="{{ settings.embedding_model }}" placeholder="text-embedding-3-small or my-embedding-deployment">
+      </label>
+      <label>
+        Azure API version
+        <input name="api_version" value="{{ settings.api_version }}" placeholder="2024-02-15-preview">
+      </label>
+    </section>
+
+    <section class="settings-section">
+      <h2>Runtime</h2>
+      <div class="two-col">
+        <label>
+          Temperature
+          <input name="temperature" type="number" min="0" max="2" step="0.1" value="{{ settings.temperature }}">
+        </label>
+        <label>
+          Timeout seconds
+          <input name="timeout_seconds" type="number" min="1" step="1" value="{{ settings.timeout_seconds }}">
+        </label>
+      </div>
+    </section>
+
+    <div class="settings-foot">
+      <button type="submit" data-loading-text="Saving...">Save settings</button>
+      <a href="/notebooks" class="ghost">Back to notebooks</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

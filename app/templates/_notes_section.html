@@ -1,0 +1,38 @@
+{# Notes section in the studio pane. Returned both inline and as an HTMX swap
+   target after pin / delete operations. Each note is a collapsible <details>
+   so the studio pane stays compact when many notes exist. #}
+<section class="studio-section studio-notes" id="studio-notes">
+  <h3>
+    Notes
+    <span class="pane-count">{{ notes|length }}</span>
+  </h3>
+  {% if notes %}
+    <ul class="note-list">
+      {% for note in notes %}
+        <li class="note-item">
+          <details>
+            <summary>
+              <span class="note-summary-title">{{ note.title or (note.content[:60] ~ ('…' if note.content|length > 60 else '')) }}</span>
+              <small class="muted note-summary-date">{{ note.created_at[:10] }}</small>
+            </summary>
+            <div class="note-body">
+              <p>{{ note.content }}</p>
+              <div class="note-foot">
+                <button type="button"
+                        class="ghost small danger-link"
+                        hx-post="/notebooks/{{ notebook.id }}/notes/{{ note.id }}/delete"
+                        hx-target="#studio-notes"
+                        hx-swap="outerHTML"
+                        hx-confirm="Remove this pinned note?">
+                  Remove
+                </button>
+              </div>
+            </div>
+          </details>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted small">Pin assistant answers from chat to keep them here for later.</p>
+  {% endif %}
+</section>

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="auth-panel">
+  <div class="auth-hero">
+    <span class="auth-mark">R</span>
+    <h1>Sign in to RAG Notebook</h1>
+    <p class="muted">A NotebookLM-style workspace for grounded chats with your own documents.</p>
+  </div>
+  {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="/login" class="stack" data-loading-form>
+    <label>
+      Username
+      <input name="username" autocomplete="username" autofocus required>
+    </label>
+    <label>
+      Password
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit" data-loading-text="Signing in...">Sign in</button>
+  </form>
+  <p class="auth-hint muted small">
+    Demo accounts: <code>admin / admin123</code> &middot; <code>user / user123</code>
+  </p>
+</section>
+{% endblock %}
