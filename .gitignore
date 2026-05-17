@@ -27,8 +27,11 @@ logs/
 .coverage
 htmlcov/
 
-# Claude Code per-user local settings (launch.json is committed)
-.claude/settings.local.json
+# Claude Code local state
+.claude/
+
+# Local engineering handoff notes
+handover.md
 
 # Docker compose env (.env.example is committed)
 .env

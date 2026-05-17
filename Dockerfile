@@ -62,11 +62,11 @@ ENV NOTEBOOKLM_DATA_DIR=/app/data \
     NOTEBOOKLM_LOG_MAX_BYTES=5242880 \
     NOTEBOOKLM_LOG_BACKUP_COUNT=5
 
-# NOTEBOOKLM_SECRET intentionally NOT defaulted in the image — the dev
-# fallback ("dev-secret-change-me") would silently make every encrypted
-# API key reversible by anyone who pulls the image. Fail loudly instead:
-# compose requires it via .env. Setting it AFTER first save invalidates
-# previously-encrypted API keys (admin will need to re-enter at /settings).
+# NOTEBOOKLM_SECRET intentionally NOT defaulted in the image. Without it the
+# app fails closed unless NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 is explicitly
+# set for local development. Compose requires NOTEBOOKLM_SECRET via .env.
+# Setting it AFTER first save invalidates previously-encrypted API keys
+# (admin will need to re-enter at /settings).
 
 EXPOSE 8000
 

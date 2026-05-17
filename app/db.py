@@ -4,12 +4,12 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .security import decrypt_secret, encrypt_secret, hash_password
+from .security import decrypt_secret, encrypt_secret, get_app_secret, hash_password
 
 
 def _app_secret() -> str:
-    """Read NOTEBOOKLM_SECRET in one place so callers do not duplicate the default."""
-    return os.environ.get("NOTEBOOKLM_SECRET", "dev-secret-change-me")
+    """Read the app secret through the fail-closed security helper."""
+    return get_app_secret()
 
 
 DATA_DIR = Path(os.environ.get("NOTEBOOKLM_DATA_DIR", "data"))

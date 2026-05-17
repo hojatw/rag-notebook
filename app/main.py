@@ -20,7 +20,7 @@ from .ingest import process_source, supported
 import httpx
 
 from .llm import close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_briefing, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries
-from .security import hash_password, sign_user_id, unsign_user_id, verify_password
+from .security import get_app_secret, hash_password, sign_user_id, unsign_user_id, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
 from .vector_store import delete_source as delete_source_vectors
@@ -30,7 +30,7 @@ from .vector_store import sync_from_sqlite
 
 
 BASE_DIR = Path(__file__).resolve().parent
-SECRET = os.environ.get("NOTEBOOKLM_SECRET", "dev-secret-change-me")
+SECRET = get_app_secret()
 LOG_LEVEL = os.environ.get("NOTEBOOKLM_LOG_LEVEL", "INFO").upper()
 LOG_FILE = Path(os.environ.get("NOTEBOOKLM_LOG_FILE", BASE_DIR.parent / "logs" / "app.log"))
 LOG_MAX_BYTES = int(os.environ.get("NOTEBOOKLM_LOG_MAX_BYTES", str(5 * 1024 * 1024)))

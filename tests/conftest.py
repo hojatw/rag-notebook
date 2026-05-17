@@ -1,6 +1,7 @@
 import hashlib
 import importlib
 import math
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+os.environ.setdefault("NOTEBOOKLM_SECRET", "test-secret-do-not-use-in-prod")
 
 
 def local_embedding(text: str, dimensions: int = 384) -> list[float]:

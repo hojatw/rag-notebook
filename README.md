@@ -31,9 +31,9 @@ The frontend stays server-rendered (Jinja templates) and sprinkles in Alpine.js,
 ## Run
 
 ```bash
-cd /Users/philip_1/Repos/My/side_projects/notebooklm-rag-poc
+cd notebooklm-rag-poc
 ./setup.sh                                              # builds .venv and handles the chromadb caveat below
-.venv/bin/uvicorn app.main:app --reload --port 8000
+NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
 `setup.sh --force` wipes any existing `.venv` first. The script auto-detects whether `onnxruntime` has a wheel for the active Python version and falls back to the `chromadb --no-deps` install path if it does not.
@@ -144,8 +144,13 @@ NOTEBOOKLM_LOG_FILE=logs/app.log
 NOTEBOOKLM_LOG_MAX_BYTES=5242880
 NOTEBOOKLM_LOG_BACKUP_COUNT=5
 NOTEBOOKLM_DATA_DIR=data
-NOTEBOOKLM_SECRET=dev-secret-change-me
+NOTEBOOKLM_SECRET=replace-me-with-a-long-random-string
+NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1  # local-only opt-in when NOTEBOOKLM_SECRET is unset
 ```
+
+`NOTEBOOKLM_SECRET` is required by default. For local-only quick starts you can
+set `NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1` to use the built-in development
+secret explicitly; do not set that flag in production.
 
 The app records: startup/shutdown, every HTTP request with status and elapsed time, login attempts, source upload/index/reindex/delete, embedding API calls, Chroma upsert/query, query rewriting, retrieval and rerank, chat success/failure, notebook and note CRUD, and exceptions with stack traces.
 

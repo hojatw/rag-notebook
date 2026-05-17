@@ -1,4 +1,13 @@
-from app.security import decrypt_secret, encrypt_secret
+import pytest
+
+from app.security import (
+    ALLOW_INSECURE_DEV_SECRET_ENV,
+    APP_SECRET_ENV,
+    INSECURE_DEV_SECRET,
+    decrypt_secret,
+    encrypt_secret,
+    get_app_secret,
+)
 
 
 SECRET = "test-secret-do-not-use-in-prod"
@@ -40,3 +49,28 @@ def test_two_secrets_produce_different_ciphertexts():
     assert a != b
     assert decrypt_secret(a, SECRET) == "payload"
     assert decrypt_secret(b, SECRET) == ""
+
+
+def test_app_secret_requires_env_by_default(monkeypatch):
+    """Production defaults must fail closed instead of silently using dev secret."""
+    monkeypatch.delenv(APP_SECRET_ENV, raising=False)
+    monkeypatch.delenv(ALLOW_INSECURE_DEV_SECRET_ENV, raising=False)
+
+    with pytest.raises(RuntimeError, match=APP_SECRET_ENV):
+        get_app_secret()
+
+
+def test_app_secret_allows_explicit_local_dev_fallback(monkeypatch):
+    """The insecure fallback is available only when explicitly opted in."""
+    monkeypatch.delenv(APP_SECRET_ENV, raising=False)
+    monkeypatch.setenv(ALLOW_INSECURE_DEV_SECRET_ENV, "1")
+
+    assert get_app_secret() == INSECURE_DEV_SECRET
+
+
+def test_app_secret_prefers_real_secret_over_dev_flag(monkeypatch):
+    """A real secret wins even if the dev opt-in flag is present."""
+    monkeypatch.setenv(APP_SECRET_ENV, "real-secret")
+    monkeypatch.setenv(ALLOW_INSECURE_DEV_SECRET_ENV, "1")
+
+    assert get_app_secret() == "real-secret"

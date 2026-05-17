@@ -14,6 +14,28 @@ FERNET_PREFIX = "gAAAAA"
 # Stable salt for deriving the encryption key from NOTEBOOKLM_SECRET. Rotating
 # this salt invalidates every stored ciphertext, so it lives in code, not env.
 ENCRYPTION_SALT = b"notebooklm-rag-poc.api-key.v1"
+APP_SECRET_ENV = "NOTEBOOKLM_SECRET"
+ALLOW_INSECURE_DEV_SECRET_ENV = "NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET"
+INSECURE_DEV_SECRET = "dev-secret-change-me"
+
+
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_app_secret() -> str:
+    """Return the app secret, failing closed unless dev fallback is explicit."""
+    secret = os.environ.get(APP_SECRET_ENV, "").strip()
+    if secret:
+        return secret
+    if _truthy(os.environ.get(ALLOW_INSECURE_DEV_SECRET_ENV)):
+        return INSECURE_DEV_SECRET
+    raise RuntimeError(
+        f"{APP_SECRET_ENV} is required. Generate one with: "
+        "python -c \"import secrets; print(secrets.token_urlsafe(48))\". "
+        f"For local-only development, set {ALLOW_INSECURE_DEV_SECRET_ENV}=1 "
+        "to explicitly allow the insecure fallback."
+    )
 
 
 def _fernet(secret: str) -> Fernet:
