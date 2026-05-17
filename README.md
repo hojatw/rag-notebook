@@ -8,7 +8,12 @@ A single-machine FastAPI proof of concept for a NotebookLM-style workspace: orga
 - **Three-pane workspace** per notebook:
   - **Sources** (left): drag-and-drop upload, automatic indexing-status polling, per-source reindex/delete, **click any indexed source to open a chunk-preview drawer**.
   - **Chat** (centre): grounded chat with conversation switcher (with per-row delete), Markdown-rendered answers, and inline `[1]` `[2]` citation chips that scroll the matching source into view.
-  - **Studio** (right): one-click *Generate suggestions* (LLM-authored starter questions from your sources, auto-refreshing as sources finish indexing) and *Pin* assistant answers into collapsible notes (removing a note un-pins the source message automatically).
+  - **Studio** (right): four NotebookLM-style helpers in one column.
+      - *Suggested questions* — one-click LLM-authored starter questions from your sources, auto-refreshing as sources finish indexing (24 h cache).
+      - *Briefing* — one-paragraph cross-source synthesis, auto-generated on first notebook view and cached for 24 h. *Regenerate* on demand.
+      - *Compare sources* — pick 2+ indexed sources (with an optional focus hint) and the model produces a Shared / Distinct / Contradictions markdown report. *Save to notes* keeps it for later.
+      - *Notes* — *Pin* assistant answers into collapsible notes (removing a note un-pins the source message automatically); comparison results can be saved here too.
+  - **Per-source summary** — every uploaded source gets a 2–4 sentence TL;DR generated automatically right after indexing, shown at the top of the preview drawer and reused as compact context for Briefing / Compare.
 - **Hybrid retrieval**: query rewriting, Chroma vector search, SQLite keyword matching, and LLM reranking. Below a configurable confidence threshold the model is asked to abstain rather than hallucinate. See [`RETRIEVAL.md`](RETRIEVAL.md) for the full pipeline, tuning knobs, and eval workflow.
 - **Per-message debug pane**: chat answers ship with a collapsible "📊 N chunks · retrieved Xms · generated Yms · top score Z" badge that opens a table of vector / keyword / rerank / final scores per citation.
 - **Retrieval eval harness** (`tests/eval_retrieval.py`) with starter questions for the demo notebook so changes to query rewrite / hybrid scoring / rerank can be measured (recall@k, MRR).
@@ -171,8 +176,12 @@ POST /notebooks/{id}/chat/{cid}/delete                    delete a conversation
 
 GET  /notebooks/{id}/_suggestions                         HTMX swap: suggestions section
 POST /notebooks/{id}/suggestions                          generate 4 starter questions
+GET  /notebooks/{id}/_briefing                            HTMX swap: briefing section
+POST /notebooks/{id}/briefing                             generate / regenerate notebook briefing
+POST /notebooks/{id}/compare                              compare 2+ sources (returns result fragment)
 
 POST /notebooks/{id}/notes/pin                            pin assistant message into notes
+POST /notebooks/{id}/notes/add                            save a raw note (title + content)
 POST /notebooks/{id}/notes/{note_id}/delete               remove pinned note (also broadcasts pin-cleared)
 
 GET  /account                                             change own password
@@ -228,6 +237,9 @@ app/templates/
   _source_preview.html Chunks list rendered inside the preview modal.
   _source_picker.html  Chat-form source-checkbox fieldset (HTMX swap target).
   _suggestions.html    Studio suggestions section (HTMX swap target).
+  _briefing.html       Studio briefing section (HTMX swap target; auto-fires POST on first view).
+  _compare.html        Studio compare-sources panel (checkbox list + focus input).
+  _compare_result.html Comparison result fragment (markdown body + Save-to-notes form).
   _notes_section.html  Studio notes section (HTMX swap target).
   account.html         Per-user password change page.
   admin_users.html     Admin user management page.

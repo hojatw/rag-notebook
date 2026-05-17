@@ -29,6 +29,36 @@ Each question must be answerable from the excerpts and stand alone (no pronouns)
 Match the dominant language of the excerpts (Traditional Chinese excerpts -> Traditional Chinese questions).
 Return only a JSON array of strings, each under 80 characters."""
 
+SOURCE_SUMMARY_PROMPT = """You write tight summaries of single source documents.
+Read the provided excerpts (which are the first chunks of one document).
+Write 2 to 4 sentences capturing what the document is about and its key claims or findings.
+No filler ("This document discusses..."), no bullets, no headings.
+Reply in the same language as the source (Traditional Chinese source -> Traditional Chinese summary)."""
+
+NOTEBOOK_BRIEFING_PROMPT = """You write a one-paragraph briefing across multiple source summaries in a notebook.
+Read each source's summary and produce a single paragraph (~120-180 words) covering:
+- What this collection of sources is about as a whole.
+- Recurring themes or shared subject matter.
+- Any notable contrasts or differences in perspective.
+Do not list sources mechanically; weave them into prose. No headings, no bullets unless absolutely needed.
+Reply in the dominant language of the source summaries."""
+
+SOURCE_COMPARE_PROMPT = """You compare two or more source documents grounded in their summaries.
+Use this Markdown structure, OMITTING any section that would be empty:
+
+## Shared
+- Common ground across the sources.
+
+## Distinct
+- **{filename}** — what is unique to this source.
+- (one bullet per source that has distinctive points)
+
+## Contradictions
+- Direct disagreements between sources, citing the sources by filename.
+
+Stay grounded in the provided summaries. If a focus question is given, prioritise points relevant to it.
+Reply in the dominant language of the source summaries."""
+
 logger = logging.getLogger(__name__)
 EMBEDDING_BATCH_SIZE = 64
 _http_client: httpx.AsyncClient | None = None
@@ -225,6 +255,96 @@ async def generate_starter_questions(excerpts: list[dict[str, Any]], settings: d
     cleaned = [q for q in (q.strip() for q in questions) if q]
     logger.info("starter_questions_generated excerpts=%s returned=%s", len(samples), len(cleaned[:4]))
     return cleaned[:4]
+
+
+async def summarize_source(chunks: list[dict[str, Any]], settings: dict[str, Any]) -> str:
+    """Generate a 2-4 sentence summary of one source from its first chunks.
+
+    Returns an empty string on missing settings or upstream failure — the
+    caller (ingest) treats summary generation as best-effort and must not
+    fail the source on a summary error.
+    """
+    if not chunks:
+        return ""
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        logger.info("source_summary_skipped reason=no_chat_settings")
+        return ""
+    samples = chunks[:12]
+    context = "\n\n".join(
+        f"[{index}] {chunk.get('location', '')}\n{chunk['text']}"
+        for index, chunk in enumerate(samples, start=1)
+    )
+    user_prompt = f"Source excerpts:\n{context}\n\nWrite the summary now."
+    try:
+        content = await chat_completion(settings, user_prompt, SOURCE_SUMMARY_PROMPT, temperature=0.3)
+    except Exception:
+        logger.exception("source_summary_failed chunks=%s", len(samples))
+        return ""
+    summary = (content or "").strip()
+    logger.info("source_summary_generated excerpts=%s chars=%s", len(samples), len(summary))
+    return summary
+
+
+async def generate_briefing(summaries: list[dict[str, Any]], settings: dict[str, Any]) -> str:
+    """Synthesize a one-paragraph briefing across multiple source summaries.
+
+    Each item should look like ``{"filename": str, "summary": str}``. Sources
+    with empty summaries are skipped — caller can pass a "(no summary)"
+    placeholder if it wants the source mentioned anyway.
+    """
+    items = [item for item in summaries if (item.get("summary") or "").strip()]
+    if not items:
+        return ""
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        logger.info("briefing_skipped reason=no_chat_settings")
+        return ""
+    context = "\n\n".join(
+        f"[{index}] {item['filename']}\n{item['summary'].strip()}"
+        for index, item in enumerate(items, start=1)
+    )
+    user_prompt = f"Source summaries:\n{context}\n\nWrite the briefing now."
+    try:
+        content = await chat_completion(settings, user_prompt, NOTEBOOK_BRIEFING_PROMPT, temperature=0.4)
+    except Exception:
+        logger.exception("briefing_failed summaries=%s", len(items))
+        return ""
+    briefing = (content or "").strip()
+    logger.info("briefing_generated summaries=%s chars=%s", len(items), len(briefing))
+    return briefing
+
+
+async def compare_sources(
+    summaries: list[dict[str, Any]],
+    focus: str,
+    settings: dict[str, Any],
+) -> str:
+    """Compare 2+ sources by their summaries.
+
+    Returns an empty string if fewer than 2 usable summaries are provided or
+    settings are missing. ``focus`` is an optional free-text hint from the
+    user about what to compare on.
+    """
+    items = [item for item in summaries if (item.get("summary") or "").strip()]
+    if len(items) < 2:
+        logger.info("compare_skipped reason=fewer_than_two_summaries provided=%s", len(items))
+        return ""
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        logger.info("compare_skipped reason=no_chat_settings")
+        return ""
+    context = "\n\n".join(
+        f"[{index}] {item['filename']}\n{item['summary'].strip()}"
+        for index, item in enumerate(items, start=1)
+    )
+    focus_line = f"Focus: {focus.strip()}\n\n" if (focus or "").strip() else ""
+    user_prompt = f"{focus_line}Sources to compare:\n{context}\n\nWrite the comparison now."
+    try:
+        content = await chat_completion(settings, user_prompt, SOURCE_COMPARE_PROMPT, temperature=0.3)
+    except Exception:
+        logger.exception("compare_failed summaries=%s focus_chars=%s", len(items), len(focus or ""))
+        return ""
+    comparison = (content or "").strip()
+    logger.info("compare_generated summaries=%s chars=%s focus_chars=%s", len(items), len(comparison), len(focus or ""))
+    return comparison
 
 
 async def chat_completion(

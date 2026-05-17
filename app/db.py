@@ -150,6 +150,15 @@ def init_db() -> None:
         _ensure_column(conn, "messages", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(conn, "notebooks", "suggestions_json", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "notebooks", "suggestions_at", "TEXT NOT NULL DEFAULT ''")
+        # Per-source TL;DR generated at ingest, shown in preview drawer and
+        # reused as compact context for briefing / comparison prompts.
+        _ensure_column(conn, "sources", "summary", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "sources", "summary_at", "TEXT NOT NULL DEFAULT ''")
+        # Cross-source briefing cached on the notebook (same TTL pattern as
+        # suggestions). Auto-generated on first notebook view when sources
+        # are indexed.
+        _ensure_column(conn, "notebooks", "briefing", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "notebooks", "briefing_at", "TEXT NOT NULL DEFAULT ''")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sources_notebook_created ON sources(notebook_id, created_at DESC)"
         )

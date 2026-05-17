@@ -20,6 +20,13 @@
   <div class="alert">{{ source.error }}</div>
 {% endif %}
 
+{% if source.summary %}
+  <section class="preview-summary">
+    <h3>Summary</h3>
+    <p>{{ source.summary }}</p>
+  </section>
+{% endif %}
+
 {% if chunks %}
   <ol class="preview-chunks">
     {% for chunk in chunks %}

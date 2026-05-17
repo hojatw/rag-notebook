@@ -1,6 +1,6 @@
 import asyncio
 
-from app.llm import build_chat_request, build_embedding_request, close_http_client, get_http_client, parse_json_strings, parse_rerank_scores
+from app.llm import build_chat_request, build_embedding_request, close_http_client, compare_sources, generate_briefing, get_http_client, parse_json_strings, parse_rerank_scores, summarize_source
 
 
 def test_openai_compatible_request_shapes():
@@ -69,3 +69,51 @@ def test_shared_http_client_is_reused():
     assert first is second
 
     asyncio.run(close_http_client())
+
+
+def test_summarize_source_returns_empty_without_settings():
+    """summarize_source must not call any API when LLM settings are missing."""
+    chunks = [{"location": "page 1", "text": "Some text from a source document."}]
+    result = asyncio.run(summarize_source(chunks, {}))
+    assert result == ""
+
+    # Empty chunks shortcut returns empty without touching settings.
+    assert asyncio.run(summarize_source([], {"api_key": "x", "chat_model": "m"})) == ""
+
+
+def test_generate_briefing_returns_empty_without_summaries_or_settings():
+    """Briefing helper short-circuits on empty summaries or missing settings."""
+    assert asyncio.run(generate_briefing([], {"api_key": "x", "chat_model": "m"})) == ""
+
+    summaries = [
+        {"filename": "a.pdf", "summary": "Summary A"},
+        {"filename": "b.pdf", "summary": "Summary B"},
+    ]
+    assert asyncio.run(generate_briefing(summaries, {})) == ""
+
+    # Whitespace-only summaries are filtered out.
+    assert asyncio.run(
+        generate_briefing(
+            [{"filename": "x.pdf", "summary": "   "}],
+            {"api_key": "x", "chat_model": "m"},
+        )
+    ) == ""
+
+
+def test_compare_sources_requires_two_summaries_and_settings():
+    """compare_sources short-circuits if fewer than 2 usable summaries or no settings."""
+    summaries = [
+        {"filename": "a.pdf", "summary": "Summary A"},
+        {"filename": "b.pdf", "summary": "Summary B"},
+    ]
+    # Missing settings -> empty without raising.
+    assert asyncio.run(compare_sources(summaries, "", {})) == ""
+
+    # Only one usable summary -> empty.
+    assert asyncio.run(
+        compare_sources(
+            [{"filename": "a.pdf", "summary": "Only one"}],
+            "",
+            {"api_key": "x", "chat_model": "m"},
+        )
+    ) == ""

@@ -294,6 +294,14 @@
       {% include "_suggestions.html" %}
     {% endwith %}
 
+    {% with briefing=cached_briefing, error="", has_indexed=indexed_sources %}
+      {% include "_briefing.html" %}
+    {% endwith %}
+
+    {% with sources_indexed=indexed_sources %}
+      {% include "_compare.html" %}
+    {% endwith %}
+
     {% include "_notes_section.html" %}
   </aside>
 

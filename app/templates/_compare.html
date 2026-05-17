@@ -1,0 +1,37 @@
+{# Source comparison section. Collapsed by default so it doesn't dominate the
+   studio pane. The checkbox list is intentionally separate from the chat-scope
+   checkboxes on the left — different intent, different state. #}
+<section class="studio-section studio-compare" id="studio-compare">
+  <details>
+    <summary>
+      <span>Compare sources</span>
+    </summary>
+    {% if not sources_indexed %}
+      <p class="muted small">Index 2+ sources to compare them.</p>
+    {% else %}
+      <form class="compare-form"
+            hx-post="/notebooks/{{ notebook.id }}/compare"
+            hx-target="#compare-result"
+            hx-swap="innerHTML"
+            hx-indicator="#compare-result">
+        <ul class="compare-source-list">
+          {% for s in sources_indexed %}
+            <li>
+              <label>
+                <input type="checkbox" name="source_ids" value="{{ s.id }}">
+                <span class="compare-source-name">{{ s.filename }}</span>
+                {% if not s.summary %}<span class="muted small">(no summary)</span>{% endif %}
+              </label>
+            </li>
+          {% endfor %}
+        </ul>
+        <label class="compare-focus-label">
+          <span class="muted small">Focus (optional)</span>
+          <input type="text" name="focus" placeholder="e.g. methodology, conclusions" maxlength="160">
+        </label>
+        <button type="submit" class="wide small" data-loading-text="Comparing…">Compare</button>
+      </form>
+      <div id="compare-result" class="compare-result"></div>
+    {% endif %}
+  </details>
+</section>

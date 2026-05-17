@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import connect, dumps, load_llm_settings
-from .llm import embed_texts
+from .llm import embed_texts, summarize_source
 from .vector_store import delete_source as delete_source_vectors
 from .vector_store import upsert_chunks
 
@@ -404,6 +404,31 @@ def get_settings() -> dict[str, Any]:
         return load_llm_settings(conn) or {}
 
 
+async def _generate_source_summary(source_id: int) -> None:
+    """Generate and persist a per-source TL;DR. Failures are logged only."""
+    try:
+        with connect() as conn:
+            chunk_rows = conn.execute(
+                "SELECT location, text FROM chunks WHERE source_id = ? ORDER BY chunk_index ASC LIMIT 12",
+                (source_id,),
+            ).fetchall()
+            settings = load_llm_settings(conn) or {}
+        chunks = [dict(r) for r in chunk_rows]
+        if not chunks:
+            return
+        summary = await summarize_source(chunks, settings)
+        if not summary:
+            return
+        with connect() as conn:
+            conn.execute(
+                "UPDATE sources SET summary = ?, summary_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (summary, source_id),
+            )
+        logger.info("source_summary_persisted source_id=%s chars=%s", source_id, len(summary))
+    except Exception:
+        logger.exception("source_summary_unhandled source_id=%s", source_id)
+
+
 async def process_source(source_id: int) -> None:
     """Extract, chunk, embed, and persist vectors for one source record."""
     with connect() as conn:
@@ -481,6 +506,9 @@ async def process_source(source_id: int) -> None:
             ]
         )
         logger.info("ingest_completed source_id=%s chunks=%s", source_id, len(records))
+        # Best-effort per-source summary. Runs AFTER status='indexed' so a
+        # summarization failure leaves the source fully usable for retrieval.
+        await _generate_source_summary(source_id)
     except Exception as exc:
         with connect() as conn:
             conn.execute(
