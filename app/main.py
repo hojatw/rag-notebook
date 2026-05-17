@@ -215,6 +215,42 @@ def logout():
 SUGGESTIONS_TTL_HOURS = 24
 BRIEFING_TTL_HOURS = 24
 
+# In-process lock for briefing generation. Keyed by notebook_id, value is the
+# unix timestamp when generation started. Used to dedupe concurrent POSTs that
+# fire when multiple sources finish indexing within seconds of each other
+# during a multi-file upload (each fires sources-changed → auto-fire POST).
+# Stale entries past BRIEFING_LOCK_TIMEOUT_S are treated as released so a
+# crashed request can't permanently block regeneration.
+# NOTE: in-process dict, single-uvicorn-worker assumption — fine for POC.
+# A multi-worker / multi-process deploy would need a SQLite row, Redis key,
+# or filesystem lockfile instead.
+_briefing_in_progress: dict[int, float] = {}
+BRIEFING_LOCK_TIMEOUT_S = 90
+
+
+def _briefing_locked(notebook_id: int) -> bool:
+    """True if a non-stale briefing generation is currently in flight."""
+    started = _briefing_in_progress.get(notebook_id)
+    if started is None:
+        return False
+    if time.time() - started > BRIEFING_LOCK_TIMEOUT_S:
+        _briefing_in_progress.pop(notebook_id, None)
+        return False
+    return True
+
+
+def _acquire_briefing_lock(notebook_id: int) -> bool:
+    """Try to take the briefing lock. Returns True if acquired, False if busy."""
+    if _briefing_locked(notebook_id):
+        return False
+    _briefing_in_progress[notebook_id] = time.time()
+    return True
+
+
+def _release_briefing_lock(notebook_id: int) -> None:
+    """Release the briefing lock. Safe to call when not held."""
+    _briefing_in_progress.pop(notebook_id, None)
+
 
 def _cached_suggestions(notebook: dict) -> list[str]:
     """Return cached suggestions if within TTL, else empty list."""
@@ -772,6 +808,29 @@ def _fetch_source_summaries(conn, notebook_id: int, user_id: int, source_ids: li
     return results
 
 
+def _render_briefing(
+    request: Request,
+    notebook: dict,
+    *,
+    briefing: str = "",
+    error: str = "",
+    has_indexed: bool = False,
+    in_progress: bool = False,
+):
+    """Shared render helper so GET and POST always pass the same context shape."""
+    return render(
+        request,
+        "_briefing.html",
+        {
+            "notebook": notebook,
+            "briefing": briefing,
+            "error": error,
+            "has_indexed": has_indexed,
+            "in_progress": in_progress,
+        },
+    )
+
+
 @app.get("/notebooks/{notebook_id}/_briefing", response_class=HTMLResponse)
 def briefing_partial(
     request: Request,
@@ -781,7 +840,9 @@ def briefing_partial(
     """Return the briefing section reflecting the current cache + indexed state.
 
     Triggered by `sources-changed` so add/delete updates the section without
-    a page reload. Never calls the LLM — POST is for generation.
+    a page reload. Never calls the LLM — POST is for generation. If a POST
+    is currently in flight (lock held), returns the in_progress placeholder
+    so this GET response doesn't kick off a duplicate auto-fire.
     """
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
@@ -789,10 +850,11 @@ def briefing_partial(
             "SELECT 1 FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' LIMIT 1",
             (notebook_id, user["id"]),
         ).fetchone())
-    return render(
-        request,
-        "_briefing.html",
-        {"notebook": notebook, "briefing": _cached_briefing(notebook), "error": "", "has_indexed": has_indexed},
+    cached = _cached_briefing(notebook)
+    in_progress = (not cached) and _briefing_locked(notebook_id)
+    return _render_briefing(
+        request, notebook,
+        briefing=cached, has_indexed=has_indexed, in_progress=in_progress,
     )
 
 
@@ -805,56 +867,72 @@ async def notebook_briefing(
 ):
     """Generate (or return cached) one-paragraph briefing across indexed sources.
 
-    The auto-fire trigger calls this without ``force`` and we honour the
-    cache so two tabs / a refresh-while-generating don't double-bill. The
-    explicit *Regenerate* button passes ``?force=1`` to bypass the cache
-    and call the LLM again.
+    Concurrency: an in-process lock dedupes overlapping POSTs that fire when
+    multiple sources finish indexing in close succession during a multi-file
+    upload (each fires sources-changed → auto-fire POST). A waiter that
+    arrives while the lock is held returns immediately with whichever state
+    fits — cached if already written, otherwise the in_progress placeholder
+    that polls until the lock clears.
+
+    `?force=1` (sent by the *Regenerate* button) bypasses the cache check
+    but still respects the lock so two simultaneous Regenerate clicks don't
+    double-bill.
     """
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
-        if not force:
-            cached = _cached_briefing(notebook)
-            if cached:
-                has_indexed = bool(conn.execute(
-                    "SELECT 1 FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' LIMIT 1",
-                    (notebook_id, user["id"]),
-                ).fetchone())
-                return render(
-                    request,
-                    "_briefing.html",
-                    {"notebook": notebook, "briefing": cached, "error": "", "has_indexed": has_indexed},
-                )
-        summaries = _fetch_source_summaries(conn, notebook_id, user["id"])
-        settings = load_llm_settings(conn) or {}
-        has_indexed = bool(summaries)
+        has_indexed = bool(conn.execute(
+            "SELECT 1 FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' LIMIT 1",
+            (notebook_id, user["id"]),
+        ).fetchone())
+        cached = _cached_briefing(notebook)
 
-    briefing = ""
-    error = ""
-    if not has_indexed:
-        error = ""
-    elif not settings.get("api_key") or not settings.get("chat_model"):
-        error = "Configure LLM settings to generate a briefing."
-    else:
-        try:
-            briefing = await generate_briefing(summaries, settings)
-            if not briefing:
-                error = "The model returned no briefing. Try again."
-        except Exception as exc:
-            logger.exception("briefing_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
-            error = f"Could not generate briefing: {exc}"
+    # Fast paths that should never call the LLM:
+    # 1. Non-forced request and we already have a fresh cache — just return it.
+    # 2. Lock held by another in-flight POST — return cache or in_progress.
+    if not force and cached:
+        return _render_briefing(request, notebook, briefing=cached, has_indexed=has_indexed)
+    if not _acquire_briefing_lock(notebook_id):
+        logger.info("briefing_skipped_locked notebook_id=%s", notebook_id)
+        return _render_briefing(
+            request, notebook,
+            briefing=cached, has_indexed=has_indexed,
+            in_progress=not cached,
+        )
 
-    if briefing:
+    try:
         with connect() as conn:
-            conn.execute(
-                "UPDATE notebooks SET briefing = ?, briefing_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (briefing, notebook_id),
-            )
+            summaries = _fetch_source_summaries(conn, notebook_id, user["id"])
+            settings = load_llm_settings(conn) or {}
+        has_indexed = bool(summaries) or has_indexed
 
-    return render(
-        request,
-        "_briefing.html",
-        {"notebook": notebook, "briefing": briefing, "error": error, "has_indexed": has_indexed},
-    )
+        briefing = ""
+        error = ""
+        if not summaries:
+            error = ""  # nothing to brief; template falls back on has_indexed
+        elif not settings.get("api_key") or not settings.get("chat_model"):
+            error = "Configure LLM settings to generate a briefing."
+        else:
+            try:
+                briefing = await generate_briefing(summaries, settings)
+                if not briefing:
+                    error = "The model returned no briefing. Try again."
+            except Exception as exc:
+                logger.exception("briefing_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
+                error = f"Could not generate briefing: {exc}"
+
+        if briefing:
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE notebooks SET briefing = ?, briefing_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (briefing, notebook_id),
+                )
+
+        return _render_briefing(
+            request, notebook,
+            briefing=briefing, error=error, has_indexed=has_indexed,
+        )
+    finally:
+        _release_briefing_lock(notebook_id)
 
 
 @app.get("/notebooks/{notebook_id}/_compare", response_class=HTMLResponse)
