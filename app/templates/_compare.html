@@ -1,7 +1,11 @@
 {# Source comparison section. Collapsed by default so it doesn't dominate the
    studio pane. The checkbox list is intentionally separate from the chat-scope
-   checkboxes on the left — different intent, different state. #}
-<section class="studio-section studio-compare" id="studio-compare">
+   checkboxes on the left — different intent, different state.
+   Re-fetched on `sources-changed` so the checkbox list stays in sync. #}
+<section class="studio-section studio-compare" id="studio-compare"
+         hx-get="/notebooks/{{ notebook.id }}/_compare"
+         hx-trigger="sources-changed from:body"
+         hx-swap="outerHTML">
   <details>
     <summary>
       <span>Compare sources</span>

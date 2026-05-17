@@ -797,23 +797,29 @@ async def notebook_briefing(
     request: Request,
     notebook_id: int,
     user: Annotated[dict, Depends(require_login)],
+    force: int = 0,
 ):
-    """Generate (or return cached) one-paragraph briefing across indexed sources."""
+    """Generate (or return cached) one-paragraph briefing across indexed sources.
+
+    The auto-fire trigger calls this without ``force`` and we honour the
+    cache so two tabs / a refresh-while-generating don't double-bill. The
+    explicit *Regenerate* button passes ``?force=1`` to bypass the cache
+    and call the LLM again.
+    """
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
-        # Respect a fresh cache so the auto-fire HTMX trigger on page load
-        # doesn't redundantly hit the LLM if another tab already generated.
-        cached = _cached_briefing(notebook)
-        if cached:
-            has_indexed = bool(conn.execute(
-                "SELECT 1 FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' LIMIT 1",
-                (notebook_id, user["id"]),
-            ).fetchone())
-            return render(
-                request,
-                "_briefing.html",
-                {"notebook": notebook, "briefing": cached, "error": "", "has_indexed": has_indexed},
-            )
+        if not force:
+            cached = _cached_briefing(notebook)
+            if cached:
+                has_indexed = bool(conn.execute(
+                    "SELECT 1 FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' LIMIT 1",
+                    (notebook_id, user["id"]),
+                ).fetchone())
+                return render(
+                    request,
+                    "_briefing.html",
+                    {"notebook": notebook, "briefing": cached, "error": "", "has_indexed": has_indexed},
+                )
         summaries = _fetch_source_summaries(conn, notebook_id, user["id"])
         settings = load_llm_settings(conn) or {}
         has_indexed = bool(summaries)
@@ -844,6 +850,33 @@ async def notebook_briefing(
         request,
         "_briefing.html",
         {"notebook": notebook, "briefing": briefing, "error": error, "has_indexed": has_indexed},
+    )
+
+
+@app.get("/notebooks/{notebook_id}/_compare", response_class=HTMLResponse)
+def compare_partial(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Return the compare-sources section reflecting current indexed sources.
+
+    Triggered by `sources-changed` so the checkbox list stays in sync with
+    the left pane after upload / delete without a page reload.
+    """
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        sources_indexed = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, filename, summary FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' ORDER BY filename",
+                (notebook_id, user["id"]),
+            ).fetchall()
+        ]
+    return render(
+        request,
+        "_compare.html",
+        {"notebook": notebook, "sources_indexed": sources_indexed},
     )
 
 
