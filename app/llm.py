@@ -33,15 +33,28 @@ SOURCE_SUMMARY_PROMPT = """You write tight summaries of single source documents.
 Read the provided excerpts (which are the first chunks of one document).
 Write 2 to 4 sentences capturing what the document is about and its key claims or findings.
 No filler ("This document discusses..."), no bullets, no headings.
-Reply in the same language as the source (Traditional Chinese source -> Traditional Chinese summary)."""
+
+LANGUAGE RULE — strictly match the dominant language of the source excerpts:
+- Traditional Chinese excerpts -> Traditional Chinese summary (繁體中文).
+- Simplified Chinese excerpts -> Simplified Chinese summary.
+- Japanese excerpts -> Japanese summary.
+- English excerpts -> English summary.
+Do NOT translate. If excerpts are mixed-language, follow whichever language carries the majority of the content."""
 
 NOTEBOOK_BRIEFING_PROMPT = """You write a one-paragraph briefing across multiple source summaries in a notebook.
-Read each source's summary and produce a single paragraph (~120-180 words) covering:
+Read each source's summary and produce a single paragraph of 80 to 110 words covering:
 - What this collection of sources is about as a whole.
 - Recurring themes or shared subject matter.
 - Any notable contrasts or differences in perspective.
-Do not list sources mechanically; weave them into prose. No headings, no bullets unless absolutely needed.
-Reply in the dominant language of the source summaries."""
+Do not list sources mechanically; weave them into prose. No headings, no bullets.
+Keep it tight — the briefing is shown in a small sidebar.
+
+LANGUAGE RULE — strictly match the dominant language of the source summaries below:
+- Traditional Chinese summaries -> Traditional Chinese briefing (繁體中文).
+- Simplified Chinese summaries -> Simplified Chinese briefing.
+- Japanese summaries -> Japanese briefing.
+- English summaries -> English briefing.
+Do NOT translate. If summaries are mixed-language, follow whichever language carries the majority of the content."""
 
 SOURCE_COMPARE_PROMPT = """You compare two or more source documents grounded in their summaries.
 Use this Markdown structure, OMITTING any section that would be empty:
@@ -57,7 +70,13 @@ Use this Markdown structure, OMITTING any section that would be empty:
 - Direct disagreements between sources, citing the sources by filename.
 
 Stay grounded in the provided summaries. If a focus question is given, prioritise points relevant to it.
-Reply in the dominant language of the source summaries."""
+
+LANGUAGE RULE — strictly match the dominant language of the source summaries below:
+- Traditional Chinese summaries -> Traditional Chinese comparison (繁體中文), including section headings (## 共同點 / ## 差異 / ## 矛盾).
+- Simplified Chinese summaries -> Simplified Chinese comparison.
+- Japanese summaries -> Japanese comparison.
+- English summaries -> English comparison (use the English headings above).
+Do NOT translate."""
 
 logger = logging.getLogger(__name__)
 EMBEDDING_BATCH_SIZE = 64

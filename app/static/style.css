@@ -2576,6 +2576,7 @@ legend {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   padding: 10px 12px;
+  margin-top: 6px;
 }
 
 .briefing-body p { margin: 0; }
@@ -2583,6 +2584,66 @@ legend {
 
 .briefing-loading {
   font-style: italic;
+}
+
+.briefing-details > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-soft);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+}
+
+.briefing-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.briefing-details > summary::before {
+  content: "▸";
+  color: var(--accent);
+  transition: transform 140ms var(--ease);
+  flex: none;
+  width: 10px;
+  margin-top: 2px;
+}
+
+.briefing-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.briefing-preview {
+  flex: 1;
+  min-width: 0;
+}
+
+.briefing-more {
+  flex: none;
+  align-self: flex-end;
+}
+
+.briefing-details[open] .briefing-more,
+.briefing-details[open] .briefing-preview {
+  display: none;
+}
+
+.briefing-details[open] > summary {
+  background: var(--accent-soft);
+  border-color: var(--line-accent);
+  color: var(--accent-deep);
+}
+
+.briefing-details[open] > summary::after {
+  content: "Hide";
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
 }
 
 /* ---------------------------------------------------------------- compare */
@@ -2742,12 +2803,20 @@ legend {
 
 @media (max-width: 1180px) {
   .workspace {
-    grid-template-columns: 260px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
+  /* At this width the Studio panel can't fit alongside Sources+Chat without
+     crowding the chat to ~400px and the briefing body becoming unreadable.
+     Stack everything single-column: Sources → Chat → Studio. Drop sticky on
+     Sources too — previously it floated over Studio while the user scrolled. */
+  .workspace-sources,
   .workspace-studio {
-    grid-column: 1 / -1;
     position: static;
     max-height: none;
+    grid-column: 1 / -1;
+  }
+  .workspace-chat {
+    min-height: auto;
   }
 }
 
