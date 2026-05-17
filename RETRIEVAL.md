@@ -1,6 +1,6 @@
 # Retrieval — strategy & methodology
 
-This doc explains how the NotebookLM-style POC turns a user question into the chunks the answer LLM sees. It is the canonical reference; [`README.md`](README.md) describes the user-facing feature, [`handover.md`](handover.md) tracks engineering deltas.
+This doc explains how the NotebookLM-style POC turns a user question into the chunks the answer LLM sees. It is the canonical retrieval reference; [`README.md`](README.md) describes the user-facing feature set and operational workflow.
 
 Last updated: 2026-05-16. Pipeline lives in [app/main.py](app/main.py) (`retrieve()`, `ask()`), [app/llm.py](app/llm.py) (rewrite / rerank / embedding), [app/ingest.py](app/ingest.py) (chunking), [app/vector_store.py](app/vector_store.py) (Chroma).
 
@@ -233,7 +233,7 @@ Other ideas, in rough order of cost-benefit:
 - Stream the answer generation (SSE) so users see the answer mid-response instead of waiting for the full call.
 - Tighten the eval set with disambiguation questions across similar files (the current set is saturated at 100 % Recall@5).
 - Add a per-source "score cap" so a single dominant source can't crowd out cross-document evidence.
-- Backfill `messages.citations_json.source_id` for legacy assistant messages (see handover [#2](handover.md)).
+- Backfill `messages.citations_json.source_id` for legacy assistant messages if older local databases need richer citation metadata.
 
 ## Pointers
 

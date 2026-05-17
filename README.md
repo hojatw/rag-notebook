@@ -2,6 +2,10 @@
 
 A single-machine FastAPI proof of concept for a NotebookLM-style workspace: organise sources into **notebooks**, ground chats against the sources you select, and pin the answers worth keeping.
 
+## Status
+
+This is a proof of concept, not a production-ready service. It is suitable for local experiments and small single-machine deployments after you configure a real `NOTEBOOKLM_SECRET`, but several production hardening items are still open (CSRF protection, worker-backed ingest, LLM retry/backoff, streaming responses). See [Known follow-ups](#known-follow-ups).
+
 ## What you get
 
 - **Notebook home grid.** Each notebook owns its own sources, conversations, and pinned notes.
@@ -30,6 +34,8 @@ The frontend stays server-rendered (Jinja templates) and sprinkles in Alpine.js,
 
 ## Run
 
+Local quickstart can opt into the built-in insecure development secret. Do not use this mode for a network-exposed deployment.
+
 ```bash
 cd notebooklm-rag-poc
 ./setup.sh                                              # builds .venv and handles the chromadb caveat below
@@ -43,6 +49,8 @@ Open `http://127.0.0.1:8000` and sign in:
 - Admin: `admin` / `admin123`
 - User: `user` / `user123`
 
+These demo accounts are for local development only. Change or remove them before exposing the app on a network.
+
 On first launch any legacy data is migrated into a default notebook called *My Notebook*. New users start with an empty notebook grid and create their own with **+ New notebook**.
 
 ### Docker (recommended for deployment)
@@ -52,6 +60,8 @@ cp .env.example .env       # then fill NOTEBOOKLM_SECRET
 docker compose up --build -d
 docker compose logs -f
 ```
+
+Docker Compose requires `NOTEBOOKLM_SECRET` in `.env`; the app fails closed when it is missing. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
 
 The compose file bind-mounts `./data` (SQLite + uploads + Chroma index) and `./logs` (rotating app log) from the repo root so that `docker compose down && docker compose up --build` preserves all user state. Backup is one `tar czf data-$(date +%F).tar.gz data/` away.
 
@@ -264,6 +274,8 @@ tests/
   test_briefing_lock.py In-process briefing lock: acquire / release / stale timeout.
   eval_questions.json  Ground-truth retrieval Qs for the demo notebook.
   eval_retrieval.py    Recall@k + MRR harness (see RETRIEVAL.md).
+
+Runtime-generated, gitignored:
 data/
   app.sqlite3          SQLite metadata (users, notebooks, sources, chunks, conversations, messages, notes, llm_settings).
   uploads/             Per-user original files.
@@ -274,7 +286,7 @@ setup.sh               One-shot env bootstrap (handles Py 3.14 chromadb caveat).
 
 ## Known follow-ups
 
-See [handover.md](handover.md) for the full deferred-work list with context. Headline items still outstanding:
+Headline items still outstanding:
 
 - No streaming responses yet — answers arrive after the full LLM call returns.
 - Background ingest uses FastAPI background tasks rather than a worker queue.
@@ -283,3 +295,7 @@ See [handover.md](handover.md) for the full deferred-work list with context. Hea
 - No offline embedding fallback — embedding model must be configured before uploads are accepted.
 - Keyword search uses `LIKE '%token%'` over SQLite; FTS5 + BM25 is on deck (see [`RETRIEVAL.md`](RETRIEVAL.md)).
 - Hybrid merge uses a fixed `0.7·vector + 0.3·keyword` blend; Reciprocal Rank Fusion is on deck.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
