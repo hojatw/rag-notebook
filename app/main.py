@@ -19,7 +19,7 @@ from .db import UPLOAD_DIR, connect, dumps, encrypt_for_storage, init_db, load_l
 from .ingest import process_source, supported
 import httpx
 
-from .llm import close_http_client, cosine, embed_texts, generate_answer, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries
+from .llm import close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_briefing, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries
 from .security import hash_password, sign_user_id, unsign_user_id, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
@@ -213,6 +213,7 @@ def logout():
 
 
 SUGGESTIONS_TTL_HOURS = 24
+BRIEFING_TTL_HOURS = 24
 
 
 def _cached_suggestions(notebook: dict) -> list[str]:
@@ -228,6 +229,21 @@ def _cached_suggestions(notebook: dict) -> list[str]:
     except Exception:
         pass
     return []
+
+
+def _cached_briefing(notebook: dict) -> str:
+    """Return cached briefing markdown if within TTL, else empty string."""
+    raw = (notebook.get("briefing") or "").strip()
+    saved_at = (notebook.get("briefing_at") or "").strip()
+    if not raw or not saved_at:
+        return ""
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=BRIEFING_TTL_HOURS)
+        if datetime.fromisoformat(saved_at.replace(" ", "T")) > cutoff:
+            return raw
+    except Exception:
+        pass
+    return ""
 
 
 def get_notebook(conn, notebook_id: int, user_id: int) -> dict:
@@ -382,6 +398,7 @@ def notebook_view(
     pinned_message_ids = {n["source_message_id"] for n in notes if n["source_message_id"] is not None}
     indexed_sources = [s for s in sources if s["status"] == "indexed"]
     cached_suggestions = _cached_suggestions(notebook)
+    cached_briefing = _cached_briefing(notebook)
     return render(
         request,
         "notebook.html",
@@ -401,6 +418,7 @@ def notebook_view(
             "messages_truncated": messages_truncated,
             "notes_truncated": notes_truncated,
             "cached_suggestions": cached_suggestions,
+            "cached_briefing": cached_briefing,
             "error": "",
             "wide": True,
             "breadcrumb": notebook["title"],
@@ -715,6 +733,228 @@ async def notebook_suggestions(
         "_suggestions.html",
         {"notebook": notebook, "questions": questions, "error": error, "has_indexed": has_indexed},
     )
+
+
+def _fetch_source_summaries(conn, notebook_id: int, user_id: int, source_ids: list[int] | None = None) -> list[dict]:
+    """Return [{id, filename, summary}] for indexed sources in this notebook.
+
+    When ``source_ids`` is given, restricts to those ids (intersection with
+    the notebook's indexed sources). For sources whose ``summary`` is empty,
+    falls back to a 400-char snippet from the first chunk so briefing and
+    comparison can still cover the source meaningfully.
+    """
+    params: list = [notebook_id, user_id]
+    where = "notebook_id = ? AND user_id = ? AND status = 'indexed'"
+    if source_ids:
+        placeholders = ",".join("?" for _ in source_ids)
+        where += f" AND id IN ({placeholders})"
+        params.extend(source_ids)
+    rows = conn.execute(
+        f"SELECT id, filename, summary FROM sources WHERE {where} ORDER BY filename",
+        params,
+    ).fetchall()
+    results: list[dict] = []
+    for row in rows:
+        summary = (row["summary"] or "").strip()
+        if not summary:
+            fallback_row = conn.execute(
+                "SELECT text FROM chunks WHERE source_id = ? ORDER BY chunk_index ASC LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            if fallback_row and fallback_row["text"]:
+                summary = (fallback_row["text"] or "").strip()[:400]
+        if summary:
+            results.append({"id": row["id"], "filename": row["filename"], "summary": summary})
+    return results
+
+
+@app.get("/notebooks/{notebook_id}/_briefing", response_class=HTMLResponse)
+def briefing_partial(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Return the briefing section reflecting the current cache + indexed state.
+
+    Triggered by `sources-changed` so add/delete updates the section without
+    a page reload. Never calls the LLM — POST is for generation.
+    """
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        has_indexed = bool(conn.execute(
+            "SELECT 1 FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' LIMIT 1",
+            (notebook_id, user["id"]),
+        ).fetchone())
+    return render(
+        request,
+        "_briefing.html",
+        {"notebook": notebook, "briefing": _cached_briefing(notebook), "error": "", "has_indexed": has_indexed},
+    )
+
+
+@app.post("/notebooks/{notebook_id}/briefing", response_class=HTMLResponse)
+async def notebook_briefing(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Generate (or return cached) one-paragraph briefing across indexed sources."""
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        # Respect a fresh cache so the auto-fire HTMX trigger on page load
+        # doesn't redundantly hit the LLM if another tab already generated.
+        cached = _cached_briefing(notebook)
+        if cached:
+            has_indexed = bool(conn.execute(
+                "SELECT 1 FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' LIMIT 1",
+                (notebook_id, user["id"]),
+            ).fetchone())
+            return render(
+                request,
+                "_briefing.html",
+                {"notebook": notebook, "briefing": cached, "error": "", "has_indexed": has_indexed},
+            )
+        summaries = _fetch_source_summaries(conn, notebook_id, user["id"])
+        settings = load_llm_settings(conn) or {}
+        has_indexed = bool(summaries)
+
+    briefing = ""
+    error = ""
+    if not has_indexed:
+        error = ""
+    elif not settings.get("api_key") or not settings.get("chat_model"):
+        error = "Configure LLM settings to generate a briefing."
+    else:
+        try:
+            briefing = await generate_briefing(summaries, settings)
+            if not briefing:
+                error = "The model returned no briefing. Try again."
+        except Exception as exc:
+            logger.exception("briefing_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
+            error = f"Could not generate briefing: {exc}"
+
+    if briefing:
+        with connect() as conn:
+            conn.execute(
+                "UPDATE notebooks SET briefing = ?, briefing_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (briefing, notebook_id),
+            )
+
+    return render(
+        request,
+        "_briefing.html",
+        {"notebook": notebook, "briefing": briefing, "error": error, "has_indexed": has_indexed},
+    )
+
+
+@app.post("/notebooks/{notebook_id}/compare", response_class=HTMLResponse)
+async def notebook_compare(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    source_ids: list[int] = Form(default=[]),
+    focus: str = Form(default=""),
+):
+    """Compare 2+ indexed sources using their summaries; returns a result fragment."""
+    selected_ids = [sid for sid in source_ids if isinstance(sid, int)]
+    if len(selected_ids) < 2:
+        return render(
+            request,
+            "_compare_result.html",
+            {
+                "notebook_id": notebook_id,
+                "comparison": "",
+                "error": "Pick at least 2 sources to compare.",
+                "filenames": [],
+                "focus": focus,
+            },
+            status_code=400,
+        )
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        summaries = _fetch_source_summaries(conn, notebook_id, user["id"], selected_ids)
+        settings = load_llm_settings(conn) or {}
+
+    if len(summaries) < 2:
+        return render(
+            request,
+            "_compare_result.html",
+            {
+                "notebook_id": notebook_id,
+                "comparison": "",
+                "error": "Need at least 2 sources with content to compare.",
+                "filenames": [s["filename"] for s in summaries],
+                "focus": focus,
+            },
+            status_code=400,
+        )
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        return render(
+            request,
+            "_compare_result.html",
+            {
+                "notebook_id": notebook_id,
+                "comparison": "",
+                "error": "Configure LLM settings to compare sources.",
+                "filenames": [s["filename"] for s in summaries],
+                "focus": focus,
+            },
+            status_code=400,
+        )
+
+    error = ""
+    comparison = ""
+    try:
+        comparison = await compare_sources(summaries, focus, settings)
+        if not comparison:
+            error = "The model returned an empty comparison. Try again."
+    except Exception as exc:
+        logger.exception("compare_failed user_id=%s notebook_id=%s sources=%s", user["id"], notebook_id, len(summaries))
+        error = f"Could not generate comparison: {exc}"
+
+    logger.info(
+        "compare_completed user_id=%s notebook_id=%s sources=%s focus_chars=%s chars=%s",
+        user["id"], notebook_id, len(summaries), len(focus or ""), len(comparison),
+    )
+    return render(
+        request,
+        "_compare_result.html",
+        {
+            "notebook_id": notebook_id,
+            "comparison": comparison,
+            "error": error,
+            "filenames": [s["filename"] for s in summaries],
+            "focus": focus,
+        },
+    )
+
+
+@app.post("/notebooks/{notebook_id}/notes/add", response_class=HTMLResponse)
+def add_note(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    title: str = Form(""),
+    content: str = Form(...),
+):
+    """Create a raw note (no source message). Used by Save-to-notes on comparison results."""
+    cleaned_content = (content or "").strip()
+    if not cleaned_content:
+        raise HTTPException(status_code=400, detail="Note content cannot be empty.")
+    cleaned_title = " ".join((title or "").split())[:80] or "Saved note"
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        conn.execute(
+            "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, ?, ?)",
+            (notebook_id, user["id"], cleaned_title, cleaned_content),
+        )
+        touch_notebook(conn, notebook_id)
+        notes = [dict(r) for r in conn.execute(
+            "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
+            (notebook_id, user["id"]),
+        ).fetchall()]
+    logger.info("note_added user_id=%s notebook_id=%s chars=%s", user["id"], notebook_id, len(cleaned_content))
+    return render(request, "_notes_section.html", {"notebook": notebook, "notes": notes})
 
 
 @app.post("/notebooks/{notebook_id}/notes/pin", response_class=HTMLResponse)

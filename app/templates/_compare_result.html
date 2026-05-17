@@ -1,0 +1,18 @@
+{# Fragment returned by POST /notebooks/{nid}/compare into #compare-result.
+   Markdown body is rendered client-side by the existing data-markdown binder. #}
+{% if error %}
+  <p class="muted small alert-inline">{{ error }}</p>
+{% elif comparison %}
+  <div class="compare-result-body">
+    <p class="muted small">Compared: {{ filenames | join(', ') }}{% if focus %} · focus: {{ focus }}{% endif %}</p>
+    <div class="markdown-body" data-markdown>{{ comparison }}</div>
+    <form class="compare-save"
+          hx-post="/notebooks/{{ notebook_id }}/notes/add"
+          hx-target="#studio-notes"
+          hx-swap="outerHTML">
+      <input type="hidden" name="title" value="Compare: {{ filenames | join(' vs ') }}{% if focus %} ({{ focus }}){% endif %}">
+      <input type="hidden" name="content" value="{{ comparison }}">
+      <button type="submit" class="ghost small">Save to notes</button>
+    </form>
+  </div>
+{% endif %}

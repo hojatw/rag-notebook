@@ -55,7 +55,19 @@ Last known verification: `pytest` 10 passed; smoke test on all routes including 
 | 23 | Admin vector-index page | `/admin/index` shows SQLite vs Chroma counts + missing/orphan deltas + in-sync verdict; *Rebuild* triggers full sync, *Clear* wipes the collection. New topbar entry "Index" for admins |
 | 24 | Form lock-out | `data-loading-form` now also disables every non-hidden input/textarea/select on the form, not just the submit button |
 
-## UX polish round (just landed)
+## Studio expansion round (just landed)
+
+Three new NotebookLM-style Studio features that demonstrate cross-source understanding. Per-source summaries feed the briefing and comparison prompts so token usage stays bounded even when a notebook has many sources.
+
+| Item | Outcome |
+|---|---|
+| Per-source summary | New `sources.summary` + `sources.summary_at` columns (via `_ensure_column`). `app/ingest.py:_generate_source_summary` runs **after** `status='indexed'` is committed — best-effort: failures are logged but never flip status to 'failed'. `app/llm.py:summarize_source` takes the first 12 chunks and asks for a 2–4 sentence TL;DR (temperature 0.3). Summary block is rendered at the top of [`_source_preview.html`](app/templates/_source_preview.html) inside the existing modal drawer. |
+| Notebook briefing | New `notebooks.briefing` + `notebooks.briefing_at` columns. Cache helper `_cached_briefing(notebook)` mirrors `_cached_suggestions` (24 h TTL). `app/llm.py:generate_briefing` synthesises one paragraph (~150 words) from per-source summaries (temperature 0.4). Routes: `GET /notebooks/{nid}/_briefing` (HTMX swap on `sources-changed`), `POST /notebooks/{nid}/briefing` (generate + cache, but returns cached if a fresh value already exists — guards against the auto-fire race). [`_briefing.html`](app/templates/_briefing.html) empty-state element carries `hx-trigger="load delay:200ms"` so first-time viewers see a briefing without clicking anything. |
+| Source comparison | Interactive: collapsed `<details>` in the Studio pane with checkbox list of indexed sources + optional focus input. `POST /notebooks/{nid}/compare` accepts `source_ids[]` + `focus`, calls `app/llm.py:compare_sources` (Shared / Distinct / Contradictions Markdown structure, temperature 0.3), returns [`_compare_result.html`](app/templates/_compare_result.html) into `#compare-result`. Result fragment includes a *Save to notes* form posting to the new `POST /notebooks/{nid}/notes/add` (raw title + content; mirrors `notes/pin` plumbing). |
+| `_fetch_source_summaries` helper | Shared by briefing and compare. Pulls indexed sources' summaries; for any source whose `summary` is empty (legacy / failed) falls back to the first 400 chars of its first chunk so coverage isn't lost. |
+| New tests | `tests/test_llm.py` adds three smoke tests covering empty-state short-circuits for `summarize_source`, `generate_briefing`, `compare_sources`. Total: 55 passed. |
+
+## UX polish round (landed 2026-05-17)
 
 | Item | Outcome |
 |---|---|
@@ -110,12 +122,14 @@ Eval harness is wired up (`python -m tests.eval_retrieval`) — change one knob,
 app/main.py            Routes, auth, retrieval orchestration, lifespan, logging.
 app/db.py              SQLite schema, default-notebook migration, load_llm_settings (decrypts).
 app/ingest.py          Text extraction, chunking, vector upsert.
-app/llm.py             LLM/embedding HTTP, query rewrite, rerank, starter questions.
+app/llm.py             LLM/embedding HTTP, query rewrite, rerank, starter questions,
+                       per-source summary, notebook briefing, source comparison.
 app/vector_store.py    Chroma persistent client, diff sync, index_status, clear_all_vectors.
 app/security.py        Password hashing, signed sessions, Fernet encryption helpers.
 app/templates/         Jinja templates: base, home, notebook (with preview modal), login, settings,
                        account, admin_users, admin_index, error, plus _source_item / _source_picker /
-                       _source_preview / _suggestions / _notes_section partials.
+                       _source_preview / _suggestions / _briefing / _compare /
+                       _compare_result / _notes_section partials.
 app/static/            style.css (design tokens + components + modal + admin-index stats),
                        app.js (binders, Alpine dropzone, Markdown render, citation click, suggestion fill, pin reset).
 tests/                 test_core.py, test_chunking.py, test_llm.py, test_security.py, test_vector_store.py,
