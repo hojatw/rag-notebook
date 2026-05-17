@@ -97,7 +97,7 @@ Seven retrieval-quality / visibility / safety items, all now in. Baseline measur
 
 ### Known bugs / UX polish
 
-*(No open items — #2 was dev-test-only messages and not a real bug; #3, #5, #10 landed in the UX polish round above.)*
+- *(No open items — #2 was dev-test-only messages and not a real bug; #3, #5, #10 landed in the UX polish round above.)*
 
 ### Architectural debt (production hardening)
 
