@@ -37,6 +37,17 @@
     {{ gen_button("Try again", notebook.id, force=true) }}
   {% elif not has_indexed %}
     <p class="muted small">Index a source first to see a notebook briefing.</p>
+  {% elif in_progress %}
+    {# Another POST is currently generating the briefing (e.g. the user has
+       another tab open, or a sibling sources-changed fired). DO NOT auto-fire
+       another POST — just poll the GET every 3s until the lock clears and
+       the cached briefing surfaces. #}
+    <p class="studio-loading"
+       style="display: flex;"
+       hx-get="/notebooks/{{ notebook.id }}/_briefing"
+       hx-target="#studio-briefing"
+       hx-swap="outerHTML"
+       hx-trigger="load delay:3s">Generating briefing…</p>
   {% else %}
     {# Auto-fire generation exactly once on first view. The POST without
        force=1 returns cache if any was written in between (race guard).
