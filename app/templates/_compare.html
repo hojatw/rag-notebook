@@ -17,7 +17,8 @@
             hx-post="/notebooks/{{ notebook.id }}/compare"
             hx-target="#compare-result"
             hx-swap="innerHTML"
-            hx-indicator="#compare-result">
+            hx-indicator="#compare-loading"
+            hx-disabled-elt="find button[type=submit]">
         <ul class="compare-source-list">
           {% for s in sources_indexed %}
             <li>
@@ -33,8 +34,13 @@
           <span class="muted small">Focus (optional)</span>
           <input type="text" name="focus" placeholder="e.g. methodology, conclusions" maxlength="160">
         </label>
-        <button type="submit" class="wide small" data-loading-text="Comparing…">Compare</button>
+        <button type="submit" class="wide small">Compare</button>
       </form>
+      {# Loading line — htmx adds .htmx-request to this element while the
+         POST is in flight (via hx-indicator above). CSS toggles visibility. #}
+      <p id="compare-loading" class="compare-loading htmx-indicator muted small">
+        <span class="compare-loading-dot"></span> Comparing sources…
+      </p>
       <div id="compare-result" class="compare-result"></div>
     {% endif %}
   </details>
