@@ -25,7 +25,13 @@
   <aside class="workspace-pane workspace-sources" aria-label="Sources">
     <header class="pane-head">
       <h2>Sources</h2>
-      <span class="pane-count">{{ sources|length }}</span>
+      <div class="inline-actions">
+        {% if indexed_sources %}
+          <button class="ghost small" type="button" data-scope-action="select-all">All</button>
+          <button class="ghost small" type="button" data-scope-action="clear-all">None</button>
+        {% endif %}
+        <span class="pane-count">{{ sources|length }}</span>
+      </div>
     </header>
 
     {% if not llm_status.ready %}
@@ -90,14 +96,17 @@
           {% if notebook.description %}
             <p class="notebook-description muted">{{ notebook.description }}</p>
           {% endif %}
-          <details class="conversation-switcher">
-            <summary>
+          <div class="conversation-switcher" x-data="{ open: false }" @click.outside="open = false">
+            <button type="button"
+                    class="convo-trigger"
+                    @click="open = !open"
+                    :class="{ 'is-open': open }">
               <span class="convo-current">
                 {% if conversation %}{{ conversation.title }}{% else %}New conversation{% endif %}
               </span>
               <span class="caret">▾</span>
-            </summary>
-            <div class="convo-menu">
+            </button>
+            <div class="convo-menu" x-show="open" style="display: none;">
               <form action="/notebooks/{{ notebook.id }}/chat/new" method="post" data-loading-form>
                 <button type="submit" class="ghost small wide" data-loading-text="Creating...">+ New conversation</button>
               </form>
@@ -120,13 +129,16 @@
                 </ul>
               {% endif %}
             </div>
-          </details>
+          </div>
         </div>
       </div>
       <div class="chat-head-actions">
-        <details class="notebook-menu">
-          <summary class="ghost small">Notebook ▾</summary>
-          <div class="convo-menu notebook-menu-content">
+        <div class="notebook-menu" x-data="{ open: false }" @click.outside="open = false">
+          <button type="button"
+                  class="convo-trigger ghost small"
+                  @click="open = !open"
+                  :class="{ 'is-open': open }">Notebook ▾</button>
+          <div class="convo-menu notebook-menu-content" x-show="open" style="display: none;">
             <form action="/notebooks/{{ notebook.id }}/rename" method="post" class="rename-form" data-loading-form>
               <label>
                 Emoji
@@ -148,7 +160,7 @@
               <button type="submit" class="ghost small danger-link wide">Delete notebook</button>
             </form>
           </div>
-        </details>
+        </div>
       </div>
     </header>
 
@@ -262,8 +274,6 @@
     <form action="/notebooks/{{ notebook.id }}/chat/ask" method="post" class="ask-form" data-loading-form>
       {% if conversation %}<input type="hidden" name="conversation_id" value="{{ conversation.id }}">{% endif %}
 
-      {% include "_source_picker.html" %}
-
       <div class="question-row">
         <textarea name="question" rows="3"
                   id="question-input"
@@ -280,7 +290,7 @@
       <h2>Studio</h2>
     </header>
 
-    {% with questions=[], error="", has_indexed=indexed_sources %}
+    {% with questions=cached_suggestions, error="", has_indexed=indexed_sources %}
       {% include "_suggestions.html" %}
     {% endwith %}
 

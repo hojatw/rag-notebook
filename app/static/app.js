@@ -29,17 +29,18 @@ document.addEventListener("alpine:init", () => {
 document.addEventListener("DOMContentLoaded", () => {
   bindAll(document);
   scrollToLatestMessage();
+  initSourceScope();
 });
 
 document.addEventListener("htmx:afterSwap", (event) => {
   bindAll(event.target);
+  restoreSourceScopeState();
 });
 
 function bindAll(root) {
   bindConfirms(root);
   bindLoadingForms(root);
   bindFileLabels(root);
-  bindSourcePicker();
   bindProviderNotes();
   renderMarkdown(root);
   bindSuggestionFill(root);
@@ -143,18 +144,81 @@ function bindFileLabels(root) {
   });
 }
 
-// ---- Source-picker All/None buttons --------------------------------------
+// ---- Source scope: checkbox-per-item in the left panel + localStorage ----
+// Selection is stored as the SET OF EXCLUDED source IDs so newly indexed
+// sources default to checked without any explicit save.
 
-function bindSourcePicker() {
-  const picker = document.querySelector("[data-source-picker]");
-  if (!picker) return;
-  const boxes = () => Array.from(picker.querySelectorAll("input[type='checkbox']"));
-  bindOnce(document, "[data-source-action]", "picker", (button) => {
-    button.addEventListener("click", () => {
-      const checked = button.getAttribute("data-source-action") === "select";
-      boxes().forEach((box) => { box.checked = checked; });
-    });
+function getNotebookId() {
+  const form = document.querySelector("form.ask-form");
+  if (!form) return null;
+  const m = (form.getAttribute("action") || "").match(/\/notebooks\/(\d+)\//);
+  return m ? m[1] : null;
+}
+
+function getScopeExcluded(notebookId) {
+  try {
+    const raw = localStorage.getItem(`scope-excluded-${notebookId}`);
+    return new Set(JSON.parse(raw || "[]").map(String));
+  } catch { return new Set(); }
+}
+
+function saveScopeExcluded(notebookId, excluded) {
+  localStorage.setItem(`scope-excluded-${notebookId}`, JSON.stringify([...excluded]));
+}
+
+function restoreSourceScopeState() {
+  const notebookId = getNotebookId();
+  if (!notebookId) return;
+  const excluded = getScopeExcluded(notebookId);
+  document.querySelectorAll(".source-scope-toggle").forEach((cb) => {
+    if (excluded.has(String(cb.dataset.sourceId))) cb.checked = false;
   });
+}
+
+function initSourceScope() {
+  const notebookId = getNotebookId();
+  if (!notebookId) return;
+
+  restoreSourceScopeState();
+
+  // Checkbox toggles — event-delegated so newly-swapped items are covered.
+  document.addEventListener("change", (e) => {
+    const cb = e.target.closest(".source-scope-toggle");
+    if (!cb) return;
+    const excluded = getScopeExcluded(notebookId);
+    if (cb.checked) excluded.delete(String(cb.dataset.sourceId));
+    else excluded.add(String(cb.dataset.sourceId));
+    saveScopeExcluded(notebookId, excluded);
+  });
+
+  // All / None buttons in the Sources pane header.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-scope-action]");
+    if (!btn) return;
+    const selectAll = btn.dataset.scopeAction === "select-all";
+    const checkboxes = [...document.querySelectorAll(".source-scope-toggle")];
+    checkboxes.forEach((cb) => { cb.checked = selectAll; });
+    saveScopeExcluded(
+      notebookId,
+      selectAll ? new Set() : new Set(checkboxes.map((cb) => String(cb.dataset.sourceId))),
+    );
+  });
+
+  // Inject source_ids hidden inputs into the ask form just before submit so
+  // the server receives only the checked sources. Capture phase runs before
+  // data-loading-form's submit lock.
+  const askForm = document.querySelector("form.ask-form");
+  if (!askForm) return;
+  askForm.addEventListener("submit", () => {
+    askForm.querySelectorAll("input[name='source_ids'][type='hidden']").forEach((el) => el.remove());
+    document.querySelectorAll(".source-scope-toggle:checked").forEach((cb) => {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "source_ids";
+      input.value = cb.dataset.sourceId;
+      askForm.appendChild(input);
+    });
+  }, true);
 }
 
 // ---- Settings provider note ----------------------------------------------
