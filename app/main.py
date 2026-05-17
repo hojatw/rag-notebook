@@ -594,7 +594,11 @@ def source_partial(
         if row is None:
             raise HTTPException(status_code=404, detail="Source not found")
     response = render(request, "_source_item.html", {"notebook": notebook, "source": dict(row)})
-    if dict(row).get("status") in ("indexed", "failed"):
+    # Broadcast sources-changed on EVERY non-uploaded poll so sibling rows
+    # immediately catch up (they listen to the same event in their hx-trigger
+    # list). Without this, a 4-file upload could show "1 indexed, 3 uploaded"
+    # for up to 2s after the first finishes, just due to staggered poll ticks.
+    if dict(row).get("status") in ("processing", "indexed", "failed"):
         response.headers["HX-Trigger"] = "sources-changed"
     return response
 

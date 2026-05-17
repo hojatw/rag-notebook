@@ -36,11 +36,10 @@
         </label>
         <button type="submit" class="wide small">Compare</button>
       </form>
-      {# Loading line — htmx adds .htmx-request to this element while the
-         POST is in flight (via hx-indicator above). CSS toggles visibility. #}
-      <p id="compare-loading" class="compare-loading htmx-indicator muted small">
-        <span class="compare-loading-dot"></span> Comparing sources…
-      </p>
+      {# Unified studio loading line — htmx adds .htmx-request to this
+         element while the POST is in flight (via hx-indicator above).
+         Shared CSS in .studio-loading toggles visibility + dot pulse. #}
+      <p id="compare-loading" class="studio-loading htmx-indicator">Comparing sources…</p>
       <div id="compare-result" class="compare-result"></div>
     {% endif %}
   </details>
