@@ -3,9 +3,9 @@
   "configurations": [
     {
       "name": "uvicorn",
-      "runtimeExecutable": ".venv/bin/python",
-      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
-      "port": 8000
+      "runtimeExecutable": "/Users/philip_1/Repos/My/side_projects/notebooklm-rag-poc/.venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8001", "--reload"],
+      "port": 8001
     }
   ]
 }

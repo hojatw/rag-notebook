@@ -1,6 +1,6 @@
 # NotebookLM RAG POC — Handover
 
-Last updated: 2026-05-16, Asia/Taipei.
+Last updated: 2026-05-17, Asia/Taipei.
 
 ## Project location
 
@@ -16,7 +16,7 @@ This POC has gone through a 5-phase NotebookLM-style UI/UX overhaul plus a follo
 
 ### Architecture summary
 
-- FastAPI + Jinja2 templates + Alpine.js + HTMX + marked + DOMPurify (all sprinkled via CDN — no build step).
+- FastAPI + Jinja2 templates + Alpine.js + HTMX + marked + DOMPurify (vendor-bundled in `app/static/vendor/` — no build step, no CDN dependency).
 - SQLite (`data/app.sqlite3`) for metadata; Chroma persistent store (`data/chroma/`) for vectors; local filesystem (`data/uploads/`) for original files.
 - Multi-user with hashed passwords (PBKDF2-SHA256) and per-user/per-notebook scoping enforced at the route layer.
 - API key encrypted at rest with Fernet (PBKDF2-SHA256 KDF over `NOTEBOOKLM_SECRET`).
@@ -55,7 +55,16 @@ Last known verification: `pytest` 10 passed; smoke test on all routes including 
 | 23 | Admin vector-index page | `/admin/index` shows SQLite vs Chroma counts + missing/orphan deltas + in-sync verdict; *Rebuild* triggers full sync, *Clear* wipes the collection. New topbar entry "Index" for admins |
 | 24 | Form lock-out | `data-loading-form` now also disables every non-hidden input/textarea/select on the form, not just the submit button |
 
-## Retrieval POC instrumentation round (just landed)
+## UX polish round (just landed)
+
+| Item | Outcome |
+|---|---|
+| Sources in scope → left panel | Removed the separate "Sources in scope" fieldset from the ask form. Each indexed source item in the left panel now carries its own checkbox. "All / None" quick-select moved to the Sources pane header. Selection persisted to `localStorage` keyed by notebook ID (stores the *excluded* set, so newly indexed sources default to checked). Ask form `submit` listener injects `source_ids` hidden inputs from the checked state. |
+| #3 Dropdown outside-click | Replaced both `<details>` dropdowns (conversation switcher, Notebook ▾ menu) with Alpine `x-data="{ open: false }" @click.outside="open = false"`. CSS updated: `> summary` selectors → `.convo-trigger`; `[open] > summary` → `.convo-trigger.is-open`. |
+| #5 Suggestions caching | New `notebooks.suggestions_json` and `notebooks.suggestions_at` columns (added via `_ensure_column`). `POST /suggestions` saves to DB on success. `GET /_suggestions` and the notebook page initial load both call `_cached_suggestions(notebook)` (TTL 24 h) and show cached chips directly — no LLM call needed until "Refresh". |
+| #10 Self-host vendor JS | Downloaded Alpine@3.14.1, htmx@1.9.12, marked@12.0.2, DOMPurify@3.1.6 to `app/static/vendor/`. `base.html` updated to load from local paths. CDN outage no longer affects the app. |
+
+## Retrieval POC instrumentation round (landed 2026-05-16)
 
 Seven retrieval-quality / visibility / safety items, all now in. Baseline measured against `tests/eval_questions.json` (25 questions, demo notebook): **Recall@5 = 100% · MRR 0.933 (with rerank) / 0.883 (no rerank)**. The +0.05 MRR is the measurable rerank lift.
 
@@ -74,10 +83,7 @@ Seven retrieval-quality / visibility / safety items, all now in. Baseline measur
 
 ### Known bugs / UX polish
 
-- **#2 Legacy citation `source_id` backfill.** Old assistant messages stored before the `citation_payload` change have no `source_id`. Frontend falls back to filename match — works as long as filenames are unique within the notebook and not renamed. One-shot backfill script welcome.
-- **#3 `<details>` dropdowns don't close on outside click.** Conversation switcher and Notebook ▾ menu need a manual second click to close. Replace native `<details>` with Alpine `x-data="{ open: false }" @click.outside="open = false"`.
-- **#5 Suggestions caching.** Every "Generate suggestions" click hits the LLM. Cache the result in `notebooks` (new `suggestions_json` + `suggestions_at` columns) with a TTL; "Refresh" still forces regeneration.
-- **#10 Pin CDN versions of Alpine/HTMX/marked/DOMPurify.** Already pinned in `base.html`; if the CDN ever ships a breaking patch on those exact paths, the app silently breaks. Document fallback or self-host.
+*(No open items — #2 was dev-test-only messages and not a real bug; #3, #5, #10 landed in the UX polish round above.)*
 
 ### Architectural debt (production hardening)
 

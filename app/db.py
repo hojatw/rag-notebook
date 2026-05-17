@@ -148,6 +148,8 @@ def init_db() -> None:
         # Per-message debug metadata: retrieval/generation timings, prompt token
         # estimates, score of the top citation. Drives the chat cost badge.
         _ensure_column(conn, "messages", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(conn, "notebooks", "suggestions_json", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "notebooks", "suggestions_at", "TEXT NOT NULL DEFAULT ''")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sources_notebook_created ON sources(notebook_id, created_at DESC)"
         )

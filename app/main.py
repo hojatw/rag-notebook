@@ -3,6 +3,7 @@ import re
 import shutil
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 import time
 import uuid
@@ -211,6 +212,24 @@ def logout():
     return response
 
 
+SUGGESTIONS_TTL_HOURS = 24
+
+
+def _cached_suggestions(notebook: dict) -> list[str]:
+    """Return cached suggestions if within TTL, else empty list."""
+    raw = (notebook.get("suggestions_json") or "").strip()
+    saved_at = (notebook.get("suggestions_at") or "").strip()
+    if not raw or not saved_at:
+        return []
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=SUGGESTIONS_TTL_HOURS)
+        if datetime.fromisoformat(saved_at.replace(" ", "T")) > cutoff:
+            return loads(raw)
+    except Exception:
+        pass
+    return []
+
+
 def get_notebook(conn, notebook_id: int, user_id: int) -> dict:
     """Fetch a notebook owned by the user, raising 404 otherwise."""
     row = conn.execute(
@@ -362,6 +381,7 @@ def notebook_view(
         )
     pinned_message_ids = {n["source_message_id"] for n in notes if n["source_message_id"] is not None}
     indexed_sources = [s for s in sources if s["status"] == "indexed"]
+    cached_suggestions = _cached_suggestions(notebook)
     return render(
         request,
         "notebook.html",
@@ -380,6 +400,7 @@ def notebook_view(
             "conversations_truncated": conversations_truncated,
             "messages_truncated": messages_truncated,
             "notes_truncated": notes_truncated,
+            "cached_suggestions": cached_suggestions,
             "error": "",
             "wide": True,
             "breadcrumb": notebook["title"],
@@ -640,7 +661,7 @@ def suggestions_partial(
     return render(
         request,
         "_suggestions.html",
-        {"notebook": notebook, "questions": [], "error": "", "has_indexed": has_indexed},
+        {"notebook": notebook, "questions": _cached_suggestions(notebook), "error": "", "has_indexed": has_indexed},
     )
 
 
@@ -681,6 +702,13 @@ async def notebook_suggestions(
         except Exception as exc:
             logger.exception("suggestions_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
             error = f"Could not generate suggestions: {exc}"
+
+    if questions:
+        with connect() as conn:
+            conn.execute(
+                "UPDATE notebooks SET suggestions_json = ?, suggestions_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (dumps(questions), notebook_id),
+            )
 
     return render(
         request,

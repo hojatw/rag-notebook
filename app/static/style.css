@@ -1793,7 +1793,8 @@ legend {
 
 /* Source row that doubles as the preview trigger. */
 .source-line-btn {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   background: transparent;
   border: 0;
   padding: 0;
@@ -1818,6 +1819,15 @@ legend {
   opacity: 1;
   background: transparent;
   box-shadow: none;
+}
+
+.source-scope-toggle {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .source-name {
@@ -1927,8 +1937,7 @@ legend {
   position: relative;
 }
 
-.conversation-switcher > summary,
-.notebook-menu > summary {
+.convo-trigger {
   list-style: none;
   cursor: pointer;
   display: inline-flex;
@@ -1942,18 +1951,14 @@ legend {
   font-weight: 600;
   color: var(--muted-strong);
   max-width: 360px;
+  box-shadow: none;
 }
 
-.conversation-switcher > summary::-webkit-details-marker,
-.notebook-menu > summary::-webkit-details-marker { display: none; }
-
-.conversation-switcher > summary::before,
-.notebook-menu > summary::before { content: none; }
-
-.conversation-switcher > summary:hover,
-.notebook-menu > summary:hover {
+.convo-trigger:hover {
   border-color: var(--accent);
   color: var(--accent-deep);
+  transform: none;
+  box-shadow: none;
 }
 
 .convo-current {
@@ -1967,8 +1972,7 @@ legend {
   font-size: 11px;
 }
 
-.conversation-switcher[open] > summary,
-.notebook-menu[open] > summary {
+.convo-trigger.is-open {
   background: var(--accent-soft);
   border-color: var(--line-accent);
   color: var(--accent-deep);
