@@ -69,6 +69,24 @@ Three new NotebookLM-style Studio features that demonstrate cross-source underst
 | Narrow-viewport layout | `@media (max-width: 1180px)` now collapses the workspace to a single column and drops `position: sticky` from `.workspace-sources` (it previously kept floating over the Studio panel as the user scrolled). Sources → Chat → Studio stack vertically with no overlap. |
 | New tests | `tests/test_llm.py` adds three smoke tests covering empty-state short-circuits for `summarize_source`, `generate_briefing`, `compare_sources`. Total: 58 passed. |
 
+## Studio iteration + concurrency lock round (landed 2026-05-17)
+
+Polish + bugfixes that surfaced once the Studio expansion was exercised with real Chinese-language sources and multi-file uploads.
+
+| Item | Outcome |
+|---|---|
+| Briefing concurrency lock | New `_briefing_in_progress: dict[int, float]` in [`app/main.py`](app/main.py) keyed by notebook_id. `BRIEFING_LOCK_TIMEOUT_S = 90` releases stale locks so a crashed POST can't permanently block regeneration. POST returns cache OR the new `in_progress` template state when the lock is held. GET `/_briefing` likewise returns `in_progress` if locked + no cache yet — the template polls `hx-get` every 3 s instead of auto-firing another POST. Eliminates the "1 upload → up to N concurrent LLM calls" race during multi-file uploads. Two unit tests in [`tests/test_briefing_lock.py`](tests/test_briefing_lock.py). |
+| Briefing preview one-liner | `<details class="briefing-details">` summary clamps to a single line via `white-space:nowrap + text-overflow:ellipsis`. The original `.briefing-more.small` span was inheriting `.small {min-height: 28px}` from the button system, pushing the row to 2 lines — class dropped. `.briefing-details` itself needs `min-width:0` (grid item) or long CJK strings without break opportunities push the Studio panel wider than its column. |
+| Compare prompt language | `SOURCE_COMPARE_PROMPT` reordered: LANGUAGE RULE now sits BEFORE the English-headed structure example, and explicitly lists translated headings for each language (e.g. 共同點 / 各自獨特之處 / 矛盾之處). Was returning English headings + body even on Chinese inputs because the model imprinted on the format example. Same reorder applied to `NOTEBOOK_BRIEFING_PROMPT` for consistency. |
+| Regenerate force flag | `POST /notebooks/{nid}/briefing` accepts `?force=1`. The Regenerate button sends it to bypass the cache (auto-fire doesn't, so two tabs / load + sources-changed don't double-bill). Force still respects the in-progress lock. |
+| Compare panel sync | New `GET /notebooks/{nid}/_compare` returns the compare section; [`_compare.html`](app/templates/_compare.html) section element carries `hx-trigger="sources-changed from:body"` so the checkbox list re-renders after upload/delete (previously stale until page reload). |
+| Unified Studio loading | Shared `.studio-loading` CSS class with a pulsing accent dot (`::before` + keyframes). Suggestions, briefing, compare all now render `<p class="studio-loading htmx-indicator">` placeholders pointed at by `hx-indicator`. The old `::after` text-suffix indicators were removed. |
+| Multi-upload status sync | `/sources/{sid}/_partial` now broadcasts `HX-Trigger=sources-changed` on **`processing`** as well as terminal states. `_source_item.html` polling rows added `sources-changed from:body` to their `hx-trigger` list so they immediately re-poll when a sibling finishes. Previously rows lagged up to 2 s behind sibling completions. |
+| Source name overflow | `.source-line-btn` had no `display` set so the inline-block default broke the ellipsis chain. Made it `display:flex` so `.source-name`'s existing `flex:1 + ellipsis` actually engages on long filenames. |
+| Notes render markdown | `_notes_section.html` note body changed from `<p>{{ content }}</p>` to `<div class="markdown-body" data-markdown>` so saved comparison results (or any pinned markdown) format properly. `bindAll()` re-runs `renderMarkdown` on every HTMX swap, no JS changes needed. |
+| Narrow-viewport refinement | Single-column stack at `<1180px` (previously Sources stayed `position: sticky` and overlaid Studio on scroll). |
+| Test count | 60 passed (added 2 lock helper tests). |
+
 ## UX polish round (landed 2026-05-17)
 
 | Item | Outcome |
@@ -121,7 +139,8 @@ Eval harness is wired up (`python -m tests.eval_retrieval`) — change one knob,
 ## Important files
 
 ```text
-app/main.py            Routes, auth, retrieval orchestration, lifespan, logging.
+app/main.py            Routes, auth, retrieval orchestration, lifespan, logging,
+                       briefing in-process concurrency lock.
 app/db.py              SQLite schema, default-notebook migration, load_llm_settings (decrypts).
 app/ingest.py          Text extraction, chunking, vector upsert.
 app/llm.py             LLM/embedding HTTP, query rewrite, rerank, starter questions,
@@ -134,7 +153,8 @@ app/templates/         Jinja templates: base, home, notebook (with preview modal
                        _compare_result / _notes_section partials.
 app/static/            style.css (design tokens + components + modal + admin-index stats),
                        app.js (binders, Alpine dropzone, Markdown render, citation click, suggestion fill, pin reset).
-tests/                 test_core.py, test_chunking.py, test_llm.py, test_security.py, test_vector_store.py,
+tests/                 test_core.py, test_chunking.py, test_llm.py, test_security.py,
+                       test_vector_store.py, test_extract.py, test_briefing_lock.py,
                        eval_questions.json (retrieval ground truth), eval_retrieval.py (harness).
 RETRIEVAL.md           End-to-end retrieval doc: pipeline diagram, per-stage details, tuning
                        knobs (with file:line refs), eval workflow, open follow-ups.
@@ -187,3 +207,4 @@ Changing `NOTEBOOKLM_SECRET` invalidates every encrypted API key (you'll need to
 - Lifespan deprecation: handled (`@app.on_event` removed). FastAPI's own `asyncio.iscoroutinefunction` DeprecationWarning remains (their bug, not ours).
 - API keys live encrypted in `llm_settings.api_key`. Decryption happens in `load_llm_settings()` (db.py) — call it instead of `SELECT * FROM llm_settings` if you need the plaintext.
 - Chroma startup sync is now diff-based. If you suspect index drift, hit `/admin/index` and click *Rebuild*; if you want a clean slate, click *Clear* then *Rebuild*.
+- **Briefing concurrency lock is in-process** (a Python dict in `app/main.py`). Single-uvicorn-worker assumption — fine for POC. A multi-worker / multi-process deploy would let one notebook generate the briefing in parallel from each worker. To productionise, swap the dict for a SQLite row, Redis key, or filesystem lockfile.

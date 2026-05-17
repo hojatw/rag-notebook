@@ -10,7 +10,7 @@ A single-machine FastAPI proof of concept for a NotebookLM-style workspace: orga
   - **Chat** (centre): grounded chat with conversation switcher (with per-row delete), Markdown-rendered answers, and inline `[1]` `[2]` citation chips that scroll the matching source into view.
   - **Studio** (right): four NotebookLM-style helpers in one column.
       - *Suggested questions* — one-click LLM-authored starter questions from your sources, auto-refreshing as sources finish indexing (24 h cache).
-      - *Briefing* — one-paragraph cross-source synthesis, auto-generated on first notebook view and cached for 24 h. *Regenerate* on demand.
+      - *Briefing* — one-paragraph cross-source synthesis, auto-generated on first notebook view and cached for 24 h. *Regenerate* on demand. Concurrent generation across tabs / sibling source completions is deduped by an in-process lock so a 5-file upload only calls the LLM once, not five times.
       - *Compare sources* — pick 2+ indexed sources (with an optional focus hint) and the model produces a Shared / Distinct / Contradictions markdown report. *Save to notes* keeps it for later.
       - *Notes* — *Pin* assistant answers into collapsible notes (removing a note un-pins the source message automatically); comparison results can be saved here too.
   - **Per-source summary** — every uploaded source gets a 2–4 sentence TL;DR generated automatically right after indexing, shown at the top of the preview drawer and reused as compact context for Briefing / Compare.
@@ -26,7 +26,7 @@ A single-machine FastAPI proof of concept for a NotebookLM-style workspace: orga
 - **Defensive list caps** (sources 200, conversations 50, messages 200, notes 50) with truncation hints in the UI.
 - **Logging** to stdout and `logs/app.log` with rotation.
 
-The frontend stays server-rendered (Jinja templates) and sprinkles in Alpine.js, HTMX, marked, and DOMPurify via CDN — no build step, no npm.
+The frontend stays server-rendered (Jinja templates) and sprinkles in Alpine.js, HTMX, marked, and DOMPurify (all self-hosted in `app/static/vendor/`) — no build step, no npm, no CDN dependency.
 
 ## Run
 
@@ -176,8 +176,9 @@ POST /notebooks/{id}/chat/{cid}/delete                    delete a conversation
 
 GET  /notebooks/{id}/_suggestions                         HTMX swap: suggestions section
 POST /notebooks/{id}/suggestions                          generate 4 starter questions
-GET  /notebooks/{id}/_briefing                            HTMX swap: briefing section
-POST /notebooks/{id}/briefing                             generate / regenerate notebook briefing
+GET  /notebooks/{id}/_briefing                            HTMX swap: briefing section (dedupes concurrent generation)
+POST /notebooks/{id}/briefing[?force=1]                   generate / regenerate notebook briefing
+GET  /notebooks/{id}/_compare                             HTMX swap: compare-sources section
 POST /notebooks/{id}/compare                              compare 2+ sources (returns result fragment)
 
 POST /notebooks/{id}/notes/pin                            pin assistant message into notes
@@ -230,7 +231,7 @@ app/llm.py             LLM/embedding HTTP, query rewrite, rerank, starter questi
 app/vector_store.py    Chroma persistent client + diff sync + index_status + clear_all_vectors.
 app/security.py        Password hashing, signed session cookies, Fernet encryption for API keys.
 app/templates/
-  base.html            Topbar, breadcrumbs, CDN scripts (marked, DOMPurify, HTMX, Alpine).
+  base.html            Topbar, breadcrumbs, self-hosted vendor scripts (marked, DOMPurify, HTMX, Alpine).
   home.html            Notebook grid.
   notebook.html        Three-pane workspace shell + source preview modal.
   _source_item.html    Single source list item (HTMX polling target + preview trigger).
@@ -251,9 +252,11 @@ app/static/
 tests/
   test_core.py         Hash, ingest, isolation, retrieval, notebook migration, pin idempotency, settings decryption.
   test_chunking.py     Sentence-aware chunker: CJK detection, splitting, overlap, long-sentence fallback.
-  test_llm.py          Provider request shapes, parsing.
+  test_llm.py          Provider request shapes, parsing, Studio helper short-circuits (summary / briefing / compare).
   test_security.py     Fernet round-trip + legacy plaintext + wrong-secret behaviour.
   test_vector_store.py Index status + diff/full sync + clear, all against a real Chroma temp dir.
+  test_extract.py      Source extraction (PDF, DOCX, HTML edge cases).
+  test_briefing_lock.py In-process briefing lock: acquire / release / stale timeout.
   eval_questions.json  Ground-truth retrieval Qs for the demo notebook.
   eval_retrieval.py    Recall@k + MRR harness (see RETRIEVAL.md).
 data/
