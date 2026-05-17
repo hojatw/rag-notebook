@@ -2590,7 +2590,7 @@ legend {
   cursor: pointer;
   list-style: none;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px;
   font-size: 13px;
   line-height: 1.45;
@@ -2599,6 +2599,7 @@ legend {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   padding: 8px 10px;
+  min-width: 0;
 }
 
 .briefing-details > summary::-webkit-details-marker {
@@ -2611,7 +2612,6 @@ legend {
   transition: transform 140ms var(--ease);
   flex: none;
   width: 10px;
-  margin-top: 2px;
 }
 
 .briefing-details[open] > summary::before {
@@ -2621,11 +2621,14 @@ legend {
 .briefing-preview {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .briefing-more {
   flex: none;
-  align-self: flex-end;
+  align-self: center;
 }
 
 .briefing-details[open] .briefing-more,
@@ -2739,6 +2742,39 @@ legend {
 }
 
 .compare-result:empty { display: none; }
+
+/* Loading line shown only while the POST /compare is in flight.
+   htmx-indicator defaults to opacity:0.5; we use display toggling instead
+   so the line genuinely appears/disappears rather than sitting half-faded. */
+.compare-loading {
+  display: none;
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  align-items: center;
+  gap: 8px;
+}
+
+.compare-loading.htmx-request,
+.htmx-request .compare-loading {
+  display: flex;
+}
+
+.compare-loading-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: inline-block;
+  animation: compare-loading-pulse 1s ease-in-out infinite;
+}
+
+@keyframes compare-loading-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50%      { opacity: 1;   transform: scale(1); }
+}
 
 .compare-result-body {
   background: var(--surface-soft);

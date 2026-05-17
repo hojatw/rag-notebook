@@ -20,12 +20,15 @@
     {% if briefing %}{{ gen_button("Regenerate", notebook.id, force=true) }}{% endif %}
   </h3>
   {% if briefing %}
-    {# Collapsible: shows the first ~120 chars by default; click to expand.
-       The full markdown is rendered on demand by the data-markdown binder. #}
+    {# Collapsible: collapsed shows one truncated line, click to expand.
+       CSS handles the visual one-line clamp via white-space:nowrap +
+       text-overflow:ellipsis so wrap-friendly languages still display
+       cleanly regardless of character count. Newlines are stripped so
+       a multi-paragraph briefing doesn't leak into the preview line. #}
     <details class="briefing-details">
       <summary>
-        <span class="briefing-preview">{{ briefing.split('\n')[0][:140] }}{% if briefing|length > 140 %}…{% endif %}</span>
-        <span class="briefing-more muted small">Show full</span>
+        <span class="briefing-preview">{{ briefing.replace('\n', ' ').strip() }}</span>
+        <span class="briefing-more muted">Show full</span>
       </summary>
       <div class="briefing-body markdown-body" data-markdown>{{ briefing }}</div>
     </details>

@@ -42,21 +42,36 @@ LANGUAGE RULE — strictly match the dominant language of the source excerpts:
 Do NOT translate. If excerpts are mixed-language, follow whichever language carries the majority of the content."""
 
 NOTEBOOK_BRIEFING_PROMPT = """You write a one-paragraph briefing across multiple source summaries in a notebook.
+
+LANGUAGE RULE — strictly match the dominant language of the source summaries:
+- Traditional Chinese summaries -> Traditional Chinese briefing (繁體中文).
+- Simplified Chinese summaries -> Simplified Chinese briefing.
+- Japanese summaries -> Japanese briefing.
+- English summaries -> English briefing.
+Do NOT translate. If summaries are mixed-language, follow whichever language carries the majority.
+
 Read each source's summary and produce a single paragraph of 80 to 110 words covering:
 - What this collection of sources is about as a whole.
 - Recurring themes or shared subject matter.
 - Any notable contrasts or differences in perspective.
 Do not list sources mechanically; weave them into prose. No headings, no bullets.
-Keep it tight — the briefing is shown in a small sidebar.
-
-LANGUAGE RULE — strictly match the dominant language of the source summaries below:
-- Traditional Chinese summaries -> Traditional Chinese briefing (繁體中文).
-- Simplified Chinese summaries -> Simplified Chinese briefing.
-- Japanese summaries -> Japanese briefing.
-- English summaries -> English briefing.
-Do NOT translate. If summaries are mixed-language, follow whichever language carries the majority of the content."""
+Keep it tight — the briefing is shown in a small sidebar."""
 
 SOURCE_COMPARE_PROMPT = """You compare two or more source documents grounded in their summaries.
+
+LANGUAGE RULE — read this FIRST, it overrides the structure example below.
+Strictly match the dominant language of the source summaries:
+- Traditional Chinese summaries -> Traditional Chinese comparison (繁體中文).
+  Use headings: ## 共同點 / ## 各自獨特之處 / ## 矛盾之處
+- Simplified Chinese summaries -> Simplified Chinese comparison.
+  Use headings: ## 共同点 / ## 各自独特之处 / ## 矛盾之处
+- Japanese summaries -> Japanese comparison.
+  Use headings: ## 共通点 / ## それぞれの特徴 / ## 矛盾点
+- English summaries -> English comparison.
+  Use headings: ## Shared / ## Distinct / ## Contradictions
+Do NOT translate. The headings below are FORMAT examples in English — translate
+them to match the source language before writing.
+
 Use this Markdown structure, OMITTING any section that would be empty:
 
 ## Shared
@@ -69,14 +84,7 @@ Use this Markdown structure, OMITTING any section that would be empty:
 ## Contradictions
 - Direct disagreements between sources, citing the sources by filename.
 
-Stay grounded in the provided summaries. If a focus question is given, prioritise points relevant to it.
-
-LANGUAGE RULE — strictly match the dominant language of the source summaries below:
-- Traditional Chinese summaries -> Traditional Chinese comparison (繁體中文), including section headings (## 共同點 / ## 差異 / ## 矛盾).
-- Simplified Chinese summaries -> Simplified Chinese comparison.
-- Japanese summaries -> Japanese comparison.
-- English summaries -> English comparison (use the English headings above).
-Do NOT translate."""
+Stay grounded in the provided summaries. If a focus question is given, prioritise points relevant to it."""
 
 logger = logging.getLogger(__name__)
 EMBEDDING_BATCH_SIZE = 64
