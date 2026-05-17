@@ -1,13 +1,18 @@
 {# Single source list item. Rendered both inline (notebook.html) and from the
    /sources/{sid}/_partial endpoint for HTMX polling. When the source is still
    processing, this fragment polls itself; once indexed/failed, the polling
-   attributes drop and HTMX naturally stops. #}
+   attributes drop and HTMX naturally stops.
+   `sources-changed from:body` in the trigger list means: when ANY other
+   source finishes (its partial response fires HX-Trigger=sources-changed),
+   this row also re-polls immediately instead of waiting for its 2s tick.
+   That eliminates the staggered "1 done, 3 still uploaded" look during a
+   multi-file upload. #}
 <li class="source-item"
     data-source-id="{{ source.id }}"
     id="source-{{ source.id }}"
     {% if source.status in ("uploaded", "processing") %}
       hx-get="/notebooks/{{ notebook.id }}/sources/{{ source.id }}/_partial"
-      hx-trigger="every 2s"
+      hx-trigger="every 2s, sources-changed from:body"
       hx-swap="outerHTML"
     {% endif %}>
   {# Scope checkbox + preview button in a flex row. Checkbox controls whether

@@ -8,7 +8,7 @@
         hx-post="/notebooks/{{ notebook_id }}/briefing{% if force %}?force=1{% endif %}"
         hx-target="#studio-briefing"
         hx-swap="outerHTML"
-        hx-indicator="#studio-briefing">{{ label }}</button>
+        hx-indicator="#briefing-loading">{{ label }}</button>
 {%- endmacro %}
 
 <section class="studio-section studio-briefing" id="studio-briefing"
@@ -39,11 +39,14 @@
     <p class="muted small">Index a source first to see a notebook briefing.</p>
   {% else %}
     {# Auto-fire generation exactly once on first view. The POST without
-       force=1 returns cache if any was written in between (race guard). #}
-    <p class="muted small briefing-loading"
+       force=1 returns cache if any was written in between (race guard).
+       Indicator points at the shared #briefing-loading placeholder below. #}
+    <p class="studio-loading"
+       style="display: flex;"
        hx-post="/notebooks/{{ notebook.id }}/briefing"
        hx-target="#studio-briefing"
        hx-swap="outerHTML"
        hx-trigger="load delay:200ms">Generating briefing…</p>
   {% endif %}
+  <p id="briefing-loading" class="studio-loading htmx-indicator">Generating briefing…</p>
 </section>

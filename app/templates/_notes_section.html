@@ -16,7 +16,7 @@
               <small class="muted note-summary-date">{{ note.created_at[:10] }}</small>
             </summary>
             <div class="note-body">
-              <p>{{ note.content }}</p>
+              <div class="note-content markdown-body" data-markdown>{{ note.content }}</div>
               <div class="note-foot">
                 <button type="button"
                         class="ghost small danger-link"

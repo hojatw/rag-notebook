@@ -1,10 +1,12 @@
-{# Suggested-questions section, returned both inline and as an HTMX swap target. #}
+{# Suggested-questions section, returned both inline and as an HTMX swap target.
+   All generate/refresh buttons point at the shared #suggestions-loading
+   placeholder so the loading UI matches briefing and compare. #}
 {% macro gen_button(label, notebook_id) -%}
 <button type="button" class="ghost small"
         hx-post="/notebooks/{{ notebook_id }}/suggestions"
         hx-target="#studio-suggestions"
         hx-swap="outerHTML"
-        hx-indicator="#studio-suggestions">{{ label }}</button>
+        hx-indicator="#suggestions-loading">{{ label }}</button>
 {%- endmacro %}
 
 <section class="studio-section studio-suggestions" id="studio-suggestions"
@@ -32,4 +34,5 @@
     <p class="muted small">Generate 4 grounded starter questions from your sources.</p>
     {{ gen_button("Generate suggestions", notebook.id) }}
   {% endif %}
+  <p id="suggestions-loading" class="studio-loading htmx-indicator">Generating suggestions…</p>
 </section>
