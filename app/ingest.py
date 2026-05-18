@@ -41,14 +41,201 @@ def extract_sections(path: Path) -> list[tuple[str, str]]:
 
 
 def _extract_pdf(path: Path) -> list[tuple[str, str]]:
-    """Page-by-page text extraction. Scanned pages return '' (no OCR)."""
+    """Extract PDF paragraphs + tables in page reading order.
+
+    Preferred path uses pdfplumber so paragraphs and tables can be emitted as
+    interleaved blocks (``page N paragraph K`` / ``page N table M``). If
+    pdfplumber is unavailable or fails for a document, falls back to plain
+    pypdf text extraction.
+    """
     from pypdf import PdfReader
+
+    structured_sections = _extract_pdf_with_pdfplumber(path)
+    if structured_sections:
+        return structured_sections
 
     reader = PdfReader(str(path))
     return [
         (f"page {index}", page.extract_text() or "")
         for index, page in enumerate(reader.pages, start=1)
     ]
+
+
+def _extract_pdf_with_pdfplumber(path: Path) -> list[tuple[str, str]]:
+    """Best-effort structured PDF extraction using pdfplumber."""
+    try:
+        import pdfplumber
+    except Exception:
+        return []
+
+    try:
+        with pdfplumber.open(str(path)) as pdf:
+            sections: list[tuple[str, str]] = []
+            for page_index, page in enumerate(pdf.pages, start=1):
+                sections.extend(_extract_pdf_page_blocks(page, page_index))
+            return sections
+    except Exception:
+        logger.exception("pdfplumber_extract_failed path=%s", path.name)
+        return []
+
+
+def _extract_pdf_page_blocks(page, page_index: int) -> list[tuple[str, str]]:
+    """Extract table + paragraph blocks from a page, preserving top-to-bottom order."""
+    tables = list(page.find_tables() or [])
+    table_bboxes = [table.bbox for table in tables if getattr(table, "bbox", None)]
+
+    table_blocks: list[dict[str, Any]] = []
+    for table_index, table in enumerate(tables, start=1):
+        table_text = _render_pdf_table(table.extract() or [])
+        if not table_text:
+            continue
+        table_blocks.append(
+            {
+                "top": _pdf_bbox_top(getattr(table, "bbox", None)),
+                "location": f"page {page_index} table {table_index}",
+                "text": table_text,
+            }
+        )
+
+    words = list(page.extract_words() or [])
+    non_table_words = [
+        word for word in words if not _pdf_word_in_any_bbox(word, table_bboxes)
+    ]
+    paragraph_blocks = _pdf_words_to_paragraph_blocks(non_table_words, page_index)
+
+    merged = [
+        {"kind": "paragraph", **block}
+        for block in paragraph_blocks
+    ] + [
+        {"kind": "table", **block}
+        for block in table_blocks
+    ]
+    merged.sort(key=lambda block: (block["top"], 0 if block["kind"] == "paragraph" else 1))
+
+    return [
+        (block["location"], block["text"])
+        for block in merged
+        if block["text"].strip()
+    ]
+
+
+def _pdf_bbox_top(bbox: tuple[float, float, float, float] | None) -> float:
+    if not bbox:
+        return 0.0
+    return float(bbox[1])
+
+
+def _pdf_word_in_any_bbox(
+    word: dict[str, Any],
+    bboxes: list[tuple[float, float, float, float]],
+) -> bool:
+    x0 = float(word.get("x0", 0.0))
+    x1 = float(word.get("x1", x0))
+    top = float(word.get("top", 0.0))
+    bottom = float(word.get("bottom", top))
+    cx = (x0 + x1) / 2.0
+    cy = (top + bottom) / 2.0
+    for bx0, btop, bx1, bbottom in bboxes:
+        if bx0 <= cx <= bx1 and btop <= cy <= bbottom:
+            return True
+    return False
+
+
+def _pdf_words_to_paragraph_blocks(words: list[dict[str, Any]], page_index: int) -> list[dict[str, Any]]:
+    """Group non-table words into paragraph blocks by line and vertical gap."""
+    if not words:
+        return []
+
+    sorted_words = sorted(words, key=lambda w: (float(w.get("top", 0.0)), float(w.get("x0", 0.0))))
+    line_tolerance = 3.0
+    lines: list[dict[str, Any]] = []
+    current_line: list[dict[str, Any]] = []
+    line_top = 0.0
+
+    def flush_line() -> None:
+        nonlocal current_line, line_top
+        if not current_line:
+            return
+        current_line.sort(key=lambda w: float(w.get("x0", 0.0)))
+        text = " ".join((w.get("text") or "").strip() for w in current_line if (w.get("text") or "").strip())
+        if text:
+            tops = [float(w.get("top", line_top)) for w in current_line]
+            bottoms = [float(w.get("bottom", line_top)) for w in current_line]
+            lines.append(
+                {
+                    "top": min(tops),
+                    "bottom": max(bottoms),
+                    "text": text,
+                }
+            )
+        current_line = []
+
+    for word in sorted_words:
+        word_top = float(word.get("top", 0.0))
+        if not current_line:
+            current_line = [word]
+            line_top = word_top
+            continue
+        if abs(word_top - line_top) <= line_tolerance:
+            current_line.append(word)
+        else:
+            flush_line()
+            current_line = [word]
+            line_top = word_top
+    flush_line()
+
+    paragraph_gap = 12.0
+    paragraphs: list[dict[str, Any]] = []
+    para_lines: list[str] = []
+    para_top = 0.0
+    previous_bottom = 0.0
+    paragraph_index = 1
+
+    def flush_paragraph() -> None:
+        nonlocal para_lines, para_top, paragraph_index
+        if not para_lines:
+            return
+        text = "\n".join(para_lines).strip()
+        if text:
+            paragraphs.append(
+                {
+                    "top": para_top,
+                    "location": f"page {page_index} paragraph {paragraph_index}",
+                    "text": text,
+                }
+            )
+            paragraph_index += 1
+        para_lines = []
+
+    for line in lines:
+        if not para_lines:
+            para_top = float(line["top"])
+            para_lines = [line["text"]]
+            previous_bottom = float(line["bottom"])
+            continue
+        gap = float(line["top"]) - previous_bottom
+        if gap > paragraph_gap:
+            flush_paragraph()
+            para_top = float(line["top"])
+            para_lines = [line["text"]]
+        else:
+            para_lines.append(line["text"])
+        previous_bottom = float(line["bottom"])
+    flush_paragraph()
+
+    return paragraphs
+
+
+def _render_pdf_table(rows: list[list[Any]]) -> str:
+    """Render extracted table rows into retrieval-friendly pipe-separated text."""
+    cleaned_rows: list[list[str]] = []
+    for row in rows:
+        cleaned = [" ".join(str(cell or "").split()) for cell in row]
+        if any(cell for cell in cleaned):
+            cleaned_rows.append(cleaned)
+    if not cleaned_rows:
+        return ""
+    return "Table:\n" + "\n".join(" | ".join(row) for row in cleaned_rows)
 
 
 def _extract_docx(path: Path) -> list[tuple[str, str]]:

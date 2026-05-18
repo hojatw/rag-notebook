@@ -7,6 +7,8 @@ depend on any binary asset, and write small HTML strings inline for the
 HTML cases.
 """
 from pathlib import Path
+import sys
+import types
 
 import pytest
 from docx import Document
@@ -101,6 +103,82 @@ def test_docx_renders_table_row_separators(tmp_path):
     sections = extract_sections(_make_docx(tmp_path))
     body = next(text for label, text in sections if label == "document")
     assert "Industry | Manufacturing | Taiwan" in body
+
+
+# -------------------- PDF --------------------
+
+class _FakeTable:
+    def __init__(self, bbox, rows):
+        self.bbox = bbox
+        self._rows = rows
+
+    def extract(self):
+        return self._rows
+
+
+class _FakePage:
+    def __init__(self, tables, words):
+        self._tables = tables
+        self._words = words
+
+    def find_tables(self):
+        return self._tables
+
+    def extract_words(self):
+        return self._words
+
+
+class _FakePdf:
+    def __init__(self, pages):
+        self.pages = pages
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def test_pdf_interleaves_paragraphs_and_tables_by_page_order(monkeypatch, tmp_path):
+    fake_page = _FakePage(
+        tables=[
+            _FakeTable(
+                bbox=(10.0, 40.0, 200.0, 70.0),
+                rows=[["Product", "Revenue"], ["Widget", "100"]],
+            )
+        ],
+        words=[
+            {"text": "Intro", "x0": 10.0, "x1": 40.0, "top": 10.0, "bottom": 18.0},
+            {"text": "paragraph.", "x0": 44.0, "x1": 100.0, "top": 10.0, "bottom": 18.0},
+            # Inside table bbox, should be suppressed from paragraph text.
+            {"text": "Product", "x0": 20.0, "x1": 60.0, "top": 50.0, "bottom": 58.0},
+            {"text": "Revenue", "x0": 120.0, "x1": 170.0, "top": 50.0, "bottom": 58.0},
+            {"text": "After", "x0": 10.0, "x1": 35.0, "top": 90.0, "bottom": 98.0},
+            {"text": "table.", "x0": 40.0, "x1": 75.0, "top": 90.0, "bottom": 98.0},
+        ],
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pdfplumber",
+        types.SimpleNamespace(open=lambda _path: _FakePdf([fake_page])),
+    )
+
+    path = tmp_path / "fixture.pdf"
+    path.write_bytes(b"%PDF-1.4\n%fake\n")
+    sections = extract_sections(path)
+
+    assert [location for location, _ in sections] == [
+        "page 1 paragraph 1",
+        "page 1 table 1",
+        "page 1 paragraph 2",
+    ]
+    assert "Intro paragraph." in sections[0][1]
+    assert "Table:" in sections[1][1]
+    assert "Product | Revenue" in sections[1][1]
+    assert "After table." in sections[2][1]
+    # Table words should not be duplicated into paragraph blocks.
+    assert "Product" not in sections[0][1]
 
 
 # -------------------- HTML --------------------
