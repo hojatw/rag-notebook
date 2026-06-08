@@ -38,11 +38,11 @@ Local quickstart can opt into the built-in insecure development secret. Do not u
 
 ```bash
 cd notebooklm-rag-poc
-./setup.sh                                              # builds .venv and handles the chromadb caveat below
+./setup.sh                                              # builds a Python 3.12 .venv, matching Docker
 NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
-`setup.sh --force` wipes any existing `.venv` first. The script auto-detects whether `onnxruntime` has a wheel for the active Python version and falls back to the `chromadb --no-deps` install path if it does not.
+`setup.sh --force` wipes any existing `.venv` first. The script uses `python3.12` by default, or `PYTHON_BIN=/path/to/python3.12 ./setup.sh` if your Python 3.12 binary has a different name.
 
 Open `http://127.0.0.1:8000` and sign in:
 
@@ -79,11 +79,11 @@ docker compose down
 rm -rf data/ logs/
 ```
 
-The image uses Python 3.12 internally to sidestep the `chromadb`/`onnxruntime` 3.14 wheel gap — your host Python version doesn't matter. Default port is 8000 (override via `HOST_PORT` in `.env`).
+The image uses the same Python 3.12 runtime as local development. Default port is 8000 (override via `HOST_PORT` in `.env`).
 
-### Python 3.14 + ChromaDB caveat
+### Python Runtime
 
-`chromadb==1.5.9` depends on `onnxruntime`, which currently has no Python 3.14 wheel. The included [`setup.sh`](setup.sh) handles this — it installs Chroma without its embedding-function dependency and then adds the runtime extras Chroma actually needs. `requirements.txt` constrains `chromadb` to Python < 3.14 so a plain `pip install -r requirements.txt` does not break on 3.14; rely on `setup.sh` instead.
+Local development and Docker both use Python 3.12. Keeping them aligned avoids platform-specific native-wheel gaps in dependencies such as `onnxruntime`, which ChromaDB declares as a required dependency. The repo includes `.python-version` as a hint for version managers, but `setup.sh` only requires a working `python3.12` on `PATH`.
 
 ## LLM settings
 
@@ -281,7 +281,7 @@ data/
   uploads/             Per-user original files.
   chroma/              Vector index.
 logs/app.log           Rotating app log.
-setup.sh               One-shot env bootstrap (handles Py 3.14 chromadb caveat).
+setup.sh               One-shot Python 3.12 env bootstrap.
 ```
 
 ## Known follow-ups

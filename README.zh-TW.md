@@ -38,11 +38,11 @@
 
 ```bash
 cd notebooklm-rag-poc
-./setup.sh                                              # 建立 .venv 並處理下方 chromadb 注意事項
+./setup.sh                                              # 建立與 Docker 一致的 Python 3.12 .venv
 NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
-`setup.sh --force` 會先清除任何既有 `.venv`。此 script 會自動偵測 `onnxruntime` 是否有對應目前 Python 版本的 wheel；若沒有，會退回 `chromadb --no-deps` 安裝路徑。
+`setup.sh --force` 會先清除任何既有 `.venv`。此 script 預設使用 `python3.12`；若你的 Python 3.12 binary 名稱不同，可用 `PYTHON_BIN=/path/to/python3.12 ./setup.sh` 指定。
 
 開啟 `http://127.0.0.1:8000` 並登入：
 
@@ -79,11 +79,11 @@ docker compose down
 rm -rf data/ logs/
 ```
 
-映像檔內部使用 Python 3.12，以避開 `chromadb`/`onnxruntime` 的 3.14 wheel 缺口 - 你的 host Python 版本不重要。預設 port 是 8000（可在 `.env` 中用 `HOST_PORT` 覆寫）。
+映像檔使用與本機開發一致的 Python 3.12 runtime。預設 port 是 8000（可在 `.env` 中用 `HOST_PORT` 覆寫）。
 
-### Python 3.14 + ChromaDB 注意事項
+### Python Runtime
 
-`chromadb==1.5.9` 依賴 `onnxruntime`，而目前沒有 Python 3.14 wheel。隨附的 [`setup.sh`](setup.sh) 會處理這件事 - 它會在不安裝 embedding-function dependency 的情況下安裝 Chroma，接著補上 Chroma 實際需要的 runtime extras。`requirements.txt` 將 `chromadb` 限制在 Python < 3.14，因此單純執行 `pip install -r requirements.txt` 不會在 3.14 上壞掉；請改依賴 `setup.sh`。
+本機開發與 Docker 都使用 Python 3.12。讓兩者一致可以避免 `onnxruntime` 這類 native dependency 在特定 Python / 平台組合上缺 wheel 的問題；ChromaDB 會將 `onnxruntime` 宣告為必要 dependency。repo 內的 `.python-version` 可供版本管理工具參考，但 `setup.sh` 只要求 `PATH` 上有可用的 `python3.12`。
 
 ## LLM 設定
 
@@ -279,7 +279,7 @@ data/
   uploads/             每位使用者的原始檔案。
   chroma/              Vector index。
 logs/app.log           輪替 app log。
-setup.sh               一次性 env bootstrap（處理 Py 3.14 chromadb 注意事項）。
+setup.sh               一次性 Python 3.12 env bootstrap。
 ```
 
 ## 已知後續事項

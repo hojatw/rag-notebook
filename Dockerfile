@@ -1,9 +1,10 @@
 # Single-stage image for the NotebookLM-style RAG POC.
 #
 # Why python:3.12-slim:
-#   - chromadb 1.5.9 ships cp310-cp313 wheels but no cp314 yet (and
-#     onnxruntime has no cp313/cp314 wheels at all). 3.12 avoids the
-#     setup.sh --no-deps dance the host script does for Python 3.14.
+#   - Matches the local development runtime pinned by .python-version and
+#     setup.sh.
+#   - Keeps native dependency wheels such as onnxruntime available on the
+#     supported local and container platforms.
 #   - slim variant keeps the image around 250 MB while still carrying glibc
 #     (so we don't fight musl quirks).
 #
