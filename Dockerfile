@@ -14,19 +14,13 @@
 #   user code that gets replaced on the next `docker compose up --build`.
 FROM python:3.12-slim AS runtime
 
-# 1) System packages: only what python-docx / pypdf / chromadb need at
-#    runtime. build-essential is for the rare wheel-less dep; we drop it
-#    immediately after pip install to keep the image small.
+# 1) Runtime defaults. build-essential is installed only inside the dependency
+#    installation layer below, then purged in the same layer so it does not
+#    remain in the final image.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-        build-essential \
-        libxml2 \
- && rm -rf /var/lib/apt/lists/*
 
 # 2) Non-root user. UID 1000 lines up with the default Linux/macOS user so
 #    bind-mounted host directories tend to be writable without chown
@@ -38,15 +32,17 @@ WORKDIR /app
 # 3) Install Python deps before copying the app code so a code-only change
 #    doesn't bust the wheel-install layer cache.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        build-essential \
+        libxml2 \
+ && pip install --no-cache-dir --no-compile -r requirements.txt \
  && apt-get purge -y --auto-remove build-essential \
  && rm -rf /var/lib/apt/lists/*
 
 # 4) App code. Excludes from .dockerignore keep data/, logs/, .venv/, .git/,
 #    __pycache__/ out of the image.
 COPY app ./app
-COPY tests ./tests
-COPY README.md handover.md RETRIEVAL.md ./
 
 # 5) Make sure mount targets exist with the right owner. Empty directories
 #    here get replaced by the bind mount at container start; the chown

@@ -282,6 +282,8 @@ data/
   chroma/              Vector index.
 logs/app.log           Rotating app log.
 setup.sh               One-shot Python 3.12 env bootstrap.
+requirements.txt       Runtime dependencies used by Docker.
+requirements-dev.txt   Local development/test dependencies layered on runtime.
 ```
 
 ## Known follow-ups
@@ -295,6 +297,7 @@ Headline items still outstanding:
 - No offline embedding fallback — embedding model must be configured before uploads are accepted.
 - Keyword search uses `LIKE '%token%'` over SQLite; FTS5 + BM25 is on deck (see [`RETRIEVAL.md`](RETRIEVAL.md)).
 - Hybrid merge uses a fixed `0.7·vector + 0.3·keyword` blend; Reciprocal Rank Fusion is on deck.
+- Qdrant is a future vector-store evaluation candidate; do a bounded spike before replacing Chroma.
 
 ## License
 

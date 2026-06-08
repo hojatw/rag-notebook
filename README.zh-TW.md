@@ -280,6 +280,8 @@ data/
   chroma/              Vector index。
 logs/app.log           輪替 app log。
 setup.sh               一次性 Python 3.12 env bootstrap。
+requirements.txt       Docker 使用的 runtime dependencies。
+requirements-dev.txt   疊在 runtime 上的本機開發 / 測試 dependencies。
 ```
 
 ## 已知後續事項
@@ -293,6 +295,7 @@ setup.sh               一次性 Python 3.12 env bootstrap。
 - 沒有 offline embedding fallback - 接受上傳前必須先設定 embedding model。
 - Keyword search 使用 SQLite 上的 `LIKE '%token%'`；FTS5 + BM25 已列入後續規劃（見 [`RETRIEVAL.md`](RETRIEVAL.md)）。
 - Hybrid merge 使用固定的 `0.7·vector + 0.3·keyword` 混合；Reciprocal Rank Fusion 已列入後續規劃。
+- Qdrant 是未來可評估的 vector store 候選；替換 Chroma 前先做有界限的 spike。
 
 ## License
 

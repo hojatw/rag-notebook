@@ -9,6 +9,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+tests/
 
 # Per-user runtime state — gets bind-mounted from the host, must not bake
 # fixtures or DBs into the image
@@ -30,9 +31,6 @@ Thumbs.db
 
 # Misc
 *.md
-!README.md
-!handover.md
-!RETRIEVAL.md
 *.log
 .env
 .env.*

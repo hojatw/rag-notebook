@@ -44,7 +44,7 @@ fi
 echo "Upgrading pip..."
 "$VENV_PY" -m pip install --upgrade pip --quiet
 
-"$VENV_PY" -m pip install -r requirements.txt
+"$VENV_PY" -m pip install -r requirements-dev.txt
 
 echo
 echo "Done. Start the dev server with:"
