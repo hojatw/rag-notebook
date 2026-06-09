@@ -26,6 +26,14 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA journal_mode = WAL")
+    # WAL makes synchronous=NORMAL safe (no corruption risk; at worst the last
+    # committed transactions are lost on OS crash) and much cheaper on writes —
+    # matters for ingest, which inserts thousands of chunk rows per source.
+    conn.execute("PRAGMA synchronous = NORMAL")
+    # Larger per-connection page cache + memory-mapped reads speed the keyword
+    # LIKE scans and large reads. cache_size is negative => KiB (~16 MB here).
+    conn.execute("PRAGMA cache_size = -16000")
+    conn.execute("PRAGMA mmap_size = 268435456")  # 256 MB
     return conn
 
 

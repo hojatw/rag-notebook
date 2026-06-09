@@ -10,17 +10,17 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## P0 — quick wins / critical for this deployment
 
-### [ ] P0-1 · Concurrent embedding batches
+### [x] P0-1 · Concurrent embedding batches
 - **Issue:** `embed_texts` (`app/llm.py`) sends batches sequentially — `for start in range(...): embeddings.extend(await embed_text_batch(...))`.
 - **Impact:** Indexing a ~900-chunk PDF is ~15 back-to-back round-trips to the shared e5 endpoint; index time is dominated by serial network wait.
 - **Fix:** Fire batches with **bounded** concurrency (`asyncio.gather` with a 2–4 in-flight cap so the shared endpoint isn't overloaded).
 
-### [ ] P0-2 · SQLite write/read pragmas
+### [x] P0-2 · SQLite write/read pragmas
 - **Issue:** `connect()` (`app/db.py`) enables WAL but leaves `synchronous` at the default (FULL) and the default ~2 MB page cache; `journal_mode=WAL` is also re-set on every connect (it is persistent).
 - **Impact:** Extra fsyncs slow ingest writes; small cache slows the `LIKE` keyword scans on large corpora.
 - **Fix:** Add `PRAGMA synchronous = NORMAL` (safe under WAL) + a larger `PRAGMA cache_size` / `PRAGMA mmap_size`. Move the one-time `journal_mode` set out of the per-connection path if convenient.
 
-### [ ] P0-3 · LLM / embedding retry + backoff + generous timeout
+### [x] P0-3 · LLM / embedding retry + backoff + generous timeout
 - **Issue:** No HTTP retry/backoff (architectural follow-up #14); each question makes 3 chat calls (rewrite, rerank, answer) + embeddings.
 - **Impact:** On the shared/throttled endpoint, a single slow or `429` call fails the whole question.
 - **Fix:** Wrap chat + embedding HTTP in exponential backoff (e.g. `tenacity`, ~3 attempts); set a generous `Timeout seconds` in `/settings`.
