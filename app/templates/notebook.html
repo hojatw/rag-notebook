@@ -255,18 +255,7 @@
           {% endif %}
         </article>
       {% else %}
-        <div class="empty chat-empty">
-          {% if indexed_sources %}
-            <h2>Ask anything about your sources</h2>
-            <p class="muted">Type a question below. Answers cite the source passages they came from.</p>
-          {% elif sources %}
-            <h2>Indexing in progress</h2>
-            <p class="muted">Wait for sources to finish indexing on the left, then ask away.</p>
-          {% else %}
-            <h2>Add a source to get started</h2>
-            <p class="muted">Upload a document on the left so this notebook has something to ground against.</p>
-          {% endif %}
-        </div>
+        {% include "_chat_empty.html" %}
       {% endfor %}
     </div>
 

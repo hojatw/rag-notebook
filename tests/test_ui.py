@@ -93,3 +93,43 @@ def test_source_partial_splits_row_and_studio_refresh_events(monkeypatch, tmp_pa
         indexed = client.get(f"/notebooks/{notebook_id}/sources/{indexed_id}/_partial")
         assert indexed.status_code == 200
         assert indexed.headers["HX-Trigger"] == "source-status-changed, indexed-sources-changed"
+
+
+def test_chat_empty_partial_reflects_indexing_state(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+            notebook_id = conn.execute(
+                "INSERT INTO notebooks (user_id, title) VALUES (?, 'Empty')",
+                (user["id"],),
+            ).lastrowid
+
+        url = f"/notebooks/{notebook_id}/_chat-empty"
+
+        # No sources at all.
+        empty = client.get(url)
+        assert empty.status_code == 200
+        assert "Add a source to get started" in empty.text
+        # The container must re-fetch itself when indexing state changes.
+        assert 'hx-trigger="indexed-sources-changed from:body"' in empty.text
+
+        # A source mid-indexing.
+        with db.connect() as conn:
+            source_id = conn.execute(
+                """
+                INSERT INTO sources (user_id, notebook_id, filename, stored_path, status)
+                VALUES (?, ?, 'doc.txt', '/tmp/doc.txt', 'processing')
+                """,
+                (user["id"], notebook_id),
+            ).lastrowid
+        processing = client.get(url)
+        assert "Indexing in progress" in processing.text
+
+        # Once indexed, the center flips to the ask prompt.
+        with db.connect() as conn:
+            conn.execute("UPDATE sources SET status = 'indexed' WHERE id = ?", (source_id,))
+        indexed = client.get(url)
+        assert "Ask anything about your sources" in indexed.text

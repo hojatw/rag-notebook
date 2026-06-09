@@ -1423,45 +1423,6 @@ legend {
   gap: 6px;
 }
 
-.source-picker {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: var(--sp-3);
-}
-
-.source-picker label {
-  display: inline-flex;
-  align-items: center;
-  max-width: 100%;
-  gap: 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-pill);
-  background: var(--surface);
-  padding: 6px 12px 6px 10px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--muted-strong);
-  cursor: pointer;
-  transition: background 120ms var(--ease), border-color 120ms var(--ease), color 120ms var(--ease);
-}
-
-.source-picker label:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.source-picker label:has(input:checked) {
-  background: var(--accent-soft);
-  border-color: var(--line-accent);
-  color: var(--accent-deep);
-}
-
-.source-picker input {
-  width: auto;
-  accent-color: var(--accent);
-}
-
 .question-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 110px;
@@ -2994,6 +2955,4 @@ legend {
 
   .actions { justify-content: flex-start; }
   .actions button { width: 100%; }
-
-  .source-picker { display: grid; }
 }

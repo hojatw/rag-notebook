@@ -682,23 +682,30 @@ def source_preview(
     )
 
 
-@app.get("/notebooks/{notebook_id}/_source-picker", response_class=HTMLResponse)
-def source_picker_partial(
+@app.get("/notebooks/{notebook_id}/_chat-empty", response_class=HTMLResponse)
+def chat_empty_partial(
     request: Request,
     notebook_id: int,
     user: Annotated[dict, Depends(require_login)],
 ):
-    """Return the chat-form source-picker fieldset, refreshed after indexing."""
+    """Return the center chat empty-state, refreshed after indexing.
+
+    Triggered by `indexed-sources-changed` so the center pane flips from
+    "Indexing in progress" to "Ask anything" the moment the first source
+    finishes indexing — matching the left source rows and right Studio
+    sections that already update live, instead of waiting for a page reload.
+    """
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
-        indexed_sources = [
+        sources = [
             dict(row)
             for row in conn.execute(
-                "SELECT * FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' ORDER BY filename",
+                "SELECT id, status FROM sources WHERE notebook_id = ? AND user_id = ?",
                 (notebook_id, user["id"]),
             ).fetchall()
         ]
-    return render(request, "_source_picker.html", {"notebook": notebook, "indexed_sources": indexed_sources})
+    indexed_sources = [s for s in sources if s["status"] == "indexed"]
+    return render(request, "_chat_empty.html", {"notebook": notebook, "sources": sources, "indexed_sources": indexed_sources})
 
 
 @app.get("/notebooks/{notebook_id}/_suggestions", response_class=HTMLResponse)
