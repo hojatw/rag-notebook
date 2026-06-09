@@ -288,7 +288,7 @@ requirements-dev.txt   Local development/test dependencies layered on runtime.
 
 ## Known follow-ups
 
-Headline items still outstanding:
+Performance / scalability work is tracked as a prioritised, tick-off backlog in [`PERFORMANCE.md`](PERFORMANCE.md) (issue → impact → fix → priority). Headline items still outstanding:
 
 - No streaming responses yet — answers arrive after the full LLM call returns.
 - Background ingest uses FastAPI background tasks rather than a worker queue.
