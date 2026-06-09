@@ -149,6 +149,12 @@ def init_db() -> None:
         # ``base_url``. Required when chat and embedding live on different
         # services (e.g. vLLM for chat + Ollama / TEI for embeddings).
         _ensure_column(conn, "llm_settings", "embedding_base_url", "TEXT NOT NULL DEFAULT ''")
+        # Optional per-path embedding prefixes. Some embedding models (notably the
+        # e5 family) need "query: " / "passage: " prefixes for best retrieval;
+        # left empty for models that don't (OpenAI, etc.), so the default behaviour
+        # is unchanged and the app stays embedding-model-agnostic.
+        _ensure_column(conn, "llm_settings", "embedding_query_prefix", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "llm_settings", "embedding_passage_prefix", "TEXT NOT NULL DEFAULT ''")
         # Notebook foreign keys are nullable so existing rows can be migrated in place.
         # Phase 2 routes will populate these on insert; the migration below backfills legacy rows.
         _ensure_column(conn, "sources", "notebook_id", "INTEGER REFERENCES notebooks(id) ON DELETE CASCADE")

@@ -43,6 +43,14 @@
         <input name="embedding_model" value="{{ settings.embedding_model }}" placeholder="text-embedding-3-small or my-embedding-deployment">
       </label>
       <label>
+        Embedding query prefix <span class="muted">(optional &mdash; e.g. <code>query:</code> for e5; a separating space is added automatically; leave blank for OpenAI etc.)</span>
+        <input name="embedding_query_prefix" value="{{ settings.embedding_query_prefix or '' }}" placeholder="query:">
+      </label>
+      <label>
+        Embedding passage prefix <span class="muted">(optional &mdash; e.g. <code>passage:</code> for e5; a separating space is added automatically; leave blank for OpenAI etc.)</span>
+        <input name="embedding_passage_prefix" value="{{ settings.embedding_passage_prefix or '' }}" placeholder="passage:">
+      </label>
+      <label>
         Azure API version
         <input name="api_version" value="{{ settings.api_version }}" placeholder="2024-02-15-preview">
       </label>

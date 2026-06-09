@@ -42,7 +42,7 @@ def local_embed(monkeypatch):
     when settings are missing — this stand-in returns a deterministic local
     hash embedding instead, suitable for asserting retrieval/indexing logic
     but NOT for asserting real model output."""
-    async def fake_embed(texts, settings):
+    async def fake_embed(texts, settings, *, role=None):
         return [local_embedding(t) for t in texts]
     # ingest.py and main.py each bind ``embed_texts`` at import time, so we
     # patch them where they look it up rather than at app.llm.

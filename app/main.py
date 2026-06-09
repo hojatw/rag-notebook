@@ -1349,7 +1349,7 @@ async def retrieve(
     """Retrieve chunks with query rewriting, hybrid search, and optional LLM reranking."""
     started = time.perf_counter()
     queries = await rewrite_search_queries(question, history or [], settings)
-    query_embeddings = await embed_texts(queries, settings)
+    query_embeddings = await embed_texts(queries, settings, role="query")
     if user_id is not None:
         try:
             vector_candidates = query_vectors(query_embeddings, user_id, source_ids, n_results=20)
@@ -1805,6 +1805,8 @@ async def update_settings(
     api_key: str = Form(""),
     chat_model: str = Form(""),
     embedding_model: str = Form(""),
+    embedding_query_prefix: str = Form(""),
+    embedding_passage_prefix: str = Form(""),
     api_version: str = Form("2024-02-15-preview"),
     temperature: float = Form(0.2),
     timeout_seconds: float = Form(60),
@@ -1882,8 +1884,9 @@ async def update_settings(
             """
             UPDATE llm_settings
             SET provider = ?, base_url = ?, embedding_base_url = ?, api_key = ?,
-                chat_model = ?, embedding_model = ?, api_version = ?,
-                temperature = ?, timeout_seconds = ?
+                chat_model = ?, embedding_model = ?,
+                embedding_query_prefix = ?, embedding_passage_prefix = ?,
+                api_version = ?, temperature = ?, timeout_seconds = ?
             WHERE id = 1
             """,
             (
@@ -1893,6 +1896,10 @@ async def update_settings(
                 stored_key,
                 chat_model.strip(),
                 embedding_model.strip(),
+                # Prefixes are stored verbatim — the trailing space in "query: "
+                # / "passage: " is significant, so they must NOT be stripped.
+                embedding_query_prefix,
+                embedding_passage_prefix,
                 api_version.strip(),
                 temperature,
                 timeout_seconds,

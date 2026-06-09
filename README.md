@@ -89,6 +89,8 @@ Local development and Docker both use Python 3.12. Keeping them aligned avoids p
 
 Set the LLM connection at `/settings` while signed in as admin. Both chat and embeddings require a configured OpenAI-compatible (or Azure OpenAI) endpoint — there is no longer an offline-hash fallback for embeddings. The upload form is disabled until the embedding model is configured. The save handler probes the embedding endpoint once to validate connectivity and detect dimension mismatches against the existing Chroma index.
 
+Optional **Embedding query/passage prefix** fields support models that need them: the e5 family (e.g. `multilingual-e5-large`) expects `query: ` on search queries and `passage: ` on indexed text. Leave both blank for OpenAI and other models that don't use prefixes — the prefix only changes what is sent to the embedding endpoint, never the stored chunk, so the app stays model-agnostic.
+
 OpenAI-compatible:
 
 ```text
