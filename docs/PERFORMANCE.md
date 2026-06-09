@@ -39,19 +39,20 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Impact:** Full-table scan per query; slows down past tens of thousands of chunks. See `RETRIEVAL.md` open follow-ups.
 - **Fix:** FTS5 virtual table + BM25 ranking.
 
-### [ ] P1-3 · Cap or remove the Chroma-failure fallback
-- **Issue:** When Chroma is unavailable, `retrieve()` (`app/main.py` ~1377-1393) decodes **every** chunk's `embedding_json` and computes cosine in pure Python.
+### [x] P1-3 · Cap the Chroma-failure fallback
+- **Issue:** When Chroma is unavailable, `retrieve()` decoded **every** chunk's `embedding_json` and computed cosine in pure Python.
 - **Impact:** `O(all_chunks × queries × dim)` per request — a transient Chroma hiccup at scale would hang / melt the process.
-- **Fix:** Bound the fallback (row cap) or drop it entirely once Chroma sync is trusted.
+- **Fix:** **Done.** `fetch_candidate_rows` now `ORDER BY chunks.id DESC LIMIT FALLBACK_MAX_CHUNKS` (2000), so the degraded fallback is bounded; the failure logs a warning pointing at `/admin/index` Rebuild. The explicit "score these rows" path (`user_id=None`, used by tests) is unaffected.
 
 ---
 
 ## P2 — scale / cleanup
 
-### [ ] P2-1 · Stop storing vectors in SQLite (`embedding_json`)
-- **Issue:** Every chunk's vector is persisted as JSON in SQLite **and** in Chroma; only the (rare) fallback above reads the SQLite copy.
-- **Impact:** Doubles vector storage (~12 KB/vector of JSON for 1024-dim e5; ~12 GB at 1M chunks) and adds `dumps`/`loads` CPU on every ingest.
-- **Fix:** After P1-3, drop the column (or store raw `float32` bytes instead of JSON). Depends on P1-3.
+### [ ] P2-1 · Reduce the SQLite vector copy (`embedding_json`) — *tradeoff, not a free cleanup*
+- **Issue:** Every chunk's vector is persisted as JSON in SQLite **and** in Chroma.
+- **Correction (2026-06-09):** an earlier note here claimed only the fallback reads the SQLite copy — that was wrong. `vector_store.py:sync_from_sqlite` reads `embedding_json` to (re)build Chroma, so **SQLite is the durable source of truth and Chroma is a derived index** rebuilt from it without re-embedding (startup diff-sync, `/admin/index` Rebuild). Dropping the column means Chroma becomes the only vector copy; any rebuild/recovery would require **re-embedding the whole corpus** (cost + time + the endpoint being up).
+- **Impact:** ~12 KB/vector of JSON (~12 GB at 1M chunks) + `dumps`/`loads` CPU on ingest — but it buys cheap, offline index rebuilds.
+- **Fix (decision needed):** Don't simply delete. Options: (a) keep as-is (durability > disk); (b) store raw `float32` bytes instead of JSON (~4 KB/vector, ~3× smaller, still rebuildable) — the better middle ground; (c) drop it and accept re-embedding on rebuild. Recommend **(b)** if disk matters, else leave it.
 
 ### [ ] P2-2 · Run vector + keyword search concurrently
 - **Issue:** `retrieve()` calls `query_vectors(...)` then `keyword_candidates_from_sqlite(...)` sequentially, though they are independent.
