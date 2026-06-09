@@ -192,6 +192,26 @@ def test_embed_texts_is_model_agnostic_without_prefix(monkeypatch):
     assert captured["texts"] == ["a"]
 
 
+def test_embed_texts_adds_missing_separator_space(monkeypatch):
+    captured = _capture_batch(monkeypatch)
+    # Users typically type the prefix without the trailing space — it's added.
+    typed_without_space = {
+        "api_key": "x",
+        "embedding_model": "e5",
+        "embedding_query_prefix": "query:",
+        "embedding_passage_prefix": "passage:",
+    }
+    asyncio.run(llm.embed_texts(["weather"], typed_without_space, role="query"))
+    assert captured["texts"] == ["query: weather"]
+    asyncio.run(llm.embed_texts(["chunk"], typed_without_space, role="passage"))
+    assert captured["texts"] == ["passage: chunk"]
+
+    # An existing trailing space is respected, not doubled.
+    with_space = {"api_key": "x", "embedding_model": "e5", "embedding_query_prefix": "query: "}
+    asyncio.run(llm.embed_texts(["weather"], with_space, role="query"))
+    assert captured["texts"] == ["query: weather"]
+
+
 # -------------------- P0-3: LLM/embedding HTTP retry + backoff --------------------
 
 

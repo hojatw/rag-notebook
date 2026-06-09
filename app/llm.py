@@ -179,12 +179,22 @@ def _embedding_prefix(settings: dict[str, Any], role: str | None) -> str:
     ``"passage: "`` on indexed text. The prefixes are configured in settings
     and default to empty, so models that don't want them (OpenAI, etc.) are
     unaffected and the app stays embedding-model-agnostic.
+
+    Defensive: the convention needs a separator after the prefix, but people
+    typically type ``"query:"`` without the trailing space. If a non-empty
+    prefix doesn't already end in whitespace, append one space so the prefix
+    is never glued onto the text (e.g. ``"query:weather"``). The stored value
+    is left as-typed; only the composed string is normalised.
     """
     if role == "query":
-        return settings.get("embedding_query_prefix") or ""
-    if role == "passage":
-        return settings.get("embedding_passage_prefix") or ""
-    return ""
+        prefix = settings.get("embedding_query_prefix") or ""
+    elif role == "passage":
+        prefix = settings.get("embedding_passage_prefix") or ""
+    else:
+        return ""
+    if prefix and not prefix[-1].isspace():
+        prefix += " "
+    return prefix
 
 
 async def embed_texts(
