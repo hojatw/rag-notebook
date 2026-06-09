@@ -7,10 +7,12 @@ Covers:
   - Overlap behaviour
   - Long-sentence fallback (soft punctuation, then hard cut)
   - Edge cases (empty, whitespace, single short sentence)
+  - Cross-section packing + span labels (chunk_sections)
 """
 from app.ingest import (
     CJK_TARGET_CHARS,
     LATIN_TARGET_CHARS,
+    chunk_sections,
     chunk_text,
     is_mostly_cjk,
     split_sentences,
@@ -183,3 +185,55 @@ def test_chunk_realistic_cjk_paragraph_keeps_sentences_intact():
     for chunk in out:
         last = chunk.rstrip()
         assert last.endswith("。") or last == paragraph, f"chunk ends mid-sentence: {last[-20:]!r}"
+
+
+# -------------------- cross-section packing (chunk_sections) --------------------
+
+
+def test_chunk_sections_single_section_matches_chunk_text():
+    # One section must behave exactly like chunk_text over the same text.
+    paragraph = (
+        "颱風是一種劇烈的熱帶氣旋。"
+        "熱帶氣旋就是在熱帶海洋上發生的低氣壓。"
+        "在北半球的颱風，其近地面的風，以颱風中心為中心，呈逆時針方向轉動。"
+        "在南半球則呈順時針方向轉動。"
+    ) * 4
+    via_sections = [body for _, body in chunk_sections([("document", paragraph)])]
+    assert via_sections == chunk_text(paragraph)
+
+
+def test_chunk_sections_packs_many_small_sections_to_target():
+    # Mimic the PDF path: lots of tiny per-paragraph sections. They must be
+    # packed up to the CJK target instead of staying one-fragment-per-section.
+    sentence = "智慧排程系統根據任務優先序與飛行員可用性自動產生派飛建議表。"
+    sections = [(f"page 1 paragraph {i}", sentence) for i in range(1, 41)]
+    out = chunk_sections(sections)
+
+    assert len(out) < len(sections)  # merged, not one chunk per paragraph
+    sizes = [len(body) for _, body in out]
+    # Every chunk except possibly the last should be filled near the target,
+    # and none may exceed it.
+    assert max(sizes) <= CJK_TARGET_CHARS
+    assert all(size > CJK_TARGET_CHARS // 2 for size in sizes[:-1])
+
+
+def test_chunk_sections_labels_span_first_to_last():
+    sentence = "智慧排程系統根據任務優先序自動產生派飛建議表。"
+    sections = [(f"page 1 paragraph {i}", sentence) for i in range(1, 21)]
+    out = chunk_sections(sections)
+
+    # A chunk that merged several paragraph blocks is labelled as a span.
+    spanning = [loc for loc, _ in out if "–" in loc]
+    assert spanning, "expected at least one merged chunk labelled as a span"
+    first_label = out[0][0]
+    assert first_label.startswith("page 1 paragraph 1")
+    assert "–" in first_label  # "page 1 paragraph 1 – page 1 paragraph N"
+
+
+def test_chunk_sections_single_contributor_keeps_plain_label():
+    # A lone section long enough to split into several chunks: every chunk must
+    # keep that section's own label (never a span), since nothing else merged in.
+    big = "排程演算法可採用限制滿足、整數規劃、啟發式演算法或混合式最佳化方法。" * 30
+    out = chunk_sections([("page 15 paragraph 2", big)])
+    assert len(out) > 1  # the section genuinely splits across multiple chunks
+    assert all(loc == "page 15 paragraph 2" for loc, _ in out)

@@ -44,14 +44,17 @@ question
 
 ### 1. Chunking (offline, at ingest)
 
-See [`app/ingest.py:chunk_text`](app/ingest.py:139). Sentence-aware splitter with CJK awareness:
+Ingest chunks via [`app/ingest.py:chunk_sections`](app/ingest.py); [`chunk_text`](app/ingest.py) is a thin single-text wrapper over it. Sentence-aware splitter with CJK awareness:
 
 - **Sentence boundaries** — `[。！？]+ | [.!?](?=\s|$) | \n+`. CJK terminators stand alone; Latin period/!/? require trailing whitespace so decimals (`3.14`), URLs, and most abbreviations are not split.
 - **Auto-sized targets** — `is_mostly_cjk(text, threshold=0.30)` picks `CJK_TARGET_CHARS = 400` vs `LATIN_TARGET_CHARS = 800`. CJK characters carry ~2× the information density per char of English so chunk-char budgets differ accordingly.
+- **Cross-section packing** — `chunk_sections` fills each chunk up to the target with sentences drawn **across consecutive extractor sections**, not resetting at every section boundary. This is what keeps formats apart-equal: the PDF extractor emits many small `page N paragraph K` blocks, and per-section chunking used to leave each short paragraph as its own tiny fragment (e.g. a 36 KB PDF → 559 chunks, median ~53 chars), while single-section TXT/MD filled to target (~106 chunks, median ~380). Packing across sections makes both produce comparable, well-sized chunks. Each sentence keeps its originating `location`; a chunk that merged several sections is labelled as a first-to-last span (`page 1 paragraph 1 – page 2 paragraph 3`) via `_span_label`.
 - **Sentence-level overlap** — `DEFAULT_OVERLAP_SENTENCES = 1`. Carry the last *sentence*, not the last *N characters*, so chunk boundaries never split a grammatical clause.
 - **Fallbacks for long sentences** — soft punctuation (`[，、；,;]`) first, then a hard char cut as a last resort to keep every output chunk `<= target_chars`.
 
 Known limitation: "Mr. Smith" splits at "Mr." — acceptable for a POC.
+
+> **Re-index after chunking changes.** Chunk granularity is fixed at ingest. Sources indexed before a chunking change keep their old chunks until re-indexed — use `/admin/index` Rebuild (or per-source reindex) to apply it.
 
 ### 2. Query rewriting
 
