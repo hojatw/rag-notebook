@@ -1,0 +1,25 @@
+{% set emoji_options = ["📓", "📚", "📝", "💡", "🧠", "🔬", "📊", "💼", "🎯", "🧪", "🗂️", "🌱", "🔖", "📌", "🧭", "⚙️"] %}
+{% set current_emoji = (emoji_value or "📓").strip() %}
+{# Emoji values never contain single quotes, so single-quoted JS string literals
+   are safe here. (tojson emits DOUBLE quotes, which collide with the outer
+   double-quoted HTML attribute and break Alpine parsing — that was the bug.) #}
+<div class="emoji-picker-field" x-data="{ selected: '{{ current_emoji }}' }">
+  <span class="field-label">{{ emoji_label|default('Emoji') }}</span>
+  <input type="hidden" name="emoji" x-model="selected" value="{{ current_emoji }}">
+  <div class="emoji-picker" role="radiogroup" aria-label="{{ emoji_label|default('Emoji') }}">
+    {% if current_emoji and current_emoji not in emoji_options %}
+      <button type="button"
+              class="emoji-choice"
+              :class="{ 'is-selected': selected === '{{ current_emoji }}' }"
+              :aria-pressed="selected === '{{ current_emoji }}'"
+              @click="selected = '{{ current_emoji }}'">{{ current_emoji }}</button>
+    {% endif %}
+    {% for option in emoji_options %}
+      <button type="button"
+              class="emoji-choice"
+              :class="{ 'is-selected': selected === '{{ option }}' }"
+              :aria-pressed="selected === '{{ option }}'"
+              @click="selected = '{{ option }}'">{{ option }}</button>
+    {% endfor %}
+  </div>
+</div>

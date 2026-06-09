@@ -140,10 +140,9 @@
                   :class="{ 'is-open': open }">Notebook ▾</button>
           <div class="convo-menu notebook-menu-content" x-show="open" style="display: none;">
             <form action="/notebooks/{{ notebook.id }}/rename" method="post" class="rename-form" data-loading-form>
-              <label>
-                Emoji
-                <input name="emoji" value="{{ notebook.emoji }}" maxlength="8">
-              </label>
+              {% with emoji_value=notebook.emoji or "📓" %}
+                {% include "_emoji_picker.html" %}
+              {% endwith %}
               <label>
                 Title
                 <input name="title" value="{{ notebook.title }}" required>

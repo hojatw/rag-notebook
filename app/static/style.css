@@ -2076,7 +2076,8 @@ legend {
   gap: 8px;
 }
 
-.rename-form label {
+.rename-form label,
+.rename-form .emoji-picker-field {
   font-size: 12px;
 }
 
@@ -2135,7 +2136,8 @@ legend {
   z-index: 5;
 }
 
-.new-notebook-form label {
+.new-notebook-form label,
+.new-notebook-form .emoji-picker-field {
   display: grid;
   gap: 4px;
   font-size: 12px;
@@ -2147,7 +2149,53 @@ legend {
   padding: 6px 10px;
 }
 
-.new-notebook-emoji input { width: 64px; }
+.emoji-picker-field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted-strong);
+}
+
+.emoji-picker-field .field-label {
+  font-weight: 600;
+}
+
+.emoji-picker {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.emoji-choice {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  width: 100%;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  box-shadow: none;
+}
+
+.emoji-choice:hover {
+  background: var(--accent-soft);
+  border-color: var(--line-accent);
+  color: var(--text);
+  transform: none;
+  box-shadow: none;
+}
+
+.emoji-choice.is-selected {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
 
 /* ---------------------------------------------------------------- chat empty state */
 
