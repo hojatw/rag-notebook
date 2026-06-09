@@ -278,3 +278,36 @@ def test_pin_note_is_idempotent(fresh_modules):
             (nb_id, msg_id),
         ).fetchone()["c"]
     assert count == 1
+
+
+def test_fetch_candidate_rows_is_capped(monkeypatch, tmp_path):
+    """The Chroma-down fallback must not load the whole corpus — it is capped."""
+    monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
+    import app.db as db
+    import app.vector_store as vector_store
+    import app.ingest as ingest
+    import app.main as main
+
+    for module in (db, vector_store, ingest, main):
+        importlib.reload(module)
+    vector_store.reset_client()
+    db.init_db()
+
+    with db.connect() as conn:
+        user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+        source_id = conn.execute(
+            "INSERT INTO sources (user_id, filename, stored_path, status) VALUES (?, 'c.txt', '/tmp/c.txt', 'indexed')",
+            (user["id"],),
+        ).lastrowid
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json) "
+                "VALUES (?, ?, ?, 'document', ?, '[]')",
+                (user["id"], source_id, i, f"chunk {i}"),
+            )
+
+    # All-sources branch and the source_ids branch both honour the cap.
+    assert len(main.fetch_candidate_rows(user["id"], [], limit=2)) == 2
+    assert len(main.fetch_candidate_rows(user["id"], [source_id], limit=3)) == 3
+    # Default cap is large enough not to clip a tiny corpus.
+    assert len(main.fetch_candidate_rows(user["id"], [])) == 5

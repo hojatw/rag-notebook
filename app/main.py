@@ -1337,6 +1337,13 @@ async def ask(
 # the eval harness can still observe raw retrieval scores.
 LOW_CONFIDENCE_THRESHOLD = 0.25
 
+# Upper bound on rows pulled into the degraded "Chroma is down" fallback in
+# retrieve(). Without it, a transient Chroma failure would decode every chunk's
+# embedding from SQLite and run Python-side cosine over the whole corpus —
+# O(all_chunks) memory + CPU that melts the box at scale. The fallback has no
+# real vector index, so it is a best-effort safety net, not the primary path.
+FALLBACK_MAX_CHUNKS = 2000
+
 
 async def retrieve(
     question: str,
@@ -1369,7 +1376,11 @@ async def retrieve(
             )
             return retrieved
         except Exception:
-            logger.exception("retrieve_vector_failed user_id=%s", user_id)
+            logger.warning(
+                "retrieve_vector_failed user_id=%s — falling back to capped SQLite scan (max=%s chunks); "
+                "results are degraded until Chroma recovers (try /admin/index Rebuild)",
+                user_id, FALLBACK_MAX_CHUNKS, exc_info=True,
+            )
             rows = fetch_candidate_rows(user_id, source_ids or [])
     if not rows:
         logger.info("retrieve_skipped reason=no_candidate_rows")
@@ -1405,8 +1416,13 @@ async def retrieve(
     return retrieved
 
 
-def fetch_candidate_rows(user_id: int, source_ids: list[int]) -> list:
-    """Fetch SQLite chunks for fallback retrieval when Chroma is unavailable."""
+def fetch_candidate_rows(user_id: int, source_ids: list[int], limit: int = FALLBACK_MAX_CHUNKS) -> list:
+    """Fetch SQLite chunks for the degraded fallback used when Chroma is down.
+
+    Capped at ``limit`` rows (most recent first) so a Chroma outage degrades
+    gracefully instead of decoding every chunk's embedding and melting the box
+    at corpus scale. This path has no real vector index — best-effort only.
+    """
     with connect() as conn:
         if source_ids:
             placeholders = ",".join("?" for _ in source_ids)
@@ -1415,16 +1431,20 @@ def fetch_candidate_rows(user_id: int, source_ids: list[int]) -> list:
                 SELECT chunks.*, sources.filename
                 FROM chunks JOIN sources ON sources.id = chunks.source_id
                 WHERE chunks.user_id = ? AND sources.status = 'indexed' AND chunks.source_id IN ({placeholders})
+                ORDER BY chunks.id DESC
+                LIMIT ?
                 """,
-                (user_id, *source_ids),
+                (user_id, *source_ids, limit),
             ).fetchall()
         return conn.execute(
             """
             SELECT chunks.*, sources.filename
             FROM chunks JOIN sources ON sources.id = chunks.source_id
             WHERE chunks.user_id = ? AND sources.status = 'indexed'
+            ORDER BY chunks.id DESC
+            LIMIT ?
             """,
-            (user_id,),
+            (user_id, limit),
         ).fetchall()
 
 
