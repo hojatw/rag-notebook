@@ -22,7 +22,7 @@ Include reproduction steps and the affected version/commit. We aim to acknowledg
 
 ## Known hardening follow-ups
 
-These are deliberately deferred for the POC and tracked in `README.md` / `AGENTS.md`. Address them before any untrusted-network exposure:
+These are deliberately deferred for the POC and tracked in `../README.md` / `../AGENTS.md`. Address them before any untrusted-network exposure:
 
 - No CSRF protection on POST routes.
 - No LLM/embedding HTTP retry/backoff.

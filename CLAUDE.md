@@ -6,7 +6,8 @@ NotebookLM-style RAG proof of concept: FastAPI + Jinja2 + HTMX + Alpine.js, SQLi
 
 - **@AGENTS.md** — the engineering rulebook (runtime, verification, persistence safety, conventions, security, git hygiene). Follow it; this file only adds Claude-specific orientation on top.
 - `README.md` — user-facing feature set, the full route list, LLM settings, run/test.
-- `RETRIEVAL.md` — read before changing retrieval, chunking, ranking, reranking, evals, or vector-store behavior.
+- `docs/RETRIEVAL.md` — read before changing retrieval, chunking, ranking, reranking, evals, or vector-store behavior.
+- `docs/PERFORMANCE.md` / `docs/QUALITY.md` — prioritised, tick-off backlogs for performance and retrieval-quality work.
 - `handover.md` (gitignored, when present) — cross-session work state; useful context, not a durable rule source.
 
 ## Commands

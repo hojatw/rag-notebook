@@ -1,8 +1,8 @@
 # Retrieval — strategy & methodology
 
-This doc explains how the NotebookLM-style POC turns a user question into the chunks the answer LLM sees. It is the canonical retrieval reference; [`README.md`](README.md) describes the user-facing feature set and operational workflow.
+This doc explains how the NotebookLM-style POC turns a user question into the chunks the answer LLM sees. It is the canonical retrieval reference; [`README.md`](../README.md) describes the user-facing feature set and operational workflow.
 
-Last updated: 2026-05-16. Pipeline lives in [app/main.py](app/main.py) (`retrieve()`, `ask()`), [app/llm.py](app/llm.py) (rewrite / rerank / embedding), [app/ingest.py](app/ingest.py) (chunking), [app/vector_store.py](app/vector_store.py) (Chroma).
+Last updated: 2026-05-16. Pipeline lives in [app/main.py](../app/main.py) (`retrieve()`, `ask()`), [app/llm.py](../app/llm.py) (rewrite / rerank / embedding), [app/ingest.py](../app/ingest.py) (chunking), [app/vector_store.py](../app/vector_store.py) (Chroma).
 
 ## Pipeline at a glance
 
@@ -44,7 +44,7 @@ question
 
 ### 1. Chunking (offline, at ingest)
 
-Ingest chunks via [`app/ingest.py:chunk_sections`](app/ingest.py); [`chunk_text`](app/ingest.py) is a thin single-text wrapper over it. Sentence-aware splitter with CJK awareness:
+Ingest chunks via [`app/ingest.py:chunk_sections`](../app/ingest.py); [`chunk_text`](../app/ingest.py) is a thin single-text wrapper over it. Sentence-aware splitter with CJK awareness:
 
 - **Sentence boundaries** — `[。！？]+ | [.!?](?=\s|$) | \n+`. CJK terminators stand alone; Latin period/!/? require trailing whitespace so decimals (`3.14`), URLs, and most abbreviations are not split.
 - **Auto-sized targets** — `is_mostly_cjk(text, threshold=0.30)` picks `CJK_TARGET_CHARS = 400` vs `LATIN_TARGET_CHARS = 800`. CJK characters carry ~2× the information density per char of English so chunk-char budgets differ accordingly.
@@ -58,32 +58,32 @@ Known limitation: "Mr. Smith" splits at "Mr." — acceptable for a POC.
 
 ### 2. Query rewriting
 
-[`app/llm.py:rewrite_search_queries`](app/llm.py:138). Sends the question + last 6 history turns to the chat model with `QUERY_REWRITE_PROMPT`; the model returns 1–4 retrieval-focused rewrites as a JSON array. Cleaned and deduped via `unique_nonempty`, then prepended with the original question and capped at 5.
+[`app/llm.py:rewrite_search_queries`](../app/llm.py:138). Sends the question + last 6 history turns to the chat model with `QUERY_REWRITE_PROMPT`; the model returns 1–4 retrieval-focused rewrites as a JSON array. Cleaned and deduped via `unique_nonempty`, then prepended with the original question and capped at 5.
 
 Skipped (`return [question]`) when no chat key/model is configured, or on any parse/HTTP failure — degrades to single-query retrieval rather than failing the request.
 
 ### 3a. Vector search
 
-[`app/vector_store.py:query`](app/vector_store.py:101). All rewritten queries are embedded in one batch ([`embed_texts`](app/llm.py:82), batch size 64) and Chroma is queried with the full list of vectors. Chroma collection uses cosine space (`metadata={"hnsw:space": "cosine"}`). Per-chunk `vector_score = max(0, 1 - distance)`; for chunks that match multiple queries we keep the best score.
+[`app/vector_store.py:query`](../app/vector_store.py:101). All rewritten queries are embedded in one batch ([`embed_texts`](../app/llm.py:82), batch size 64) and Chroma is queried with the full list of vectors. Chroma collection uses cosine space (`metadata={"hnsw:space": "cosine"}`). Per-chunk `vector_score = max(0, 1 - distance)`; for chunks that match multiple queries we keep the best score.
 
 Filter is always `{user_id}` (multi-tenant isolation) and adds `{source_id: {$in: [...]}}` when the user picked specific sources in the chat form. `n_results=20`.
 
-No-embedding-fallback policy: `embed_texts` raises when the embedding model isn't configured (previously fell back to a SHA-256 hash bag-of-tokens vector — removed because the resulting vectors are dim-incompatible with any real model and silent fallback masked misconfiguration as poor retrieval). The upload route refuses ingestion when LLM isn't configured ([`llm_settings_status`](app/main.py:232)), and `/settings` save probes the embedding endpoint to validate connectivity + dim consistency against the existing Chroma index.
+No-embedding-fallback policy: `embed_texts` raises when the embedding model isn't configured (previously fell back to a SHA-256 hash bag-of-tokens vector — removed because the resulting vectors are dim-incompatible with any real model and silent fallback masked misconfiguration as poor retrieval). The upload route refuses ingestion when LLM isn't configured ([`llm_settings_status`](../app/main.py:232)), and `/settings` save probes the embedding endpoint to validate connectivity + dim consistency against the existing Chroma index.
 
 ### 3b. Keyword search
 
-[`app/main.py:keyword_candidates_from_sqlite`](app/main.py:1002). Tokenises every rewritten query via [`search_tokens`](app/main.py:1086):
+[`app/main.py:keyword_candidates_from_sqlite`](../app/main.py:1002). Tokenises every rewritten query via [`search_tokens`](../app/main.py:1086):
 
 - Latin: `re.findall(r"[\w.-]+", text.lower())` minus a small EN+ZH stopword set; tokens shorter than 2 chars dropped.
-- CJK: 2-grams plus 3-grams over the `[一-鿿]` characters of the text ([`cjk_ngrams`](app/main.py:1135)).
+- CJK: 2-grams plus 3-grams over the `[一-鿿]` characters of the text ([`cjk_ngrams`](../app/main.py:1135)).
 
-Unique tokens are capped at 12, fed into a single `WHERE chunks.text LIKE ? OR ...` query (with `LIMIT limit*4`), then re-ranked locally by [`keyword_score`](app/main.py:1069) — token overlap fraction with a `+0.15` phrase bonus when the full query string appears verbatim. Returns top-20.
+Unique tokens are capped at 12, fed into a single `WHERE chunks.text LIKE ? OR ...` query (with `LIMIT limit*4`), then re-ranked locally by [`keyword_score`](../app/main.py:1069) — token overlap fraction with a `+0.15` phrase bonus when the full query string appears verbatim. Returns top-20.
 
 This is the part most worth replacing with **SQLite FTS5 + BM25** when corpus size grows — see *Open follow-ups* below.
 
 ### 4. Hybrid merge
 
-[`app/main.py:merge_candidates`](app/main.py:1046). Vector + keyword candidate lists are deduped by `chunk_id`, scored as
+[`app/main.py:merge_candidates`](../app/main.py:1046). Vector + keyword candidate lists are deduped by `chunk_id`, scored as
 
 ```
 score = 0.7 · max(0, vector_score) + 0.3 · keyword_score
@@ -95,7 +95,7 @@ The 0.7/0.3 weighting is empirical (recall@5 = 100%, MRR ≈ 0.88 against the de
 
 ### 5. LLM rerank
 
-[`app/llm.py:rerank_chunks`](app/llm.py:161). Up to 20 candidates plus the question go to the chat model with `RERANK_PROMPT`; the model returns `[{"id": 1, "score": 0.92}, ...]`. Each scored candidate's final score is
+[`app/llm.py:rerank_chunks`](../app/llm.py:161). Up to 20 candidates plus the question go to the chat model with `RERANK_PROMPT`; the model returns `[{"id": 1, "score": 0.92}, ...]`. Each scored candidate's final score is
 
 ```
 combined = 0.8 · rerank_score + 0.2 · hybrid_score
@@ -110,13 +110,13 @@ Full chunk text is sent (no `text[:900]` truncation) because chunks are already 
 
 ### 6. Low-confidence abstain
 
-[`app/main.py:ask`](app/main.py:776), threshold `LOW_CONFIDENCE_THRESHOLD = 0.25` ([app/main.py:909](app/main.py:909)). When `not retrieved` or `top.score < 0.25` we skip `generate_answer` entirely and return the canned "I cannot determine that from the selected sources." This avoids paying for a generation call that would either hallucinate or echo the same refusal back.
+[`app/main.py:ask`](../app/main.py:776), threshold `LOW_CONFIDENCE_THRESHOLD = 0.25` ([app/main.py:909](../app/main.py:909)). When `not retrieved` or `top.score < 0.25` we skip `generate_answer` entirely and return the canned "I cannot determine that from the selected sources." This avoids paying for a generation call that would either hallucinate or echo the same refusal back.
 
 `metadata.outcome` is set to `low_confidence` / `no_retrieval` / `answered` / `error` so the per-message debug pane can render the reason.
 
 ### 7. Answer generation
 
-[`app/llm.py:generate_answer`](app/llm.py:124) with `SYSTEM_PROMPT` ([app/llm.py:11](app/llm.py:11)):
+[`app/llm.py:generate_answer`](../app/llm.py:124) with `SYSTEM_PROMPT` ([app/llm.py:11](../app/llm.py:11)):
 
 - "Answer only from the provided source excerpts." (grounding)
 - "Reply in the same language as the user's question (Traditional Chinese question → Traditional Chinese answer)." (stops the CJK-question / EN-answer regression)
@@ -127,9 +127,9 @@ User prompt is `"Source excerpts:\n{numbered chunks}\n\nQuestion: {question}"`.
 
 ### 8. Citation filtering & UI
 
-[`app/main.py:ask`](app/main.py:776) parses `[N]` markers out of the answer with `re.finditer(r"\[(\d+)\]", answer)` and only persists citations the model actually referenced — same behaviour as NotebookLM. Falls back to all retrieved chunks if the answer contains no markers (defensive: lets the user still see what was retrieved).
+[`app/main.py:ask`](../app/main.py:776) parses `[N]` markers out of the answer with `re.finditer(r"\[(\d+)\]", answer)` and only persists citations the model actually referenced — same behaviour as NotebookLM. Falls back to all retrieved chunks if the answer contains no markers (defensive: lets the user still see what was retrieved).
 
-[`citation_payload`](app/main.py:1145) serialises each chunk with `score / vector_score / keyword_score / rerank_score` so the per-message debug pane (`📊 N chunks · retrieved Xms · generated Yms · top score Z`) can show the table.
+[`citation_payload`](../app/main.py:1145) serialises each chunk with `score / vector_score / keyword_score / rerank_score` so the per-message debug pane (`📊 N chunks · retrieved Xms · generated Yms · top score Z`) can show the table.
 
 Per-message `messages.metadata_json` row carries `{retrieval_ms, generation_ms, retrieved_chunks, top_score, outcome, threshold?, answer_chars?, error?}` for the debug pane. Legacy messages stored before the column existed default to `'{}'` and render with whatever data is available.
 
@@ -186,19 +186,19 @@ for q in questions:
 
 | Knob | Default | Location | What it controls |
 |---|---:|---|---|
-| `LATIN_TARGET_CHARS` | 800 | [app/ingest.py:71](app/ingest.py:71) | Max chars per Latin-dominant chunk |
-| `CJK_TARGET_CHARS` | 400 | [app/ingest.py:72](app/ingest.py:72) | Max chars per CJK-dominant chunk |
-| `DEFAULT_OVERLAP_SENTENCES` | 1 | [app/ingest.py:73](app/ingest.py:73) | Sentences carried into the next chunk |
-| `is_mostly_cjk` threshold | 0.30 | [app/ingest.py:76](app/ingest.py:76) | CJK char ratio that flips to CJK chunk size |
-| Vector `n_results` | 20 | [app/main.py:926](app/main.py:926) | Per-query vector candidates pulled from Chroma |
-| Keyword `limit` | 20 | [app/main.py:927](app/main.py:927) | Top-N kept after SQLite LIKE search |
-| Hybrid weights | 0.7 / 0.3 | [app/main.py:1053](app/main.py:1053) | `vector` / `keyword` blend in `merge_candidates` |
-| Rerank candidates | 20 | [app/llm.py:176](app/llm.py:176) | How many candidates the LLM reranker sees |
-| Rerank weights | 0.8 / 0.2 | [app/llm.py:191](app/llm.py:191) | `rerank` / `hybrid` blend after LLM rerank |
-| Rerank `limit` | 6 | [app/llm.py:161](app/llm.py:161) | Chunks returned from `rerank_chunks` |
-| `LOW_CONFIDENCE_THRESHOLD` | 0.25 | [app/main.py:909](app/main.py:909) | Top-score under which `ask()` abstains |
-| History turns for rewrite | 6 | [app/llm.py:144](app/llm.py:144) | Trailing history passed to query rewriter |
-| Embedding batch size | 64 | [app/llm.py:35](app/llm.py:35) | Per-HTTP batch for `embed_texts` |
+| `LATIN_TARGET_CHARS` | 800 | [app/ingest.py:71](../app/ingest.py:71) | Max chars per Latin-dominant chunk |
+| `CJK_TARGET_CHARS` | 400 | [app/ingest.py:72](../app/ingest.py:72) | Max chars per CJK-dominant chunk |
+| `DEFAULT_OVERLAP_SENTENCES` | 1 | [app/ingest.py:73](../app/ingest.py:73) | Sentences carried into the next chunk |
+| `is_mostly_cjk` threshold | 0.30 | [app/ingest.py:76](../app/ingest.py:76) | CJK char ratio that flips to CJK chunk size |
+| Vector `n_results` | 20 | [app/main.py:926](../app/main.py:926) | Per-query vector candidates pulled from Chroma |
+| Keyword `limit` | 20 | [app/main.py:927](../app/main.py:927) | Top-N kept after SQLite LIKE search |
+| Hybrid weights | 0.7 / 0.3 | [app/main.py:1053](../app/main.py:1053) | `vector` / `keyword` blend in `merge_candidates` |
+| Rerank candidates | 20 | [app/llm.py:176](../app/llm.py:176) | How many candidates the LLM reranker sees |
+| Rerank weights | 0.8 / 0.2 | [app/llm.py:191](../app/llm.py:191) | `rerank` / `hybrid` blend after LLM rerank |
+| Rerank `limit` | 6 | [app/llm.py:161](../app/llm.py:161) | Chunks returned from `rerank_chunks` |
+| `LOW_CONFIDENCE_THRESHOLD` | 0.25 | [app/main.py:909](../app/main.py:909) | Top-score under which `ask()` abstains |
+| History turns for rewrite | 6 | [app/llm.py:144](../app/llm.py:144) | Trailing history passed to query rewriter |
+| Embedding batch size | 64 | [app/llm.py:35](../app/llm.py:35) | Per-HTTP batch for `embed_texts` |
 
 Change one knob, rerun `python -m tests.eval_retrieval`, compare numbers.
 
@@ -240,9 +240,9 @@ Other ideas, in rough order of cost-benefit:
 
 ## Pointers
 
-- Retrieval orchestration: [`app/main.py:retrieve`](app/main.py:912), [`app/main.py:ask`](app/main.py:776)
-- LLM helpers: [`app/llm.py`](app/llm.py) (rewrite / embed / rerank / generate)
-- Chunker: [`app/ingest.py`](app/ingest.py)
-- Vector store: [`app/vector_store.py`](app/vector_store.py)
+- Retrieval orchestration: [`app/main.py:retrieve`](../app/main.py:912), [`app/main.py:ask`](../app/main.py:776)
+- LLM helpers: [`app/llm.py`](../app/llm.py) (rewrite / embed / rerank / generate)
+- Chunker: [`app/ingest.py`](../app/ingest.py)
+- Vector store: [`app/vector_store.py`](../app/vector_store.py)
 - Eval: [`tests/eval_retrieval.py`](tests/eval_retrieval.py), [`tests/eval_questions.json`](tests/eval_questions.json)
 - Unit tests: [`tests/test_chunking.py`](tests/test_chunking.py) (chunker), [`tests/test_core.py`](tests/test_core.py) (retrieve end-to-end against fixtures)
