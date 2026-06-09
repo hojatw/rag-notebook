@@ -1,5 +1,5 @@
 {# Notebook briefing section. Returned both inline and as an HTMX swap target.
-   Mirrors _suggestions.html: GET (sources-changed) returns the current cached
+   Mirrors _suggestions.html: GET (indexed-sources-changed) returns the current cached
    state; POST generates+caches; the empty-but-has-indexed state auto-fires the
    POST exactly once on page load so first-time viewers see a briefing without
    having to click anything. Regenerate sends force=true to bypass cache. #}
@@ -13,7 +13,7 @@
 
 <section class="studio-section studio-briefing" id="studio-briefing"
          hx-get="/notebooks/{{ notebook.id }}/_briefing"
-         hx-trigger="sources-changed from:body"
+         hx-trigger="indexed-sources-changed from:body"
          hx-swap="outerHTML">
   <h3>
     Briefing
@@ -39,7 +39,7 @@
     <p class="muted small">Index a source first to see a notebook briefing.</p>
   {% elif in_progress %}
     {# Another POST is currently generating the briefing (e.g. the user has
-       another tab open, or a sibling sources-changed fired). DO NOT auto-fire
+       another tab open, or a sibling indexed-sources-changed fired). DO NOT auto-fire
        another POST — just poll the GET every 3s until the lock clears and
        the cached briefing surfaces. #}
     <p class="studio-loading"

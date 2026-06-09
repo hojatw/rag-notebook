@@ -140,10 +140,9 @@
                   :class="{ 'is-open': open }">Notebook ▾</button>
           <div class="convo-menu notebook-menu-content" x-show="open" style="display: none;">
             <form action="/notebooks/{{ notebook.id }}/rename" method="post" class="rename-form" data-loading-form>
-              <label>
-                Emoji
-                <input name="emoji" value="{{ notebook.emoji }}" maxlength="8">
-              </label>
+              {% with emoji_value=notebook.emoji or "📓" %}
+                {% include "_emoji_picker.html" %}
+              {% endwith %}
               <label>
                 Title
                 <input name="title" value="{{ notebook.title }}" required>
@@ -256,18 +255,7 @@
           {% endif %}
         </article>
       {% else %}
-        <div class="empty chat-empty">
-          {% if indexed_sources %}
-            <h2>Ask anything about your sources</h2>
-            <p class="muted">Type a question below. Answers cite the source passages they came from.</p>
-          {% elif sources %}
-            <h2>Indexing in progress</h2>
-            <p class="muted">Wait for sources to finish indexing on the left, then ask away.</p>
-          {% else %}
-            <h2>Add a source to get started</h2>
-            <p class="muted">Upload a document on the left so this notebook has something to ground against.</p>
-          {% endif %}
-        </div>
+        {% include "_chat_empty.html" %}
       {% endfor %}
     </div>
 
