@@ -151,6 +151,47 @@ def test_embed_texts_runs_batches_concurrently_and_in_order(monkeypatch):
     assert inflight["max"] <= 3                       # but bounded by the cap
 
 
+# -------------------- Q0-1: e5 query/passage prefix --------------------
+
+
+def _capture_batch(monkeypatch):
+    captured = {}
+
+    async def fake_batch(texts, settings):
+        captured["texts"] = list(texts)
+        return [[0.0] for _ in texts]
+
+    monkeypatch.setattr(llm, "embed_text_batch", fake_batch)
+    return captured
+
+
+def test_embed_texts_applies_role_prefix_when_configured(monkeypatch):
+    captured = _capture_batch(monkeypatch)
+    settings = {
+        "api_key": "x",
+        "embedding_model": "e5",
+        "embedding_query_prefix": "query: ",
+        "embedding_passage_prefix": "passage: ",
+    }
+    asyncio.run(llm.embed_texts(["a", "b"], settings, role="passage"))
+    assert captured["texts"] == ["passage: a", "passage: b"]
+
+    asyncio.run(llm.embed_texts(["weather"], settings, role="query"))
+    assert captured["texts"] == ["query: weather"]
+
+
+def test_embed_texts_is_model_agnostic_without_prefix(monkeypatch):
+    captured = _capture_batch(monkeypatch)
+    # No prefix configured (e.g. OpenAI) -> text is sent unchanged.
+    asyncio.run(llm.embed_texts(["a"], {"api_key": "x", "embedding_model": "oai"}, role="passage"))
+    assert captured["texts"] == ["a"]
+
+    # role=None never prefixes, even if a prefix is configured (e.g. the dim probe).
+    settings = {"api_key": "x", "embedding_model": "e5", "embedding_passage_prefix": "passage: "}
+    asyncio.run(llm.embed_texts(["a"], settings))
+    assert captured["texts"] == ["a"]
+
+
 # -------------------- P0-3: LLM/embedding HTTP retry + backoff --------------------
 
 

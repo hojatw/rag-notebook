@@ -10,10 +10,10 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## P0 — model-switch correctness (do before / at go-live; app-side only)
 
-### [ ] Q0-1 · e5 `query:` / `passage:` prefix
+### [x] Q0-1 · e5 `query:` / `passage:` prefix
 - **Issue:** `embed_texts` (`../app/llm.py`) sends raw text; multilingual-e5 expects `"passage: "` on indexed chunks and `"query: "` on search queries.
 - **Impact:** Noticeably worse retrieval — the model was trained expecting those prefixes. **Highest-value quality item; only fixable in our code.**
-- **Fix:** Prepend the right prefix on each embed path (ingest vs query) in the embed layer, then re-index.
+- **Fix:** **Done.** `embed_texts(..., role="query"|"passage")` prepends a **settings-driven** prefix (`/settings` → *Embedding query/passage prefix*), default empty so OpenAI and other models are unaffected (the app stays embedding-model-agnostic). Ingest embeds with `role="passage"`, retrieve with `role="query"`; the prefix only changes the text sent to the API, never the stored chunk. For e5, set the prefixes to `query: ` / `passage: ` and re-index.
 
 ### [ ] Q0-2 · Re-tune the low-confidence abstain threshold
 - **Issue:** `LOW_CONFIDENCE_THRESHOLD = 0.25` (`../app/main.py`) was tuned against OpenAI-1536; e5-1024 cosine scores have a different distribution.

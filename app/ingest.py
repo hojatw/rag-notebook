@@ -703,7 +703,7 @@ async def process_source(source_id: int) -> None:
             len(sections),
             len(records),
         )
-        embeddings = await embed_texts([text for _, text in records], get_settings())
+        embeddings = await embed_texts([text for _, text in records], get_settings(), role="passage")
         with connect() as conn:
             chunk_rows = [
                 (source["user_id"], source_id, index, location, text, dumps(embedding))

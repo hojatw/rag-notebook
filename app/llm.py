@@ -172,8 +172,32 @@ def cosine(a: list[float], b: list[float]) -> float:
     return sum(a[i] * b[i] for i in range(limit))
 
 
-async def embed_texts(texts: list[str], settings: dict[str, Any]) -> list[list[float]]:
+def _embedding_prefix(settings: dict[str, Any], role: str | None) -> str:
+    """Return the configured embedding prefix for this path, or empty.
+
+    Some models (the e5 family) need ``"query: "`` on search queries and
+    ``"passage: "`` on indexed text. The prefixes are configured in settings
+    and default to empty, so models that don't want them (OpenAI, etc.) are
+    unaffected and the app stays embedding-model-agnostic.
+    """
+    if role == "query":
+        return settings.get("embedding_query_prefix") or ""
+    if role == "passage":
+        return settings.get("embedding_passage_prefix") or ""
+    return ""
+
+
+async def embed_texts(
+    texts: list[str],
+    settings: dict[str, Any],
+    *,
+    role: str | None = None,
+) -> list[list[float]]:
     """Embed texts using the configured embedding API.
+
+    ``role`` selects an optional, settings-driven prefix: ``"passage"`` for
+    indexed chunks, ``"query"`` for search queries (e5-style). It only changes
+    the text sent to the embedding endpoint, never the stored chunk text.
 
     Raises RuntimeError when the embedding model or API key is missing — we
     no longer fall back to a local hash embedder because the resulting
@@ -185,6 +209,10 @@ async def embed_texts(texts: list[str], settings: dict[str, Any]) -> list[list[f
             "Embedding model is not configured. An admin must set the embedding "
             "model and API key at /settings before embeddings can be generated."
         )
+
+    prefix = _embedding_prefix(settings, role)
+    if prefix:
+        texts = [prefix + text for text in texts]
 
     batch_size = int(settings.get("embedding_batch_size") or EMBEDDING_BATCH_SIZE)
     batches = [texts[start : start + batch_size] for start in range(0, len(texts), batch_size)]

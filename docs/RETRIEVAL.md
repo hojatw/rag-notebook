@@ -70,6 +70,8 @@ Filter is always `{user_id}` (multi-tenant isolation) and adds `{source_id: {$in
 
 No-embedding-fallback policy: `embed_texts` raises when the embedding model isn't configured (previously fell back to a SHA-256 hash bag-of-tokens vector — removed because the resulting vectors are dim-incompatible with any real model and silent fallback masked misconfiguration as poor retrieval). The upload route refuses ingestion when LLM isn't configured ([`llm_settings_status`](../app/main.py:232)), and `/settings` save probes the embedding endpoint to validate connectivity + dim consistency against the existing Chroma index.
 
+Model-specific prefixes: `embed_texts(..., role="query"|"passage")` prepends an optional, settings-driven prefix (`/settings` → *Embedding query/passage prefix*). Retrieve embeds queries with `role="query"`, ingest embeds chunks with `role="passage"`. The e5 family needs `query: ` / `passage: `; OpenAI and others leave them blank (default), so the prefix is opt-in and only changes the text sent to the endpoint, never the stored chunk. **Changing a prefix changes the vectors → re-index** (`/admin/index` Rebuild).
+
 ### 3b. Keyword search
 
 [`app/main.py:keyword_candidates_from_sqlite`](../app/main.py:1002). Tokenises every rewritten query via [`search_tokens`](../app/main.py:1086):
