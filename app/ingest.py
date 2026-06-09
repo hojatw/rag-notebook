@@ -514,12 +514,108 @@ def _split_long_sentence(sentence: str, target_chars: int) -> list[str]:
     return final
 
 
+def _span_label(locations: list[str]) -> str:
+    """Build a citation label for a chunk that may span several sections.
+
+    A chunk packed from one section keeps that section's location verbatim. A
+    chunk that merged consecutive sections (e.g. several PDF paragraph blocks
+    filled up to the chunk target) is labelled as a first-to-last span so the
+    citation still points at the right region. Empty locations are ignored.
+    """
+    cleaned = [loc for loc in locations if loc]
+    if not cleaned:
+        return ""
+    first, last = cleaned[0], cleaned[-1]
+    return first if first == last else f"{first} – {last}"
+
+
+def chunk_sections(
+    sections: list[tuple[str, str]],
+    target_chars: int | None = None,
+    overlap_sentences: int = DEFAULT_OVERLAP_SENTENCES,
+) -> list[tuple[str, str]]:
+    """Sentence-aware chunking that packs sentences across sections.
+
+    Same sentence-aware strategy as :func:`chunk_text` (CJK-aware sizing,
+    sentence-level overlap, long-sentence fallback), but it fills each chunk up
+    to ``target_chars`` worth of sentences **across consecutive sections**
+    instead of resetting at every section boundary. Without this, formats whose
+    extractor emits many small sections — notably the PDF path's per-paragraph
+    blocks (``page N paragraph K``) — leave each short paragraph as its own
+    tiny fragment, while single-section formats (TXT/MD) fill to target. Each
+    sentence carries its originating ``location`` so the emitted chunk is
+    labelled with the source span it covers (see :func:`_span_label`).
+
+    Returns ``(location, chunk_text)`` pairs in document order.
+    """
+    # Normalise each section's text the same way chunk_text does (collapse the
+    # horizontal whitespace PDFs scatter mid-paragraph, keep newlines).
+    normalized_sections: list[tuple[str, str]] = []
+    for location, text in sections:
+        if not text:
+            continue
+        normalized = _HORIZONTAL_WS_RE.sub(" ", text).strip()
+        if normalized:
+            normalized_sections.append((location, normalized))
+    if not normalized_sections:
+        return []
+
+    if target_chars is None:
+        combined = "\n".join(text for _, text in normalized_sections)
+        target_chars = CJK_TARGET_CHARS if is_mostly_cjk(combined) else LATIN_TARGET_CHARS
+
+    # Flatten to (location, sentence) units across all sections.
+    units: list[tuple[str, str]] = []
+    for location, text in normalized_sections:
+        for sentence in split_sentences(text):
+            units.append((location, sentence))
+    if not units:
+        return []
+
+    chunks: list[tuple[str, str]] = []
+    current: list[tuple[str, str]] = []  # (location, sentence)
+    current_len = 0
+
+    def flush() -> None:
+        if current:
+            body = " ".join(sentence for _, sentence in current).strip()
+            if body:
+                chunks.append((_span_label([loc for loc, _ in current]), body))
+
+    for location, sentence in units:
+        if len(sentence) > target_chars:
+            flush()
+            # Carry-over does not apply across an over-long sentence — by
+            # definition it already contains too much context.
+            current = []
+            current_len = 0
+            for piece in _split_long_sentence(sentence, target_chars):
+                if piece:
+                    chunks.append((location, piece))
+            continue
+
+        if current and current_len + len(sentence) + 1 > target_chars:
+            flush()
+            if overlap_sentences > 0:
+                current = current[-overlap_sentences:]
+                current_len = sum(len(s) + 1 for _, s in current)
+            else:
+                current = []
+                current_len = 0
+
+        current.append((location, sentence))
+        current_len += len(sentence) + 1
+
+    flush()
+    return [(loc, body) for loc, body in chunks if body]
+
+
 def chunk_text(
     text: str,
     target_chars: int | None = None,
     overlap_sentences: int = DEFAULT_OVERLAP_SENTENCES,
 ) -> list[str]:
-    """Split text into sentence-aware retrieval chunks.
+    """Split a single text into sentence-aware retrieval chunks.
 
     Strategy:
         1. Normalise horizontal whitespace, keep newlines as boundaries.
@@ -535,54 +631,9 @@ def chunk_text(
            soft punctuation, then hard-cut as a last resort.
 
     Pass ``target_chars=None`` (the default) to auto-pick from text language.
+    Thin wrapper over :func:`chunk_sections` for a single unlabelled section.
     """
-    if not text:
-        return []
-    # Preserve newlines (sentence boundaries) but collapse internal runs of
-    # spaces, tabs and form-feeds that PDFs love to scatter mid-paragraph.
-    normalized = _HORIZONTAL_WS_RE.sub(" ", text).strip()
-    if not normalized:
-        return []
-
-    if target_chars is None:
-        target_chars = CJK_TARGET_CHARS if is_mostly_cjk(normalized) else LATIN_TARGET_CHARS
-
-    sentences = split_sentences(normalized)
-    if not sentences:
-        return []
-
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-
-    def flush() -> None:
-        if current:
-            chunks.append(" ".join(current).strip())
-
-    for sentence in sentences:
-        if len(sentence) > target_chars:
-            flush()
-            # Carry-over does not apply across an over-long sentence — by
-            # definition it already contains too much context.
-            current = []
-            current_len = 0
-            chunks.extend(_split_long_sentence(sentence, target_chars))
-            continue
-
-        if current and current_len + len(sentence) + 1 > target_chars:
-            flush()
-            if overlap_sentences > 0:
-                current = current[-overlap_sentences:]
-                current_len = sum(len(s) + 1 for s in current)
-            else:
-                current = []
-                current_len = 0
-
-        current.append(sentence)
-        current_len += len(sentence) + 1
-
-    flush()
-    return [c for c in chunks if c]
+    return [body for _, body in chunk_sections([("", text)], target_chars, overlap_sentences)]
 
 
 def get_settings() -> dict[str, Any]:
@@ -638,10 +689,11 @@ async def process_source(source_id: int) -> None:
             source["filename"],
         )
         sections = extract_sections(Path(source["stored_path"]))
-        records: list[tuple[str, str]] = []
-        for location, text in sections:
-            for chunk in chunk_text(text):
-                records.append((location, chunk))
+        # Pack sentences across sections up to the chunk target so formats that
+        # emit many small sections (PDF per-paragraph blocks) produce the same
+        # well-sized chunks as single-section formats (TXT/MD) rather than
+        # hundreds of tiny fragments.
+        records: list[tuple[str, str]] = chunk_sections(sections)
         if not records:
             raise ValueError("No extractable text found.")
 
