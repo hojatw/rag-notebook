@@ -1,5 +1,7 @@
+import asyncio
 import json
 import logging
+import random
 import time
 from typing import Any
 
@@ -88,6 +90,18 @@ Stay grounded in the provided summaries. If a focus question is given, prioritis
 
 logger = logging.getLogger(__name__)
 EMBEDDING_BATCH_SIZE = 64
+# How many embedding batches may be in flight at once. Bounded so a large
+# ingest doesn't hammer a shared/borrowed embedding endpoint. Override per
+# deployment via the `embedding_max_concurrency` setting.
+EMBEDDING_MAX_CONCURRENCY = 4
+
+# Retry policy for the LLM/embedding HTTP calls. The target endpoint is often a
+# shared, occasionally-throttled service; one transient 429/5xx or timeout
+# should not fail the whole question (which makes several calls).
+LLM_RETRY_MAX_ATTEMPTS = 3
+LLM_RETRY_BACKOFF_BASE_S = 0.5
+LLM_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
 _http_client: httpx.AsyncClient | None = None
 
 
@@ -103,6 +117,43 @@ def get_http_client() -> httpx.AsyncClient:
     if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient(timeout=None)
     return _http_client
+
+
+async def _post_json_with_retry(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout: float,
+    *,
+    max_attempts: int = LLM_RETRY_MAX_ATTEMPTS,
+) -> dict[str, Any]:
+    """POST JSON and return the decoded body, retrying transient failures.
+
+    Retries network/timeout errors and 429/5xx with exponential backoff + jitter
+    — the failure modes of a shared, throttled endpoint. Non-retryable 4xx (e.g.
+    a malformed request) and the final attempt's error propagate to the caller.
+    """
+    client = get_http_client()
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            response = await client.post(url, headers=headers, json=payload, timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in LLM_RETRYABLE_STATUS or attempt >= max_attempts:
+                raise
+        except httpx.RequestError:
+            # Covers connect/read/write/pool timeouts and transport/network errors.
+            if attempt >= max_attempts:
+                raise
+        delay = LLM_RETRY_BACKOFF_BASE_S * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25)
+        logger.warning(
+            "llm_http_retry attempt=%s/%s delay_ms=%.0f url=%s",
+            attempt, max_attempts, delay * 1000, url,
+        )
+        await asyncio.sleep(delay)
 
 
 async def close_http_client() -> None:
@@ -136,9 +187,26 @@ async def embed_texts(texts: list[str], settings: dict[str, Any]) -> list[list[f
         )
 
     batch_size = int(settings.get("embedding_batch_size") or EMBEDDING_BATCH_SIZE)
+    batches = [texts[start : start + batch_size] for start in range(0, len(texts), batch_size)]
+    if not batches:
+        return []
+    if len(batches) == 1:
+        return await embed_text_batch(batches[0], settings)
+
+    # Run batches with bounded concurrency instead of one-at-a-time, so a large
+    # ingest isn't dominated by serial round-trips to the embedding endpoint.
+    # asyncio.gather preserves order, so results still line up with `texts`.
+    max_concurrency = max(1, int(settings.get("embedding_max_concurrency") or EMBEDDING_MAX_CONCURRENCY))
+    semaphore = asyncio.Semaphore(max_concurrency)
+
+    async def _run(batch: list[str]) -> list[list[float]]:
+        async with semaphore:
+            return await embed_text_batch(batch, settings)
+
+    results = await asyncio.gather(*(_run(batch) for batch in batches))
     embeddings: list[list[float]] = []
-    for start in range(0, len(texts), batch_size):
-        embeddings.extend(await embed_text_batch(texts[start : start + batch_size], settings))
+    for result in results:
+        embeddings.extend(result)
     return embeddings
 
 
@@ -159,10 +227,7 @@ async def embed_text_batch(texts: list[str], settings: dict[str, Any]) -> list[l
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
     try:
-        client = get_http_client()
-        response = await client.post(request["url"], headers=request["headers"], json=request["json"], timeout=timeout)
-        response.raise_for_status()
-        data = response.json()
+        data = await _post_json_with_retry(request["url"], request["headers"], request["json"], timeout)
     except Exception:
         logger.exception(
             "embedding_api_failed provider=%s model=%s text_count=%s",
@@ -385,10 +450,7 @@ async def chat_completion(
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
     try:
-        client = get_http_client()
-        response = await client.post(request["url"], headers=request["headers"], json=request["json"], timeout=timeout)
-        response.raise_for_status()
-        data = response.json()
+        data = await _post_json_with_retry(request["url"], request["headers"], request["json"], timeout)
     except Exception:
         logger.exception(
             "chat_completion_failed provider=%s model=%s prompt_chars=%s",

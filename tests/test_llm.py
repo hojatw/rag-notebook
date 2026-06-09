@@ -1,5 +1,9 @@
 import asyncio
 
+import httpx
+import pytest
+
+import app.llm as llm
 from app.llm import build_chat_request, build_embedding_request, close_http_client, compare_sources, generate_briefing, get_http_client, parse_json_strings, parse_rerank_scores, summarize_source
 
 
@@ -117,3 +121,87 @@ def test_compare_sources_requires_two_summaries_and_settings():
             {"api_key": "x", "chat_model": "m"},
         )
     ) == ""
+
+
+# -------------------- P0-1: concurrent embedding batches --------------------
+
+
+def test_embed_texts_runs_batches_concurrently_and_in_order(monkeypatch):
+    inflight = {"current": 0, "max": 0}
+
+    async def fake_batch(texts, settings):
+        inflight["current"] += 1
+        inflight["max"] = max(inflight["max"], inflight["current"])
+        await asyncio.sleep(0.01)
+        inflight["current"] -= 1
+        return [[float(ord(text))] for text in texts]
+
+    monkeypatch.setattr(llm, "embed_text_batch", fake_batch)
+    settings = {
+        "api_key": "x",
+        "embedding_model": "e5",
+        "embedding_batch_size": 1,        # 1 text per batch -> 5 batches
+        "embedding_max_concurrency": 3,
+    }
+    texts = ["a", "b", "c", "d", "e"]
+    out = asyncio.run(llm.embed_texts(texts, settings))
+
+    assert out == [[float(ord(t))] for t in texts]  # order preserved
+    assert inflight["max"] >= 2                       # actually ran concurrently
+    assert inflight["max"] <= 3                       # but bounded by the cap
+
+
+# -------------------- P0-3: LLM/embedding HTTP retry + backoff --------------------
+
+
+def _client_returning(monkeypatch, responses):
+    """Inject a mock HTTP client that yields the given responses in sequence."""
+    calls = {"n": 0}
+
+    def handler(request):
+        index = min(calls["n"], len(responses) - 1)
+        calls["n"] += 1
+        status, body = responses[index]
+        return httpx.Response(status, json=body)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    llm.set_http_client(client)
+
+    async def _no_sleep(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(llm.asyncio, "sleep", _no_sleep)  # keep the test fast
+    return client, calls
+
+
+def test_post_json_retries_transient_then_succeeds(monkeypatch):
+    client, calls = _client_returning(monkeypatch, [(503, {}), (429, {}), (200, {"ok": True})])
+    try:
+        data = asyncio.run(llm._post_json_with_retry("http://x/v1/embeddings", {}, {"input": ["a"]}, 5.0))
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+    assert data == {"ok": True}
+    assert calls["n"] == 3
+
+
+def test_post_json_gives_up_after_max_attempts(monkeypatch):
+    client, calls = _client_returning(monkeypatch, [(500, {"error": "boom"})])
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            asyncio.run(llm._post_json_with_retry("http://x", {}, {}, 5.0))
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+    assert calls["n"] == llm.LLM_RETRY_MAX_ATTEMPTS
+
+
+def test_post_json_does_not_retry_on_4xx_request_error(monkeypatch):
+    client, calls = _client_returning(monkeypatch, [(400, {"error": "bad request"})])
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            asyncio.run(llm._post_json_with_retry("http://x", {}, {}, 5.0))
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+    assert calls["n"] == 1  # 400 is not retryable
