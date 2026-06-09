@@ -11,7 +11,7 @@
 
 <section class="studio-section studio-suggestions" id="studio-suggestions"
          hx-get="/notebooks/{{ notebook.id }}/_suggestions"
-         hx-trigger="sources-changed from:body"
+         hx-trigger="indexed-sources-changed from:body"
          hx-swap="outerHTML">
   <h3>
     Suggested questions

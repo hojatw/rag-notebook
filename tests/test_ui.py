@@ -58,3 +58,38 @@ def test_notebook_forms_render_preset_emoji_picker(monkeypatch, tmp_path):
         assert notebook.text.count('class="emoji-picker"') >= 1
         assert "🧠" in notebook.text
         assert "⚙️" in notebook.text
+
+
+def test_source_partial_splits_row_and_studio_refresh_events(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+            notebook_id = conn.execute(
+                "INSERT INTO notebooks (user_id, title) VALUES (?, 'Events')",
+                (user["id"],),
+            ).lastrowid
+            processing_id = conn.execute(
+                """
+                INSERT INTO sources (user_id, notebook_id, filename, stored_path, status)
+                VALUES (?, ?, 'processing.txt', '/tmp/processing.txt', 'processing')
+                """,
+                (user["id"], notebook_id),
+            ).lastrowid
+            indexed_id = conn.execute(
+                """
+                INSERT INTO sources (user_id, notebook_id, filename, stored_path, status)
+                VALUES (?, ?, 'indexed.txt', '/tmp/indexed.txt', 'indexed')
+                """,
+                (user["id"], notebook_id),
+            ).lastrowid
+
+        processing = client.get(f"/notebooks/{notebook_id}/sources/{processing_id}/_partial")
+        assert processing.status_code == 200
+        assert processing.headers["HX-Trigger"] == "source-status-changed"
+
+        indexed = client.get(f"/notebooks/{notebook_id}/sources/{indexed_id}/_partial")
+        assert indexed.status_code == 200
+        assert indexed.headers["HX-Trigger"] == "source-status-changed, indexed-sources-changed"

@@ -218,7 +218,7 @@ BRIEFING_TTL_HOURS = 24
 # In-process lock for briefing generation. Keyed by notebook_id, value is the
 # unix timestamp when generation started. Used to dedupe concurrent POSTs that
 # fire when multiple sources finish indexing within seconds of each other
-# during a multi-file upload (each fires sources-changed → auto-fire POST).
+# during a multi-file upload (each fires indexed-sources-changed → auto-fire POST).
 # Stale entries past BRIEFING_LOCK_TIMEOUT_S are treated as released so a
 # crashed request can't permanently block regeneration.
 # NOTE: in-process dict, single-uvicorn-worker assumption — fine for POC.
@@ -630,12 +630,15 @@ def source_partial(
         if row is None:
             raise HTTPException(status_code=404, detail="Source not found")
     response = render(request, "_source_item.html", {"notebook": notebook, "source": dict(row)})
-    # Broadcast sources-changed on EVERY non-uploaded poll so sibling rows
-    # immediately catch up (they listen to the same event in their hx-trigger
-    # list). Without this, a 4-file upload could show "1 indexed, 3 uploaded"
-    # for up to 2s after the first finishes, just due to staggered poll ticks.
-    if dict(row).get("status") in ("processing", "indexed", "failed"):
-        response.headers["HX-Trigger"] = "sources-changed"
+    # Keep fast source-row synchronization separate from Studio refreshes.
+    # Processing polls are frequent; if the Studio sections also listen to
+    # them they re-render every 2s during embedding, even when no useful
+    # Studio data changed.
+    status = dict(row).get("status")
+    if status == "processing":
+        response.headers["HX-Trigger"] = "source-status-changed"
+    elif status in ("indexed", "failed"):
+        response.headers["HX-Trigger"] = "source-status-changed, indexed-sources-changed"
     return response
 
 
@@ -706,7 +709,7 @@ def suggestions_partial(
 ):
     """Return the suggestions section reflecting current indexed-source state.
 
-    Triggered by `sources-changed` so the right pane swaps from the
+    Triggered by `indexed-sources-changed` so the right pane swaps from the
     "Index a source first" placeholder to the "Generate suggestions" CTA the
     moment the first source finishes indexing — without page reload.
     """
@@ -839,7 +842,7 @@ def briefing_partial(
 ):
     """Return the briefing section reflecting the current cache + indexed state.
 
-    Triggered by `sources-changed` so add/delete updates the section without
+    Triggered by `indexed-sources-changed` so add/delete updates the section without
     a page reload. Never calls the LLM — POST is for generation. If a POST
     is currently in flight (lock held), returns the in_progress placeholder
     so this GET response doesn't kick off a duplicate auto-fire.
@@ -869,7 +872,7 @@ async def notebook_briefing(
 
     Concurrency: an in-process lock dedupes overlapping POSTs that fire when
     multiple sources finish indexing in close succession during a multi-file
-    upload (each fires sources-changed → auto-fire POST). A waiter that
+    upload (each fires indexed-sources-changed → auto-fire POST). A waiter that
     arrives while the lock is held returns immediately with whichever state
     fits — cached if already written, otherwise the in_progress placeholder
     that polls until the lock clears.
@@ -943,7 +946,7 @@ def compare_partial(
 ):
     """Return the compare-sources section reflecting current indexed sources.
 
-    Triggered by `sources-changed` so the checkbox list stays in sync with
+    Triggered by `indexed-sources-changed` so the checkbox list stays in sync with
     the left pane after upload / delete without a page reload.
     """
     with connect() as conn:
