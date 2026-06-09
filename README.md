@@ -18,7 +18,7 @@ This is a proof of concept, not a production-ready service. It is suitable for l
       - *Compare sources* — pick 2+ indexed sources (with an optional focus hint) and the model produces a Shared / Distinct / Contradictions markdown report. *Save to notes* keeps it for later.
       - *Notes* — *Pin* assistant answers into collapsible notes (removing a note un-pins the source message automatically); comparison results can be saved here too.
   - **Per-source summary** — every uploaded source gets a 2–4 sentence TL;DR generated automatically right after indexing, shown at the top of the preview drawer and reused as compact context for Briefing / Compare.
-- **Hybrid retrieval**: query rewriting, Chroma vector search, SQLite keyword matching, and LLM reranking. Below a configurable confidence threshold the model is asked to abstain rather than hallucinate. See [`RETRIEVAL.md`](RETRIEVAL.md) for the full pipeline, tuning knobs, and eval workflow.
+- **Hybrid retrieval**: query rewriting, Chroma vector search, SQLite keyword matching, and LLM reranking. Below a configurable confidence threshold the model is asked to abstain rather than hallucinate. See [`RETRIEVAL.md`](docs/RETRIEVAL.md) for the full pipeline, tuning knobs, and eval workflow.
 - **Per-message debug pane**: chat answers ship with a collapsible "📊 N chunks · retrieved Xms · generated Yms · top score Z" badge that opens a table of vector / keyword / rerank / final scores per citation.
 - **Retrieval eval harness** (`tests/eval_retrieval.py`) with starter questions for the demo notebook so changes to query rewrite / hybrid scoring / rerank can be measured (recall@k, MRR).
 - **Multi-user** with hashed passwords and strict per-user/per-notebook isolation. Admin can manage user accounts at `/admin/users`; any signed-in user can change their own password at `/account`.
@@ -288,14 +288,14 @@ requirements-dev.txt   Local development/test dependencies layered on runtime.
 
 ## Known follow-ups
 
-Performance / scalability work is tracked as a prioritised, tick-off backlog in [`PERFORMANCE.md`](PERFORMANCE.md) (issue → impact → fix → priority). Headline items still outstanding:
+Performance/scalability and retrieval-quality work are tracked as prioritised, tick-off backlogs in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) and [`docs/QUALITY.md`](docs/QUALITY.md) (issue → impact → fix → priority). Engineering deep-dives live in [`docs/`](docs/). Headline items still outstanding:
 
 - No streaming responses yet — answers arrive after the full LLM call returns.
 - Background ingest uses FastAPI background tasks rather than a worker queue.
 - No CSRF protection on POST routes.
 - No LLM/embedding HTTP retry / backoff.
 - No offline embedding fallback — embedding model must be configured before uploads are accepted.
-- Keyword search uses `LIKE '%token%'` over SQLite; FTS5 + BM25 is on deck (see [`RETRIEVAL.md`](RETRIEVAL.md)).
+- Keyword search uses `LIKE '%token%'` over SQLite; FTS5 + BM25 is on deck (see [`RETRIEVAL.md`](docs/RETRIEVAL.md)).
 - Hybrid merge uses a fixed `0.7·vector + 0.3·keyword` blend; Reciprocal Rank Fusion is on deck.
 - Qdrant is a future vector-store evaluation candidate; do a bounded spike before replacing Chroma.
 

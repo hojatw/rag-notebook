@@ -9,7 +9,8 @@ Treat it as a POC, not a production service. Keep changes scoped and behavior-pr
 ## Context To Read First
 
 - Read `README.md` for the current user-facing feature set, routes, setup, LLM settings, and known follow-ups.
-- Read `RETRIEVAL.md` before changing retrieval, chunking, ranking, reranking, evals, or vector-store behavior.
+- Read `docs/RETRIEVAL.md` before changing retrieval, chunking, ranking, reranking, evals, or vector-store behavior.
+- Engineering deep-dives and the prioritised backlogs live in `docs/`: `docs/PERFORMANCE.md` (performance/scalability), `docs/QUALITY.md` (retrieval/answer quality), `docs/SECURITY.md` (security policy + triaged audit findings).
 - Read `handover.md` when present for local cross-session work state. It is gitignored and may contain current priorities, but it is not a durable project rule source.
 
 ## Runtime And Dependencies
@@ -78,7 +79,7 @@ For Docker/runtime changes, build the image and smoke-test at least `/` and `/lo
 - Local OpenAI-compatible services may still need a non-empty dummy API key in settings.
 - Embedding responses must provide OpenAI-compatible `data[].embedding`; chat responses must provide `choices[0].message.content`.
 - Changing embedding models can change vector dimensions. Preserve the existing dimension check and require clearing/rebuilding the Chroma index when needed.
-- Before changing query rewrite, hybrid retrieval, reranking, chunking, or scoring, read `RETRIEVAL.md` and update eval expectations where appropriate.
+- Before changing query rewrite, hybrid retrieval, reranking, chunking, or scoring, read `docs/RETRIEVAL.md` and update eval expectations where appropriate.
 
 ## Security Expectations
 

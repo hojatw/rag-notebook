@@ -2,7 +2,7 @@
 
 Prioritised list of known performance / scalability issues, kept so they can be worked through one at a time. Each item lists **Issue → Impact → Fix**, a **priority**, and a **status** box to tick when done.
 
-**Deployment context:** the target is ~200 users (not all concurrent) on the customer's **borrowed, shared** Gemma 4 31B (chat) + multilingual-e5-large (embedding) endpoint — **the serving side is fixed, so every adaptation must happen app-side** — with hundreds-of-page research-report PDFs. See `handover.md` for the pre-launch checklist and `RETRIEVAL.md` for the retrieval pipeline.
+**Deployment context:** the target is ~200 users (not all concurrent) on the customer's **borrowed, shared** Gemma 4 31B (chat) + multilingual-e5-large (embedding) endpoint — **the serving side is fixed, so every adaptation must happen app-side** — with hundreds-of-page research-report PDFs. See `../handover.md` for the pre-launch checklist and `RETRIEVAL.md` for the retrieval pipeline.
 
 Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
