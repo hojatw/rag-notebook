@@ -234,6 +234,30 @@ Status of the original "retrieval top 3":
 | 2 | SQLite **FTS5** for keyword search | Pending | Bigger notebooks (>5K chunks) get meaningful latency drop; smaller ones get better tokenisation quality (esp. CJK). Replaces the `LIKE '%token%'` scan + Python re-scoring in `keyword_candidates_from_sqlite` |
 | 3 | **Reciprocal Rank Fusion** for hybrid merge | Pending | Less sensitive to score-scale drift between vector cosine and keyword overlap. Replaces the `0.7×v + 0.3×k` weighted sum in `merge_candidates` |
 
+### P1-2 design note — CJK tokenization is the real blocker (not config)
+
+Externalizing tunables (`app/config.py`) does **not** unblock P1-2. FTS5 is implementable today (bundled SQLite 3.53 has FTS5 + the `trigram` tokenizer), but a naive swap would **regress Chinese keyword recall** on the deployment's CJK corpus, because FTS5's only built-in CJK-capable tokenizer (`trigram`) **cannot match queries shorter than 3 characters** — and 2-char terms (端點, 設定, 部署, 報告…) are the backbone of Chinese search. Measured:
+
+| query | chars | trigram FTS5 match |
+|---|---|---|
+| `端點設` | 3 | ✅ |
+| `設定方式` | 4 | ✅ |
+| `端點` / `設定` / `部署` | 2 | ❌ 0 hits |
+
+The current `keyword_candidates_from_sqlite` (`LIKE '%token%'` + custom `keyword_score`) matches arbitrary substrings, so it already handles 2-char CJK; FTS5+trigram would lose exactly those.
+
+Segmentation options if/when we do P1-2 (decision deferred until a representative CJK corpus + eval set exist):
+
+| route | method | CJK quality | cost |
+|---|---|---|---|
+| FTS5 `trigram` | char 3-grams | 2-char queries fail ❌ | lowest (built-in) |
+| FTS5 custom **bigram** | char 2-grams | 2-char OK, noisier | low–med |
+| **jieba (`cut_for_search`) → space-joined → FTS5** | dictionary + HMM | good, custom terms ✅ | med (one dep, segment at ingest) |
+| FTS5 `icu` | dictionary | medium, ambiguity | med (compile ICU into Docker) |
+| neural (pkuseg / BERT) | deep model | best | high (model + latency) |
+
+Sweet spot for "single-machine POC + Chinese reports + recall-first" is likely **jieba search-mode → FTS5**, or a **custom bigram** tokenizer; `trigram` is unsuitable (2-char hole) and neural is overkill for search. Either way, adopting **BM25** ranking (vs the current overlap score) also needs the customer eval set to confirm no regression. Net: P1-2 stays parked on *representative CJK data*, not on config.
+
 Other ideas, in rough order of cost-benefit:
 
 - Cache embeddings per (query, model) — repeated questions in the same conversation don't need a fresh embedding call.

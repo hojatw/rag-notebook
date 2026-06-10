@@ -30,7 +30,14 @@ Return only a JSON array of objects like [{"id": 1, "score": 0.92}]."""
 STARTER_QUESTIONS_PROMPT = """You suggest starter questions for a notebook of source documents.
 Read the provided excerpts. Propose 4 short, varied questions a curious reader might ask.
 Each question must be answerable from the excerpts and stand alone (no pronouns).
-Match the dominant language of the excerpts (Traditional Chinese excerpts -> Traditional Chinese questions).
+
+LANGUAGE RULE — strictly match the dominant language of the source excerpts:
+- Traditional Chinese excerpts -> Traditional Chinese questions (繁體中文).
+- Simplified Chinese excerpts -> Simplified Chinese questions.
+- Japanese excerpts -> Japanese questions.
+- English excerpts -> English questions.
+Do NOT translate. If excerpts are mixed-language, follow whichever language carries the majority of the content.
+
 Return only a JSON array of strings, each under 80 characters."""
 
 SOURCE_SUMMARY_PROMPT = """You write tight summaries of single source documents.

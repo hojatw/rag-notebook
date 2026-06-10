@@ -38,6 +38,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Issue:** `keyword_candidates_from_sqlite` (`app/main.py`) uses `WHERE chunks.text LIKE '%token%'`.
 - **Impact:** Full-table scan per query; slows down past tens of thousands of chunks. See `RETRIEVAL.md` open follow-ups.
 - **Fix:** FTS5 virtual table + BM25 ranking.
+- **Blocked on:** a representative **CJK** corpus + eval set — **not** config. FTS5's `trigram` tokenizer can't match <3-char Chinese queries (2-char terms are the backbone of CN search), so a naive swap regresses Chinese recall, and BM25 ranking needs real-data validation. Segmentation options (jieba search-mode / custom bigram / ICU / neural) and the measured trigram limitation are written up in `docs/RETRIEVAL.md` → *P1-2 design note — CJK tokenization*.
 
 ### [x] P1-3 · Cap the Chroma-failure fallback
 - **Issue:** When Chroma is unavailable, `retrieve()` decoded **every** chunk's `embedding_json` and computed cosine in pure Python.
