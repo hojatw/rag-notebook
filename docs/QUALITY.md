@@ -35,6 +35,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Impact:** Chunk tails dropped from the embedding → lost recall on long CJK / table chunks.
 - **Fix:** Measure token counts for CJK / Latin / table chunks against the e5 tokenizer; lower `CJK_TARGET_CHARS` if needed.
 
+### [x] Q0-6 · Starter questions ignored the source language
+- **Issue:** `STARTER_QUESTIONS_PROMPT` had only a weak one-line language rule with a single CJK example, so the chat model emitted **Chinese** starter questions for **English-only** sources (observed on a real notebook).
+- **Impact:** A Chinese starter question against an English-only notebook then forced cross-lingual retrieval (see Q1-4) → thin answers/citations, confusingly worse than the same question once a same-language source existed.
+- **Fix:** **Done.** Strengthened the prompt to the same explicit per-language `LANGUAGE RULE` + "Do NOT translate" block used by summary/briefing. Regression-guarded by `tests/test_llm.py::test_generation_prompts_carry_strong_language_rule`.
+
 ---
 
 ## P1 — retrieval-quality improvements
@@ -52,7 +57,12 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 ### [ ] Q1-3 · A harder, representative eval set
 - **Issue:** The eval is saturated (Recall@5 = 100%, MRR 0.933) and built on the **demo notebook**, not the customer's hundreds-of-page research reports.
 - **Impact:** Can't measure any of the above — tuning is blind.
-- **Fix:** Build an eval set from representative customer-style documents with harder questions. **Prerequisite for tuning Q0-2 / Q1-1 / Q1-2.**
+- **Fix:** Build an eval set from representative customer-style documents with harder questions. **Prerequisite for tuning Q0-2 / Q1-1 / Q1-2 / Q1-4.**
+
+### [ ] Q1-4 · Cross-lingual retrieval (e.g. Chinese question ↔ English sources)
+- **Issue:** A query only retrieves cross-language content through the **vector** arm (multilingual embedding); the **keyword** arm (`LIKE` on tokens) is dead across scripts, and cross-lingual cosine scores run lower — so a Chinese question against English-only sources retrieves fewer/weaker chunks (some trimmed by the `0.25` abstain threshold), yielding thin answers. Confirmed on a real notebook: the same Chinese questions answered richly once a same-language source was added. Same drug in EN (FDA label) + zh (仿單) is a ready-made test case.
+- **Impact:** Mixed-language notebooks under-serve questions asked in the "other" language — a likely real usage pattern for this deployment.
+- **Fix (investigate, needs the Q1-3 eval set):** options to measure — (a) confirm/upgrade the embedding model's CN↔EN strength (prod e5-large > ada-002); (b) translate/expand the query into the corpus languages before retrieval; (c) language-aware abstain threshold or a small cross-lingual score boost; (d) a CJK-capable keyword arm (ties into Q1-2). Measure each against a bilingual eval set before adopting.
 
 ---
 

@@ -75,6 +75,19 @@ def test_shared_http_client_is_reused():
     asyncio.run(close_http_client())
 
 
+def test_generation_prompts_carry_strong_language_rule():
+    """Starter questions must follow the source language like summary/briefing do.
+
+    Regression guard: a weak one-line rule (only a CJK example) made the model
+    emit Chinese questions for English sources. All three generation prompts
+    should pin every supported language explicitly and forbid translation.
+    """
+    for prompt in (llm.STARTER_QUESTIONS_PROMPT, llm.SOURCE_SUMMARY_PROMPT, llm.NOTEBOOK_BRIEFING_PROMPT):
+        assert "Do NOT translate" in prompt
+        assert "English" in prompt
+        assert "Traditional Chinese" in prompt
+
+
 def test_summarize_source_returns_empty_without_settings():
     """summarize_source must not call any API when LLM settings are missing."""
     chunks = [{"location": "page 1", "text": "Some text from a source document."}]
