@@ -25,9 +25,9 @@ Include reproduction steps and the affected version/commit. We aim to acknowledg
 These are deliberately deferred for the POC and tracked in `../README.md` / `../AGENTS.md`. Address them before any untrusted-network exposure:
 
 - No CSRF protection on POST routes.
-- No LLM/embedding HTTP retry/backoff.
-- Background ingest uses FastAPI background tasks rather than a worker queue.
 - No streaming responses.
+
+(Resolved: LLM/embedding HTTP retry/backoff and worker-backed ingest — a DB-backed queue (`app/jobs.py`) with a dedicated/inline worker — are now implemented. See `docs/PERFORMANCE.md`.)
 
 ## Triaged dependency-audit findings
 

@@ -29,6 +29,9 @@ services:
       # it invalidates every saved API key (admin re-enters at /settings).
       NOTEBOOKLM_SECRET: ${NOTEBOOKLM_SECRET:?NOTEBOOKLM_SECRET must be set in .env}
       NOTEBOOKLM_LOG_LEVEL: ${NOTEBOOKLM_LOG_LEVEL:-INFO}
+      # Ingest runs in the dedicated `worker` service below, so keep the web
+      # process clean — heavy PDF extraction/embedding must not block requests.
+      NOTEBOOKLM_INLINE_WORKER: "0"
     volumes:
       # SQLite DB + uploads + Chroma persistent index. Single bind-mount
       # keeps related state together so backups are one `tar czf` away.
@@ -43,3 +46,21 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+
+  # Ingest worker (P1-1). Drains the SQLite ingest_jobs queue in a separate
+  # process so PDF extraction/embedding stays off the web process. Shares the
+  # same image and the same ./data bind-mount (one SQLite DB + Chroma index).
+  worker:
+    build: .
+    image: notebooklm-rag-poc:latest
+    container_name: notebooklm-rag-poc-worker
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      - app
+    environment:
+      NOTEBOOKLM_SECRET: ${NOTEBOOKLM_SECRET:?NOTEBOOKLM_SECRET must be set in .env}
+      NOTEBOOKLM_LOG_LEVEL: ${NOTEBOOKLM_LOG_LEVEL:-INFO}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs

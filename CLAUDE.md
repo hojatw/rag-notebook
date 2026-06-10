@@ -22,9 +22,11 @@ NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload -
 
 ## Architecture map
 
-- `app/main.py` — routes, auth, retrieval orchestration, lifespan, logging; in-process briefing concurrency lock.
+- `app/main.py` — routes, auth, retrieval orchestration, lifespan, logging; SQLite-backed briefing concurrency lock; optional inline ingest worker (`NOTEBOOKLM_INLINE_WORKER`).
 - `app/db.py` — SQLite schema + idempotent migrations (`_ensure_column`); `load_llm_settings()` decrypts the API key — **always go through it**, never `SELECT` the key directly.
 - `app/ingest.py` — text extraction, chunking, vector upsert, per-source summary (best-effort after indexing).
+- `app/jobs.py` — DB-backed ingest queue (`ingest_jobs` table): `enqueue_source`, atomic `claim_next_job`, retry/visibility-timeout. The single swap-point if ingest ever moves to Redis/RQ.
+- `app/worker.py` — ingest worker loop; runs standalone (`python -m app.worker`) or inline in the web lifespan.
 - `app/llm.py` — LLM/embedding HTTP, query rewrite, rerank, starter questions, briefing, compare. Providers: `openai_compatible` and `azure_openai` only (Ollama/vLLM/TEI go through the OpenAI-compatible `/v1` path).
 - `app/vector_store.py` — Chroma persistent client, diff/full sync, `index_status`, `clear_all_vectors`.
 - `app/security.py` — password hashing, signed session cookies, Fernet API-key encryption (KDF over `NOTEBOOKLM_SECRET`).
@@ -45,7 +47,7 @@ When adding a fragment that depends on indexed-source availability, listen for `
 - Never modify or commit `data/` or `logs/` (user state); keep `.env` and real secrets uncommitted. Changing `NOTEBOOKLM_SECRET` invalidates encrypted API keys.
 - Preserve per-user / per-notebook authorization checks on every route that reads or mutates notebook data.
 - Keep password hashing and API-key encryption centralized in `app/security.py`.
-- CSRF protection, LLM retry/backoff, worker-backed ingest, and streaming responses are known hardening follow-ups — don't add them unless asked.
+- CSRF protection and streaming responses are known hardening follow-ups — don't add them unless asked. (LLM retry/backoff and worker-backed ingest are now implemented — see `docs/PERFORMANCE.md`.)
 
 ## Verifying in the browser
 

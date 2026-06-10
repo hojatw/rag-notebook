@@ -4,7 +4,7 @@ A single-machine FastAPI proof of concept for a NotebookLM-style workspace: orga
 
 ## Status
 
-This is a proof of concept, not a production-ready service. It is suitable for local experiments and small single-machine deployments after you configure a real `NOTEBOOKLM_SECRET`, but several production hardening items are still open (CSRF protection, worker-backed ingest, LLM retry/backoff, streaming responses). See [Known follow-ups](#known-follow-ups).
+This is a proof of concept, not a production-ready service. It is suitable for local experiments and small single-machine deployments after you configure a real `NOTEBOOKLM_SECRET`, but several production hardening items are still open (CSRF protection, streaming responses). See [Known follow-ups](#known-follow-ups).
 
 ## What you get
 
@@ -14,7 +14,7 @@ This is a proof of concept, not a production-ready service. It is suitable for l
   - **Chat** (centre): grounded chat with conversation switcher (with per-row delete), Markdown-rendered answers, and inline `[1]` `[2]` citation chips that scroll the matching source into view.
   - **Studio** (right): four NotebookLM-style helpers in one column.
       - *Suggested questions* — one-click LLM-authored starter questions from your sources, auto-refreshing as sources finish indexing (24 h cache).
-      - *Briefing* — one-paragraph cross-source synthesis, auto-generated on first notebook view and cached for 24 h. *Regenerate* on demand. Concurrent generation across tabs / sibling source completions is deduped by an in-process lock so a 5-file upload only calls the LLM once, not five times.
+      - *Briefing* — one-paragraph cross-source synthesis, auto-generated on first notebook view and cached for 24 h. *Regenerate* on demand. Concurrent generation across tabs / sibling source completions is deduped by a shared SQLite-backed lock so a 5-file upload only calls the LLM once, not five times (works across multiple workers).
       - *Compare sources* — pick 2+ indexed sources (with an optional focus hint) and the model produces a Shared / Distinct / Contradictions markdown report. *Save to notes* keeps it for later.
       - *Notes* — *Pin* assistant answers into collapsible notes (removing a note un-pins the source message automatically); comparison results can be saved here too.
   - **Per-source summary** — every uploaded source gets a 2–4 sentence TL;DR generated automatically right after indexing, shown at the top of the preview drawer and reused as compact context for Briefing / Compare.
@@ -43,6 +43,12 @@ NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload -
 ```
 
 `setup.sh --force` wipes any existing `.venv` first. The script uses `python3.12` by default, or `PYTHON_BIN=/path/to/python3.12 ./setup.sh` if your Python 3.12 binary has a different name.
+
+By default the web process also drains the ingest queue inline, so the single `uvicorn` command above ingests uploads as before. For a production-style split that keeps PDF extraction/embedding off the web process, set `NOTEBOOKLM_INLINE_WORKER=0` on the web app and run a dedicated worker alongside it (Docker Compose does this automatically — see the `worker` service):
+
+```bash
+.venv/bin/python -m app.worker                         # dedicated ingest worker (shares data/app.sqlite3)
+```
 
 Open `http://127.0.0.1:8000` and sign in:
 
@@ -244,6 +250,8 @@ The harness reports per-question hit rank, **Recall@k**, and **MRR**. Edit `test
 app/main.py            Routes, auth, retrieval orchestration, lifespan, logging.
 app/db.py              SQLite schema, default-notebook migration, load_llm_settings (decrypts API key).
 app/ingest.py          Text extraction, chunking, vector upsert.
+app/jobs.py            DB-backed ingest queue (ingest_jobs): enqueue + atomic claim + retry.
+app/worker.py          Ingest worker loop (standalone `python -m app.worker` or inline).
 app/llm.py             LLM/embedding HTTP, query rewrite, rerank, starter questions.
 app/vector_store.py    Chroma persistent client + diff sync + index_status + clear_all_vectors.
 app/security.py        Password hashing, signed session cookies, Fernet encryption for API keys.
@@ -273,7 +281,8 @@ tests/
   test_security.py     Fernet round-trip + legacy plaintext + wrong-secret behaviour.
   test_vector_store.py Index status + diff/full sync + clear, all against a real Chroma temp dir.
   test_extract.py      Source extraction (PDF, DOCX, HTML edge cases).
-  test_briefing_lock.py In-process briefing lock: acquire / release / stale timeout.
+  test_briefing_lock.py SQLite briefing lock: acquire / release / stale timeout.
+  test_jobs.py         Ingest queue: enqueue idempotency, atomic claim, stale reclaim, retry/fail.
   eval_questions.json  Ground-truth retrieval Qs for the demo notebook.
   eval_retrieval.py    Recall@k + MRR harness (see RETRIEVAL.md).
 
@@ -293,9 +302,7 @@ requirements-dev.txt   Local development/test dependencies layered on runtime.
 Performance/scalability and retrieval-quality work are tracked as prioritised, tick-off backlogs in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) and [`docs/QUALITY.md`](docs/QUALITY.md) (issue → impact → fix → priority). Engineering deep-dives live in [`docs/`](docs/). Headline items still outstanding:
 
 - No streaming responses yet — answers arrive after the full LLM call returns.
-- Background ingest uses FastAPI background tasks rather than a worker queue.
 - No CSRF protection on POST routes.
-- No LLM/embedding HTTP retry / backoff.
 - No offline embedding fallback — embedding model must be configured before uploads are accepted.
 - Keyword search uses `LIKE '%token%'` over SQLite; FTS5 + BM25 is on deck (see [`RETRIEVAL.md`](docs/RETRIEVAL.md)).
 - Hybrid merge uses a fixed `0.7·vector + 0.3·keyword` blend; Reciprocal Rank Fusion is on deck.

@@ -141,6 +141,35 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_notebooks_user_updated
             ON notebooks(user_id, updated_at DESC);
+
+            -- Cross-process briefing generation lock (P2-3). One row per
+            -- notebook while a briefing is being generated; PRIMARY KEY gives
+            -- at-most-one-holder, and a stale row past BRIEFING_LOCK_TIMEOUT_S
+            -- is reclaimed by the acquirer. Replaces the old in-process dict so
+            -- multiple uvicorn workers don't each hold an independent lock.
+            CREATE TABLE IF NOT EXISTS briefing_locks (
+                notebook_id INTEGER PRIMARY KEY REFERENCES notebooks(id) ON DELETE CASCADE,
+                acquired_at REAL NOT NULL
+            );
+
+            -- DB-backed ingest job queue (P1-1). Replaces FastAPI
+            -- BackgroundTasks so ingest survives a restart and can run in a
+            -- separate worker process off the web process. UNIQUE(source_id)
+            -- keeps at most one job per source; reindex upserts it back to
+            -- 'queued'. claimed_at drives the crashed-worker visibility timeout.
+            CREATE TABLE IF NOT EXISTS ingest_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL UNIQUE REFERENCES sources(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'queued',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                claimed_at REAL,
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ingest_jobs_status
+            ON ingest_jobs(status, id);
             """
         )
         _ensure_column(conn, "llm_settings", "provider", "TEXT NOT NULL DEFAULT 'openai_compatible'")

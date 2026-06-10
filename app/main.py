@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import shutil
@@ -10,13 +11,15 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import UPLOAD_DIR, connect, dumps, encrypt_for_storage, init_db, load_llm_settings, load_llm_settings_for_display, loads
-from .ingest import process_source, supported
+from .ingest import supported
+from .jobs import enqueue_source
+from .worker import run_worker_loop
 import httpx
 
 from .llm import close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_briefing, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries
@@ -36,6 +39,10 @@ LOG_FILE = Path(os.environ.get("NOTEBOOKLM_LOG_FILE", BASE_DIR.parent / "logs" /
 LOG_MAX_BYTES = int(os.environ.get("NOTEBOOKLM_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
 LOG_BACKUP_COUNT = int(os.environ.get("NOTEBOOKLM_LOG_BACKUP_COUNT", "5"))
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+# Run the ingest worker inside the web process (P1-1). On by default so a lone
+# `uvicorn app.main:app` ingests as before; set to 0 in deployments that run a
+# dedicated `python -m app.worker` to keep ingest off the web process.
+INLINE_WORKER = os.environ.get("NOTEBOOKLM_INLINE_WORKER", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def configure_logging() -> None:
@@ -80,13 +87,29 @@ async def lifespan(_app: FastAPI):
     init_db()
     set_http_client(httpx.AsyncClient(timeout=None))
     sync_from_sqlite()
+    # Inline ingest worker (P1-1): on by default so a single `uvicorn app.main:app`
+    # keeps draining the ingest queue like before. Production sets
+    # NOTEBOOKLM_INLINE_WORKER=0 and runs a dedicated `python -m app.worker`
+    # process so PDF extraction/embedding stays off the web process.
+    worker_task: asyncio.Task | None = None
+    worker_stop: asyncio.Event | None = None
+    if INLINE_WORKER:
+        worker_stop = asyncio.Event()
+        worker_task = asyncio.create_task(run_worker_loop(stop_event=worker_stop))
     logger.info(
-        "app_started log_level=%s log_file=%s data_dir=%s",
-        LOG_LEVEL, LOG_FILE, os.environ.get("NOTEBOOKLM_DATA_DIR", "data"),
+        "app_started log_level=%s log_file=%s data_dir=%s inline_worker=%s",
+        LOG_LEVEL, LOG_FILE, os.environ.get("NOTEBOOKLM_DATA_DIR", "data"), INLINE_WORKER,
     )
     try:
         yield
     finally:
+        if worker_task is not None and worker_stop is not None:
+            worker_stop.set()
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
         await close_http_client()
         logger.info("app_stopped")
 
@@ -215,41 +238,69 @@ def logout():
 SUGGESTIONS_TTL_HOURS = 24
 BRIEFING_TTL_HOURS = 24
 
-# In-process lock for briefing generation. Keyed by notebook_id, value is the
-# unix timestamp when generation started. Used to dedupe concurrent POSTs that
-# fire when multiple sources finish indexing within seconds of each other
-# during a multi-file upload (each fires indexed-sources-changed → auto-fire POST).
-# Stale entries past BRIEFING_LOCK_TIMEOUT_S are treated as released so a
-# crashed request can't permanently block regeneration.
-# NOTE: in-process dict, single-uvicorn-worker assumption — fine for POC.
-# A multi-worker / multi-process deploy would need a SQLite row, Redis key,
-# or filesystem lockfile instead.
-_briefing_in_progress: dict[int, float] = {}
+# Cross-process lock for briefing generation, backed by the ``briefing_locks``
+# SQLite table (one row per in-flight notebook, value is the unix timestamp when
+# generation started). Used to dedupe concurrent POSTs that fire when multiple
+# sources finish indexing within seconds of each other during a multi-file
+# upload (each fires indexed-sources-changed → auto-fire POST). A row older than
+# BRIEFING_LOCK_TIMEOUT_S is treated as released so a crashed request can't
+# permanently block regeneration.
+# Unlike the old in-process dict, the SQLite row is shared across uvicorn
+# workers, so the app can run multiple workers without two of them each holding
+# an independent lock (P2-3).
 BRIEFING_LOCK_TIMEOUT_S = 90
 
 
 def _briefing_locked(notebook_id: int) -> bool:
     """True if a non-stale briefing generation is currently in flight."""
-    started = _briefing_in_progress.get(notebook_id)
-    if started is None:
-        return False
-    if time.time() - started > BRIEFING_LOCK_TIMEOUT_S:
-        _briefing_in_progress.pop(notebook_id, None)
-        return False
-    return True
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT acquired_at FROM briefing_locks WHERE notebook_id = ?",
+            (notebook_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if time.time() - row["acquired_at"] > BRIEFING_LOCK_TIMEOUT_S:
+            # Stale (crashed holder) — reclaim opportunistically and report free.
+            conn.execute("DELETE FROM briefing_locks WHERE notebook_id = ?", (notebook_id,))
+            return False
+        return True
 
 
 def _acquire_briefing_lock(notebook_id: int) -> bool:
-    """Try to take the briefing lock. Returns True if acquired, False if busy."""
-    if _briefing_locked(notebook_id):
-        return False
-    _briefing_in_progress[notebook_id] = time.time()
-    return True
+    """Try to take the briefing lock. Returns True if acquired, False if busy.
+
+    The check-and-set runs inside a ``BEGIN IMMEDIATE`` write transaction so two
+    workers can't both observe "free" and both acquire. ``busy_timeout`` (set in
+    ``connect()``) makes a competing writer wait rather than error.
+    """
+    now = time.time()
+    conn = connect()
+    try:
+        conn.isolation_level = None  # take manual control of the transaction
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT acquired_at FROM briefing_locks WHERE notebook_id = ?",
+            (notebook_id,),
+        ).fetchone()
+        if row is not None and now - row["acquired_at"] <= BRIEFING_LOCK_TIMEOUT_S:
+            conn.execute("ROLLBACK")
+            return False
+        conn.execute(
+            "INSERT INTO briefing_locks (notebook_id, acquired_at) VALUES (?, ?) "
+            "ON CONFLICT(notebook_id) DO UPDATE SET acquired_at = excluded.acquired_at",
+            (notebook_id, now),
+        )
+        conn.execute("COMMIT")
+        return True
+    finally:
+        conn.close()
 
 
 def _release_briefing_lock(notebook_id: int) -> None:
     """Release the briefing lock. Safe to call when not held."""
-    _briefing_in_progress.pop(notebook_id, None)
+    with connect() as conn:
+        conn.execute("DELETE FROM briefing_locks WHERE notebook_id = ?", (notebook_id,))
 
 
 def _cached_suggestions(notebook: dict) -> list[str]:
@@ -509,7 +560,6 @@ UPLOAD_BATCH_LIMIT = 5
 @app.post("/notebooks/{notebook_id}/sources/upload")
 async def upload_source(
     notebook_id: int,
-    background: BackgroundTasks,
     user: Annotated[dict, Depends(require_login)],
     files: list[UploadFile] = File(...),
 ):
@@ -554,7 +604,7 @@ async def upload_source(
             )
             source_id = cursor.lastrowid
             touch_notebook(conn, notebook_id)
-        background.add_task(process_source, source_id)
+        enqueue_source(source_id)
         queued_source_ids.append(source_id)
         logger.info(
             "source_uploaded user_id=%s notebook_id=%s source_id=%s filename=%s content_type=%s",
@@ -571,7 +621,6 @@ async def upload_source(
 def reindex_source(
     notebook_id: int,
     source_id: int,
-    background: BackgroundTasks,
     user: Annotated[dict, Depends(require_login)],
 ):
     """Schedule reindexing for a source within a specific notebook."""
@@ -585,7 +634,7 @@ def reindex_source(
             logger.warning("source_reindex_missing user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
             raise HTTPException(status_code=404, detail="Source not found")
         touch_notebook(conn, notebook_id)
-    background.add_task(process_source, source_id)
+    enqueue_source(source_id)
     logger.info("source_reindex_requested user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 

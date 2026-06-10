@@ -133,3 +133,47 @@ def test_chat_empty_partial_reflects_indexing_state(monkeypatch, tmp_path):
             conn.execute("UPDATE sources SET status = 'indexed' WHERE id = ?", (source_id,))
         indexed = client.get(url)
         assert "Ask anything about your sources" in indexed.text
+
+
+def test_upload_enqueues_ingest_job_instead_of_running_inline(monkeypatch, tmp_path):
+    """P1-1: uploading queues an ingest_jobs row; the source waits for a worker."""
+    # Disable the inline worker so nothing drains the queue during the test.
+    monkeypatch.setenv("NOTEBOOKLM_INLINE_WORKER", "0")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        # Seed llm_settings directly: the /settings route does a live network
+        # probe that can't run offline, but the upload route only needs a
+        # "ready" config. (Schema exists now — init_db ran in the lifespan.)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://api.example.com/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+            notebook_id = conn.execute(
+                "INSERT INTO notebooks (user_id, title) VALUES (?, 'Q')",
+                (user["id"],),
+            ).lastrowid
+
+        resp = client.post(
+            f"/notebooks/{notebook_id}/sources/upload",
+            files={"files": ("a.txt", b"hello world", "text/plain")},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        with db.connect() as conn:
+            source = conn.execute(
+                "SELECT id, status FROM sources WHERE notebook_id = ?", (notebook_id,)
+            ).fetchone()
+            job = conn.execute(
+                "SELECT status FROM ingest_jobs WHERE source_id = ?", (source["id"],)
+            ).fetchone()
+        # Source is parked until a worker picks it up; a queued job exists.
+        assert source["status"] == "uploaded"
+        assert job is not None
+        assert job["status"] == "queued"

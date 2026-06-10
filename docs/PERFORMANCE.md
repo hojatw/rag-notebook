@@ -29,10 +29,10 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## P1 — important at launch scale
 
-### [ ] P1-1 · Move ingest off the web process
-- **Issue:** Background ingest runs in-process (FastAPI `BackgroundTasks`); `pdfplumber` extraction of hundreds-of-page PDFs is slow and CPU-heavy (architectural follow-up #13).
-- **Impact:** A bulk upload blocks the single web process and degrades every user's requests; a restart drops the queue with no retry.
-- **Fix:** Migrate ingest to a worker queue (RQ / Arq / Celery / Dramatiq) with retries.
+### [x] P1-1 · Move ingest off the web process
+- **Issue:** Background ingest ran in-process (FastAPI `BackgroundTasks`); `pdfplumber` extraction of hundreds-of-page PDFs is slow and CPU-heavy (architectural follow-up #13).
+- **Impact:** A bulk upload blocked the single web process and degraded every user's requests; a restart dropped the queue with no retry.
+- **Fix:** **Done — DB-backed queue, no new infra (Redis deferred).** Uploads/reindex now `enqueue_source()` into an `ingest_jobs` SQLite table (`app/jobs.py`); a worker drains it via `process_source`. Two modes: a dedicated `python -m app.worker` process (compose `worker` service; `NOTEBOOKLM_INLINE_WORKER=0` on the web app) gives true off-process isolation, **or** an inline worker in the web lifespan (`NOTEBOOKLM_INLINE_WORKER=1`, the default) so a lone `uvicorn` still ingests. The queue also **fixes the restart-drops-the-queue gap** (queued jobs survive) and adds crash recovery via a visibility timeout + capped retries. `app/jobs.py` is the single swap-point for Redis + RQ later. Same single-machine constraint as P2-3: valid while all processes share one `data/app.sqlite3`.
 
 ### [ ] P1-2 · Keyword search → SQLite FTS5 + BM25
 - **Issue:** `keyword_candidates_from_sqlite` (`app/main.py`) uses `WHERE chunks.text LIKE '%token%'`.
@@ -59,10 +59,10 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Impact:** Minor added latency per question (both are local/fast).
 - **Fix:** Run them concurrently (`asyncio.gather`, keyword in a thread since it's sync SQLite).
 
-### [ ] P2-3 · Resolve the in-process briefing lock → enable multi-worker
-- **Issue:** Briefing concurrency lock is an in-process dict (`app/main.py`), forcing a single uvicorn worker.
+### [x] P2-3 · Resolve the in-process briefing lock → enable multi-worker
+- **Issue:** Briefing concurrency lock was an in-process dict (`app/main.py`), forcing a single uvicorn worker.
 - **Impact:** Cannot use multiple cores / horizontal scale; vertical scaling only.
-- **Fix:** Move the lock to a shared store (SQLite row / Redis / filesystem lockfile), then run multiple workers.
+- **Fix:** **Done.** The lock now lives in a `briefing_locks` SQLite row (`app/db.py`), keyed by `notebook_id` with the same 90 s stale-timeout self-heal. `_acquire_briefing_lock` does the check-and-set inside a `BEGIN IMMEDIATE` write transaction so two workers can't both acquire (the dict couldn't guarantee this). Same single-machine constraint as P1-1: valid while all workers share one `data/app.sqlite3`. This *unblocks* multiple workers; **the actual uvicorn worker count is a deploy decision and is not changed here.**
 
 ---
 
