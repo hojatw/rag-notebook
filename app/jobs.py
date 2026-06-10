@@ -16,16 +16,17 @@ import logging
 import time
 from typing import Optional
 
+from .config import config
 from .db import connect
 
 logger = logging.getLogger("notebooklm")
 
 # A claimed job whose worker hasn't finished within this window is assumed dead
 # and becomes re-claimable. Generous: hundreds-of-page PDFs embed slowly.
-JOB_VISIBILITY_TIMEOUT_S = 1800  # 30 min
+JOB_VISIBILITY_TIMEOUT_S = config.jobs.visibility_timeout_s
 # Hard cap on (re)claims so a job that keeps crashing the worker eventually
 # fails instead of looping forever.
-JOB_MAX_ATTEMPTS = 3
+JOB_MAX_ATTEMPTS = config.jobs.max_attempts
 
 
 def enqueue_source(source_id: int) -> None:

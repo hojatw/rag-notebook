@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .config import config
 from .db import UPLOAD_DIR, connect, dumps, encrypt_for_storage, init_db, load_llm_settings, load_llm_settings_for_display, loads
 from .ingest import supported
 from .jobs import enqueue_source
@@ -235,8 +236,8 @@ def logout():
     return response
 
 
-SUGGESTIONS_TTL_HOURS = 24
-BRIEFING_TTL_HOURS = 24
+SUGGESTIONS_TTL_HOURS = config.runtime.suggestions_ttl_hours
+BRIEFING_TTL_HOURS = config.runtime.briefing_ttl_hours
 
 # Cross-process lock for briefing generation, backed by the ``briefing_locks``
 # SQLite table (one row per in-flight notebook, value is the unix timestamp when
@@ -248,7 +249,7 @@ BRIEFING_TTL_HOURS = 24
 # Unlike the old in-process dict, the SQLite row is shared across uvicorn
 # workers, so the app can run multiple workers without two of them each holding
 # an independent lock (P2-3).
-BRIEFING_LOCK_TIMEOUT_S = 90
+BRIEFING_LOCK_TIMEOUT_S = config.runtime.briefing_lock_timeout_s
 
 
 def _briefing_locked(notebook_id: int) -> bool:
@@ -554,7 +555,7 @@ def delete_notebook(notebook_id: int, user: Annotated[dict, Depends(require_logi
     return RedirectResponse("/notebooks", status_code=303)
 
 
-UPLOAD_BATCH_LIMIT = 5
+UPLOAD_BATCH_LIMIT = config.runtime.upload_batch_limit
 
 
 @app.post("/notebooks/{notebook_id}/sources/upload")
@@ -1384,14 +1385,20 @@ async def ask(
 # Per-question minimum top-score before we let the answer LLM run. Below this
 # the model is asked to abstain. Lives on the ask() side, not retrieve(), so
 # the eval harness can still observe raw retrieval scores.
-LOW_CONFIDENCE_THRESHOLD = 0.25
+LOW_CONFIDENCE_THRESHOLD = config.retrieval.low_confidence_threshold
 
 # Upper bound on rows pulled into the degraded "Chroma is down" fallback in
 # retrieve(). Without it, a transient Chroma failure would decode every chunk's
 # embedding from SQLite and run Python-side cosine over the whole corpus —
 # O(all_chunks) memory + CPU that melts the box at scale. The fallback has no
 # real vector index, so it is a best-effort safety net, not the primary path.
-FALLBACK_MAX_CHUNKS = 2000
+FALLBACK_MAX_CHUNKS = config.retrieval.fallback_max_chunks
+
+# Hybrid blend weights + candidate-pool / final-chunk sizes (config-driven).
+VECTOR_WEIGHT = config.retrieval.vector_weight
+KEYWORD_WEIGHT = config.retrieval.keyword_weight
+CANDIDATE_POOL_SIZE = config.retrieval.candidate_pool_size
+FINAL_CHUNK_COUNT = config.retrieval.final_chunk_count
 
 
 async def retrieve(
@@ -1408,11 +1415,16 @@ async def retrieve(
     query_embeddings = await embed_texts(queries, settings, role="query")
     if user_id is not None:
         try:
-            vector_candidates = query_vectors(query_embeddings, user_id, source_ids, n_results=20)
-            keyword_candidates = keyword_candidates_from_sqlite(user_id, source_ids or [], queries, limit=20)
+            # Vector (Chroma) and keyword (SQLite) search are independent — run
+            # them concurrently in threads so their I/O overlaps instead of
+            # adding up (P2-2). Both are sync; to_thread releases the event loop.
+            vector_candidates, keyword_candidates = await asyncio.gather(
+                asyncio.to_thread(query_vectors, query_embeddings, user_id, source_ids, n_results=CANDIDATE_POOL_SIZE),
+                asyncio.to_thread(keyword_candidates_from_sqlite, user_id, source_ids or [], queries, limit=CANDIDATE_POOL_SIZE),
+            )
             candidates = merge_candidates(vector_candidates, keyword_candidates, queries)
-            ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:20]
-            retrieved = await rerank_chunks(question, ranked, settings, limit=6)
+            ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:CANDIDATE_POOL_SIZE]
+            retrieved = await rerank_chunks(question, ranked, settings, limit=FINAL_CHUNK_COUNT)
             elapsed_ms = (time.perf_counter() - started) * 1000
             logger.info(
                 "retrieve_completed mode=chroma rewritten_queries=%s vector_candidates=%s keyword_candidates=%s candidates=%s reranked=%s elapsed_ms=%.1f",
@@ -1439,7 +1451,7 @@ async def retrieve(
         embedding = loads(row["embedding_json"])
         vector_score = max(cosine(query_embedding, embedding) for query_embedding in query_embeddings)
         keyword = keyword_score(queries, row["text"])
-        score = (0.7 * max(0.0, vector_score)) + (0.3 * keyword)
+        score = (VECTOR_WEIGHT * max(0.0, vector_score)) + (KEYWORD_WEIGHT * keyword)
         if score <= 0:
             continue
         candidates[row["id"]] = {
@@ -1451,8 +1463,8 @@ async def retrieve(
             "vector_score": vector_score,
             "keyword_score": keyword,
         }
-    ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:20]
-    retrieved = await rerank_chunks(question, ranked, settings, limit=6)
+    ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:CANDIDATE_POOL_SIZE]
+    retrieved = await rerank_chunks(question, ranked, settings, limit=FINAL_CHUNK_COUNT)
     elapsed_ms = (time.perf_counter() - started) * 1000
     logger.info(
         "retrieve_completed source_rows=%s rewritten_queries=%s candidates=%s reranked=%s elapsed_ms=%.1f",
@@ -1548,7 +1560,7 @@ def merge_candidates(vector_candidates: list[dict], keyword_candidates: list[dic
         chunk_id = int(item["id"])
         keyword = keyword_score(queries, item["text"])
         vector_score = max(0.0, float(item.get("vector_score") or 0.0))
-        score = (0.7 * vector_score) + (0.3 * keyword)
+        score = (VECTOR_WEIGHT * vector_score) + (KEYWORD_WEIGHT * keyword)
         existing = candidates.get(chunk_id)
         if existing and existing["score"] >= score:
             continue

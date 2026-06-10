@@ -23,6 +23,7 @@ NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload -
 ## Architecture map
 
 - `app/main.py` — routes, auth, retrieval orchestration, lifespan, logging; SQLite-backed briefing concurrency lock; optional inline ingest worker (`NOTEBOOKLM_INLINE_WORKER`).
+- `app/config.py` — centralized tunables (retrieval weights, top-k, chunking, retry, queue, TTLs). Defaults ← `config.toml` ← `NOTEBOOKLM_<GROUP>_<FIELD>` env. Constants in other modules now read from `config`; **keep dataclass defaults equal to current behavior** (guarded by `tests/test_config.py`).
 - `app/db.py` — SQLite schema + idempotent migrations (`_ensure_column`); `load_llm_settings()` decrypts the API key — **always go through it**, never `SELECT` the key directly.
 - `app/ingest.py` — text extraction, chunking, vector upsert, per-source summary (best-effort after indexing).
 - `app/jobs.py` — DB-backed ingest queue (`ingest_jobs` table): `enqueue_source`, atomic `claim_next_job`, retry/visibility-timeout. The single swap-point if ingest ever moves to Redis/RQ.

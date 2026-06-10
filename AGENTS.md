@@ -71,6 +71,7 @@ For Docker/runtime changes, build the image and smoke-test at least `/` and `/lo
 - Keep generated UI fragments in `app/templates/_*.html` when they are HTMX partials.
 - Keep Markdown rendering sanitized through the existing marked + DOMPurify path.
 - Avoid broad refactors unless they directly reduce risk for the requested change.
+- Tunable parameters (retrieval weights, top-k, chunking sizes, retry, queue timeouts, TTLs) live in `app/config.py`, resolved as defaults ← `config.toml` ← `NOTEBOOKLM_<GROUP>_<FIELD>` env. Add new tunables there rather than hardcoding; keep the dataclass defaults equal to current behavior and update `config.example.toml` (kept in sync by `tests/test_config.py`).
 
 ## LLM And Retrieval Notes
 

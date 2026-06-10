@@ -35,3 +35,6 @@ handover.md
 
 # Docker compose env (.env.example is committed)
 .env
+
+# Local tunable config (config.example.toml is committed)
+config.toml

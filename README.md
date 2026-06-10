@@ -147,6 +147,21 @@ Temperature: 0.2
 Timeout seconds: 60
 ```
 
+## Tuning / configuration
+
+Retrieval and operational tunables — hybrid weights, the abstain threshold, candidate pool / final-chunk sizes, chunking targets, embedding batching, retry policy, ingest-queue timeouts, TTLs — live in [`app/config.py`](app/config.py). Values resolve in three layers, each overriding the one before:
+
+1. **dataclass defaults** (version-controlled, identical to prior hardcoded behavior),
+2. a **TOML file** — copy [`config.example.toml`](config.example.toml) to `config.toml` (gitignored), or point `NOTEBOOKLM_CONFIG_FILE` at any path,
+3. **environment variables** `NOTEBOOKLM_<GROUP>_<FIELD>` (these win — handy for eval sweeps and per-deployment overrides).
+
+```bash
+# Sweep a retrieval weight without touching code:
+NOTEBOOKLM_RETRIEVAL_VECTOR_WEIGHT=0.6 .venv/bin/python -m tests.eval_retrieval
+```
+
+Keep a tuned file per corpus/language as a deliverable (e.g. `config.zh.toml`). Changing `[chunking]` requires re-indexing existing sources (it changes how chunks are stored).
+
 ## Logging
 
 ```bash
@@ -248,6 +263,7 @@ The harness reports per-question hit rank, **Recall@k**, and **MRR**. Edit `test
 
 ```text
 app/main.py            Routes, auth, retrieval orchestration, lifespan, logging.
+app/config.py          Centralized tunables (defaults <- config.toml <- env vars).
 app/db.py              SQLite schema, default-notebook migration, load_llm_settings (decrypts API key).
 app/ingest.py          Text extraction, chunking, vector upsert.
 app/jobs.py            DB-backed ingest queue (ingest_jobs): enqueue + atomic claim + retry.
@@ -283,8 +299,10 @@ tests/
   test_extract.py      Source extraction (PDF, DOCX, HTML edge cases).
   test_briefing_lock.py SQLite briefing lock: acquire / release / stale timeout.
   test_jobs.py         Ingest queue: enqueue idempotency, atomic claim, stale reclaim, retry/fail.
+  test_config.py       Config layering (defaults <- TOML <- env) + example-file sync.
   eval_questions.json  Ground-truth retrieval Qs for the demo notebook.
   eval_retrieval.py    Recall@k + MRR harness (see RETRIEVAL.md).
+config.example.toml    Tunable-config template (copy to config.toml to override).
 
 Runtime-generated, gitignored:
 data/

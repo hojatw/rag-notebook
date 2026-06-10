@@ -1,0 +1,52 @@
+# NotebookLM RAG POC — tunable configuration template.
+#
+# Copy to `config.toml` (gitignored) to override defaults, or point
+# NOTEBOOKLM_CONFIG_FILE at any path. Every value below is the built-in default,
+# so an empty/absent file changes nothing. Precedence (low -> high):
+#   dataclass defaults  <  this TOML file  <  env vars NOTEBOOKLM_<GROUP>_<FIELD>
+# e.g. NOTEBOOKLM_RETRIEVAL_VECTOR_WEIGHT=0.6 overrides [retrieval].vector_weight.
+#
+# Handy for eval sweeps:  NOTEBOOKLM_RETRIEVAL_VECTOR_WEIGHT=0.6 \
+#                         .venv/bin/python -m tests.eval_retrieval
+#
+# Keep a tuned file per corpus/language as a deliverable (e.g. config.zh.toml).
+
+# --- Retrieval / answer quality (the main Q1-3 tuning knobs) ----------------
+[retrieval]
+vector_weight = 0.7            # hybrid blend weight on the vector score
+keyword_weight = 0.3          # hybrid blend weight on the keyword score
+rerank_weight = 0.8           # rerank blend weight on the LLM rerank score
+rerank_base_weight = 0.2      # rerank blend weight on the hybrid score
+low_confidence_threshold = 0.25  # top score below this -> the answer abstains
+candidate_pool_size = 20      # vector n_results / keyword limit / pre-rerank cap
+final_chunk_count = 6         # chunks kept after rerank, fed to the answer
+fallback_max_chunks = 2000    # cap on the degraded Chroma-down SQLite scan
+
+# --- Chunking (CHANGING THESE REQUIRES RE-INDEXING existing sources) --------
+[chunking]
+latin_target_chars = 800      # target chunk size for Latin-script text
+cjk_target_chars = 400        # target chunk size for CJK text (denser per char)
+overlap_sentences = 1         # sentences of overlap between adjacent chunks
+
+# --- Embedding throughput (settings.* can still override per deployment) -----
+[embedding]
+batch_size = 64               # texts per embedding request
+max_concurrency = 4           # in-flight embedding batches (bound the endpoint)
+
+# --- LLM/embedding HTTP retry ------------------------------------------------
+[llm_retry]
+max_attempts = 3
+backoff_base_s = 0.5          # exponential backoff base (seconds) + jitter
+
+# --- Ingest job queue --------------------------------------------------------
+[jobs]
+visibility_timeout_s = 1800.0 # abandoned 'running' job becomes re-claimable
+max_attempts = 3              # cap on (re)claims before a job is failed
+poll_interval_s = 2.0         # worker idle poll interval
+
+# --- Misc runtime ------------------------------------------------------------
+[runtime]
+briefing_lock_timeout_s = 90.0
+upload_batch_limit = 5        # max files per upload request
+suggestions_ttl_hours = 24
+briefing_ttl_hours = 24
