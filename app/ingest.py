@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .config import config
 from .db import connect, dumps, load_llm_settings
 from .llm import embed_texts, summarize_source
 from .vector_store import delete_source as delete_source_vectors
@@ -446,9 +447,10 @@ _CJK_RE = re.compile(r"[一-鿿]")
 # spacing inside paragraphs that we still want flattened.
 _HORIZONTAL_WS_RE = re.compile(r"[ \t\r\f\v]+")
 
-LATIN_TARGET_CHARS = 800
-CJK_TARGET_CHARS = 400
-DEFAULT_OVERLAP_SENTENCES = 1
+# Chunking targets (config-driven; changing them requires re-indexing).
+LATIN_TARGET_CHARS = config.chunking.latin_target_chars
+CJK_TARGET_CHARS = config.chunking.cjk_target_chars
+DEFAULT_OVERLAP_SENTENCES = config.chunking.overlap_sentences
 
 
 def is_mostly_cjk(text: str, threshold: float = 0.30) -> bool:

@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from .config import config
+
 
 SYSTEM_PROMPT = """You are a source-grounded RAG assistant.
 Answer only from the provided source excerpts.
@@ -89,18 +91,25 @@ Use this Markdown structure, OMITTING any section that would be empty:
 Stay grounded in the provided summaries. If a focus question is given, prioritise points relevant to it."""
 
 logger = logging.getLogger(__name__)
-EMBEDDING_BATCH_SIZE = 64
+# Tunables sourced from app.config (defaults <- config.toml <- env); see config.py.
+EMBEDDING_BATCH_SIZE = config.embedding.batch_size
 # How many embedding batches may be in flight at once. Bounded so a large
 # ingest doesn't hammer a shared/borrowed embedding endpoint. Override per
-# deployment via the `embedding_max_concurrency` setting.
-EMBEDDING_MAX_CONCURRENCY = 4
+# deployment via the `embedding_max_concurrency` setting or config.
+EMBEDDING_MAX_CONCURRENCY = config.embedding.max_concurrency
 
 # Retry policy for the LLM/embedding HTTP calls. The target endpoint is often a
 # shared, occasionally-throttled service; one transient 429/5xx or timeout
 # should not fail the whole question (which makes several calls).
-LLM_RETRY_MAX_ATTEMPTS = 3
-LLM_RETRY_BACKOFF_BASE_S = 0.5
+LLM_RETRY_MAX_ATTEMPTS = config.llm_retry.max_attempts
+LLM_RETRY_BACKOFF_BASE_S = config.llm_retry.backoff_base_s
 LLM_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+# Rerank blend: final score = RERANK_WEIGHT * llm_rerank + RERANK_BASE_WEIGHT * hybrid.
+RERANK_WEIGHT = config.retrieval.rerank_weight
+RERANK_BASE_WEIGHT = config.retrieval.rerank_base_weight
+# Cap on candidates sent to the LLM reranker — same pool size as retrieve().
+RERANK_INPUT_SIZE = config.retrieval.candidate_pool_size
 
 _http_client: httpx.AsyncClient | None = None
 
@@ -337,7 +346,7 @@ async def rerank_chunks(question: str, candidates: list[dict[str, Any]], setting
     # cheap relative to the rerank call itself.
     excerpts = "\n\n".join(
         f'Candidate {index}\nFile: {chunk["filename"]}\nLocation: {chunk["location"]}\nText: {chunk["text"]}'
-        for index, chunk in enumerate(candidates[:20], start=1)
+        for index, chunk in enumerate(candidates[:RERANK_INPUT_SIZE], start=1)
     )
     user_prompt = f"Question:\n{question}\n\nCandidates:\n{excerpts}"
     try:
@@ -348,11 +357,11 @@ async def rerank_chunks(question: str, candidates: list[dict[str, Any]], setting
         return fallback
 
     ranked = []
-    for index, chunk in enumerate(candidates[:20], start=1):
+    for index, chunk in enumerate(candidates[:RERANK_INPUT_SIZE], start=1):
         rerank_score = scores.get(index)
         if rerank_score is None:
             continue
-        combined = (0.8 * rerank_score) + (0.2 * chunk["score"])
+        combined = (RERANK_WEIGHT * rerank_score) + (RERANK_BASE_WEIGHT * chunk["score"])
         ranked.append((combined, {**chunk, "rerank_score": rerank_score, "score": combined}))
     if not ranked:
         logger.warning("rerank_empty_scores candidates=%s", len(candidates))

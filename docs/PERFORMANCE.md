@@ -54,10 +54,10 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Impact:** ~12 KB/vector of JSON (~12 GB at 1M chunks) + `dumps`/`loads` CPU on ingest — but it buys cheap, offline index rebuilds.
 - **Fix (decision needed):** Don't simply delete. Options: (a) keep as-is (durability > disk); (b) store raw `float32` bytes instead of JSON (~4 KB/vector, ~3× smaller, still rebuildable) — the better middle ground; (c) drop it and accept re-embedding on rebuild. Recommend **(b)** if disk matters, else leave it.
 
-### [ ] P2-2 · Run vector + keyword search concurrently
-- **Issue:** `retrieve()` calls `query_vectors(...)` then `keyword_candidates_from_sqlite(...)` sequentially, though they are independent.
+### [x] P2-2 · Run vector + keyword search concurrently
+- **Issue:** `retrieve()` called `query_vectors(...)` then `keyword_candidates_from_sqlite(...)` sequentially, though they are independent.
 - **Impact:** Minor added latency per question (both are local/fast).
-- **Fix:** Run them concurrently (`asyncio.gather`, keyword in a thread since it's sync SQLite).
+- **Fix:** **Done.** Both now run via `asyncio.gather(asyncio.to_thread(query_vectors, …), asyncio.to_thread(keyword_candidates_from_sqlite, …))` so their I/O overlaps; behavior-preserving (same merge/rank). Both stay inside the existing `try`, so a Chroma failure still trips the capped SQLite fallback. Covered by `test_retrieve_runs_vector_and_keyword_search_concurrently`.
 
 ### [x] P2-3 · Resolve the in-process briefing lock → enable multi-worker
 - **Issue:** Briefing concurrency lock was an in-process dict (`app/main.py`), forcing a single uvicorn worker.

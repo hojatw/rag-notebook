@@ -145,6 +145,21 @@ Temperature: 0.2
 Timeout seconds: 60
 ```
 
+## 調參 / 設定
+
+檢索與運維的可調參數 —— 混合權重、放棄門檻、候選池/最終 chunk 數、chunking 目標、embedding 批次、retry 政策、匯入佇列逾時、TTL —— 都集中在 [`app/config.py`](app/config.py)。值依三層解析,後者覆寫前者:
+
+1. **dataclass 預設值**(版本控管,與先前寫死的行為完全相同),
+2. **TOML 檔** —— 把 [`config.example.toml`](config.example.toml) 複製成 `config.toml`(已 gitignore),或用 `NOTEBOOKLM_CONFIG_FILE` 指定任意路徑,
+3. **環境變數** `NOTEBOOKLM_<GROUP>_<FIELD>`(優先序最高 —— 適合 eval sweep 與各部署覆寫)。
+
+```bash
+# 不改 code 掃一個檢索權重:
+NOTEBOOKLM_RETRIEVAL_VECTOR_WEIGHT=0.6 .venv/bin/python -m tests.eval_retrieval
+```
+
+可依語料/語言保留一份調好的設定檔當交付物(例如 `config.zh.toml`)。改 `[chunking]` 需要對既有來源重新索引(它會改變 chunk 的儲存方式)。
+
 ## Logging
 
 ```bash
@@ -244,6 +259,7 @@ Harness 會回報每題 hit rank、**Recall@k** 與 **MRR**。編輯 `tests/eval
 
 ```text
 app/main.py            Routes、auth、retrieval orchestration、lifespan、logging。
+app/config.py          集中式可調參數（預設值 <- config.toml <- env vars）。
 app/db.py              SQLite schema、default-notebook migration、load_llm_settings（解密 API key）。
 app/ingest.py          文字抽取、chunking、vector upsert。
 app/jobs.py            DB-backed 匯入佇列（ingest_jobs）：enqueue + 原子 claim + retry。
@@ -279,8 +295,10 @@ tests/
   test_extract.py      Source extraction（PDF、DOCX、HTML edge cases）。
   test_briefing_lock.py SQLite briefing lock：acquire / release / stale timeout。
   test_jobs.py         匯入佇列：enqueue 冪等、原子 claim、stale 重認領、retry/fail。
+  test_config.py       設定分層（預設值 <- TOML <- env）+ 範例檔同步檢查。
   eval_questions.json  Demo notebook 的 ground-truth retrieval Qs。
   eval_retrieval.py    Recall@k + MRR harness（見 RETRIEVAL.md）。
+config.example.toml    可調參數設定範本（複製成 config.toml 即可覆寫）。
 
 Runtime-generated，已 gitignore：
 data/

@@ -139,6 +139,52 @@ def test_retrieve_prefers_keyword_and_vector_relevant_chunks(local_embed):
     assert chunks[0]["filename"] == "azure.md"
 
 
+def test_retrieve_runs_vector_and_keyword_search_concurrently(local_embed, monkeypatch):
+    """P2-2: the Chroma path fires vector + keyword search concurrently and merges both."""
+    import threading
+    import time as _time
+    import app.main as main
+
+    inflight = {"cur": 0, "max": 0}
+    lock = threading.Lock()
+
+    def _enter():
+        with lock:
+            inflight["cur"] += 1
+            inflight["max"] = max(inflight["max"], inflight["cur"])
+
+    def _exit():
+        with lock:
+            inflight["cur"] -= 1
+
+    def fake_vectors(embeddings, user_id, source_ids, n_results=20):
+        _enter(); _time.sleep(0.05); _exit()
+        return [{"id": 1, "source_id": 1, "filename": "a.md", "location": "doc",
+                 "text": "api_version controls the API version", "vector_score": 0.9}]
+
+    def fake_keyword(user_id, source_ids, queries, limit=20):
+        _enter(); _time.sleep(0.05); _exit()
+        return [{"id": 2, "source_id": 2, "filename": "b.md", "location": "doc",
+                 "text": "setting reference appendix"}]
+
+    async def fake_rewrite(question, history, settings):
+        return [question]
+
+    async def fake_rerank(question, candidates, settings, limit=6):
+        return candidates
+
+    monkeypatch.setattr(main, "query_vectors", fake_vectors)
+    monkeypatch.setattr(main, "keyword_candidates_from_sqlite", fake_keyword)
+    monkeypatch.setattr(main, "rewrite_search_queries", fake_rewrite)
+    monkeypatch.setattr(main, "rerank_chunks", fake_rerank)
+
+    chunks = asyncio.run(main.retrieve("api_version setting", [], {}, user_id=1, source_ids=[1, 2]))
+
+    # Both searches contributed (merge happened) and both ran at the same time.
+    assert {c["filename"] for c in chunks} == {"a.md", "b.md"}
+    assert inflight["max"] == 2
+
+
 def test_keyword_score_supports_cjk_terms():
     """Keyword scoring should handle Chinese text without whitespace."""
     from app.main import keyword_score

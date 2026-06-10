@@ -22,6 +22,7 @@ import signal
 
 import httpx
 
+from .config import config
 from .db import init_db
 from .ingest import process_source
 from .jobs import claim_next_job, mark_done, requeue_or_fail
@@ -29,7 +30,7 @@ from .llm import close_http_client, set_http_client
 
 logger = logging.getLogger("notebooklm")
 
-DEFAULT_POLL_INTERVAL_S = 2.0
+DEFAULT_POLL_INTERVAL_S = config.jobs.poll_interval_s
 
 
 async def _wait(interval: float, stop_event: "asyncio.Event | None") -> None:

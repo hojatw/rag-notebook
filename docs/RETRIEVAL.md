@@ -186,6 +186,8 @@ for q in questions:
 
 ## Tuning knobs (one place to change each)
 
+Most of these are now **centralized in [`app/config.py`](../app/config.py)** and overridable at runtime without code edits — defaults ← `config.toml` ← `NOTEBOOKLM_<GROUP>_<FIELD>` env (see the README "Tuning / configuration" section). The mapping: hybrid weights → `[retrieval] vector_weight/keyword_weight`; rerank weights → `rerank_weight/rerank_base_weight`; vector/keyword/rerank candidate counts → `candidate_pool_size`; rerank limit → `final_chunk_count`; abstain → `low_confidence_threshold`; chunking → `[chunking] *`; embedding batch → `[embedding] batch_size`. The module constants below still exist (call sites read them) but their values come from config. `is_mostly_cjk` threshold and the rewrite-history count remain plain constants.
+
 | Knob | Default | Location | What it controls |
 |---|---:|---|---|
 | `LATIN_TARGET_CHARS` | 800 | [app/ingest.py:71](../app/ingest.py:71) | Max chars per Latin-dominant chunk |
@@ -202,7 +204,7 @@ for q in questions:
 | History turns for rewrite | 6 | [app/llm.py:144](../app/llm.py:144) | Trailing history passed to query rewriter |
 | Embedding batch size | 64 | [app/llm.py:35](../app/llm.py:35) | Per-HTTP batch for `embed_texts` |
 
-Change one knob, rerun `python -m tests.eval_retrieval`, compare numbers.
+Change one knob, rerun `python -m tests.eval_retrieval`, compare numbers. For the config-driven knobs you can sweep without editing code, e.g. `NOTEBOOKLM_RETRIEVAL_VECTOR_WEIGHT=0.6 python -m tests.eval_retrieval`.
 
 ## Observability
 
