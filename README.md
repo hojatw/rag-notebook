@@ -87,6 +87,15 @@ rm -rf data/ logs/
 
 The image uses the same Python 3.12 runtime as local development. Default port is 8000 (override via `HOST_PORT` in `.env`).
 
+Compose runs **two services off one image**: `app` (web, `NOTEBOOKLM_INLINE_WORKER=0`) and `worker` (`python -m app.worker`), which drains the ingest queue off the web process. They share the same `./data` bind-mount (one SQLite DB + Chroma index). The worker waits for the app to be healthy before starting, so schema migrations run once.
+
+**Deploying to a remote / customer host:**
+
+- **Build on the target host** (`docker compose up --build` there) so the image matches the host architecture. If you build on Apple Silicon (arm64) and ship the image to a linux/amd64 server, build with `docker buildx build --platform linux/amd64`.
+- **Outbound network:** the container must reach the customer's chat + embedding endpoints (set as the Base URL in `/settings`). Ensure the Docker network / firewall allows egress to them.
+- **Bind-mount ownership:** the container runs as UID 1000. `./data` and `./logs` on the host must be writable by it — `chown -R 1000:1000 data logs`, or set `user:` in `docker-compose.yml` to your host UID.
+- **Tuning in Docker:** override retrieval/runtime defaults either with env vars (`NOTEBOOKLM_<GROUP>_<FIELD>`, highest precedence) or by mounting a tuned config — `cp config.example.toml config.toml`, edit it, and uncomment the `./config.toml:/app/config.toml:ro` line in `docker-compose.yml`. See [Tuning / configuration](#tuning--configuration).
+
 ### Python Runtime
 
 Local development and Docker both use Python 3.12. Keeping them aligned avoids platform-specific native-wheel gaps in dependencies such as `onnxruntime`, which ChromaDB declares as a required dependency. The repo includes `.python-version` as a hint for version managers, but `setup.sh` only requires a working `python3.12` on `PATH`.

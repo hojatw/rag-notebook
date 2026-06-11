@@ -38,6 +38,9 @@ services:
       - ./data:/app/data
       # Rotating log files. Inspectable from the host with tail -f.
       - ./logs:/app/logs
+      # Optional tuned config (copy config.example.toml -> config.toml). Env
+      # vars NOTEBOOKLM_<GROUP>_<FIELD> also override and take precedence.
+      # - ./config.toml:/app/config.toml:ro
     healthcheck:
       # Defined in the Dockerfile; restated here so `docker compose ps`
       # reflects health without poking inside the image.
@@ -57,10 +60,15 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     depends_on:
-      - app
+      # Wait until the web app is healthy so it has finished the SQLite schema
+      # migrations before the worker opens the same DB (avoids both racing on
+      # the column ALTERs at first boot; the ALTERs are also guarded in code).
+      app:
+        condition: service_healthy
     environment:
       NOTEBOOKLM_SECRET: ${NOTEBOOKLM_SECRET:?NOTEBOOKLM_SECRET must be set in .env}
       NOTEBOOKLM_LOG_LEVEL: ${NOTEBOOKLM_LOG_LEVEL:-INFO}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+      # - ./config.toml:/app/config.toml:ro   # optional, see app service above
