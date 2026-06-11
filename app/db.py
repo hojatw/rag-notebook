@@ -262,10 +262,21 @@ def _migrate_default_notebooks(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-    """Add a column to an existing SQLite table when it is missing."""
+    """Add a column to an existing SQLite table when it is missing.
+
+    Idempotent under concurrency: the web app and the standalone ingest worker
+    both run ``init_db()`` against the same SQLite file at startup, so two
+    processes can observe the column missing and both issue the ALTER. The
+    loser gets ``duplicate column name`` — swallow it, since the column now
+    exists, which is all this function guarantees.
+    """
     columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
     if column not in columns:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
 
 
 def _ensure_user(conn: sqlite3.Connection, username: str, password: str, is_admin: bool) -> None:

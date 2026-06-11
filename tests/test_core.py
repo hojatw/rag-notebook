@@ -357,3 +357,35 @@ def test_fetch_candidate_rows_is_capped(monkeypatch, tmp_path):
     assert len(main.fetch_candidate_rows(user["id"], [source_id], limit=3)) == 3
     # Default cap is large enough not to clip a tiny corpus.
     assert len(main.fetch_candidate_rows(user["id"], [])) == 5
+
+
+def test_concurrent_init_db_does_not_race_on_migrations(monkeypatch, tmp_path):
+    """app + worker both run init_db() on the shared SQLite at boot. The
+    _ensure_column migrations must be idempotent under concurrency — without
+    the duplicate-column guard one thread crashes with 'duplicate column name'
+    (the Docker app/worker first-boot race)."""
+    import threading
+
+    monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
+    import app.db as db
+    importlib.reload(db)
+    db.connect().close()  # create the data dir before the threads race
+
+    errors: list[Exception] = []
+
+    def run():
+        try:
+            db.init_db()
+        except Exception as exc:  # record any startup crash
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"concurrent init_db raised: {errors}"
+    with db.connect() as conn:
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(sources)")]
+    assert "notebook_id" in cols and "summary" in cols  # migrations applied

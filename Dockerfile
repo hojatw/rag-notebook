@@ -44,6 +44,11 @@ RUN apt-get update \
 #    __pycache__/ out of the image.
 COPY app ./app
 
+# 4b) Tunable-config template, for reference inside the container. To actually
+#     override defaults, bind-mount a config.toml over /app/config.toml (see
+#     docker-compose.yml) or set NOTEBOOKLM_<GROUP>_<FIELD> env vars.
+COPY config.example.toml ./
+
 # 5) Make sure mount targets exist with the right owner. Empty directories
 #    here get replaced by the bind mount at container start; the chown
 #    matters when the user runs without a mount (fresh-install demo).
