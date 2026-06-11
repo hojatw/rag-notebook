@@ -263,12 +263,14 @@
       {% if conversation %}<input type="hidden" name="conversation_id" value="{{ conversation.id }}">{% endif %}
 
       <div class="question-row">
-        <textarea name="question" rows="3"
+        <textarea name="question" rows="2"
                   id="question-input"
                   placeholder="Ask a question about the selected sources"
+                  {% if conversation %}autofocus{% endif %}
                   required></textarea>
         <button type="submit" data-loading-text="Asking...">Ask</button>
       </div>
+      <p class="ask-hint" aria-hidden="true">Enter to send · Shift+Enter for a new line</p>
     </form>
   </section>
 
