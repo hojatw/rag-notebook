@@ -45,6 +45,44 @@ function bindAll(root) {
   renderMarkdown(root);
   bindSuggestionFill(root);
   bindAskFormThinkingBubble(root);
+  bindChatInput(root);
+}
+
+// ---- Chat input: Enter-to-send, Shift+Enter newline, IME-safe, auto-grow --
+// Standard chatbot input behaviour. CRITICAL for CJK: Enter that confirms an
+// IME candidate must NOT submit — guarded via composition tracking +
+// isComposing/keyCode 229. Submit goes through requestSubmit() so the existing
+// submit handlers (source_ids injection, loading lock, thinking bubble) all run.
+function bindChatInput(root) {
+  const MAX_GROW_PX = 200; // ~8 lines, then the textarea scrolls internally
+  bindOnce(root, "textarea#question-input", "chatinput", (textarea) => {
+    const form = textarea.closest("form.ask-form");
+    if (!form) return;
+
+    let composing = false;
+    textarea.addEventListener("compositionstart", () => { composing = true; });
+    textarea.addEventListener("compositionend", () => { composing = false; });
+
+    textarea.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      // Mid-IME-composition Enter only confirms the candidate — never submit.
+      if (composing || event.isComposing || event.keyCode === 229) return;
+      // Shift+Enter keeps the default newline.
+      if (event.shiftKey) return;
+      event.preventDefault();
+      if (!textarea.value.trim()) return; // ignore blank / whitespace-only
+      if (typeof form.requestSubmit === "function") form.requestSubmit();
+      else form.submit();
+    });
+
+    // Grow with content up to MAX_GROW_PX, then overflow scrolls (see CSS).
+    const autogrow = () => {
+      textarea.style.height = "auto";
+      textarea.style.height = Math.min(textarea.scrollHeight, MAX_GROW_PX) + "px";
+    };
+    textarea.addEventListener("input", autogrow);
+    autogrow();
+  });
 }
 
 // Optimistic "thinking" placeholder inside the chat pane. The ask form does
