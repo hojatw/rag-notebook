@@ -40,6 +40,33 @@ Do NOT translate. If excerpts are mixed-language, follow whichever language carr
 
 Return only a JSON array of strings, each under 80 characters."""
 
+FOLLOWUP_QUESTIONS_PROMPT = """You suggest follow-up questions after an assistant answered a user inside a source-grounded RAG app.
+Read the user's question and the assistant's answer. Propose 3 short, distinct follow-up questions the user would plausibly ask next.
+Each question must stand alone (no pronouns) and be answerable from the same source documents.
+
+LANGUAGE RULE — strictly match the language of the user's question:
+- Traditional Chinese question -> Traditional Chinese follow-ups (繁體中文).
+- Simplified Chinese question -> Simplified Chinese follow-ups.
+- Japanese question -> Japanese follow-ups.
+- English question -> English follow-ups.
+Do NOT translate.
+
+Return only a JSON array of strings, each under 60 characters."""
+
+MEETING_MINUTES_PROMPT = """You turn a meeting transcript (or meeting-notes document) into structured minutes.
+
+LANGUAGE RULE — strictly match the dominant language of the transcript; do NOT translate:
+- Traditional Chinese transcript -> 繁體中文, use headings: ## 會議主題 / ## 重要決議 / ## 行動項目 / ## 待辦與追蹤 / ## 未決事項
+- Simplified Chinese transcript -> Simplified Chinese with equivalent headings.
+- Japanese transcript -> Japanese with equivalent headings.
+- English transcript -> English, use headings: ## Topic / ## Decisions / ## Action items / ## Follow-ups / ## Open questions
+
+Rules:
+- OMIT any section that would be empty. No filler, no preamble before the first heading.
+- Under 行動項目 / Action items, one bullet per item as: **負責人/owner (if stated)** — task — 期限/deadline (if stated).
+- Stay strictly grounded in the transcript; never invent attendees, decisions, or dates.
+- If the document is clearly NOT a meeting transcript or meeting notes, reply with exactly one line saying it does not look like a meeting record (in the document's language) and nothing else."""
+
 SOURCE_SUMMARY_PROMPT = """You write tight summaries of single source documents.
 Read the provided excerpts (which are the first chunks of one document).
 Write 2 to 4 sentences capturing what the document is about and its key claims or findings.
@@ -401,6 +428,61 @@ async def generate_starter_questions(excerpts: list[dict[str, Any]], settings: d
     cleaned = [q for q in (q.strip() for q in questions) if q]
     logger.info("starter_questions_generated excerpts=%s returned=%s", len(samples), len(cleaned[:4]))
     return cleaned[:4]
+
+
+async def suggest_followup_questions(question: str, answer: str, settings: dict[str, Any]) -> list[str]:
+    """Suggest up to 3 follow-up questions for the latest answered QA pair (A2)."""
+    if not question.strip() or not answer.strip():
+        return []
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        logger.info("followups_skipped reason=no_chat_settings")
+        return []
+    user_prompt = (
+        f"User question:\n{question.strip()[:1000]}\n\n"
+        f"Assistant answer:\n{answer.strip()[:4000]}\n\n"
+        "Return the JSON array now."
+    )
+    try:
+        content = await chat_completion(settings, user_prompt, FOLLOWUP_QUESTIONS_PROMPT, temperature=0.6)
+        questions = parse_json_strings(content)
+    except Exception:
+        logger.exception("followups_failed")
+        return []
+    cleaned = [q for q in (q.strip() for q in questions) if q]
+    logger.info("followups_generated returned=%s", len(cleaned[:3]))
+    return cleaned[:3]
+
+
+MEETING_MINUTES_CONTEXT_CHARS = 16000
+
+
+async def generate_meeting_minutes(chunks: list[dict[str, Any]], settings: dict[str, Any]) -> str:
+    """Turn one source's chunks (a transcript) into structured minutes (A1).
+
+    Returns an empty string on missing settings or upstream failure — the
+    caller surfaces a friendly error instead.
+    """
+    if not chunks:
+        return ""
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        logger.info("meeting_minutes_skipped reason=no_chat_settings")
+        return ""
+    parts: list[str] = []
+    used = 0
+    for chunk in chunks:
+        text = chunk["text"]
+        if used + len(text) > MEETING_MINUTES_CONTEXT_CHARS:
+            break
+        parts.append(text)
+        used += len(text)
+    user_prompt = f"Transcript:\n{'\n\n'.join(parts)}\n\nWrite the minutes now."
+    try:
+        minutes = await chat_completion(settings, user_prompt, MEETING_MINUTES_PROMPT, temperature=0.3)
+    except Exception:
+        logger.exception("meeting_minutes_failed chunks=%s", len(chunks))
+        return ""
+    logger.info("meeting_minutes_generated chunks_used=%s chars=%s", len(parts), len(minutes))
+    return minutes.strip()
 
 
 async def summarize_source(chunks: list[dict[str, Any]], settings: dict[str, Any]) -> str:

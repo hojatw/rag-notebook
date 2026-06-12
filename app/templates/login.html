@@ -3,23 +3,23 @@
 <section class="auth-panel">
   <div class="auth-hero">
     <span class="auth-mark">R</span>
-    <h1>Sign in to RAG Notebook</h1>
-    <p class="muted">A NotebookLM-style workspace for grounded chats with your own documents.</p>
+    <h1>登入 RAG Notebook</h1>
+    <p class="muted">NotebookLM 風格的個人工作區 — 與你自己的文件進行有根據的對話。</p>
   </div>
   {% if error %}<div class="alert">{{ error }}</div>{% endif %}
   <form method="post" action="/login" class="stack" data-loading-form>
     <label>
-      Username
+      帳號
       <input name="username" autocomplete="username" autofocus required>
     </label>
     <label>
-      Password
+      密碼
       <input name="password" type="password" autocomplete="current-password" required>
     </label>
-    <button type="submit" data-loading-text="Signing in...">Sign in</button>
+    <button type="submit" data-loading-text="登入中...">登入</button>
   </form>
   <p class="auth-hint muted small">
-    Demo accounts: <code>admin / admin123</code> &middot; <code>user / user123</code>
+    示範帳號： <code>admin / admin123</code> &middot; <code>user / user123</code>
   </p>
 </section>
 {% endblock %}

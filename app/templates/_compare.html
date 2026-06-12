@@ -8,10 +8,10 @@
          hx-swap="outerHTML">
   <details>
     <summary>
-      <span>Compare sources</span>
+      <span>來源比較</span>
     </summary>
     {% if not sources_indexed %}
-      <p class="muted small">Index 2+ sources to compare them.</p>
+      <p class="muted small">需要 2 個以上已索引的來源才能比較。</p>
     {% else %}
       <form class="compare-form"
             hx-post="/notebooks/{{ notebook.id }}/compare"
@@ -25,21 +25,21 @@
               <label>
                 <input type="checkbox" name="source_ids" value="{{ s.id }}">
                 <span class="compare-source-name">{{ s.filename }}</span>
-                {% if not s.summary %}<span class="muted small">(no summary)</span>{% endif %}
+                {% if not s.summary %}<span class="muted small">（無摘要）</span>{% endif %}
               </label>
             </li>
           {% endfor %}
         </ul>
         <label class="compare-focus-label">
-          <span class="muted small">Focus (optional)</span>
-          <input type="text" name="focus" placeholder="e.g. methodology, conclusions" maxlength="160">
+          <span class="muted small">聚焦重點（選填）</span>
+          <input type="text" name="focus" placeholder="例如：研究方法、結論" maxlength="160">
         </label>
-        <button type="submit" class="wide small">Compare</button>
+        <button type="submit" class="wide small">開始比較</button>
       </form>
       {# Unified studio loading line — htmx adds .htmx-request to this
          element while the POST is in flight (via hx-indicator above).
          Shared CSS in .studio-loading toggles visibility + dot pulse. #}
-      <p id="compare-loading" class="studio-loading htmx-indicator">Comparing sources…</p>
+      <p id="compare-loading" class="studio-loading htmx-indicator">來源比較中…</p>
       <div id="compare-result" class="compare-result"></div>
     {% endif %}
   </details>

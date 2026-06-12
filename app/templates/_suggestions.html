@@ -14,8 +14,8 @@
          hx-trigger="indexed-sources-changed from:body"
          hx-swap="outerHTML">
   <h3>
-    Suggested questions
-    {% if questions %}{{ gen_button("Refresh", notebook.id) }}{% endif %}
+    建議問題
+    {% if questions %}{{ gen_button("重新生成", notebook.id) }}{% endif %}
   </h3>
   {% if questions %}
     <ul class="suggestion-list">
@@ -27,12 +27,12 @@
     </ul>
   {% elif error %}
     <p class="muted small">{{ error }}</p>
-    {{ gen_button("Try again", notebook.id) }}
+    {{ gen_button("再試一次", notebook.id) }}
   {% elif not has_indexed %}
-    <p class="muted small">Index a source first to generate starter questions.</p>
+    <p class="muted small">先完成來源索引，才能生成建議問題。</p>
   {% else %}
-    <p class="muted small">Generate 4 grounded starter questions from your sources.</p>
-    {{ gen_button("Generate suggestions", notebook.id) }}
+    <p class="muted small">從你的來源生成 4 個有依據的起始問題。</p>
+    {{ gen_button("生成建議問題", notebook.id) }}
   {% endif %}
-  <p id="suggestions-loading" class="studio-loading htmx-indicator">Generating suggestions…</p>
+  <p id="suggestions-loading" class="studio-loading htmx-indicator">建議問題生成中…</p>
 </section>

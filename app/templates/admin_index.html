@@ -2,81 +2,81 @@
 {% block content %}
 <section class="settings">
   <header class="settings-head">
-    <p class="eyebrow">Admin console</p>
-    <h1>Vector index</h1>
-    <p class="muted">Compare the Chroma collection to the SQLite chunks of indexed sources. Use <strong>Rebuild</strong> after restoring from a backup, or <strong>Clear</strong> to wipe Chroma and start fresh.</p>
+    <p class="eyebrow">管理主控台</p>
+    <h1>向量索引</h1>
+    <p class="muted">比對 Chroma 集合與 SQLite 中已索引來源的分塊。從備份還原後請用<strong>重建</strong>；要清空 Chroma 重來則用<strong>清除</strong>。</p>
   </header>
 
   {% if msg.startswith('rebuilt-') %}
-    <div class="notice">Index rebuilt — {{ msg.split('-', 1)[1] }} chunks upserted.</div>
+    <div class="notice">索引已重建 — 已寫入 {{ msg.split('-', 1)[1] }} 個分塊。</div>
   {% elif msg.startswith('cleared-') %}
-    <div class="notice">Cleared {{ msg.split('-', 1)[1] }} vectors. Run Rebuild to repopulate.</div>
+    <div class="notice">已清除 {{ msg.split('-', 1)[1] }} 個向量。執行「重建」即可重新建立。</div>
   {% endif %}
 
   {% if not status.chroma_available %}
-    <div class="alert">ChromaDB is not importable in this environment. Vector search is disabled until it is installed.</div>
+    <div class="alert">此環境無法載入 ChromaDB，安裝前向量搜尋停用。</div>
   {% endif %}
 
   <section class="settings-section">
-    <h2>Status</h2>
+    <h2>狀態</h2>
     <div class="index-stat-grid">
       <div class="index-stat">
-        <span class="index-stat-label">SQLite chunks</span>
+        <span class="index-stat-label">SQLite 分塊</span>
         <span class="index-stat-value">{{ status.sqlite_chunks }}</span>
-        <span class="muted small">(from indexed sources)</span>
+        <span class="muted small">（來自已索引來源）</span>
       </div>
       <div class="index-stat">
-        <span class="index-stat-label">Chroma vectors</span>
+        <span class="index-stat-label">Chroma 向量</span>
         <span class="index-stat-value">{{ status.chroma_chunks }}</span>
-        <span class="muted small">(in the persistent collection)</span>
+        <span class="muted small">（持久化集合內）</span>
       </div>
       <div class="index-stat">
-        <span class="index-stat-label">Missing in Chroma</span>
+        <span class="index-stat-label">Chroma 缺少</span>
         <span class="index-stat-value {% if status.missing_in_chroma %}warn{% endif %}">{{ status.missing_in_chroma }}</span>
-        <span class="muted small">(would be upserted)</span>
+        <span class="muted small">（重建時會補上）</span>
       </div>
       <div class="index-stat">
-        <span class="index-stat-label">Orphan in Chroma</span>
+        <span class="index-stat-label">Chroma 孤兒</span>
         <span class="index-stat-value {% if status.orphan_in_chroma %}warn{% endif %}">{{ status.orphan_in_chroma }}</span>
-        <span class="muted small">(would be deleted)</span>
+        <span class="muted small">（重建時會刪除）</span>
       </div>
       <div class="index-stat">
-        <span class="index-stat-label">Vector dimension</span>
+        <span class="index-stat-label">向量維度</span>
         <span class="index-stat-value">{{ status.dimension if status.dimension is not none else "—" }}</span>
-        <span class="muted small">{% if status.dimension is not none %}(locked by first upsert){% else %}(empty collection — any dim still legal){% endif %}</span>
+        <span class="muted small">{% if status.dimension is not none %}（由第一次寫入鎖定）{% else %}（集合為空 — 尚未鎖定維度）{% endif %}</span>
       </div>
     </div>
 
     <div class="index-verdict">
       {% if status.in_sync %}
-        <span class="status indexed">In sync</span>
-        <span class="muted small">SQLite and Chroma agree.</span>
+        <span class="status indexed">已同步</span>
+        <span class="muted small">SQLite 與 Chroma 一致。</span>
       {% else %}
-        <span class="status failed">Out of sync</span>
-        <span class="muted small">A diff sync runs automatically on next app startup; Rebuild forces it now.</span>
+        <span class="status failed">不同步</span>
+        <span class="muted small">下次啟動會自動差異同步；按「重建」可立即執行。</span>
       {% endif %}
     </div>
   </section>
 
   <section class="settings-section">
-    <h2>Actions</h2>
+    <h2>操作</h2>
     <div class="index-actions">
       <form method="post" action="/admin/index/rebuild"
-            data-confirm="Re-upsert every SQLite chunk into Chroma? This can take several seconds for large notebooks."
+            data-confirm="將所有 SQLite 分塊重新寫入 Chroma？資料量大時可能需要數秒。"
             data-loading-form>
-        <button type="submit" data-loading-text="Rebuilding...">Rebuild index</button>
+        <button type="submit" data-loading-text="重建中...">重建索引</button>
       </form>
       <form method="post" action="/admin/index/clear"
-            data-confirm="Delete EVERY vector from Chroma? SQLite data is untouched, and a follow-up Rebuild restores search."
+            data-confirm="刪除 Chroma 中的所有向量？SQLite 資料不受影響，之後執行「重建」即可恢復搜尋。"
             data-loading-form>
-        <button type="submit" class="danger" data-loading-text="Clearing...">Clear vectors</button>
+        <button type="submit" class="danger" data-loading-text="清除中...">清除向量</button>
       </form>
     </div>
-    <p class="hint muted small">A diff-only sync runs automatically every time the app starts — these buttons are for manual repair when drift is suspected.</p>
+    <p class="hint muted small">每次啟動都會自動執行差異同步 — 這些按鈕只在懷疑索引漂移時手動修復用。</p>
   </section>
 
   <div class="settings-foot">
-    <a href="/notebooks" class="ghost">Back to notebooks</a>
+    <a href="/notebooks" class="ghost">返回筆記本</a>
   </div>
 </section>
 {% endblock %}

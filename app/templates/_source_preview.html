@@ -6,14 +6,14 @@
     <p class="preview-meta">
       <span class="status {{ source.status }}">{{ source.status }}</span>
       <span class="muted">·</span>
-      <span class="muted">{{ chunks|length }} {% if chunks|length == 1 %}chunk{% else %}chunks{% endif %}</span>
+      <span class="muted">{{ chunks|length }} 個分塊</span>
       {% if source.content_type %}
         <span class="muted">·</span>
         <span class="muted">{{ source.content_type }}</span>
       {% endif %}
     </p>
   </div>
-  <button type="button" class="ghost preview-close" @click="$dispatch('close-preview')" aria-label="Close preview">×</button>
+  <button type="button" class="ghost preview-close" @click="$dispatch('close-preview')" aria-label="關閉預覽">×</button>
 </header>
 
 {% if source.error %}
@@ -22,7 +22,7 @@
 
 {% if source.summary %}
   <section class="preview-summary">
-    <h3>Summary</h3>
+    <h3>摘要</h3>
     <p>{{ source.summary }}</p>
   </section>
 {% endif %}
@@ -33,7 +33,7 @@
       <li id="preview-chunk-{{ chunk.id }}" class="preview-chunk">
         <div class="preview-chunk-head">
           <span class="chunk-loc">{{ chunk.location }}</span>
-          <span class="muted small">chunk #{{ chunk.chunk_index }}</span>
+          <span class="muted small">分塊 #{{ chunk.chunk_index }}</span>
         </div>
         <p class="preview-chunk-text">{{ chunk.text }}</p>
       </li>
@@ -41,6 +41,6 @@
   </ol>
 {% else %}
   <div class="empty">
-    <p class="muted">No chunks yet — this source has not been successfully indexed.</p>
+    <p class="muted">尚無分塊 — 這個來源還沒有成功完成索引。</p>
   </div>
 {% endif %}

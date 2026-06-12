@@ -23,8 +23,8 @@
            class="source-scope-toggle"
            data-source-id="{{ source.id }}"
            checked
-           title="Include in chat scope"
-           aria-label="Include {{ source.filename }} in chat scope">
+           title="納入對話範圍"
+           aria-label="將 {{ source.filename }} 納入對話範圍">
     {% endif %}
     <button type="button"
             class="source-line-btn"
@@ -33,10 +33,10 @@
             hx-target="#preview-content"
             hx-swap="innerHTML"
             hx-on::after-request="window.dispatchEvent(new CustomEvent('open-preview'))"
-            title="Click to preview chunks"
+            title="點擊預覽內容分塊"
             {% else %}
             disabled
-            title="Preview available once indexed"
+            title="索引完成後即可預覽"
             {% endif %}>
       <span class="source-name">{{ source.filename }}</span>
       <span class="status {{ source.status }}">{{ source.status }}</span>
@@ -47,10 +47,10 @@
   {% endif %}
   <div class="source-actions">
     <form action="/notebooks/{{ notebook.id }}/sources/{{ source.id }}/reindex" method="post" data-loading-form>
-      <button class="ghost small" type="submit" data-loading-text="...">Reindex</button>
+      <button class="ghost small" type="submit" data-loading-text="...">重新索引</button>
     </form>
-    <form action="/notebooks/{{ notebook.id }}/sources/{{ source.id }}/delete" method="post" data-confirm="Delete this source and its indexed chunks?">
-      <button class="ghost small danger-link" type="submit">Delete</button>
+    <form action="/notebooks/{{ notebook.id }}/sources/{{ source.id }}/delete" method="post" data-confirm="刪除這個來源與其索引分塊？">
+      <button class="ghost small danger-link" type="submit">刪除</button>
     </form>
   </div>
 </li>

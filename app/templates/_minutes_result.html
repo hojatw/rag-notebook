@@ -1,0 +1,9 @@
+{# Result fragment for the meeting-minutes card (A1). On success the minutes
+   are also saved as a note (the card response fires notes-changed to refresh
+   the Notes section). #}
+{% if error %}
+  <p class="compare-error">{{ error }}</p>
+{% elif minutes %}
+  <p class="muted small">已從「{{ filename }}」整理完成，並存入筆記。</p>
+  <div class="markdown-body" data-markdown>{{ minutes }}</div>
+{% endif %}

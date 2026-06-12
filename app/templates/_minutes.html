@@ -1,0 +1,35 @@
+{# Meeting-minutes Studio card (A1). Pick one indexed source (a transcript or
+   meeting-notes upload) -> structured minutes saved to Notes. Re-fetched on
+   indexed-sources-changed so the picker stays in sync. #}
+<section class="studio-section studio-minutes" id="studio-minutes"
+         hx-get="/notebooks/{{ notebook.id }}/_minutes"
+         hx-trigger="indexed-sources-changed from:body"
+         hx-swap="outerHTML">
+  <details>
+    <summary>
+      <span>會議記錄整理</span>
+    </summary>
+    {% if not sources_indexed %}
+      <p class="muted small">先上傳並完成索引一份會議逐字稿（txt / docx / pdf）。</p>
+    {% else %}
+      <form class="minutes-form"
+            hx-post="/notebooks/{{ notebook.id }}/minutes"
+            hx-target="#minutes-result"
+            hx-swap="innerHTML"
+            hx-indicator="#minutes-loading"
+            hx-disabled-elt="find button[type=submit]">
+        <label class="minutes-source-label">
+          <span class="muted small">選擇來源（會議逐字稿）</span>
+          <select name="source_id" required>
+            {% for s in sources_indexed %}
+              <option value="{{ s.id }}">{{ s.filename }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit" class="wide small">整理成會議記錄</button>
+      </form>
+      <p id="minutes-loading" class="studio-loading htmx-indicator">整理中…</p>
+      <div id="minutes-result" class="minutes-result"></div>
+    {% endif %}
+  </details>
+</section>
