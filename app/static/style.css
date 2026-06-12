@@ -1470,6 +1470,45 @@ legend {
   color: var(--muted);
 }
 
+/* Assistant message action row (copy + pin) */
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Follow-up question chips under the latest answer (A2) */
+.followups {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: var(--sp-3) 0 0;
+}
+
+.followups-label {
+  flex-shrink: 0;
+}
+
+.followup-chip {
+  max-width: 100%;
+  text-align: left;
+}
+
+/* Export links (conversation menu + notes header) */
+.convo-export {
+  display: block;
+  text-decoration: none;
+  text-align: center;
+  margin-top: 6px;
+}
+
+.notes-export {
+  float: right;
+  text-decoration: none;
+  font-weight: 400;
+}
+
 /* ---------------------------------------------------------------- settings */
 
 .settings-section {

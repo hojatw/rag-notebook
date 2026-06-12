@@ -11,12 +11,13 @@
 - **Notebook 首頁格狀列表。** 每個 notebook 都有自己的來源、對話與釘選筆記。
 - **每個 notebook 都有三欄式工作區**：
   - **Sources**（左側）：拖放上傳、自動輪詢索引狀態、針對單一來源重新索引/刪除、**點擊任一已索引來源即可開啟 chunk 預覽抽屜**。
-  - **Chat**（中間）：有來源根據的對話，包含對話切換器（每列可刪除）、Markdown 轉譯回答，以及行內 `[1]` `[2]` 引用 chip，可捲動到對應來源。
-  - **Studio**（右側）：一欄內提供四個 NotebookLM 風格輔助功能。
+  - **Chat**（中間）：有來源根據的對話，包含對話切換器（每列可刪除、可**匯出 Markdown**）、Markdown 轉譯回答（每則回答可一鍵**複製**），以及行內 `[1]` `[2]` 引用 chip，可捲動到對應來源。提問經由 HTMX 只更新訊息區（不再整頁重載）；每次成功回答後會建議 2–3 個**追問問題 chip**（延遲生成、逐訊息快取）。Enter 送出、Shift+Enter 換行、中文選字 Enter 不會誤送。介面為繁體中文。
+  - **Studio**（右側）：一欄內提供五個 NotebookLM 風格輔助功能。
       - *Suggested questions*：由 LLM 根據你的來源一鍵產生開場問題；來源完成索引後會自動重新整理（24 小時快取）。
       - *Briefing*：跨來源的一段式綜合摘要，第一次檢視 notebook 時自動產生並快取 24 小時。可視需要按 *Regenerate*。跨分頁/相鄰來源完成時的並行產生，會由共享的 SQLite 鎖去重，所以一次上傳 5 個檔案只會呼叫 LLM 一次，而不是五次（可跨多個 worker 運作）。
       - *Compare sources*：選擇 2 個以上已索引來源（可選擇性提供聚焦提示），模型會產生 Shared / Distinct / Contradictions 的 Markdown 報告。按 *Save to notes* 可保留供之後使用。
-      - *Notes*：將助理回答 *Pin* 到可收合筆記中（移除筆記會自動取消釘選原始訊息）；比較結果也能儲存在這裡。
+      - *會議記錄整理*：選擇一個已索引來源（會議逐字稿），模型會產生結構化會議記錄（主題 / 決議 / 行動項目 / 待辦 / 未決事項），直接存入筆記。
+      - *Notes*：將助理回答 *Pin* 到可收合筆記中（移除筆記會自動取消釘選原始訊息）；比較結果與會議記錄也會存在這裡；可**一鍵匯出全部筆記為 Markdown**。
   - **單一來源摘要**：每個上傳來源在索引完成後，都會自動產生 2 到 4 句 TL;DR，顯示在預覽抽屜頂端，並作為 Briefing / Compare 的精簡脈絡重用。
 - **混合式檢索**：query rewriting、Chroma vector search、SQLite keyword matching 與 LLM reranking。低於可設定信心閾值時，模型會被要求避免回答，而不是產生幻覺。完整 pipeline、調校旋鈕與 eval 工作流程請見 [`RETRIEVAL.md`](docs/RETRIEVAL.md)。
 - **每則訊息的除錯窗格**：聊天回答附有可收合的「📊 N chunks · retrieved Xms · generated Yms · top score Z」徽章，點開後可看到每個引用的 vector / keyword / rerank / final 分數表格。
@@ -205,8 +206,10 @@ GET  /notebooks/{id}/sources/{sid}/preview                來源預覽抽屜（c
 GET  /notebooks/{id}/_source-picker                       HTMX swap：chat-form picker
 
 POST /notebooks/{id}/chat/new                             新對話
-POST /notebooks/{id}/chat/ask                             提問
+POST /notebooks/{id}/chat/ask                             提問（HTMX 回傳訊息 partial；無 JS 則 303）
 POST /notebooks/{id}/chat/{cid}/delete                    刪除對話
+GET  /notebooks/{id}/chat/{cid}/_followups?message_id=N   延遲載入追問問題 chip（快取於 metadata）
+GET  /notebooks/{id}/chat/{cid}/export                    下載對話 Markdown
 
 GET  /notebooks/{id}/_suggestions                         HTMX swap：suggestions section
 POST /notebooks/{id}/suggestions                          產生 4 個起始問題
@@ -214,10 +217,14 @@ GET  /notebooks/{id}/_briefing                            HTMX swap：briefing s
 POST /notebooks/{id}/briefing[?force=1]                   產生 / 重新產生 notebook briefing
 GET  /notebooks/{id}/_compare                             HTMX swap：compare-sources section
 POST /notebooks/{id}/compare                              比較 2 個以上來源（回傳 result fragment）
+GET  /notebooks/{id}/_minutes                             HTMX swap：會議記錄整理卡片
+POST /notebooks/{id}/minutes                              從單一來源產生結構化會議記錄
 
 POST /notebooks/{id}/notes/pin                            將助理訊息釘選到 notes
 POST /notebooks/{id}/notes/add                            儲存 raw note（title + content）
 POST /notebooks/{id}/notes/{note_id}/delete               移除釘選筆記（也會 broadcast pin-cleared）
+GET  /notebooks/{id}/_notes                               HTMX swap：notes section（notes-changed 事件）
+GET  /notebooks/{id}/notes/export                         下載全部筆記 Markdown
 
 GET  /account                                             變更自己的密碼
 POST /account/password                                    儲存新密碼

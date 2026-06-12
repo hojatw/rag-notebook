@@ -1,0 +1,128 @@
+{# Chat messages pane. Included inline by notebook.html AND returned as the
+   HTMX swap target after asking a question (U1: no full page reload).
+   Context: notebook, conversation, messages, messages_truncated,
+   pinned_message_ids, llm_status, oob (True only for the ask() partial
+   response — adds the OOB hidden-input update so follow-up questions in a
+   brand-new conversation reuse it instead of creating another one). #}
+<div class="messages" id="chat-messages">
+  {% if oob and conversation %}
+    <input type="hidden" id="conversation-id-field" name="conversation_id"
+           value="{{ conversation.id }}" hx-swap-oob="true">
+  {% endif %}
+  {% if messages_truncated %}
+    <div class="truncated-hint muted small">僅顯示此對話最近 200 則訊息。</div>
+  {% endif %}
+  {% for message in messages %}
+    <article class="message {{ message.role }}" id="msg-{{ message.id }}">
+      <div class="message-head">
+        <div class="role">{{ "你" if message.role == "user" else "助理" }}</div>
+        {% if message.role == "assistant" %}
+          <div class="message-actions">
+            <button type="button" class="ghost small copy-btn" data-copy-message
+                    title="複製回答（Markdown）">📋 複製</button>
+            <form id="pin-msg-{{ message.id }}"
+                  hx-post="/notebooks/{{ notebook.id }}/notes/pin"
+                  hx-target="#studio-notes"
+                  hx-swap="outerHTML"
+                  class="pin-form"
+                  x-data="{ pinned: {{ 'true' if message.id in pinned_message_ids else 'false' }} }"
+                  @htmx:after-request="if ($event.detail.successful) pinned = true"
+                  @pin-cleared.window="if ($event.detail.message_id === {{ message.id }}) pinned = false">
+              <input type="hidden" name="message_id" value="{{ message.id }}">
+              <button type="submit"
+                      class="ghost small pin-btn"
+                      :class="{ 'pinned': pinned }"
+                      :disabled="pinned"
+                      x-text="pinned ? '📌 已釘選' : '📌 釘選'"
+                      :title="pinned ? '已釘選到筆記' : '釘選到筆記'">📌 釘選</button>
+            </form>
+          </div>
+        {% endif %}
+      </div>
+
+      {% if message.role == "assistant" %}
+        <div class="message-body markdown-body"
+             data-markdown
+             data-citations='{{ message.citations | tojson | safe }}'>{{ message.content }}</div>
+      {% else %}
+        <p class="message-body">{{ message.content }}</p>
+      {% endif %}
+
+      {% if message.citations %}
+        <div class="citations">
+          <div class="citation-title">引用來源</div>
+          {% for citation in message.citations %}
+            <details id="msg-{{ message.id }}-cite-{{ citation.index }}">
+              <summary>[{{ citation.index }}] {{ citation.filename }} · {{ citation.location }}</summary>
+              <p>{{ citation.snippet }}</p>
+            </details>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      {% if message.role == "assistant" and (message.metadata or message.citations) %}
+        <details class="debug-pane">
+          <summary>
+            <span class="debug-summary-text">
+              {% if message.metadata.retrieved_chunks is defined %}
+                {{ message.metadata.retrieved_chunks }} 個段落
+                {% if message.metadata.retrieval_ms %} · 檢索 {{ message.metadata.retrieval_ms }}ms{% endif %}
+                {% if message.metadata.generation_ms %} · 生成 {{ message.metadata.generation_ms }}ms{% endif %}
+                {% if message.metadata.top_score %} · 最高分 {{ message.metadata.top_score }}{% endif %}
+              {% else %}
+                為什麼引用這些內容？
+              {% endif %}
+            </span>
+          </summary>
+          {% if message.metadata.outcome == "low_confidence" %}
+            <p class="muted small">最高分段落只有 {{ message.metadata.top_score }}，低於信心門檻 {{ message.metadata.threshold|default(0.25) }} — 為避免幻覺，模型選擇不作答。</p>
+          {% elif message.metadata.outcome == "no_retrieval" %}
+            <p class="muted small">已索引的來源中找不到候選段落。</p>
+          {% elif message.metadata.outcome == "error" %}
+            <p class="muted small">處理過程發生錯誤：{{ message.metadata.error|default('未知') }}</p>
+          {% endif %}
+          {% if message.citations and message.citations[0].score is defined %}
+            <table class="debug-scores">
+              <thead>
+                <tr><th>#</th><th>檔案 · 位置</th><th>向量</th><th>關鍵字</th><th>重排</th><th>總分</th></tr>
+              </thead>
+              <tbody>
+              {% for c in message.citations %}
+                <tr>
+                  <td>[{{ c.index }}]</td>
+                  <td class="debug-file">{{ c.filename }} · {{ c.location }}</td>
+                  <td>{{ '%.2f'|format(c.vector_score|default(0)) }}</td>
+                  <td>{{ '%.2f'|format(c.keyword_score|default(0)) }}</td>
+                  <td>{% if c.rerank_score is not none %}{{ '%.2f'|format(c.rerank_score) }}{% else %}—{% endif %}</td>
+                  <td>{{ '%.2f'|format(c.score|default(0)) }}</td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          {% endif %}
+        </details>
+      {% endif %}
+    </article>
+  {% else %}
+    {% include "_chat_empty.html" %}
+  {% endfor %}
+
+  {# A2: follow-up question chips under the latest answered assistant message.
+     Cached followups render immediately; otherwise lazy-load them in a
+     separate request so the answer itself is never delayed. #}
+  {% if conversation and messages and llm_status and llm_status.ready %}
+    {% set last = messages[-1] %}
+    {% if last.role == "assistant" and last.metadata.outcome == "answered" %}
+      {% if last.metadata.followups %}
+        {% with questions=last.metadata.followups %}
+          {% include "_followups.html" %}
+        {% endwith %}
+      {% else %}
+        <div class="followups followups-loading"
+             hx-get="/notebooks/{{ notebook.id }}/chat/{{ conversation.id }}/_followups?message_id={{ last.id }}"
+             hx-trigger="load delay:400ms"
+             hx-swap="outerHTML"></div>
+      {% endif %}
+    {% endif %}
+  {% endif %}
+</div>

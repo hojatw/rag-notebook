@@ -9,6 +9,7 @@ NotebookLM-style RAG proof of concept: FastAPI + Jinja2 + HTMX + Alpine.js, SQLi
 - `docs/RETRIEVAL.md` — read before changing retrieval, chunking, ranking, reranking, evals, or vector-store behavior.
 - `docs/PERFORMANCE.md` / `docs/QUALITY.md` — prioritised, tick-off backlogs for performance and retrieval-quality work.
 - `docs/SCHEMA.md` — DB schema reference (tables, columns, FKs, indexes). Keep in sync with `app/db.py` on every schema change.
+- `docs/ROADMAP.md` — product-surface backlog (UX improvements + new AI features, with effort/prerequisites). Performance/quality items stay in their own backlogs.
 - `handover.md` (gitignored, when present) — cross-session work state; useful context, not a durable rule source.
 
 ## Commands

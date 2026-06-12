@@ -23,7 +23,7 @@ from .jobs import enqueue_source
 from .worker import run_worker_loop
 import httpx
 
-from .llm import close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_briefing, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries
+from .llm import close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_briefing, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions
 from .security import get_app_secret, hash_password, sign_user_id, unsign_user_id, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
@@ -169,7 +169,7 @@ def require_login(request: Request) -> dict:
 def require_admin(user: Annotated[dict, Depends(require_login)]) -> dict:
     """Require the authenticated user to have administrator privileges."""
     if not user["is_admin"]:
-        raise HTTPException(status_code=403, detail="Admin only")
+        raise HTTPException(status_code=403, detail="僅限管理員")
     return user
 
 
@@ -220,7 +220,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
         user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
     if not user or not verify_password(password, user["password_hash"]):
         logger.warning("login_failed username=%s", username)
-        return render(request, "login.html", {"error": "Invalid username or password."}, 400)
+        return render(request, "login.html", {"error": "帳號或密碼錯誤。"}, 400)
     redirect = RedirectResponse("/notebooks", status_code=303)
     redirect.set_cookie("session", sign_user_id(user["id"], SECRET), httponly=True, samesite="lax")
     logger.info("login_succeeded user_id=%s username=%s", user["id"], username)
@@ -341,7 +341,7 @@ def get_notebook(conn, notebook_id: int, user_id: int) -> dict:
         (notebook_id, user_id),
     ).fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Notebook not found")
+        raise HTTPException(status_code=404, detail="找不到筆記本")
     return dict(row)
 
 
@@ -409,12 +409,12 @@ def list_notebooks(request: Request, user: Annotated[dict, Depends(require_login
 @app.post("/notebooks/new")
 def create_notebook(
     user: Annotated[dict, Depends(require_login)],
-    title: str = Form("Untitled notebook"),
+    title: str = Form("未命名筆記本"),
     emoji: str = Form("📓"),
     description: str = Form(""),
 ):
     """Create a notebook and redirect into its workspace."""
-    title = title.strip() or "Untitled notebook"
+    title = title.strip() or "未命名筆記本"
     description = description.strip()[:280]
     with connect() as conn:
         cursor = conn.execute(
@@ -470,7 +470,7 @@ def notebook_view(
                 (conversation_id, notebook_id, user["id"]),
             ).fetchone()
             if convo_row is None:
-                raise HTTPException(status_code=404, detail="Conversation not found")
+                raise HTTPException(status_code=404, detail="找不到對話")
             conversation = dict(convo_row)
             recent, messages_truncated = fetch_capped(
                 conn,
@@ -523,7 +523,7 @@ def rename_notebook(
     description: str = Form(""),
 ):
     """Update a notebook's title, emoji, and description."""
-    title = title.strip() or "Untitled notebook"
+    title = title.strip() or "未命名筆記本"
     emoji = (emoji or "").strip()[:8]
     description = description.strip()[:280]
     with connect() as conn:
@@ -575,16 +575,16 @@ async def upload_source(
         logger.warning("source_upload_rejected user_id=%s notebook_id=%s reason=llm_not_configured", user["id"], notebook_id)
         raise HTTPException(
             status_code=400,
-            detail="LLM is not configured. An admin must set the embedding model and chat model at /settings before sources can be indexed.",
+            detail="尚未完成 LLM 設定。請管理員先到 /settings 設定 embedding 模型與聊天模型，才能索引來源。",
         )
     if not files:
-        raise HTTPException(status_code=400, detail="No files selected.")
+        raise HTTPException(status_code=400, detail="尚未選擇檔案。")
     if len(files) > UPLOAD_BATCH_LIMIT:
-        raise HTTPException(status_code=400, detail=f"Upload at most {UPLOAD_BATCH_LIMIT} files at a time.")
+        raise HTTPException(status_code=400, detail=f"一次最多上傳 {UPLOAD_BATCH_LIMIT} 個檔案。")
     for upload in files:
         if not upload.filename or not supported(upload.filename):
             logger.warning("source_upload_rejected user_id=%s notebook_id=%s filename=%s", user["id"], notebook_id, upload.filename)
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {upload.filename or '(unnamed)'}")
+            raise HTTPException(status_code=400, detail=f"不支援的檔案格式：{upload.filename or '(未命名)'}")
 
     user_dir = UPLOAD_DIR / str(user["id"])
     user_dir.mkdir(parents=True, exist_ok=True)
@@ -633,7 +633,7 @@ def reindex_source(
         ).fetchone()
         if source is None:
             logger.warning("source_reindex_missing user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail="找不到來源")
         touch_notebook(conn, notebook_id)
     enqueue_source(source_id)
     logger.info("source_reindex_requested user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
@@ -651,7 +651,7 @@ def delete_source(notebook_id: int, source_id: int, user: Annotated[dict, Depend
         ).fetchone()
         if source is None:
             logger.warning("source_delete_missing user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail="找不到來源")
         conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         touch_notebook(conn, notebook_id)
     cleanup_source_artifacts({"id": source_id, "stored_path": source["stored_path"], "user_id": user["id"]})
@@ -678,7 +678,7 @@ def source_partial(
             (source_id, notebook_id, user["id"]),
         ).fetchone()
         if row is None:
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail="找不到來源")
     response = render(request, "_source_item.html", {"notebook": notebook, "source": dict(row)})
     # Keep fast source-row synchronization separate from Studio refreshes.
     # Processing polls are frequent; if the Studio sections also listen to
@@ -713,7 +713,7 @@ def source_preview(
             (source_id, notebook_id, user["id"]),
         ).fetchone()
         if source_row is None:
-            raise HTTPException(status_code=404, detail="Source not found")
+            raise HTTPException(status_code=404, detail="找不到來源")
         chunks = [
             dict(r)
             for r in conn.execute(
@@ -811,15 +811,15 @@ async def notebook_suggestions(
     if not has_indexed:
         error = ""
     elif not (settings or {}).get("api_key") or not (settings or {}).get("chat_model"):
-        error = "Configure LLM settings to generate suggestions."
+        error = "請先完成 LLM 設定，才能生成建議問題。"
     else:
         try:
             questions = await generate_starter_questions(excerpts, settings or {})
             if not questions:
-                error = "The model returned no questions. Try again."
+                error = "模型未回傳建議問題，請再試一次。"
         except Exception as exc:
             logger.exception("suggestions_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
-            error = f"Could not generate suggestions: {exc}"
+            error = f"建議問題生成失敗：{exc}"
 
     if questions:
         with connect() as conn:
@@ -970,15 +970,15 @@ async def notebook_briefing(
         if not summaries:
             error = ""  # nothing to brief; template falls back on has_indexed
         elif not settings.get("api_key") or not settings.get("chat_model"):
-            error = "Configure LLM settings to generate a briefing."
+            error = "請先完成 LLM 設定，才能生成簡報。"
         else:
             try:
                 briefing = await generate_briefing(summaries, settings)
                 if not briefing:
-                    error = "The model returned no briefing. Try again."
+                    error = "模型未回傳簡報內容，請再試一次。"
             except Exception as exc:
                 logger.exception("briefing_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
-                error = f"Could not generate briefing: {exc}"
+                error = f"簡報生成失敗：{exc}"
 
         if briefing:
             with connect() as conn:
@@ -1039,7 +1039,7 @@ async def notebook_compare(
             {
                 "notebook_id": notebook_id,
                 "comparison": "",
-                "error": "Pick at least 2 sources to compare.",
+                "error": "請至少勾選 2 個來源進行比較。",
                 "filenames": [],
                 "focus": focus,
             },
@@ -1057,7 +1057,7 @@ async def notebook_compare(
             {
                 "notebook_id": notebook_id,
                 "comparison": "",
-                "error": "Need at least 2 sources with content to compare.",
+                "error": "至少需要 2 個有內容的來源才能比較。",
                 "filenames": [s["filename"] for s in summaries],
                 "focus": focus,
             },
@@ -1070,7 +1070,7 @@ async def notebook_compare(
             {
                 "notebook_id": notebook_id,
                 "comparison": "",
-                "error": "Configure LLM settings to compare sources.",
+                "error": "請先完成 LLM 設定，才能比較來源。",
                 "filenames": [s["filename"] for s in summaries],
                 "focus": focus,
             },
@@ -1082,10 +1082,10 @@ async def notebook_compare(
     try:
         comparison = await compare_sources(summaries, focus, settings)
         if not comparison:
-            error = "The model returned an empty comparison. Try again."
+            error = "模型回傳的比較結果為空，請再試一次。"
     except Exception as exc:
         logger.exception("compare_failed user_id=%s notebook_id=%s sources=%s", user["id"], notebook_id, len(summaries))
-        error = f"Could not generate comparison: {exc}"
+        error = f"來源比較失敗：{exc}"
 
     logger.info(
         "compare_completed user_id=%s notebook_id=%s sources=%s focus_chars=%s chars=%s",
@@ -1115,8 +1115,8 @@ def add_note(
     """Create a raw note (no source message). Used by Save-to-notes on comparison results."""
     cleaned_content = (content or "").strip()
     if not cleaned_content:
-        raise HTTPException(status_code=400, detail="Note content cannot be empty.")
-    cleaned_title = " ".join((title or "").split())[:80] or "Saved note"
+        raise HTTPException(status_code=400, detail="筆記內容不可為空。")
+    cleaned_title = " ".join((title or "").split())[:80] or "已儲存筆記"
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
         conn.execute(
@@ -1151,7 +1151,7 @@ def pin_note(
             (message_id, user["id"], notebook_id),
         ).fetchone()
         if message is None:
-            raise HTTPException(status_code=404, detail="Message not found")
+            raise HTTPException(status_code=404, detail="找不到訊息")
         # Idempotent: pinning the same message twice is a no-op.
         existing = conn.execute(
             "SELECT id FROM notes WHERE notebook_id = ? AND source_message_id = ?",
@@ -1204,7 +1204,7 @@ def delete_note(
             (note_id, notebook_id, user["id"]),
         ).fetchone()
         if deleted is None:
-            raise HTTPException(status_code=404, detail="Note not found")
+            raise HTTPException(status_code=404, detail="找不到筆記")
         source_message_id = deleted["source_message_id"]
         notes = [dict(r) for r in conn.execute(
             "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
@@ -1231,7 +1231,7 @@ def delete_conversation(
             (conversation_id, notebook_id, user["id"]),
         )
         if result.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Conversation not found")
+            raise HTTPException(status_code=404, detail="找不到對話")
         touch_notebook(conn, notebook_id)
     logger.info("conversation_deleted user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
@@ -1243,7 +1243,7 @@ def new_conversation(notebook_id: int, user: Annotated[dict, Depends(require_log
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
         cursor = conn.execute(
-            "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, 'New conversation')",
+            "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, '新對話')",
             (user["id"], notebook_id),
         )
         conversation_id = cursor.lastrowid
@@ -1254,14 +1254,23 @@ def new_conversation(notebook_id: int, user: Annotated[dict, Depends(require_log
 
 @app.post("/notebooks/{notebook_id}/chat/ask")
 async def ask(
+    request: Request,
     notebook_id: int,
     user: Annotated[dict, Depends(require_login)],
     question: str = Form(...),
-    conversation_id: int | None = Form(None),
+    conversation_id: str | None = Form(None),
     source_ids: list[int] = Form(default=[]),
 ):
-    """Persist a user question within a notebook, run retrieval, and save the assistant answer."""
+    """Persist a user question within a notebook, run retrieval, and save the assistant answer.
+
+    Responds two ways (U1): HTMX requests get just the messages partial (no
+    full page reload, URL updated via HX-Push-Url); plain form posts keep the
+    original 303 redirect as the no-JS fallback.
+    """
     question = question.strip()
+    # The hidden field is always rendered ("" for a new conversation), so the
+    # value arrives as a string; normalise to int | None ourselves.
+    conversation_id = int(conversation_id) if conversation_id and str(conversation_id).strip() else None
     if not question:
         return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
@@ -1296,7 +1305,7 @@ async def ask(
                 (conversation_id, notebook_id, user["id"]),
             ).fetchone()
             if convo is None:
-                raise HTTPException(status_code=404, detail="Conversation not found")
+                raise HTTPException(status_code=404, detail="找不到對話")
         conn.execute(
             "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'user', ?)",
             (conversation_id, user["id"], question),
@@ -1330,7 +1339,7 @@ async def ask(
             metadata["top_score"] = round(top_score, 3)
 
         if not retrieved or top_score < LOW_CONFIDENCE_THRESHOLD:
-            answer = "I cannot determine that from the selected sources."
+            answer = "依據所選的來源，我無法判斷這個問題的答案。"
             citations = []
             metadata["outcome"] = "low_confidence" if retrieved else "no_retrieval"
             metadata["threshold"] = LOW_CONFIDENCE_THRESHOLD
@@ -1355,7 +1364,7 @@ async def ask(
                 user["id"], notebook_id, conversation_id, len(retrieved), len(citations), len(all_citations), len(answer),
             )
     except Exception as exc:
-        answer = f"Chat error: {exc}"
+        answer = f"處理時發生錯誤：{exc}"
         citations = []
         metadata["outcome"] = "error"
         metadata["error"] = str(exc)[:200]
@@ -1372,14 +1381,266 @@ async def ask(
         conn.execute(
             """
             UPDATE conversations
-            SET title = CASE WHEN title = 'New conversation' THEN ? ELSE title END,
+            SET title = CASE WHEN title IN ('New conversation', '新對話') THEN ? ELSE title END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND user_id = ?
             """,
             (question[:80], conversation_id, user["id"]),
         )
         touch_notebook(conn, notebook_id)
+
+    if request.headers.get("HX-Request") == "true":
+        # U1: swap only the messages pane. oob=True also updates the hidden
+        # conversation field so the next ask reuses this conversation.
+        with connect() as conn:
+            notebook = get_notebook(conn, notebook_id, user["id"])
+            llm_status = llm_settings_status(conn)
+            convo_row = conn.execute(
+                "SELECT * FROM conversations WHERE id = ? AND user_id = ?",
+                (conversation_id, user["id"]),
+            ).fetchone()
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE conversation_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC LIMIT 201",
+                (conversation_id, user["id"]),
+            ).fetchall()
+            pinned_message_ids = {
+                r["source_message_id"]
+                for r in conn.execute(
+                    "SELECT source_message_id FROM notes WHERE notebook_id = ? AND user_id = ? AND source_message_id IS NOT NULL",
+                    (notebook_id, user["id"]),
+                ).fetchall()
+            }
+        recent = [dict(r) for r in rows]
+        response = render(
+            request,
+            "_messages.html",
+            {
+                "notebook": notebook,
+                "conversation": dict(convo_row) if convo_row else None,
+                "messages": [message_with_citations(row) for row in reversed(recent[:200])],
+                "messages_truncated": len(recent) > 200,
+                "pinned_message_ids": pinned_message_ids,
+                "llm_status": llm_status,
+                "oob": True,
+            },
+        )
+        response.headers["HX-Push-Url"] = f"/notebooks/{notebook_id}?conversation_id={conversation_id}"
+        return response
     return RedirectResponse(f"/notebooks/{notebook_id}?conversation_id={conversation_id}", status_code=303)
+
+
+@app.get("/notebooks/{notebook_id}/chat/{conversation_id}/_followups", response_class=HTMLResponse)
+async def followups_partial(
+    request: Request,
+    notebook_id: int,
+    conversation_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    message_id: int,
+):
+    """Lazy-load follow-up question chips for an answered assistant message (A2).
+
+    Generated once per message and cached in messages.metadata_json.followups,
+    so reloading the page does not re-call the LLM.
+    """
+    with connect() as conn:
+        get_notebook(conn, notebook_id, user["id"])
+        convo = conn.execute(
+            "SELECT id FROM conversations WHERE id = ? AND notebook_id = ? AND user_id = ?",
+            (conversation_id, notebook_id, user["id"]),
+        ).fetchone()
+        message = conn.execute(
+            "SELECT * FROM messages WHERE id = ? AND conversation_id = ? AND user_id = ? AND role = 'assistant'",
+            (message_id, conversation_id, user["id"]),
+        ).fetchone() if convo else None
+        if message is None:
+            return HTMLResponse("")
+        metadata = message_with_citations(message)["metadata"]
+        if metadata.get("followups"):
+            return render(request, "_followups.html", {"questions": metadata["followups"]})
+        prior_question = conn.execute(
+            "SELECT content FROM messages WHERE conversation_id = ? AND user_id = ? AND role = 'user' AND id < ? ORDER BY id DESC LIMIT 1",
+            (conversation_id, user["id"], message_id),
+        ).fetchone()
+        settings = load_llm_settings(conn)
+    if prior_question is None:
+        return HTMLResponse("")
+    questions = await suggest_followup_questions(prior_question["content"], message["content"], settings or {})
+    if questions:
+        # json_set patches only the followups key inside SQLite, so a slow LLM
+        # call here can't clobber metadata written concurrently elsewhere.
+        with connect() as conn:
+            conn.execute(
+                "UPDATE messages SET metadata_json = json_set(metadata_json, '$.followups', json(?)) "
+                "WHERE id = ? AND user_id = ?",
+                (dumps(questions), message_id, user["id"]),
+            )
+    return render(request, "_followups.html", {"questions": questions})
+
+
+def _markdown_download(markdown: str, filename: str) -> Response:
+    """Wrap markdown text as a UTF-8 file download (RFC 5987 filename)."""
+    from urllib.parse import quote
+
+    return Response(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"export.md\"; filename*=UTF-8''{quote(filename)}",
+        },
+    )
+
+
+@app.get("/notebooks/{notebook_id}/chat/{conversation_id}/export")
+def export_conversation(
+    notebook_id: int,
+    conversation_id: int,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Download one conversation (questions, answers, citations) as Markdown (A3)."""
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        convo = conn.execute(
+            "SELECT * FROM conversations WHERE id = ? AND notebook_id = ? AND user_id = ?",
+            (conversation_id, notebook_id, user["id"]),
+        ).fetchone()
+        if convo is None:
+            raise HTTPException(status_code=404, detail="找不到對話")
+        rows = conn.execute(
+            "SELECT * FROM messages WHERE conversation_id = ? AND user_id = ? ORDER BY created_at, id",
+            (conversation_id, user["id"]),
+        ).fetchall()
+    lines = [f"# {notebook['title']} — {convo['title']}", ""]
+    for row in rows:
+        message = message_with_citations(row)
+        if message["role"] == "user":
+            lines += [f"## 🙋 {message['content']}", ""]
+        else:
+            lines += [message["content"], ""]
+            if message["citations"]:
+                lines.append("> 引用來源：")
+                for c in message["citations"]:
+                    lines.append(f"> [{c.get('index')}] {c.get('filename')} · {c.get('location')}")
+                lines.append("")
+    logger.info("conversation_exported user_id=%s notebook_id=%s conversation_id=%s messages=%s", user["id"], notebook_id, conversation_id, len(rows))
+    return _markdown_download("\n".join(lines), f"{notebook['title']}-{convo['title']}.md")
+
+
+@app.get("/notebooks/{notebook_id}/notes/export")
+def export_notes(
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Download all of a notebook's notes as Markdown (A3)."""
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        notes = conn.execute(
+            "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
+            (notebook_id, user["id"]),
+        ).fetchall()
+    lines = [f"# {notebook['title']} — 筆記", ""]
+    for note in notes:
+        title = note["title"] or note["content"][:40]
+        lines += [f"## {title}", "", note["content"], "", f"_{note['created_at']}_", "", "---", ""]
+    logger.info("notes_exported user_id=%s notebook_id=%s notes=%s", user["id"], notebook_id, len(notes))
+    return _markdown_download("\n".join(lines), f"{notebook['title']}-notes.md")
+
+
+@app.get("/notebooks/{notebook_id}/_notes", response_class=HTMLResponse)
+def notes_partial(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Return the notes section fragment (refreshed via the notes-changed event)."""
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        notes = [dict(r) for r in conn.execute(
+            "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
+            (notebook_id, user["id"]),
+        ).fetchall()]
+    return render(request, "_notes_section.html", {"notebook": notebook, "notes": notes})
+
+
+@app.get("/notebooks/{notebook_id}/_minutes", response_class=HTMLResponse)
+def minutes_partial(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Return the meeting-minutes Studio card (source picker stays in sync)."""
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        sources_indexed = [dict(r) for r in conn.execute(
+            "SELECT * FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' ORDER BY filename",
+            (notebook_id, user["id"]),
+        ).fetchall()]
+    return render(request, "_minutes.html", {"notebook": notebook, "sources_indexed": sources_indexed})
+
+
+@app.post("/notebooks/{notebook_id}/minutes", response_class=HTMLResponse)
+async def source_minutes(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    source_id: int = Form(...),
+):
+    """Generate structured meeting minutes from one indexed source (A1).
+
+    The result is rendered in the Studio card and saved as a note; an
+    HX-Trigger refreshes the notes section.
+    """
+    with connect() as conn:
+        get_notebook(conn, notebook_id, user["id"])
+        source = conn.execute(
+            "SELECT * FROM sources WHERE id = ? AND notebook_id = ? AND user_id = ? AND status = 'indexed'",
+            (source_id, notebook_id, user["id"]),
+        ).fetchone()
+        if source is None:
+            return render(
+                request, "_minutes_result.html",
+                {"minutes": "", "error": "找不到已索引的來源，請重新整理後再試。", "filename": ""},
+                status_code=404,
+            )
+        # Cap the fetch: generate_meeting_minutes uses ~16k chars and chunks are
+        # ~300-800 chars each, so 100 rows is ample — don't read a 1000-chunk
+        # transcript just to throw 95% of it away.
+        chunks = [dict(r) for r in conn.execute(
+            "SELECT location, text FROM chunks WHERE source_id = ? AND user_id = ? ORDER BY chunk_index LIMIT 100",
+            (source_id, user["id"]),
+        ).fetchall()]
+        settings = load_llm_settings(conn) or {}
+
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        return render(
+            request, "_minutes_result.html",
+            {"minutes": "", "error": "請先在系統設定完成 LLM 設定。", "filename": source["filename"]},
+            status_code=400,
+        )
+
+    minutes = await generate_meeting_minutes(chunks, settings)
+    if not minutes:
+        return render(
+            request, "_minutes_result.html",
+            {"minutes": "", "error": "模型未能產生會議記錄，請再試一次。", "filename": source["filename"]},
+            status_code=502,
+        )
+
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, ?, ?)",
+            (notebook_id, user["id"], f"會議整理 — {source['filename']}"[:80], minutes),
+        )
+        touch_notebook(conn, notebook_id)
+    logger.info(
+        "meeting_minutes_completed user_id=%s notebook_id=%s source_id=%s chars=%s",
+        user["id"], notebook_id, source_id, len(minutes),
+    )
+    response = render(
+        request, "_minutes_result.html",
+        {"minutes": minutes, "error": "", "filename": source["filename"]},
+    )
+    response.headers["HX-Trigger"] = "notes-changed"
+    return response
 
 
 # Per-question minimum top-score before we let the answer LLM run. Below this
@@ -1707,11 +1968,11 @@ def change_own_password(
     with connect() as conn:
         row = conn.execute("SELECT password_hash FROM users WHERE id = ?", (user["id"],)).fetchone()
     if row is None or not verify_password(current_password, row["password_hash"]):
-        error = "Current password is incorrect."
+        error = "目前密碼不正確。"
     elif len(new_password) < 6:
-        error = "New password must be at least 6 characters."
+        error = "新密碼至少需要 6 個字元。"
     elif new_password != confirm_password:
-        error = "New password and confirmation do not match."
+        error = "新密碼與確認密碼不一致。"
     if error:
         return render(request, "account.html", {"user": user, "saved": False, "error": error}, 400)
     with connect() as conn:
@@ -1779,9 +2040,9 @@ def admin_create_user(
     username = username.strip()
     error = ""
     if not username or len(username) > 64:
-        error = "Username must be 1–64 characters."
+        error = "帳號長度須為 1–64 個字元。"
     elif len(password) < 6:
-        error = "Password must be at least 6 characters."
+        error = "密碼至少需要 6 個字元。"
     if not error:
         try:
             with connect() as conn:
@@ -1790,7 +2051,7 @@ def admin_create_user(
                     (username, hash_password(password), 1 if is_admin else 0),
                 )
         except Exception as exc:
-            error = f"Could not create user: {exc}"
+            error = f"建立使用者失敗：{exc}"
     with connect() as conn:
         rows = [dict(r) for r in conn.execute("SELECT id, username, is_admin, created_at FROM users ORDER BY id ASC").fetchall()]
     if error:
@@ -1807,7 +2068,7 @@ def admin_reset_password(
 ):
     """Reset another user's password to a new value."""
     if len(new_password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+        raise HTTPException(status_code=400, detail="密碼至少需要 6 個字元。")
     with connect() as conn:
         result = conn.execute(
             "UPDATE users SET password_hash = ? WHERE id = ?",

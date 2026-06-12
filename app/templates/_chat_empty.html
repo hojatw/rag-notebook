@@ -7,13 +7,13 @@
      hx-trigger="indexed-sources-changed from:body"
      hx-swap="outerHTML">
   {% if indexed_sources %}
-    <h2>Ask anything about your sources</h2>
-    <p class="muted">Type a question below. Answers cite the source passages they came from.</p>
+    <h2>問任何關於你來源文件的問題</h2>
+    <p class="muted">在下方輸入問題，回答會附上引用的來源段落。</p>
   {% elif sources %}
-    <h2>Indexing in progress</h2>
-    <p class="muted">Wait for sources to finish indexing on the left, then ask away.</p>
+    <h2>索引建立中</h2>
+    <p class="muted">請等待左側來源完成索引，就可以開始提問。</p>
   {% else %}
-    <h2>Add a source to get started</h2>
-    <p class="muted">Upload a document on the left so this notebook has something to ground against.</p>
+    <h2>先新增一個來源開始使用</h2>
+    <p class="muted">在左側上傳文件，這本筆記本的回答才有依據。</p>
   {% endif %}
 </div>

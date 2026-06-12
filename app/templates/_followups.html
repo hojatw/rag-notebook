@@ -1,0 +1,11 @@
+{# Follow-up question chips (A2). Returned by the _followups lazy-load route
+   and rendered inline when cached in message metadata. Buttons reuse the
+   data-fill-question binding (fill the ask box + auto-submit). #}
+{% if questions %}
+<div class="followups">
+  <span class="followups-label muted small">繼續追問</span>
+  {% for q in questions %}
+    <button type="button" class="suggestion-chip followup-chip" data-fill-question data-text="{{ q }}">{{ q }}</button>
+  {% endfor %}
+</div>
+{% endif %}

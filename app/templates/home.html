@@ -2,25 +2,25 @@
 {% block content %}
 <section class="page-head">
   <div>
-    <p class="eyebrow">Workspace</p>
-    <h1>Notebooks</h1>
-    <p class="muted">Each notebook keeps its own sources, conversations, and notes. Create one per topic, project, or research thread.</p>
+    <p class="eyebrow">工作區</p>
+    <h1>筆記本</h1>
+    <p class="muted">每本筆記本各自管理來源、對話與筆記。建議依主題、專案或研究方向各建一本。</p>
   </div>
   <details class="new-notebook-menu" x-data="{ open: false }" :open="open" @toggle="open = $event.target.open">
-    <summary class="new-notebook-trigger">+ New notebook</summary>
+    <summary class="new-notebook-trigger">+ 新增筆記本</summary>
     <form action="/notebooks/new" method="post" class="new-notebook-form" data-loading-form>
       {% with emoji_value="📓" %}
         {% include "_emoji_picker.html" %}
       {% endwith %}
       <label class="new-notebook-title">
-        <span>Title</span>
-        <input name="title" value="Untitled notebook" required autocomplete="off">
+        <span>標題</span>
+        <input name="title" value="未命名筆記本" required autocomplete="off">
       </label>
       <label class="new-notebook-desc">
-        <span>Description <em class="muted small">(optional)</em></span>
-        <input name="description" placeholder="One-line summary shown on the notebook card" maxlength="280">
+        <span>描述 <em class="muted small">（選填）</em></span>
+        <input name="description" placeholder="顯示在筆記本卡片上的一行摘要" maxlength="280">
       </label>
-      <button type="submit" class="wide" data-loading-text="Creating...">Create notebook</button>
+      <button type="submit" class="wide" data-loading-text="建立中...">建立筆記本</button>
     </form>
   </details>
 </section>
@@ -31,19 +31,19 @@
       <div class="notebook-cover">{{ notebook.emoji or "📓" }}</div>
       <h3>{{ notebook.title }}</h3>
       <p class="notebook-meta">
-        <span>{{ notebook.source_count }} {% if notebook.source_count == 1 %}source{% else %}sources{% endif %}</span>
+        <span>{{ notebook.source_count }} 個來源</span>
         <span class="dot"></span>
-        <span>{{ notebook.conversation_count }} {% if notebook.conversation_count == 1 %}chat{% else %}chats{% endif %}</span>
+        <span>{{ notebook.conversation_count }} 個對話</span>
       </p>
       {% if notebook.description %}
         <p class="notebook-desc muted">{{ notebook.description }}</p>
       {% endif %}
-      <small class="muted notebook-time">Updated {{ notebook.updated_at[:10] }}</small>
+      <small class="muted notebook-time">更新於 {{ notebook.updated_at[:10] }}</small>
     </a>
   {% else %}
     <div class="empty notebook-empty">
-      <h2>No notebooks yet</h2>
-      <p>Click <strong>+ New notebook</strong> above to start your first one.</p>
+      <h2>還沒有任何筆記本</h2>
+      <p>點選上方的 <strong>+ 新增筆記本</strong> 建立第一本。</p>
     </div>
   {% endfor %}
 </div>

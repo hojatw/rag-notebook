@@ -1,10 +1,18 @@
-{# Notes section in the studio pane. Returned both inline and as an HTMX swap
-   target after pin / delete operations. Each note is a collapsible <details>
-   so the studio pane stays compact when many notes exist. #}
-<section class="studio-section studio-notes" id="studio-notes">
+{# Notes section in the studio pane. Returned inline, as an HTMX swap target
+   after pin / delete operations, and re-fetched on the notes-changed event
+   (fired e.g. when meeting minutes are saved). Each note is a collapsible
+   <details> so the studio pane stays compact when many notes exist. #}
+<section class="studio-section studio-notes" id="studio-notes"
+         hx-get="/notebooks/{{ notebook.id }}/_notes"
+         hx-trigger="notes-changed from:body"
+         hx-swap="outerHTML">
   <h3>
-    Notes
+    筆記
     <span class="pane-count">{{ notes|length }}</span>
+    {% if notes %}
+      <a class="ghost small notes-export" href="/notebooks/{{ notebook.id }}/notes/export"
+         title="匯出全部筆記 (Markdown)">⬇ 匯出</a>
+    {% endif %}
   </h3>
   {% if notes %}
     <ul class="note-list">
@@ -23,8 +31,8 @@
                         hx-post="/notebooks/{{ notebook.id }}/notes/{{ note.id }}/delete"
                         hx-target="#studio-notes"
                         hx-swap="outerHTML"
-                        hx-confirm="Remove this pinned note?">
-                  Remove
+                        hx-confirm="移除這則筆記？">
+                  移除
                 </button>
               </div>
             </div>
@@ -33,6 +41,6 @@
       {% endfor %}
     </ul>
   {% else %}
-    <p class="muted small">Pin assistant answers from chat to keep them here for later.</p>
+    <p class="muted small">在對話中釘選助理的回答，就會保存在這裡。</p>
   {% endif %}
 </section>

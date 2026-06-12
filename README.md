@@ -11,12 +11,13 @@ This is a proof of concept, not a production-ready service. It is suitable for l
 - **Notebook home grid.** Each notebook owns its own sources, conversations, and pinned notes.
 - **Three-pane workspace** per notebook:
   - **Sources** (left): drag-and-drop upload, automatic indexing-status polling, per-source reindex/delete, **click any indexed source to open a chunk-preview drawer**.
-  - **Chat** (centre): grounded chat with conversation switcher (with per-row delete), Markdown-rendered answers, and inline `[1]` `[2]` citation chips that scroll the matching source into view.
-  - **Studio** (right): four NotebookLM-style helpers in one column.
+  - **Chat** (centre): grounded chat with conversation switcher (with per-row delete and **Markdown export**), Markdown-rendered answers (with a per-answer **copy** button), and inline `[1]` `[2]` citation chips that scroll the matching source into view. Asking swaps in just the messages pane via HTMX (no full page reload); after each answered question 2–3 **follow-up question chips** are suggested (lazy-generated, cached per message). Enter sends, Shift+Enter inserts a newline, IME-safe for CJK input. UI strings are Traditional Chinese.
+  - **Studio** (right): five NotebookLM-style helpers in one column.
       - *Suggested questions* — one-click LLM-authored starter questions from your sources, auto-refreshing as sources finish indexing (24 h cache).
       - *Briefing* — one-paragraph cross-source synthesis, auto-generated on first notebook view and cached for 24 h. *Regenerate* on demand. Concurrent generation across tabs / sibling source completions is deduped by a shared SQLite-backed lock so a 5-file upload only calls the LLM once, not five times (works across multiple workers).
       - *Compare sources* — pick 2+ indexed sources (with an optional focus hint) and the model produces a Shared / Distinct / Contradictions markdown report. *Save to notes* keeps it for later.
-      - *Notes* — *Pin* assistant answers into collapsible notes (removing a note un-pins the source message automatically); comparison results can be saved here too.
+      - *Meeting minutes* — pick one indexed source (a transcript upload) and the model produces structured minutes (topic / decisions / action items / follow-ups / open questions), saved straight into Notes.
+      - *Notes* — *Pin* assistant answers into collapsible notes (removing a note un-pins the source message automatically); comparison results and meeting minutes land here too; **export all notes as Markdown**.
   - **Per-source summary** — every uploaded source gets a 2–4 sentence TL;DR generated automatically right after indexing, shown at the top of the preview drawer and reused as compact context for Briefing / Compare.
 - **Hybrid retrieval**: query rewriting, Chroma vector search, SQLite keyword matching, and LLM reranking. Below a configurable confidence threshold the model is asked to abstain rather than hallucinate. See [`RETRIEVAL.md`](docs/RETRIEVAL.md) for the full pipeline, tuning knobs, and eval workflow.
 - **Per-message debug pane**: chat answers ship with a collapsible "📊 N chunks · retrieved Xms · generated Yms · top score Z" badge that opens a table of vector / keyword / rerank / final scores per citation.
@@ -218,8 +219,10 @@ GET  /notebooks/{id}/sources/{sid}/preview                source preview drawer 
 GET  /notebooks/{id}/_source-picker                       HTMX swap: chat-form picker
 
 POST /notebooks/{id}/chat/new                             new conversation
-POST /notebooks/{id}/chat/ask                             ask a question
+POST /notebooks/{id}/chat/ask                             ask a question (HTMX: returns messages partial; no-JS: 303)
 POST /notebooks/{id}/chat/{cid}/delete                    delete a conversation
+GET  /notebooks/{id}/chat/{cid}/_followups?message_id=N   lazy-load follow-up question chips (cached in metadata)
+GET  /notebooks/{id}/chat/{cid}/export                    download conversation as Markdown
 
 GET  /notebooks/{id}/_suggestions                         HTMX swap: suggestions section
 POST /notebooks/{id}/suggestions                          generate 4 starter questions
@@ -227,10 +230,14 @@ GET  /notebooks/{id}/_briefing                            HTMX swap: briefing se
 POST /notebooks/{id}/briefing[?force=1]                   generate / regenerate notebook briefing
 GET  /notebooks/{id}/_compare                             HTMX swap: compare-sources section
 POST /notebooks/{id}/compare                              compare 2+ sources (returns result fragment)
+GET  /notebooks/{id}/_minutes                             HTMX swap: meeting-minutes card
+POST /notebooks/{id}/minutes                              generate structured meeting minutes from one source
 
 POST /notebooks/{id}/notes/pin                            pin assistant message into notes
 POST /notebooks/{id}/notes/add                            save a raw note (title + content)
 POST /notebooks/{id}/notes/{note_id}/delete               remove pinned note (also broadcasts pin-cleared)
+GET  /notebooks/{id}/_notes                               HTMX swap: notes section (notes-changed event)
+GET  /notebooks/{id}/notes/export                         download all notes as Markdown
 
 GET  /account                                             change own password
 POST /account/password                                    save new password
@@ -326,7 +333,7 @@ requirements-dev.txt   Local development/test dependencies layered on runtime.
 
 ## Known follow-ups
 
-Performance/scalability and retrieval-quality work are tracked as prioritised, tick-off backlogs in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) and [`docs/QUALITY.md`](docs/QUALITY.md) (issue → impact → fix → priority). Engineering deep-dives live in [`docs/`](docs/). Headline items still outstanding:
+Performance/scalability and retrieval-quality work are tracked as prioritised, tick-off backlogs in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) and [`docs/QUALITY.md`](docs/QUALITY.md) (issue → impact → fix → priority); UX improvements and new AI features live in [`docs/ROADMAP.md`](docs/ROADMAP.md). Engineering deep-dives live in [`docs/`](docs/). Headline items still outstanding:
 
 - No streaming responses yet — answers arrive after the full LLM call returns.
 - No CSRF protection on POST routes.

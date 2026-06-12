@@ -2,30 +2,30 @@
 {% block content %}
 <section class="settings">
   <header class="settings-head">
-    <p class="eyebrow">Account</p>
-    <h1>Change your password</h1>
-    <p class="muted">Signed in as <strong>{{ user.username }}</strong>{% if user.is_admin %} · admin{% endif %}.</p>
+    <p class="eyebrow">帳號</p>
+    <h1>變更密碼</h1>
+    <p class="muted">目前登入：<strong>{{ user.username }}</strong>{% if user.is_admin %} · 管理員{% endif %}</p>
   </header>
-  {% if saved %}<div class="notice">Password updated.</div>{% endif %}
+  {% if saved %}<div class="notice">密碼已更新。</div>{% endif %}
   {% if error %}<div class="alert">{{ error }}</div>{% endif %}
   <form method="post" action="/account/password" class="settings-grid" data-loading-form>
     <section class="settings-section">
       <label>
-        Current password
+        目前密碼
         <input name="current_password" type="password" autocomplete="current-password" required>
       </label>
       <label>
-        New password <span class="muted">(at least 6 characters)</span>
+        新密碼 <span class="muted">（至少 6 個字元）</span>
         <input name="new_password" type="password" autocomplete="new-password" minlength="6" required>
       </label>
       <label>
-        Confirm new password
+        確認新密碼
         <input name="confirm_password" type="password" autocomplete="new-password" minlength="6" required>
       </label>
     </section>
     <div class="settings-foot">
-      <button type="submit" data-loading-text="Saving...">Update password</button>
-      <a href="/notebooks" class="ghost">Back to notebooks</a>
+      <button type="submit" data-loading-text="儲存中...">更新密碼</button>
+      <a href="/notebooks" class="ghost">返回筆記本</a>
     </div>
   </form>
 </section>

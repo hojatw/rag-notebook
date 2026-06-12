@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hant">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -19,32 +19,32 @@
         <span class="brand-mark">R</span>
         <span>
           <strong>RAG Notebook</strong>
-          <small>POC workspace</small>
+          <small>個人 AI 工作區</small>
         </span>
       </a>
       {% if user %}
         {% if breadcrumb %}
           <nav aria-label="Breadcrumb" class="breadcrumb">
-            <a href="/notebooks">Notebooks</a>
+            <a href="/notebooks">筆記本</a>
             <span class="sep">›</span>
             <span class="crumb-current">{{ breadcrumb }}</span>
           </nav>
         {% else %}
           <nav aria-label="Primary">
-            <a class="{% if request.url.path == '/notebooks' or request.url.path.startswith('/notebooks/') %}active{% endif %}" href="/notebooks">Notebooks</a>
+            <a class="{% if request.url.path == '/notebooks' or request.url.path.startswith('/notebooks/') %}active{% endif %}" href="/notebooks">筆記本</a>
             {% if user.is_admin %}
-              <a class="{% if request.url.path.startswith('/admin/users') %}active{% endif %}" href="/admin/users">Users</a>
-              <a class="{% if request.url.path.startswith('/admin/index') %}active{% endif %}" href="/admin/index">Index</a>
-              <a class="{% if request.url.path.startswith('/settings') %}active{% endif %}" href="/settings">Settings</a>
+              <a class="{% if request.url.path.startswith('/admin/users') %}active{% endif %}" href="/admin/users">使用者</a>
+              <a class="{% if request.url.path.startswith('/admin/index') %}active{% endif %}" href="/admin/index">索引</a>
+              <a class="{% if request.url.path.startswith('/settings') %}active{% endif %}" href="/settings">系統設定</a>
             {% endif %}
           </nav>
         {% endif %}
         <form action="/logout" method="post" class="session">
-          {% if user.is_admin and breadcrumb %}<a href="/settings" class="ghost small">Settings</a>{% endif %}
+          {% if user.is_admin and breadcrumb %}<a href="/settings" class="ghost small">系統設定</a>{% endif %}
           <a href="/account"
              class="user-chip {% if request.url.path.startswith('/account') %}active{% endif %}"
-             title="Account settings">{{ user.username }}</a>
-          <button type="submit" class="ghost">Sign out</button>
+             title="帳號設定">{{ user.username }}</a>
+          <button type="submit" class="ghost">登出</button>
         </form>
       {% endif %}
     </header>

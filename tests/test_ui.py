@@ -112,7 +112,7 @@ def test_chat_empty_partial_reflects_indexing_state(monkeypatch, tmp_path):
         # No sources at all.
         empty = client.get(url)
         assert empty.status_code == 200
-        assert "Add a source to get started" in empty.text
+        assert "先新增一個來源開始使用" in empty.text
         # The container must re-fetch itself when indexing state changes.
         assert 'hx-trigger="indexed-sources-changed from:body"' in empty.text
 
@@ -126,13 +126,13 @@ def test_chat_empty_partial_reflects_indexing_state(monkeypatch, tmp_path):
                 (user["id"], notebook_id),
             ).lastrowid
         processing = client.get(url)
-        assert "Indexing in progress" in processing.text
+        assert "索引建立中" in processing.text
 
         # Once indexed, the center flips to the ask prompt.
         with db.connect() as conn:
             conn.execute("UPDATE sources SET status = 'indexed' WHERE id = ?", (source_id,))
         indexed = client.get(url)
-        assert "Ask anything about your sources" in indexed.text
+        assert "問任何關於你來源文件的問題" in indexed.text
 
 
 def test_upload_enqueues_ingest_job_instead_of_running_inline(monkeypatch, tmp_path):
@@ -177,3 +177,167 @@ def test_upload_enqueues_ingest_job_instead_of_running_inline(monkeypatch, tmp_p
         assert source["status"] == "uploaded"
         assert job is not None
         assert job["status"] == "queued"
+
+
+def _seed_notebook(db, title="NB"):
+    with db.connect() as conn:
+        user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+        notebook_id = conn.execute(
+            "INSERT INTO notebooks (user_id, title) VALUES (?, ?)", (user["id"], title)
+        ).lastrowid
+    return dict(user), notebook_id
+
+
+def test_ask_returns_messages_partial_for_htmx(monkeypatch, tmp_path):
+    """U1: HTMX asks swap only the messages pane; plain posts keep the redirect."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+
+        # HTMX request -> 200 partial with the question echoed, URL pushed,
+        # and the OOB conversation-field update present.
+        resp = client.post(
+            f"/notebooks/{notebook_id}/chat/ask",
+            data={"question": "第一個問題", "conversation_id": ""},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert 'id="chat-messages"' in resp.text
+        assert "第一個問題" in resp.text
+        assert "conversation_id=" in resp.headers.get("HX-Push-Url", "")
+        assert 'hx-swap-oob="true"' in resp.text
+
+        # Plain form post (no-JS fallback) -> 303 redirect, unchanged behavior.
+        resp2 = client.post(
+            f"/notebooks/{notebook_id}/chat/ask",
+            data={"question": "第二個問題", "conversation_id": ""},
+            follow_redirects=False,
+        )
+        assert resp2.status_code == 303
+
+
+def test_followups_generate_once_and_cache(monkeypatch, tmp_path):
+    """A2: follow-up chips are generated once, cached into message metadata."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    calls = {"n": 0}
+
+    async def fake_followups(question, answer, settings):
+        calls["n"] += 1
+        return ["追問一？", "追問二？"]
+
+    monkeypatch.setattr(main, "suggest_followup_questions", fake_followups)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            convo_id = conn.execute(
+                "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, 'T')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'user', '原始問題')",
+                (convo_id, user["id"]),
+            )
+            msg_id = conn.execute(
+                "INSERT INTO messages (conversation_id, user_id, role, content, metadata_json) "
+                "VALUES (?, ?, 'assistant', '答案', '{\"outcome\": \"answered\"}')",
+                (convo_id, user["id"]),
+            ).lastrowid
+
+        url = f"/notebooks/{notebook_id}/chat/{convo_id}/_followups?message_id={msg_id}"
+        first = client.get(url)
+        assert first.status_code == 200
+        assert "追問一？" in first.text
+        assert "data-fill-question" in first.text
+        assert calls["n"] == 1
+
+        # Cached in metadata_json -> the second request must not regenerate.
+        second = client.get(url)
+        assert "追問一？" in second.text
+        assert calls["n"] == 1
+        with db.connect() as conn:
+            meta = conn.execute("SELECT metadata_json FROM messages WHERE id = ?", (msg_id,)).fetchone()
+        assert "追問一" in meta["metadata_json"]
+
+
+def test_minutes_saves_note_and_triggers_refresh(monkeypatch, tmp_path):
+    """A1: minutes generation renders the result, saves a note, fires notes-changed."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_minutes(chunks, settings):
+        return "## 會議主題\n測試會議\n\n## 重要決議\n- 通過提案"
+
+    monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status) "
+                "VALUES (?, ?, 'meeting.txt', '/tmp/m.txt', 'indexed')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json) "
+                "VALUES (?, ?, 0, 'document', '會議逐字稿內容', '[]')",
+                (user["id"], source_id),
+            )
+
+        resp = client.post(f"/notebooks/{notebook_id}/minutes", data={"source_id": source_id})
+        assert resp.status_code == 200
+        assert "存入筆記" in resp.text
+        assert resp.headers.get("HX-Trigger") == "notes-changed"
+        with db.connect() as conn:
+            note = conn.execute(
+                "SELECT title, content FROM notes WHERE notebook_id = ?", (notebook_id,)
+            ).fetchone()
+        assert note is not None
+        assert note["title"].startswith("會議整理")
+        assert "重要決議" in note["content"]
+
+
+def test_export_conversation_and_notes_markdown(monkeypatch, tmp_path):
+    """A3: conversation and notes export as downloadable Markdown."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db, title="匯出測試")
+        with db.connect() as conn:
+            convo_id = conn.execute(
+                "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, '對話A')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'user', '問題X')",
+                (convo_id, user["id"]),
+            )
+            conn.execute(
+                "INSERT INTO messages (conversation_id, user_id, role, content, citations_json) "
+                "VALUES (?, ?, 'assistant', '回答Y [1]', '[{\"index\": 1, \"filename\": \"a.pdf\", \"location\": \"page 1\"}]')",
+                (convo_id, user["id"]),
+            )
+            conn.execute(
+                "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, '筆記1', '筆記內容')",
+                (notebook_id, user["id"]),
+            )
+
+        convo = client.get(f"/notebooks/{notebook_id}/chat/{convo_id}/export")
+        assert convo.status_code == 200
+        assert "text/markdown" in convo.headers["content-type"]
+        assert "attachment" in convo.headers["content-disposition"]
+        assert "問題X" in convo.text and "回答Y" in convo.text and "a.pdf" in convo.text
+
+        notes = client.get(f"/notebooks/{notebook_id}/notes/export")
+        assert notes.status_code == 200
+        assert "筆記內容" in notes.text
+        assert "attachment" in notes.headers["content-disposition"]

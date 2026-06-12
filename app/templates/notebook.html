@@ -24,11 +24,11 @@
   {# ---------------- LEFT: Sources ---------------- #}
   <aside class="workspace-pane workspace-sources" aria-label="Sources">
     <header class="pane-head">
-      <h2>Sources</h2>
+      <h2>來源</h2>
       <div class="inline-actions">
         {% if indexed_sources %}
-          <button class="ghost small" type="button" data-scope-action="select-all">All</button>
-          <button class="ghost small" type="button" data-scope-action="clear-all">None</button>
+          <button class="ghost small" type="button" data-scope-action="select-all">全選</button>
+          <button class="ghost small" type="button" data-scope-action="clear-all">全不選</button>
         {% endif %}
         <span class="pane-count">{{ sources|length }}</span>
       </div>
@@ -36,8 +36,8 @@
 
     {% if not llm_status.ready %}
       <div class="alert llm-not-ready">
-        LLM is not configured. Uploads are disabled until an admin sets the
-        embedding model and chat model at <a href="/settings">/settings</a>.
+        尚未完成 LLM 設定。請管理員先到 <a href="/settings">系統設定</a> 設定
+        embedding 模型與聊天模型，才能上傳來源。
       </div>
     {% endif %}
 
@@ -54,7 +54,7 @@
           @drop.prevent="drop($event)"
           :class="{ 'is-dragover': over }">
       <label class="file-picker">
-        <span>Add sources</span>
+        <span>新增來源</span>
         <input type="file"
                name="files"
                accept=".pdf,.txt,.md,.markdown,.docx,.html,.htm"
@@ -65,10 +65,10 @@
                data-max-files="5"
                {% if not llm_status.ready %}disabled{% endif %}>
       </label>
-      <span id="nb-selected-file" class="file-name">Drop up to 5 files or browse</span>
-      <button type="submit" class="wide" data-loading-text="Uploading..."
-              {% if not llm_status.ready %}disabled{% endif %}>Upload</button>
-      <p class="hint">PDF · TXT · Markdown · DOCX · HTML · up to 5 at once</p>
+      <span id="nb-selected-file" class="file-name">拖曳最多 5 個檔案到此，或點擊選擇</span>
+      <button type="submit" class="wide" data-loading-text="上傳中..."
+              {% if not llm_status.ready %}disabled{% endif %}>上傳</button>
+      <p class="hint">PDF · TXT · Markdown · DOCX · HTML · 一次最多 5 個</p>
     </form>
 
     <ul class="source-list">
@@ -76,13 +76,13 @@
         {% include "_source_item.html" %}
       {% else %}
         <li class="source-empty">
-          <p class="muted">No sources yet.</p>
-          <p class="muted small">Upload a document to ground your conversations.</p>
+          <p class="muted">還沒有任何來源。</p>
+          <p class="muted small">上傳文件，讓對話有所依據。</p>
         </li>
       {% endfor %}
     </ul>
     {% if sources_truncated %}
-      <p class="truncated-hint muted small">Showing the most recent 200 sources only.</p>
+      <p class="truncated-hint muted small">僅顯示最近 200 個來源。</p>
     {% endif %}
   </aside>
 
@@ -102,14 +102,18 @@
                     @click="open = !open"
                     :class="{ 'is-open': open }">
               <span class="convo-current">
-                {% if conversation %}{{ conversation.title }}{% else %}New conversation{% endif %}
+                {% if conversation %}{{ conversation.title }}{% else %}新對話{% endif %}
               </span>
               <span class="caret">▾</span>
             </button>
             <div class="convo-menu" x-show="open" style="display: none;">
               <form action="/notebooks/{{ notebook.id }}/chat/new" method="post" data-loading-form>
-                <button type="submit" class="ghost small wide" data-loading-text="Creating...">+ New conversation</button>
+                <button type="submit" class="ghost small wide" data-loading-text="建立中...">+ 新對話</button>
               </form>
+              {% if conversation %}
+                <a class="ghost small wide convo-export"
+                   href="/notebooks/{{ notebook.id }}/chat/{{ conversation.id }}/export">⬇ 匯出此對話 (Markdown)</a>
+              {% endif %}
               {% if conversations %}
                 <hr>
                 <ul>
@@ -120,9 +124,9 @@
                         {{ item.title }}
                       </a>
                       <form action="/notebooks/{{ notebook.id }}/chat/{{ item.id }}/delete" method="post"
-                            data-confirm="Delete this conversation and all of its messages?"
+                            data-confirm="刪除這個對話與其中所有訊息？"
                             class="convo-del">
-                        <button type="submit" class="ghost small danger-link" title="Delete conversation" aria-label="Delete conversation">×</button>
+                        <button type="submit" class="ghost small danger-link" title="刪除對話" aria-label="刪除對話">×</button>
                       </form>
                     </li>
                   {% endfor %}
@@ -137,147 +141,63 @@
           <button type="button"
                   class="convo-trigger ghost small"
                   @click="open = !open"
-                  :class="{ 'is-open': open }">Notebook ▾</button>
+                  :class="{ 'is-open': open }">筆記本 ▾</button>
           <div class="convo-menu notebook-menu-content" x-show="open" style="display: none;">
             <form action="/notebooks/{{ notebook.id }}/rename" method="post" class="rename-form" data-loading-form>
               {% with emoji_value=notebook.emoji or "📓" %}
                 {% include "_emoji_picker.html" %}
               {% endwith %}
               <label>
-                Title
+                標題
                 <input name="title" value="{{ notebook.title }}" required>
               </label>
               <label>
-                Description
+                描述
                 <input name="description" value="{{ notebook.description or '' }}" maxlength="280"
-                       placeholder="One-line summary shown on the notebook card">
+                       placeholder="顯示在筆記本卡片上的一行摘要">
               </label>
-              <button type="submit" class="wide small" data-loading-text="Saving...">Save</button>
+              <button type="submit" class="wide small" data-loading-text="儲存中...">儲存</button>
             </form>
             <hr>
-            <form action="/notebooks/{{ notebook.id }}/delete" method="post" data-confirm="Delete this notebook? Its sources, chunks, conversations, and notes will be removed.">
-              <button type="submit" class="ghost small danger-link wide">Delete notebook</button>
+            <form action="/notebooks/{{ notebook.id }}/delete" method="post" data-confirm="刪除這本筆記本？其中的來源、分塊、對話與筆記都會一併移除。">
+              <button type="submit" class="ghost small danger-link wide">刪除筆記本</button>
             </form>
           </div>
         </div>
       </div>
     </header>
 
-    <div class="messages">
-      {% if messages_truncated %}
-        <div class="truncated-hint muted small">Showing the most recent 200 messages from this conversation.</div>
-      {% endif %}
-      {% for message in messages %}
-        <article class="message {{ message.role }}" id="msg-{{ message.id }}">
-          <div class="message-head">
-            <div class="role">{{ "You" if message.role == "user" else "Assistant" }}</div>
-            {% if message.role == "assistant" %}
-              <form id="pin-msg-{{ message.id }}"
-                    hx-post="/notebooks/{{ notebook.id }}/notes/pin"
-                    hx-target="#studio-notes"
-                    hx-swap="outerHTML"
-                    class="pin-form"
-                    x-data="{ pinned: {{ 'true' if message.id in pinned_message_ids else 'false' }} }"
-                    @htmx:after-request="if ($event.detail.successful) pinned = true"
-                    @pin-cleared.window="if ($event.detail.message_id === {{ message.id }}) pinned = false">
-                <input type="hidden" name="message_id" value="{{ message.id }}">
-                <button type="submit"
-                        class="ghost small pin-btn"
-                        :class="{ 'pinned': pinned }"
-                        :disabled="pinned"
-                        x-text="pinned ? '📌 Pinned' : '📌 Pin'"
-                        :title="pinned ? 'Already pinned to notes' : 'Pin to notes'">📌 Pin</button>
-              </form>
-            {% endif %}
-          </div>
+    {% with oob=False %}
+      {% include "_messages.html" %}
+    {% endwith %}
 
-          {% if message.role == "assistant" %}
-            <div class="message-body markdown-body"
-                 data-markdown
-                 data-citations='{{ message.citations | tojson | safe }}'>{{ message.content }}</div>
-          {% else %}
-            <p class="message-body">{{ message.content }}</p>
-          {% endif %}
-
-          {% if message.citations %}
-            <div class="citations">
-              <div class="citation-title">Citations</div>
-              {% for citation in message.citations %}
-                <details id="msg-{{ message.id }}-cite-{{ citation.index }}">
-                  <summary>[{{ citation.index }}] {{ citation.filename }} · {{ citation.location }}</summary>
-                  <p>{{ citation.snippet }}</p>
-                </details>
-              {% endfor %}
-            </div>
-          {% endif %}
-
-          {% if message.role == "assistant" and (message.metadata or message.citations) %}
-            <details class="debug-pane">
-              <summary>
-                <span class="debug-summary-text">
-                  {% if message.metadata.retrieved_chunks is defined %}
-                    {{ message.metadata.retrieved_chunks }} chunks
-                    {% if message.metadata.retrieval_ms %} · retrieved {{ message.metadata.retrieval_ms }}ms{% endif %}
-                    {% if message.metadata.generation_ms %} · generated {{ message.metadata.generation_ms }}ms{% endif %}
-                    {% if message.metadata.top_score %} · top score {{ message.metadata.top_score }}{% endif %}
-                  {% else %}
-                    Why these citations?
-                  {% endif %}
-                </span>
-              </summary>
-              {% if message.metadata.outcome == "low_confidence" %}
-                <p class="muted small">Top chunk scored {{ message.metadata.top_score }} which is below the {{ message.metadata.threshold|default(0.25) }} confidence threshold — the model was asked to abstain to avoid hallucination.</p>
-              {% elif message.metadata.outcome == "no_retrieval" %}
-                <p class="muted small">No candidate chunks were returned from the indexed sources.</p>
-              {% elif message.metadata.outcome == "error" %}
-                <p class="muted small">Pipeline error: {{ message.metadata.error|default('unknown') }}</p>
-              {% endif %}
-              {% if message.citations and message.citations[0].score is defined %}
-                <table class="debug-scores">
-                  <thead>
-                    <tr><th>#</th><th>file · loc</th><th>vector</th><th>keyword</th><th>rerank</th><th>final</th></tr>
-                  </thead>
-                  <tbody>
-                  {% for c in message.citations %}
-                    <tr>
-                      <td>[{{ c.index }}]</td>
-                      <td class="debug-file">{{ c.filename }} · {{ c.location }}</td>
-                      <td>{{ '%.2f'|format(c.vector_score|default(0)) }}</td>
-                      <td>{{ '%.2f'|format(c.keyword_score|default(0)) }}</td>
-                      <td>{% if c.rerank_score is not none %}{{ '%.2f'|format(c.rerank_score) }}{% else %}—{% endif %}</td>
-                      <td>{{ '%.2f'|format(c.score|default(0)) }}</td>
-                    </tr>
-                  {% endfor %}
-                  </tbody>
-                </table>
-              {% endif %}
-            </details>
-          {% endif %}
-        </article>
-      {% else %}
-        {% include "_chat_empty.html" %}
-      {% endfor %}
-    </div>
-
-    <form action="/notebooks/{{ notebook.id }}/chat/ask" method="post" class="ask-form" data-loading-form>
-      {% if conversation %}<input type="hidden" name="conversation_id" value="{{ conversation.id }}">{% endif %}
+    {# U1: hx-post swaps only the messages pane; action/method stay as the
+       no-JS fallback (full POST -> redirect). The hidden conversation field is
+       always rendered (empty for a new conversation) so the ask() partial can
+       OOB-update it once the conversation exists. #}
+    <form action="/notebooks/{{ notebook.id }}/chat/ask" method="post" class="ask-form" data-loading-form
+          hx-post="/notebooks/{{ notebook.id }}/chat/ask"
+          hx-target="#chat-messages"
+          hx-swap="outerHTML">
+      <input type="hidden" id="conversation-id-field" name="conversation_id"
+             value="{{ conversation.id if conversation else '' }}">
 
       <div class="question-row">
         <textarea name="question" rows="2"
                   id="question-input"
-                  placeholder="Ask a question about the selected sources"
+                  placeholder="針對所選來源提出問題"
                   {% if conversation %}autofocus{% endif %}
                   required></textarea>
-        <button type="submit" data-loading-text="Asking...">Ask</button>
+        <button type="submit" data-loading-text="送出中...">送出</button>
       </div>
-      <p class="ask-hint" aria-hidden="true">Enter to send · Shift+Enter for a new line</p>
+      <p class="ask-hint" aria-hidden="true">Enter 送出 · Shift+Enter 換行</p>
     </form>
   </section>
 
   {# ---------------- RIGHT: Studio ---------------- #}
   <aside class="workspace-pane workspace-studio" aria-label="Studio">
     <header class="pane-head">
-      <h2>Studio</h2>
+      <h2>工作台</h2>
     </header>
 
     {% with questions=cached_suggestions, error="", has_indexed=indexed_sources %}
@@ -290,6 +210,10 @@
 
     {% with sources_indexed=indexed_sources %}
       {% include "_compare.html" %}
+    {% endwith %}
+
+    {% with sources_indexed=indexed_sources %}
+      {% include "_minutes.html" %}
     {% endwith %}
 
     {% include "_notes_section.html" %}

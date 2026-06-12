@@ -16,8 +16,8 @@
          hx-trigger="indexed-sources-changed from:body"
          hx-swap="outerHTML">
   <h3>
-    Briefing
-    {% if briefing %}{{ gen_button("Regenerate", notebook.id, force=true) }}{% endif %}
+    重點簡報
+    {% if briefing %}{{ gen_button("重新生成", notebook.id, force=true) }}{% endif %}
   </h3>
   {% if briefing %}
     {# Collapsible: collapsed shows one truncated line, click to expand.
@@ -28,15 +28,15 @@
     <details class="briefing-details">
       <summary>
         <span class="briefing-preview">{{ briefing.replace('\n', ' ').strip() }}</span>
-        <span class="briefing-more muted">Show full</span>
+        <span class="briefing-more muted">展開全文</span>
       </summary>
       <div class="briefing-body markdown-body" data-markdown>{{ briefing }}</div>
     </details>
   {% elif error %}
     <p class="muted small">{{ error }}</p>
-    {{ gen_button("Try again", notebook.id, force=true) }}
+    {{ gen_button("再試一次", notebook.id, force=true) }}
   {% elif not has_indexed %}
-    <p class="muted small">Index a source first to see a notebook briefing.</p>
+    <p class="muted small">先完成來源索引，才能生成筆記本簡報。</p>
   {% elif in_progress %}
     {# Another POST is currently generating the briefing (e.g. the user has
        another tab open, or a sibling indexed-sources-changed fired). DO NOT auto-fire
@@ -47,7 +47,7 @@
        hx-get="/notebooks/{{ notebook.id }}/_briefing"
        hx-target="#studio-briefing"
        hx-swap="outerHTML"
-       hx-trigger="load delay:3s">Generating briefing…</p>
+       hx-trigger="load delay:3s">簡報生成中…</p>
   {% else %}
     {# Auto-fire generation exactly once on first view. The POST without
        force=1 returns cache if any was written in between (race guard).
@@ -57,7 +57,7 @@
        hx-post="/notebooks/{{ notebook.id }}/briefing"
        hx-target="#studio-briefing"
        hx-swap="outerHTML"
-       hx-trigger="load delay:200ms">Generating briefing…</p>
+       hx-trigger="load delay:200ms">簡報生成中…</p>
   {% endif %}
-  <p id="briefing-loading" class="studio-loading htmx-indicator">Generating briefing…</p>
+  <p id="briefing-loading" class="studio-loading htmx-indicator">簡報生成中…</p>
 </section>

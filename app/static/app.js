@@ -35,6 +35,10 @@ document.addEventListener("DOMContentLoaded", () => {
 document.addEventListener("htmx:afterSwap", (event) => {
   bindAll(event.target);
   restoreSourceScopeState();
+  // U1: after the ask partial swap, bring the new answer into view.
+  if (event.target && event.target.id === "chat-messages") {
+    scrollToLatestMessage();
+  }
 });
 
 function bindAll(root) {
@@ -46,6 +50,29 @@ function bindAll(root) {
   bindSuggestionFill(root);
   bindAskFormThinkingBubble(root);
   bindChatInput(root);
+  bindCopyButtons(root);
+}
+
+// ---- Copy assistant answer (U7) -------------------------------------------
+// Copies the raw Markdown (stored by renderMarkdown before it rewrites the
+// DOM) so the paste target gets clean source text, not rendered HTML.
+function bindCopyButtons(root) {
+  bindOnce(root, "[data-copy-message]", "copy", (button) => {
+    button.addEventListener("click", async () => {
+      const message = button.closest(".message");
+      const body = message && message.querySelector(".message-body");
+      if (!body) return;
+      const text = body.dataset.rawMarkdown || body.innerText || "";
+      try {
+        await navigator.clipboard.writeText(text);
+        const original = button.textContent;
+        button.textContent = "✓ 已複製";
+        setTimeout(() => { button.textContent = original; }, 1500);
+      } catch (e) {
+        console.error("[notebook] copy failed", e);
+      }
+    });
+  });
 }
 
 // ---- Chat input: Enter-to-send, Shift+Enter newline, IME-safe, auto-grow --
@@ -82,6 +109,24 @@ function bindChatInput(root) {
     };
     textarea.addEventListener("input", autogrow);
     autogrow();
+
+    // U1: the ask form posts via HTMX (no page reload), so undo the
+    // data-loading-form submit lock ourselves and reset the box for the
+    // next question once the messages pane has been swapped in.
+    form.addEventListener("htmx:afterRequest", (event) => {
+      if (event.detail.elt !== form) return;
+      const button = form.querySelector("button[type='submit']");
+      if (button) {
+        button.disabled = false;
+        if (button.dataset.originalText) button.textContent = button.dataset.originalText;
+      }
+      form.classList.remove("is-submitting");
+      if (event.detail.successful) {
+        textarea.value = "";
+        autogrow();
+      }
+      textarea.focus();
+    });
   });
 }
 
@@ -105,7 +150,7 @@ function bindAskFormThinkingBubble(root) {
       const bubble = document.createElement("div");
       bubble.className = "thinking-bubble";
       bubble.innerHTML =
-        "<span>Thinking</span>" +
+        "<span>思考中</span>" +
         "<span class=\"thinking-dots\"><span></span><span></span><span></span></span>";
       wrap.appendChild(q);
       wrap.appendChild(bubble);
@@ -268,8 +313,8 @@ function bindProviderNotes() {
   if (provider.dataset.providerBound) return;
   provider.dataset.providerBound = "1";
   const notes = {
-    openai_compatible: "Use a /v1 compatible base URL. Model fields should be model names.",
-    azure_openai: "Use the Azure resource endpoint. Model fields should be deployment names.",
+    openai_compatible: "請填入相容 /v1 的 base URL；模型欄位填模型名稱。",
+    azure_openai: "請填入 Azure 資源端點；模型欄位填部署（deployment）名稱。",
   };
   const updateNote = () => {
     providerNote.textContent = notes[provider.value] || notes.openai_compatible;
@@ -289,6 +334,7 @@ function renderMarkdown(root) {
   root.querySelectorAll("[data-markdown]:not([data-markdown-rendered])").forEach((node) => {
     node.dataset.markdownRendered = "1";
     const raw = node.textContent || "";
+    node.dataset.rawMarkdown = raw; // kept for the copy button (U7)
     let html = "";
     try {
       html = DOMPurify.sanitize(marked.parse(raw));

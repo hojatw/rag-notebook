@@ -2,43 +2,43 @@
 {% block content %}
 <section class="settings">
   <header class="settings-head">
-    <p class="eyebrow">Admin console</p>
-    <h1>Users</h1>
-    <p class="muted">Create, reset, promote, or remove user accounts. Per-user data (notebooks, sources, conversations, notes) is removed on delete.</p>
+    <p class="eyebrow">管理主控台</p>
+    <h1>使用者</h1>
+    <p class="muted">建立、重設、升級或移除帳號。刪除帳號會一併移除其筆記本、來源、對話與筆記。</p>
   </header>
 
-  {% if saved %}<div class="notice">User created.</div>{% endif %}
+  {% if saved %}<div class="notice">使用者已建立。</div>{% endif %}
   {% if error %}<div class="alert">{{ error }}</div>{% endif %}
 
   <section class="settings-section">
-    <h2>Add a new user</h2>
+    <h2>新增使用者</h2>
     <form method="post" action="/admin/users/new" class="user-create-form" data-loading-form>
       <label>
-        Username
+        帳號
         <input name="username" maxlength="64" required>
       </label>
       <label>
-        Initial password <span class="muted">(at least 6 characters)</span>
+        初始密碼 <span class="muted">（至少 6 個字元）</span>
         <input name="password" type="password" minlength="6" required>
       </label>
       <label class="user-admin-toggle">
         <input type="checkbox" name="is_admin" value="1">
-        <span>Grant admin privileges</span>
+        <span>授予管理員權限</span>
       </label>
-      <button type="submit" data-loading-text="Creating...">Create user</button>
+      <button type="submit" data-loading-text="建立中...">建立使用者</button>
     </form>
   </section>
 
   <section class="settings-section">
-    <h2>Existing users</h2>
+    <h2>現有使用者</h2>
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>User</th>
-            <th>Role</th>
-            <th>Created</th>
-            <th>Actions</th>
+            <th>使用者</th>
+            <th>角色</th>
+            <th>建立時間</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -46,32 +46,32 @@
             <tr>
               <td data-label="User">
                 <strong>{{ u.username }}</strong>
-                <small class="muted">id #{{ u.id }}{% if u.id == user.id %} · you{% endif %}</small>
+                <small class="muted">id #{{ u.id }}{% if u.id == user.id %} · 你{% endif %}</small>
               </td>
               <td data-label="Role">
                 {% if u.is_admin %}
-                  <span class="status indexed">Admin</span>
+                  <span class="status indexed">管理員</span>
                 {% else %}
-                  <span class="status">User</span>
+                  <span class="status">一般使用者</span>
                 {% endif %}
               </td>
               <td data-label="Created">{{ u.created_at[:10] }}</td>
               <td data-label="Actions" class="actions">
                 <details class="reset-details">
-                  <summary class="ghost small">Reset password</summary>
+                  <summary class="ghost small">重設密碼</summary>
                   <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="reset-form" data-loading-form>
-                    <input name="new_password" type="password" placeholder="New password" minlength="6" required>
-                    <button type="submit" class="secondary small" data-loading-text="...">Set</button>
+                    <input name="new_password" type="password" placeholder="新密碼" minlength="6" required>
+                    <button type="submit" class="secondary small" data-loading-text="...">設定</button>
                   </form>
                 </details>
                 {% if u.id != user.id %}
                   <form method="post" action="/admin/users/{{ u.id }}/toggle-admin"
-                        data-confirm="{% if u.is_admin %}Demote{% else %}Promote{% endif %} {{ u.username }}?">
-                    <button type="submit" class="ghost small">{% if u.is_admin %}Demote{% else %}Make admin{% endif %}</button>
+                        data-confirm="{% if u.is_admin %}降級{% else %}升級{% endif %} {{ u.username }}？">
+                    <button type="submit" class="ghost small">{% if u.is_admin %}降為一般{% else %}設為管理員{% endif %}</button>
                   </form>
                   <form method="post" action="/admin/users/{{ u.id }}/delete"
-                        data-confirm="Delete user {{ u.username }} and all of their notebooks, sources, conversations, and notes? This cannot be undone.">
-                    <button type="submit" class="ghost small danger-link">Delete</button>
+                        data-confirm="刪除使用者 {{ u.username }} 與其所有筆記本、來源、對話與筆記？此操作無法復原。">
+                    <button type="submit" class="ghost small danger-link">刪除</button>
                   </form>
                 {% endif %}
               </td>
@@ -83,7 +83,7 @@
   </section>
 
   <div class="settings-foot">
-    <a href="/notebooks" class="ghost">Back to notebooks</a>
+    <a href="/notebooks" class="ghost">返回筆記本</a>
   </div>
 </section>
 {% endblock %}

@@ -2,16 +2,16 @@
 {% block content %}
 <section class="settings">
   <header class="settings-head">
-    <p class="eyebrow">Admin console</p>
-    <h1>LLM settings</h1>
-    <p class="muted">Shared by all users. The API key is masked once saved and never sent back to the browser.</p>
+    <p class="eyebrow">管理主控台</p>
+    <h1>LLM 設定</h1>
+    <p class="muted">所有使用者共用。API key 儲存後即遮罩，不會再回傳到瀏覽器。</p>
   </header>
-  {% if saved %}<div class="notice">Settings saved.</div>{% endif %}
+  {% if saved %}<div class="notice">設定已儲存。</div>{% endif %}
   <form method="post" action="/settings" class="settings-grid" data-loading-form>
     <section class="settings-section">
-      <h2>Connection</h2>
+      <h2>連線</h2>
       <label>
-        Provider
+        提供者
         <select name="provider" data-provider-select>
           <option value="openai_compatible" {% if settings.provider == "openai_compatible" %}selected{% endif %}>OpenAI-compatible</option>
           <option value="azure_openai" {% if settings.provider == "azure_openai" %}selected{% endif %}>Azure OpenAI</option>
@@ -19,60 +19,60 @@
       </label>
       <p class="hint" data-provider-note></p>
       <label>
-        Base URL / Azure endpoint
+        Base URL / Azure 端點
         <input name="base_url" value="{{ settings.base_url }}" placeholder="https://api.openai.com/v1 or https://my-resource.openai.azure.com">
       </label>
       <label>
-        Embedding base URL <span class="muted">(optional &mdash; leave blank to share the chat URL above)</span>
-        <input name="embedding_base_url" value="{{ settings.embedding_base_url or '' }}" placeholder="http://localhost:11434/v1 (Ollama / TEI when split from chat)">
+        Embedding base URL <span class="muted">（選填 — 留空則沿用上方聊天 URL）</span>
+        <input name="embedding_base_url" value="{{ settings.embedding_base_url or '' }}" placeholder="http://localhost:11434/v1（聊天與 embedding 分開部署時填）">
       </label>
       <label>
-        API key {% if settings.api_key_masked %}<span class="muted">(saved &mdash; leave blank to keep)</span>{% endif %}
+        API key {% if settings.api_key_masked %}<span class="muted">（已儲存 — 留空表示沿用）</span>{% endif %}
         <input name="api_key" type="password" autocomplete="off" placeholder="{% if settings.api_key_masked %}••••••••{% else %}sk-...{% endif %}">
       </label>
     </section>
 
     <section class="settings-section">
-      <h2>Models</h2>
+      <h2>模型</h2>
       <label>
-        Chat model / Azure chat deployment
+        聊天模型 / Azure 聊天部署名稱
         <input name="chat_model" value="{{ settings.chat_model }}" placeholder="gpt-4.1-mini or my-chat-deployment">
       </label>
       <label>
-        Embedding model / Azure embedding deployment
+        Embedding 模型 / Azure embedding 部署名稱
         <input name="embedding_model" value="{{ settings.embedding_model }}" placeholder="text-embedding-3-small or my-embedding-deployment">
       </label>
       <label>
-        Embedding query prefix <span class="muted">(optional &mdash; e.g. <code>query:</code> for e5; a separating space is added automatically; leave blank for OpenAI etc.)</span>
+        Embedding 查詢前綴 <span class="muted">（選填 — e5 系列填 <code>query:</code>，分隔空格會自動補上；OpenAI 等留空）</span>
         <input name="embedding_query_prefix" value="{{ settings.embedding_query_prefix or '' }}" placeholder="query:">
       </label>
       <label>
-        Embedding passage prefix <span class="muted">(optional &mdash; e.g. <code>passage:</code> for e5; a separating space is added automatically; leave blank for OpenAI etc.)</span>
+        Embedding 段落前綴 <span class="muted">（選填 — e5 系列填 <code>passage:</code>，分隔空格會自動補上；OpenAI 等留空）</span>
         <input name="embedding_passage_prefix" value="{{ settings.embedding_passage_prefix or '' }}" placeholder="passage:">
       </label>
       <label>
-        Azure API version
+        Azure API 版本
         <input name="api_version" value="{{ settings.api_version }}" placeholder="2024-02-15-preview">
       </label>
     </section>
 
     <section class="settings-section">
-      <h2>Runtime</h2>
+      <h2>執行參數</h2>
       <div class="two-col">
         <label>
-          Temperature
+          Temperature（溫度）
           <input name="temperature" type="number" min="0" max="2" step="0.1" value="{{ settings.temperature }}">
         </label>
         <label>
-          Timeout seconds
+          逾時秒數
           <input name="timeout_seconds" type="number" min="1" step="1" value="{{ settings.timeout_seconds }}">
         </label>
       </div>
     </section>
 
     <div class="settings-foot">
-      <button type="submit" data-loading-text="Saving...">Save settings</button>
-      <a href="/notebooks" class="ghost">Back to notebooks</a>
+      <button type="submit" data-loading-text="儲存中...">儲存設定</button>
+      <a href="/notebooks" class="ghost">返回筆記本</a>
     </div>
   </form>
 </section>
