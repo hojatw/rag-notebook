@@ -1466,11 +1466,13 @@ async def followups_partial(
         return HTMLResponse("")
     questions = await suggest_followup_questions(prior_question["content"], message["content"], settings or {})
     if questions:
-        metadata["followups"] = questions
+        # json_set patches only the followups key inside SQLite, so a slow LLM
+        # call here can't clobber metadata written concurrently elsewhere.
         with connect() as conn:
             conn.execute(
-                "UPDATE messages SET metadata_json = ? WHERE id = ? AND user_id = ?",
-                (dumps(metadata), message_id, user["id"]),
+                "UPDATE messages SET metadata_json = json_set(metadata_json, '$.followups', json(?)) "
+                "WHERE id = ? AND user_id = ?",
+                (dumps(questions), message_id, user["id"]),
             )
     return render(request, "_followups.html", {"questions": questions})
 
@@ -1599,8 +1601,11 @@ async def source_minutes(
                 {"minutes": "", "error": "找不到已索引的來源，請重新整理後再試。", "filename": ""},
                 status_code=404,
             )
+        # Cap the fetch: generate_meeting_minutes uses ~16k chars and chunks are
+        # ~300-800 chars each, so 100 rows is ample — don't read a 1000-chunk
+        # transcript just to throw 95% of it away.
         chunks = [dict(r) for r in conn.execute(
-            "SELECT location, text FROM chunks WHERE source_id = ? AND user_id = ? ORDER BY chunk_index",
+            "SELECT location, text FROM chunks WHERE source_id = ? AND user_id = ? ORDER BY chunk_index LIMIT 100",
             (source_id, user["id"]),
         ).fetchall()]
         settings = load_llm_settings(conn) or {}

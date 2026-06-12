@@ -17,7 +17,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Fix:** **Done.** The ask form now `hx-post`s and swaps only the messages pane (`_messages.html`); the URL updates via `HX-Push-Url`; non-JS fallback keeps the redirect. Prerequisite for U2 (streaming).
 
 #### [ ] U2 · Streaming responses (SSE)
-- Perceived-latency king on the slow shared model. Build on U1; pair with P3-2 (optional rerank/rewrite) to shorten time-to-first-token. See `PERFORMANCE.md` P3-1.
+- **Same item as [`PERFORMANCE.md` P3-1](PERFORMANCE.md)** — full description lives there; tick both together. Build on U1; pair with P3-2 (optional rerank/rewrite) to shorten time-to-first-token.
 
 #### [ ] U3 · Citation → source highlight
 - Clicking `[2]` should open the source preview at that chunk and highlight it (today: collapsible snippet only). The trust-building feature of NotebookLM.
@@ -52,6 +52,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [ ] U12 · Onboarding empty state (3-step "upload → wait → ask" guide)
 #### [ ] U13 · Accessibility pass (focus rings, aria labels, Esc to close modals)
 #### [ ] U14 · Friendlier error messages (no raw exception strings in chat)
+#### [ ] U15 · Proper i18n layer (low priority, but eventually required)
+- U4 hardcoded zh-TW strings directly in templates / `app.js` / server messages — fine for the current single-language deployment, but adding any second language means re-touching every string. When needed: extract to a message catalog (Jinja i18n extension or a simple `messages.py` dict + a JS strings object), keyed lookups, language picked per deployment (config) or per user. Prerequisite for an English/zh-TW toggle; also centralizes the exported-Markdown headings (引用來源/筆記) that currently live in `main.py`.
 
 ---
 

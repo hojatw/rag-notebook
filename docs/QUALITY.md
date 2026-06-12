@@ -50,9 +50,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Fix:** Replace the linear blend with RRF. Documented in `RETRIEVAL.md` open follow-ups.
 
 ### [ ] Q1-2 · Keyword search → SQLite FTS5 + BM25
-- **Issue:** `LIKE '%token%'` + a token-overlap heuristic has no real relevance ranking and matches substrings noisily.
-- **Impact:** Weak keyword arm of the hybrid; BM25 ranks far better. (Same change as `PERFORMANCE.md` P1-2 — also a speed win.)
-- **Fix:** FTS5 virtual table + BM25.
+- **Same item as [`PERFORMANCE.md` P1-2](PERFORMANCE.md)** — full description, the CJK-tokenization blocker, and segmentation options live there (and in `RETRIEVAL.md` → *P1-2 design note*). Tick both together when done.
 
 ### [ ] Q1-3 · A harder, representative eval set
 - **Issue:** The eval is saturated (Recall@5 = 100%, MRR 0.933) and built on the **demo notebook**, not the customer's hundreds-of-page research reports.
