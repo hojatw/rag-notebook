@@ -521,16 +521,21 @@ def rename_notebook(
     title: str = Form(...),
     emoji: str = Form(""),
     description: str = Form(""),
+    followups_enabled: str | None = Form(None),
+    followups_setting_present: str | None = Form(None),
 ):
-    """Update a notebook's title, emoji, and description."""
+    """Update a notebook's title, emoji, description, and UI settings."""
     title = title.strip() or "未命名筆記本"
     emoji = (emoji or "").strip()[:8]
     description = description.strip()[:280]
     with connect() as conn:
-        get_notebook(conn, notebook_id, user["id"])
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        followups_flag = (
+            1 if followups_enabled == "1" else 0
+        ) if followups_setting_present is not None else notebook["followups_enabled"]
         conn.execute(
-            "UPDATE notebooks SET title = ?, emoji = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
-            (title, emoji, description, notebook_id, user["id"]),
+            "UPDATE notebooks SET title = ?, emoji = ?, description = ?, followups_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+            (title, emoji, description, followups_flag, notebook_id, user["id"]),
         )
     logger.info("notebook_renamed user_id=%s notebook_id=%s", user["id"], notebook_id)
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
@@ -1443,7 +1448,9 @@ async def followups_partial(
     so reloading the page does not re-call the LLM.
     """
     with connect() as conn:
-        get_notebook(conn, notebook_id, user["id"])
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        if not notebook["followups_enabled"]:
+            return HTMLResponse("")
         convo = conn.execute(
             "SELECT id FROM conversations WHERE id = ? AND notebook_id = ? AND user_id = ?",
             (conversation_id, notebook_id, user["id"]),
@@ -1545,6 +1552,27 @@ def export_notes(
     return _markdown_download("\n".join(lines), f"{notebook['title']}-notes.md")
 
 
+@app.get("/notebooks/{notebook_id}/notes/{note_id}/export")
+def export_note(
+    notebook_id: int,
+    note_id: int,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Download one notebook note as Markdown."""
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        note = conn.execute(
+            "SELECT * FROM notes WHERE id = ? AND notebook_id = ? AND user_id = ?",
+            (note_id, notebook_id, user["id"]),
+        ).fetchone()
+        if note is None:
+            raise HTTPException(status_code=404, detail="找不到筆記")
+    title = note["title"] or note["content"][:40] or "筆記"
+    lines = [f"# {title}", "", note["content"], "", f"_{note['created_at']}_", ""]
+    logger.info("note_exported user_id=%s notebook_id=%s note_id=%s", user["id"], notebook_id, note_id)
+    return _markdown_download("\n".join(lines), f"{notebook['title']}-{title}.md")
+
+
 @app.get("/notebooks/{notebook_id}/_notes", response_class=HTMLResponse)
 def notes_partial(
     request: Request,
@@ -1559,6 +1587,108 @@ def notes_partial(
             (notebook_id, user["id"]),
         ).fetchall()]
     return render(request, "_notes_section.html", {"notebook": notebook, "notes": notes})
+
+
+MEETING_LIKE_PATTERNS = [
+    (r"會議(逐字稿|紀錄|記錄|主題|主席|主持|議程)", "會議相關標題"),
+    (r"與會(者|人員)", "與會者資訊"),
+    (r"出席(者|人員)", "出席者資訊"),
+    (r"列席", "列席資訊"),
+    (r"決議", "決議事項"),
+    (r"行動項目", "行動項目"),
+    (r"待辦", "待辦事項"),
+    (r"未決事項", "未決事項"),
+    (r"follow[- ]?up", "追蹤事項"),
+    (r"action item", "行動項目"),
+    (r"meeting (transcript|minutes|notes|agenda)", "會議相關標題"),
+    (r"attendee[s]?", "與會者資訊"),
+    (r"participant[s]?", "與會者資訊"),
+    (r"decision[s]?", "決議事項"),
+]
+STRONG_MEETING_LIKE_PATTERNS = [
+    (r"會議逐字稿", "會議逐字稿"),
+    (r"會議(紀錄|記錄)", "會議紀錄"),
+    (r"meeting (transcript|minutes|notes)", "會議逐字稿或會議紀錄"),
+]
+
+SPEAKER_LABEL_RE = re.compile(
+    r"(?mi)^\s*(?:主持人|主席|與會者|參與者|講者|發言人|記錄|紀錄|Speaker|Host|Moderator|Participant|Attendee)\s*[：:]\s*\S"
+)
+TIMESTAMP_RE = re.compile(r"(?:^|\s)(?:\d{1,2}:){1,2}\d{2}(?:\s|$)|\[\s*\d{1,2}:\d{2}(?::\d{2})?\s*\]")
+
+
+def meeting_likelihood(chunks: list[dict[str, str]]) -> dict[str, object]:
+    """Cheaply detect whether a source looks like meeting notes/transcript."""
+    sample = "\n\n".join((chunk.get("text") or "") for chunk in chunks[:20])[:12000]
+    lowered = sample.lower()
+    hits: list[str] = []
+    score = 0
+
+    for pattern, label in STRONG_MEETING_LIKE_PATTERNS:
+        if re.search(pattern, lowered, re.IGNORECASE):
+            score += 4
+            hits.append(label)
+
+    for pattern, label in MEETING_LIKE_PATTERNS:
+        if re.search(pattern, lowered, re.IGNORECASE):
+            score += 2
+            hits.append(label)
+
+    speaker_labels = len(SPEAKER_LABEL_RE.findall(sample))
+    if speaker_labels >= 3:
+        score += 4
+        hits.append("多位主持人或講者欄位")
+    elif speaker_labels:
+        score += 2
+        hits.append("主持人或講者欄位")
+
+    timestamps = len(TIMESTAMP_RE.findall(sample))
+    if timestamps >= 3:
+        score += 3
+        hits.append("多個時間戳記")
+    elif timestamps:
+        score += 1
+        hits.append("時間戳記")
+
+    bullet_actions = len(re.findall(r"(?im)^\s*(?:[-*]|\d+[.)])\s*(?:TODO|待辦|決議|action|follow)", sample))
+    if bullet_actions:
+        score += 2
+        hits.append("條列行動項目")
+
+    is_likely = score >= 4
+    unique_hits = list(dict.fromkeys(hits))
+    if not unique_hits:
+        reason = "沒有看到明顯的會議逐字稿、與會者、決議或待辦資訊。"
+    else:
+        evidence = "、".join(unique_hits[:4])
+        reason = (
+            f"看到「{evidence}」。"
+            if is_likely
+            else f"只看到「{evidence}」，但不足以判定這是會議逐字稿或會議紀錄。"
+        )
+
+    return {
+        "is_likely": is_likely,
+        "score": score,
+        "reason": reason,
+    }
+
+
+def minutes_declines_meeting(minutes: str) -> bool:
+    """Detect the prompt's "not a meeting record" abstention response."""
+    normalized = minutes.strip().lower()
+    if not normalized:
+        return False
+    decline_markers = [
+        "不像會議",
+        "不是會議",
+        "不屬於會議",
+        "not look like a meeting",
+        "does not look like a meeting",
+        "not a meeting transcript",
+        "not meeting notes",
+    ]
+    return any(marker in normalized for marker in decline_markers)
 
 
 @app.get("/notebooks/{notebook_id}/_minutes", response_class=HTMLResponse)
@@ -1583,6 +1713,7 @@ async def source_minutes(
     notebook_id: int,
     user: Annotated[dict, Depends(require_login)],
     source_id: int = Form(...),
+    force: int = Form(0),
 ):
     """Generate structured meeting minutes from one indexed source (A1).
 
@@ -1610,10 +1741,30 @@ async def source_minutes(
         ).fetchall()]
         settings = load_llm_settings(conn) or {}
 
+    likelihood = meeting_likelihood(chunks)
+    if not force and not likelihood["is_likely"]:
+        logger.info(
+            "meeting_minutes_warning user_id=%s notebook_id=%s source_id=%s score=%s",
+            user["id"], notebook_id, source_id, likelihood["score"],
+        )
+        return render(
+            request,
+            "_minutes_result.html",
+            {
+                "minutes": "",
+                "error": "",
+                "filename": source["filename"],
+                "warning": "這份來源看起來不像會議逐字稿或會議紀錄。",
+                "warning_detail": likelihood["reason"],
+                "notebook_id": notebook_id,
+                "source_id": source_id,
+            },
+        )
+
     if not settings.get("api_key") or not settings.get("chat_model"):
         return render(
             request, "_minutes_result.html",
-            {"minutes": "", "error": "請先在系統設定完成 LLM 設定。", "filename": source["filename"]},
+            {"minutes": "", "error": "請先在系統設定完成 LLM 設定。", "filename": source["filename"], "warning": ""},
             status_code=400,
         )
 
@@ -1623,6 +1774,17 @@ async def source_minutes(
             request, "_minutes_result.html",
             {"minutes": "", "error": "模型未能產生會議記錄，請再試一次。", "filename": source["filename"]},
             status_code=502,
+        )
+
+    if minutes_declines_meeting(minutes):
+        logger.info(
+            "meeting_minutes_declined user_id=%s notebook_id=%s source_id=%s chars=%s",
+            user["id"], notebook_id, source_id, len(minutes),
+        )
+        return render(
+            request,
+            "_minutes_result.html",
+            {"minutes": minutes, "error": "", "filename": source["filename"], "saved": False, "warning": ""},
         )
 
     with connect() as conn:
@@ -1637,7 +1799,7 @@ async def source_minutes(
     )
     response = render(
         request, "_minutes_result.html",
-        {"minutes": minutes, "error": "", "filename": source["filename"]},
+        {"minutes": minutes, "error": "", "filename": source["filename"], "saved": True, "warning": ""},
     )
     response.headers["HX-Trigger"] = "notes-changed"
     return response

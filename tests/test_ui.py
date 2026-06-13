@@ -263,6 +263,67 @@ def test_followups_generate_once_and_cache(monkeypatch, tmp_path):
         assert "追問一" in meta["metadata_json"]
 
 
+def test_notebook_can_disable_followups(monkeypatch, tmp_path):
+    """Notebook-level setting prevents lazy follow-up generation."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    calls = {"n": 0}
+
+    async def fake_followups(question, answer, settings):
+        calls["n"] += 1
+        return ["不應產生"]
+
+    monkeypatch.setattr(main, "suggest_followup_questions", fake_followups)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db, title="追問設定")
+        with db.connect() as conn:
+            notebook = conn.execute(
+                "SELECT followups_enabled FROM notebooks WHERE id = ?", (notebook_id,)
+            ).fetchone()
+        assert notebook["followups_enabled"] == 1
+
+        legacy_rename = client.post(
+            f"/notebooks/{notebook_id}/rename",
+            data={"title": "追問設定", "emoji": "📓", "description": ""},
+            follow_redirects=False,
+        )
+        assert legacy_rename.status_code == 303
+        with db.connect() as conn:
+            assert conn.execute(
+                "SELECT followups_enabled FROM notebooks WHERE id = ?", (notebook_id,)
+            ).fetchone()["followups_enabled"] == 1
+
+        renamed = client.post(
+            f"/notebooks/{notebook_id}/rename",
+            data={"title": "追問設定", "emoji": "📓", "description": "", "followups_setting_present": "1"},
+            follow_redirects=False,
+        )
+        assert renamed.status_code == 303
+        with db.connect() as conn:
+            assert conn.execute(
+                "SELECT followups_enabled FROM notebooks WHERE id = ?", (notebook_id,)
+            ).fetchone()["followups_enabled"] == 0
+            convo_id = conn.execute(
+                "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, 'T')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'user', '原始問題')",
+                (convo_id, user["id"]),
+            )
+            msg_id = conn.execute(
+                "INSERT INTO messages (conversation_id, user_id, role, content, metadata_json) "
+                "VALUES (?, ?, 'assistant', '答案', '{\"outcome\": \"answered\"}')",
+                (convo_id, user["id"]),
+            ).lastrowid
+
+        resp = client.get(f"/notebooks/{notebook_id}/chat/{convo_id}/_followups?message_id={msg_id}")
+        assert resp.status_code == 200
+        assert resp.text == ""
+        assert calls["n"] == 0
+
+
 def test_minutes_saves_note_and_triggers_refresh(monkeypatch, tmp_path):
     """A1: minutes generation renders the result, saves a note, fires notes-changed."""
     main, db = _fresh_app(monkeypatch, tmp_path)
@@ -305,6 +366,93 @@ def test_minutes_saves_note_and_triggers_refresh(monkeypatch, tmp_path):
         assert "重要決議" in note["content"]
 
 
+def test_minutes_warns_before_non_meeting_source(monkeypatch, tmp_path):
+    """Non-meeting sources show a warning first and do not spend an LLM call."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    calls = {"n": 0}
+    ambiguous = main.meeting_likelihood([{"text": "主持人：藥師\n這是一份藥品仿單，包含劑量資訊。"}])
+    assert ambiguous["is_likely"] is False
+    assert "只看到「主持人或講者欄位」" in ambiguous["reason"]
+    assert "發言者標記" not in ambiguous["reason"]
+
+    async def fake_minutes(chunks, settings):
+        calls["n"] += 1
+        return "## 會議主題\n不應先產生"
+
+    monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status) "
+                "VALUES (?, ?, 'label.txt', '/tmp/label.txt', 'indexed')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json) "
+                "VALUES (?, ?, 0, 'document', '這是一份藥品仿單，包含劑量、禁忌症與副作用資訊。', '[]')",
+                (user["id"], source_id),
+            )
+
+        resp = client.post(f"/notebooks/{notebook_id}/minutes", data={"source_id": source_id})
+        assert resp.status_code == 200
+        assert "不像會議逐字稿" in resp.text
+        assert "仍然整理" in resp.text
+        assert "發言者標記" not in resp.text
+        assert calls["n"] == 0
+        with db.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) c FROM notes WHERE notebook_id = ?", (notebook_id,)).fetchone()["c"] == 0
+
+        forced = client.post(f"/notebooks/{notebook_id}/minutes", data={"source_id": source_id, "force": "1"})
+        assert forced.status_code == 200
+        assert "存入筆記" in forced.text
+        assert calls["n"] == 1
+
+
+def test_minutes_decline_is_not_saved(monkeypatch, tmp_path):
+    """If the model says the source is not meeting-like, show it but don't save."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_minutes(chunks, settings):
+        return "This does not look like a meeting record."
+
+    monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status) "
+                "VALUES (?, ?, 'meeting.txt', '/tmp/meeting.txt', 'indexed')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json) "
+                "VALUES (?, ?, 0, 'document', '會議逐字稿\n主持人：今天討論專案進度。', '[]')",
+                (user["id"], source_id),
+            )
+
+        resp = client.post(f"/notebooks/{notebook_id}/minutes", data={"source_id": source_id})
+        assert resp.status_code == 200
+        assert "未存入筆記" in resp.text
+        assert resp.headers.get("HX-Trigger") is None
+        with db.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) c FROM notes WHERE notebook_id = ?", (notebook_id,)).fetchone()["c"] == 0
+
+
 def test_export_conversation_and_notes_markdown(monkeypatch, tmp_path):
     """A3: conversation and notes export as downloadable Markdown."""
     main, db = _fresh_app(monkeypatch, tmp_path)
@@ -330,6 +478,10 @@ def test_export_conversation_and_notes_markdown(monkeypatch, tmp_path):
                 "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, '筆記1', '筆記內容')",
                 (notebook_id, user["id"]),
             )
+            note_id = conn.execute(
+                "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, '筆記2', '單筆內容')",
+                (notebook_id, user["id"]),
+            ).lastrowid
 
         convo = client.get(f"/notebooks/{notebook_id}/chat/{convo_id}/export")
         assert convo.status_code == 200
@@ -341,3 +493,9 @@ def test_export_conversation_and_notes_markdown(monkeypatch, tmp_path):
         assert notes.status_code == 200
         assert "筆記內容" in notes.text
         assert "attachment" in notes.headers["content-disposition"]
+
+        note = client.get(f"/notebooks/{notebook_id}/notes/{note_id}/export")
+        assert note.status_code == 200
+        assert "單筆內容" in note.text
+        assert "筆記內容" not in note.text
+        assert "attachment" in note.headers["content-disposition"]

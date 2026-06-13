@@ -72,6 +72,7 @@ A workspace owned by a user. Holds cached Studio outputs.
 | `title` | TEXT DEFAULT `'Untitled notebook'` | |
 | `emoji` | TEXT DEFAULT `''` | |
 | `description` | TEXT DEFAULT `''` | |
+| `followups_enabled` | INTEGER NOT NULL DEFAULT 1 | 1 = show follow-up question suggestions after answered chat messages |
 | `created_at` / `updated_at` | TEXT | `updated_at` bumped on activity (sorts the grid) |
 | `suggestions_json` / `suggestions_at` | TEXT DEFAULT `''` | cached starter questions + timestamp (24 h TTL) |
 | `briefing` / `briefing_at` | TEXT DEFAULT `''` | cached cross-source briefing + timestamp (24 h TTL) |

@@ -69,6 +69,7 @@ def init_db() -> None:
                 title TEXT NOT NULL DEFAULT 'Untitled notebook',
                 emoji TEXT NOT NULL DEFAULT '',
                 description TEXT NOT NULL DEFAULT '',
+                followups_enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -193,6 +194,7 @@ def init_db() -> None:
         _ensure_column(conn, "messages", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(conn, "notebooks", "suggestions_json", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "notebooks", "suggestions_at", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "notebooks", "followups_enabled", "INTEGER NOT NULL DEFAULT 1")
         # Per-source TL;DR generated at ingest, shown in preview drawer and
         # reused as compact context for briefing / comparison prompts.
         _ensure_column(conn, "sources", "summary", "TEXT NOT NULL DEFAULT ''")
