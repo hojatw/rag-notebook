@@ -69,10 +69,10 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## P3 — UX / product tradeoffs
 
-### [ ] P3-1 · Streaming responses
-- **Issue:** Answers are returned only after the full chat call completes (architectural follow-up #18-streaming).
+### [x] P3-1 · Streaming responses
+- **Issue:** Answers were returned only after the full chat call completed (architectural follow-up #18-streaming).
 - **Impact:** High perceived latency, worse with a large/slow model.
-- **Fix:** SSE / chunked streaming; reshape `chat_completion` to an async generator and stream into the chat UI.
+- **Fix:** **Done.** Added a streaming chat path that emits retrieval/generation status and answer chunks, then swaps in the saved Markdown/citation message when complete. Non-streaming chat helpers remain for Studio features.
 
 ### [ ] P3-2 · Make query-rewrite / rerank optional or cached
 - **Issue:** Each question runs 3 sequential LLM calls (rewrite → rerank → answer).

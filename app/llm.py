@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 import time
 from typing import Any
 
@@ -41,15 +42,15 @@ Do NOT translate. If excerpts are mixed-language, follow whichever language carr
 Return only a JSON array of strings, each under 80 characters."""
 
 FOLLOWUP_QUESTIONS_PROMPT = """You suggest follow-up questions after an assistant answered a user inside a source-grounded RAG app.
-Read the user's question and the assistant's answer. Propose 3 short, distinct follow-up questions the user would plausibly ask next.
+Read the source excerpts, the user's question, and the assistant's answer. Propose 3 short, distinct follow-up questions the user would plausibly ask next.
 Each question must stand alone (no pronouns) and be answerable from the same source documents.
 
-LANGUAGE RULE — strictly match the language of the user's question:
-- Traditional Chinese question -> Traditional Chinese follow-ups (繁體中文).
-- Simplified Chinese question -> Simplified Chinese follow-ups.
-- Japanese question -> Japanese follow-ups.
-- English question -> English follow-ups.
-Do NOT translate.
+LANGUAGE RULE — the user prompt includes TARGET LANGUAGE. Write every follow-up question in that target language.
+The TARGET LANGUAGE overrides the user's question language and the assistant answer language.
+If TARGET LANGUAGE is English, every follow-up must be English.
+If TARGET LANGUAGE is Traditional Chinese, every follow-up must be Traditional Chinese (繁體中文).
+If TARGET LANGUAGE is Japanese, every follow-up must be Japanese.
+Do NOT translate the source content; ask natural follow-up questions in the target language.
 
 Return only a JSON array of strings, each under 60 characters."""
 
@@ -144,6 +145,7 @@ RERANK_WEIGHT = config.retrieval.rerank_weight
 RERANK_BASE_WEIGHT = config.retrieval.rerank_base_weight
 # Cap on candidates sent to the LLM reranker — same pool size as retrieve().
 RERANK_INPUT_SIZE = config.retrieval.candidate_pool_size
+FOLLOWUPS_CACHE_VERSION = 2
 
 _http_client: httpx.AsyncClient | None = None
 
@@ -334,12 +336,26 @@ async def generate_answer(question: str, chunks: list[dict[str, Any]], settings:
         raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
 
     logger.info("answer_generation_started chunks=%s question_chars=%s", len(chunks), len(question))
+    return await chat_completion(settings, answer_prompt(question, chunks), SYSTEM_PROMPT)
+
+
+async def generate_answer_stream(question: str, chunks: list[dict[str, Any]], settings: dict[str, Any]):
+    """Stream answer text from the configured chat model."""
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
+
+    logger.info("answer_stream_started chunks=%s question_chars=%s", len(chunks), len(question))
+    async for chunk in chat_completion_stream(settings, answer_prompt(question, chunks), SYSTEM_PROMPT):
+        yield chunk
+
+
+def answer_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
+    """Build the grounded answer prompt shared by normal and streaming chat."""
     context = "\n\n".join(
         f"[{index}] {chunk['filename']} - {chunk['location']}\n{chunk['text']}"
         for index, chunk in enumerate(chunks, start=1)
     )
-    user_prompt = f"Source excerpts:\n{context}\n\nQuestion: {question}"
-    return await chat_completion(settings, user_prompt, SYSTEM_PROMPT)
+    return f"Source excerpts:\n{context}\n\nQuestion: {question}"
 
 
 async def rewrite_search_queries(question: str, history: list[dict[str, str]], settings: dict[str, Any]) -> list[str]:
@@ -430,14 +446,27 @@ async def generate_starter_questions(excerpts: list[dict[str, Any]], settings: d
     return cleaned[:4]
 
 
-async def suggest_followup_questions(question: str, answer: str, settings: dict[str, Any]) -> list[str]:
+async def suggest_followup_questions(
+    question: str,
+    answer: str,
+    settings: dict[str, Any],
+    source_context: list[str] | None = None,
+) -> list[str]:
     """Suggest up to 3 follow-up questions for the latest answered QA pair (A2)."""
     if not question.strip() or not answer.strip():
         return []
     if not settings.get("api_key") or not settings.get("chat_model"):
         logger.info("followups_skipped reason=no_chat_settings")
         return []
+    target_language = followup_target_language(source_context or [], answer, question)
+    excerpts = "\n\n".join(
+        f"[{index}] {text.strip()[:500]}"
+        for index, text in enumerate(source_context or [], start=1)
+        if text and text.strip()
+    )
     user_prompt = (
+        f"TARGET LANGUAGE: {target_language}\n\n"
+        f"Source excerpts:\n{excerpts or '(unavailable)'}\n\n"
         f"User question:\n{question.strip()[:1000]}\n\n"
         f"Assistant answer:\n{answer.strip()[:4000]}\n\n"
         "Return the JSON array now."
@@ -451,6 +480,38 @@ async def suggest_followup_questions(question: str, answer: str, settings: dict[
     cleaned = [q for q in (q.strip() for q in questions) if q]
     logger.info("followups_generated returned=%s", len(cleaned[:3]))
     return cleaned[:3]
+
+
+def followup_target_language(source_context: list[str], answer: str, question: str) -> str:
+    """Pick a concrete output language for follow-ups.
+
+    Source excerpts win over Q/A language so English documents still produce
+    English follow-ups even when the user asks in Traditional Chinese.
+    """
+    for text in ("\n".join(source_context), answer, question):
+        detected = detect_dominant_language(text)
+        if detected:
+            return detected
+    return "Traditional Chinese"
+
+
+def detect_dominant_language(text: str) -> str:
+    sample = (text or "")[:6000]
+    latin = len(re.findall(r"[A-Za-z]", sample))
+    han = len(re.findall(r"[\u4e00-\u9fff]", sample))
+    kana = len(re.findall(r"[\u3040-\u30ff]", sample))
+    simplified_markers = set("这为与时会们问题临床试验药")
+    simplified = sum(1 for char in sample if char in simplified_markers)
+
+    if latin >= max(40, (han + kana) * 2):
+        return "English"
+    if kana >= 8:
+        return "Japanese"
+    if han >= 12:
+        return "Simplified Chinese" if simplified >= 3 else "Traditional Chinese"
+    if latin >= 12:
+        return "English"
+    return ""
 
 
 MEETING_MINUTES_CONTEXT_CHARS = 16000
@@ -611,6 +672,65 @@ async def chat_completion(
         elapsed_ms,
     )
     return content
+
+
+async def chat_completion_stream(
+    settings: dict[str, Any],
+    user_prompt: str,
+    system_prompt: str,
+    temperature: float | None = None,
+):
+    """Stream message text from an OpenAI-compatible chat completion endpoint."""
+    request = build_chat_request(settings, user_prompt, system_prompt, temperature)
+    request["json"]["stream"] = True
+    timeout = float(settings.get("timeout_seconds") or 60)
+    started = time.perf_counter()
+    chars = 0
+    client = get_http_client()
+    try:
+        async with client.stream(
+            "POST",
+            request["url"],
+            headers=request["headers"],
+            json=request["json"],
+            timeout=timeout,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                payload = line.removeprefix("data:").strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    logger.warning("chat_stream_bad_json payload_chars=%s", len(payload))
+                    continue
+                choices = data.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {}).get("content") or ""
+                if delta:
+                    chars += len(delta)
+                    yield delta
+    except Exception:
+        logger.exception(
+            "chat_stream_failed provider=%s model=%s prompt_chars=%s",
+            settings.get("provider") or "openai_compatible",
+            settings.get("chat_model"),
+            len(user_prompt),
+        )
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    logger.info(
+        "chat_stream_completed provider=%s model=%s prompt_chars=%s response_chars=%s elapsed_ms=%.1f",
+        settings.get("provider") or "openai_compatible",
+        settings.get("chat_model"),
+        len(user_prompt),
+        chars,
+        elapsed_ms,
+    )
 
 
 def parse_json_strings(content: str) -> list[str]:

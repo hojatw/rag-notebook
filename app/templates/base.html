@@ -32,6 +32,7 @@
         {% else %}
           <nav aria-label="Primary">
             <a class="{% if request.url.path == '/notebooks' or request.url.path.startswith('/notebooks/') %}active{% endif %}" href="/notebooks">筆記本</a>
+            <a class="{% if request.url.path.startswith('/search') %}active{% endif %}" href="/search">搜尋</a>
             {% if user.is_admin %}
               <a class="{% if request.url.path.startswith('/admin/users') %}active{% endif %}" href="/admin/users">使用者</a>
               <a class="{% if request.url.path.startswith('/admin/index') %}active{% endif %}" href="/admin/index">索引</a>

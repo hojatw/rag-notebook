@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">全域搜尋</p>
+    <h1>搜尋筆記本內容</h1>
+    <p class="muted">搜尋你的筆記本、來源、對話標題與筆記。</p>
+  </div>
+</section>
+
+<form class="search-form panel-strip" action="/search" method="get">
+  <label>
+    <span>關鍵字</span>
+    <input name="q" value="{{ query }}" placeholder="輸入來源、筆記或對話關鍵字" autofocus>
+  </label>
+  <button type="submit">搜尋</button>
+</form>
+
+{% if query %}
+  <section class="search-results">
+    <div class="section-head">
+      <h2>搜尋結果</h2>
+      <span class="pane-count">{{ results|length }}</span>
+    </div>
+    {% if results %}
+      <ul class="result-list">
+        {% for item in results %}
+          <li class="result-item">
+            <a href="{{ item.url }}">
+              <span class="result-type">{{ item.type }}</span>
+              <strong>{{ item.title }}</strong>
+              <span class="muted small">{{ item.snippet }}</span>
+              {% if item.time %}<span class="muted small">{{ item.time }}</span>{% endif %}
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="empty">
+        <h2>找不到符合的內容</h2>
+        <p>試試較短的關鍵字，或確認內容已完成索引。</p>
+      </div>
+    {% endif %}
+  </section>
+{% else %}
+  <div class="empty search-empty">
+    <h2>輸入關鍵字開始搜尋</h2>
+    <p>可搜尋來源檔名、來源摘要、筆記內容、筆記本與對話標題。</p>
+  </div>
+{% endif %}
+{% endblock %}

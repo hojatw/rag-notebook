@@ -4,14 +4,14 @@ A single-machine FastAPI proof of concept for a NotebookLM-style workspace: orga
 
 ## Status
 
-This is a proof of concept, not a production-ready service. It is suitable for local experiments and small single-machine deployments after you configure a real `NOTEBOOKLM_SECRET`, but several production hardening items are still open (CSRF protection, streaming responses). See [Known follow-ups](#known-follow-ups).
+This is a proof of concept, not a production-ready service. It is suitable for local experiments and small single-machine deployments after you configure a real `NOTEBOOKLM_SECRET`, but several production hardening items are still open (CSRF protection). See [Known follow-ups](#known-follow-ups).
 
 ## What you get
 
 - **Notebook home grid.** Each notebook owns its own sources, conversations, and pinned notes.
 - **Three-pane workspace** per notebook:
-  - **Sources** (left): drag-and-drop upload, automatic indexing-status polling, per-source reindex/delete, **click any indexed source to open a chunk-preview drawer**.
-  - **Chat** (centre): grounded chat with conversation switcher (with per-row delete and **Markdown export**), Markdown-rendered answers (with a per-answer **copy** button), and inline `[1]` `[2]` citation chips that scroll the matching source into view. Asking swaps in just the messages pane via HTMX (no full page reload); after each answered question 2–3 **follow-up question chips** are suggested (lazy-generated, cached per message). Enter sends, Shift+Enter inserts a newline, IME-safe for CJK input. UI strings are Traditional Chinese.
+  - **Sources** (left): drag-and-drop upload with selected-file/size feedback, automatic indexing-status polling, per-source reindex/delete, **click any indexed source to open a chunk-preview drawer**.
+  - **Chat** (centre): grounded chat with streaming answers, conversation switcher (rename, message counts, relative timestamps, per-row delete, and **Markdown export**), Markdown-rendered answers (with a per-answer **copy** button), and inline `[1]` `[2]` citation chips that scroll the matching source into view. Asking stays in place with progressive status updates; after each answered question 2–3 **follow-up question chips** are suggested (lazy-generated, cached per message). Enter sends, Shift+Enter inserts a newline, IME-safe for CJK input. UI strings are Traditional Chinese.
   - **Studio** (right): five NotebookLM-style helpers in one column.
       - *Suggested questions* — one-click LLM-authored starter questions from your sources, auto-refreshing as sources finish indexing (24 h cache).
       - *Briefing* — one-paragraph cross-source synthesis, auto-generated on first notebook view and cached for 24 h. *Regenerate* on demand. Concurrent generation across tabs / sibling source completions is deduped by a shared SQLite-backed lock so a 5-file upload only calls the LLM once, not five times (works across multiple workers).
@@ -25,6 +25,7 @@ This is a proof of concept, not a production-ready service. It is suitable for l
 - **Multi-user** with hashed passwords and strict per-user/per-notebook isolation. Admin can manage user accounts at `/admin/users`; any signed-in user can change their own password at `/account`.
 - **OpenAI-compatible** (including local Ollama / vLLM / TEI) and **Azure OpenAI** chat + embedding providers, configured by an admin in `/settings`. Chat and embedding endpoints can live on different services via the optional **Embedding base URL** field. **API keys are encrypted at rest** with Fernet (PBKDF2-SHA256 over `NOTEBOOKLM_SECRET`). On save the embedding endpoint is probed once; dim mismatches with the existing Chroma index are rejected with a clear "Clear at /admin/index first" message.
 - **Admin vector-index console** at `/admin/index`: SQLite ↔ Chroma drift report, manual *Rebuild* and *Clear*.
+- **Global search** at `/search`: searches the signed-in user's notebooks, source filenames/summaries, conversation titles, and notes.
 - **Diff-only Chroma sync on startup**: only missing chunks are upserted and orphan vectors deleted; same-state restarts are near-instant.
 - **Source formats**: PDF, TXT, Markdown, DOCX, HTML.
 - **Persistence**: SQLite for metadata, the local filesystem for uploads, and Chroma for vectors.
@@ -206,6 +207,7 @@ POST /login                                               authenticate
 POST /logout                                              clear session
 
 GET  /notebooks                                           notebook grid
+GET  /search                                              search notebooks, sources, conversations, and notes
 POST /notebooks/new                                       create a notebook
 GET  /notebooks/{id}                                      three-pane workspace
 POST /notebooks/{id}/rename                               rename / change emoji
@@ -220,6 +222,8 @@ GET  /notebooks/{id}/_source-picker                       HTMX swap: chat-form p
 
 POST /notebooks/{id}/chat/new                             new conversation
 POST /notebooks/{id}/chat/ask                             ask a question (HTMX: returns messages partial; no-JS: 303)
+POST /notebooks/{id}/chat/ask-stream                      ask a question with streamed answer events
+POST /notebooks/{id}/chat/{cid}/rename                    rename a conversation
 POST /notebooks/{id}/chat/{cid}/delete                    delete a conversation
 GET  /notebooks/{id}/chat/{cid}/_followups?message_id=N   lazy-load follow-up question chips (cached in metadata)
 GET  /notebooks/{id}/chat/{cid}/export                    download conversation as Markdown
@@ -335,7 +339,6 @@ requirements-dev.txt   Local development/test dependencies layered on runtime.
 
 Performance/scalability and retrieval-quality work are tracked as prioritised, tick-off backlogs in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) and [`docs/QUALITY.md`](docs/QUALITY.md) (issue → impact → fix → priority); UX improvements and new AI features live in [`docs/ROADMAP.md`](docs/ROADMAP.md). Engineering deep-dives live in [`docs/`](docs/). Headline items still outstanding:
 
-- No streaming responses yet — answers arrive after the full LLM call returns.
 - No CSRF protection on POST routes.
 - No offline embedding fallback — embedding model must be configured before uploads are accepted.
 - Keyword search uses `LIKE '%token%'` over SQLite; FTS5 + BM25 is on deck (see [`RETRIEVAL.md`](docs/RETRIEVAL.md)).

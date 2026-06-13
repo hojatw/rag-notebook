@@ -113,6 +113,9 @@ def test_chat_empty_partial_reflects_indexing_state(monkeypatch, tmp_path):
         empty = client.get(url)
         assert empty.status_code == 200
         assert "先新增一個來源開始使用" in empty.text
+        assert "上傳來源" in empty.text
+        assert "等待索引" in empty.text
+        assert "開始提問" in empty.text
         # The container must re-fetch itself when indexing state changes.
         assert 'hx-trigger="indexed-sources-changed from:body"' in empty.text
 
@@ -218,13 +221,169 @@ def test_ask_returns_messages_partial_for_htmx(monkeypatch, tmp_path):
         assert resp2.status_code == 303
 
 
+def test_streaming_ask_saves_answer_and_returns_final_messages(monkeypatch, tmp_path):
+    """U2: streaming ask emits chunks, saves the final assistant message, and returns refreshed HTML."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_retrieve(question, conversation_id, settings, history, user_id, source_ids=None):
+        return [{
+            "id": 1,
+            "source_id": 10,
+            "filename": "source.md",
+            "location": "section",
+            "text": "答案依據",
+            "score": 0.9,
+        }]
+
+    async def fake_stream(question, chunks, settings):
+        yield "串流"
+        yield "回答 [1]"
+
+    monkeypatch.setattr(main, "retrieve", fake_retrieve)
+    monkeypatch.setattr(main, "generate_answer_stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+
+        resp = client.post(
+            f"/notebooks/{notebook_id}/chat/ask-stream",
+            data={"question": "請回答", "conversation_id": ""},
+        )
+        assert resp.status_code == 200
+        assert "event: init" in resp.text
+        assert "event: chunk" in resp.text
+        assert "串流" in resp.text
+        assert "event: done" in resp.text
+
+        with db.connect() as conn:
+            messages = conn.execute(
+                "SELECT role, content, citations_json, metadata_json FROM messages ORDER BY id"
+            ).fetchall()
+        assert [m["role"] for m in messages] == ["user", "assistant"]
+        assert messages[1]["content"] == "串流回答 [1]"
+        assert "source.md" in messages[1]["citations_json"]
+        assert '"outcome": "answered"' in messages[1]["metadata_json"]
+
+
+def test_chat_errors_are_friendly_in_ui(monkeypatch, tmp_path):
+    """U14: raw exception text is logged/metadata only, not shown in chat UI."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def failing_answer(question, settings, history, user_id, source_ids):
+        raise RuntimeError("SECRET_PROVIDER_STACKTRACE")
+
+    monkeypatch.setattr(main, "_answer_question", failing_answer)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        _user, notebook_id = _seed_notebook(db)
+        resp = client.post(
+            f"/notebooks/{notebook_id}/chat/ask",
+            data={"question": "會失敗", "conversation_id": ""},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert "回答生成失敗" in resp.text
+        assert "SECRET_PROVIDER_STACKTRACE" not in resp.text
+        assert "技術細節已記錄" in resp.text
+
+
+def test_conversation_rename_and_menu_metadata(monkeypatch, tmp_path):
+    """U5: conversations can be renamed and the menu shows message count/time metadata."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            convo_id = conn.execute(
+                "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, '舊名稱')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'user', '問題')",
+                (convo_id, user["id"]),
+            )
+            conn.execute(
+                "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'assistant', '回答')",
+                (convo_id, user["id"]),
+            )
+
+        renamed = client.post(
+            f"/notebooks/{notebook_id}/chat/{convo_id}/rename",
+            data={"title": " 新名稱  "},
+            follow_redirects=False,
+        )
+        assert renamed.status_code == 303
+        assert f"conversation_id={convo_id}" in renamed.headers["location"]
+
+        page = client.get(f"/notebooks/{notebook_id}?conversation_id={convo_id}")
+        assert "新名稱" in page.text
+        assert "2 則訊息" in page.text
+        assert "重新命名對話" in page.text
+
+
+def test_global_search_scopes_to_current_user(monkeypatch, tmp_path):
+    """U9: global search covers owned content and does not leak other users' rows."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        with db.connect() as conn:
+            admin = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+            other = conn.execute("SELECT * FROM users WHERE username = 'user'").fetchone()
+            notebook_id = conn.execute(
+                "INSERT INTO notebooks (user_id, title, description) VALUES (?, '搜尋測試', 'alpha 專案')",
+                (admin["id"],),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, summary) "
+                "VALUES (?, ?, 'alpha.txt', '/tmp/a.txt', 'indexed', 'alpha 摘要')",
+                (admin["id"], notebook_id),
+            )
+            convo_id = conn.execute(
+                "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, 'alpha 對話')",
+                (admin["id"], notebook_id),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, 'alpha 筆記', '內容')",
+                (notebook_id, admin["id"]),
+            )
+            other_nb = conn.execute(
+                "INSERT INTO notebooks (user_id, title, description) VALUES (?, 'alpha 不可見', '')",
+                (other["id"],),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, 'alpha 私人', '不可見')",
+                (other_nb, other["id"]),
+            )
+
+        resp = client.get("/search?q=alpha")
+        assert resp.status_code == 200
+        assert "搜尋測試" in resp.text
+        assert "alpha.txt" in resp.text
+        assert "alpha 對話" in resp.text
+        assert "alpha 筆記" in resp.text
+        assert f"conversation_id={convo_id}" in resp.text
+        assert "alpha 不可見" not in resp.text
+        assert "alpha 私人" not in resp.text
+
+
 def test_followups_generate_once_and_cache(monkeypatch, tmp_path):
     """A2: follow-up chips are generated once, cached into message metadata."""
     main, db = _fresh_app(monkeypatch, tmp_path)
     calls = {"n": 0}
 
-    async def fake_followups(question, answer, settings):
+    async def fake_followups(question, answer, settings, source_context=None):
         calls["n"] += 1
+        assert source_context == ["English source excerpt"]
         return ["追問一？", "追問二？"]
 
     monkeypatch.setattr(main, "suggest_followup_questions", fake_followups)
@@ -233,6 +392,11 @@ def test_followups_generate_once_and_cache(monkeypatch, tmp_path):
         _login(client)
         user, notebook_id = _seed_notebook(db)
         with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
             convo_id = conn.execute(
                 "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, 'T')",
                 (user["id"], notebook_id),
@@ -242,15 +406,21 @@ def test_followups_generate_once_and_cache(monkeypatch, tmp_path):
                 (convo_id, user["id"]),
             )
             msg_id = conn.execute(
-                "INSERT INTO messages (conversation_id, user_id, role, content, metadata_json) "
-                "VALUES (?, ?, 'assistant', '答案', '{\"outcome\": \"answered\"}')",
+                "INSERT INTO messages (conversation_id, user_id, role, content, citations_json, metadata_json) "
+                "VALUES (?, ?, 'assistant', '答案', '[{\"index\": 1, \"snippet\": \"English source excerpt\"}]', "
+                "'{\"outcome\": \"answered\", \"followups\": [\"舊追問\"]}')",
                 (convo_id, user["id"]),
             ).lastrowid
+
+        page = client.get(f"/notebooks/{notebook_id}?conversation_id={convo_id}")
+        assert "舊追問" not in page.text
+        assert "追問生成中" in page.text
 
         url = f"/notebooks/{notebook_id}/chat/{convo_id}/_followups?message_id={msg_id}"
         first = client.get(url)
         assert first.status_code == 200
         assert "追問一？" in first.text
+        assert "舊追問" not in first.text
         assert "data-fill-question" in first.text
         assert calls["n"] == 1
 
@@ -268,7 +438,7 @@ def test_notebook_can_disable_followups(monkeypatch, tmp_path):
     main, db = _fresh_app(monkeypatch, tmp_path)
     calls = {"n": 0}
 
-    async def fake_followups(question, answer, settings):
+    async def fake_followups(question, answer, settings, source_context=None):
         calls["n"] += 1
         return ["不應產生"]
 

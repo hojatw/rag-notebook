@@ -79,7 +79,7 @@
           {% elif message.metadata.outcome == "no_retrieval" %}
             <p class="muted small">已索引的來源中找不到候選段落。</p>
           {% elif message.metadata.outcome == "error" %}
-            <p class="muted small">處理過程發生錯誤：{{ message.metadata.error|default('未知') }}</p>
+            <p class="muted small">處理過程發生錯誤。技術細節已記錄在系統記錄中。</p>
           {% endif %}
           {% if message.citations and message.citations[0].score is defined %}
             <table class="debug-scores">
@@ -113,7 +113,7 @@
   {% if notebook.followups_enabled|default(1) and conversation and messages and llm_status and llm_status.ready %}
     {% set last = messages[-1] %}
     {% if last.role == "assistant" and last.metadata.outcome == "answered" %}
-      {% if last.metadata.followups %}
+      {% if last.metadata.followups and last.metadata.followups_version == followups_cache_version %}
         {% with questions=last.metadata.followups %}
           {% include "_followups.html" %}
         {% endwith %}
