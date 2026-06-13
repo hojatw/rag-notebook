@@ -19,7 +19,7 @@ document.addEventListener("alpine:init", () => {
       for (let i = 0; i < cap; i += 1) transfer.items.add(dropped[i]);
       input.files = transfer.files;
       if (max > 0 && dropped.length > max) {
-        window.alert(`Only the first ${max} files will be uploaded.`);
+        window.alert(`一次最多上傳 ${max} 個檔案，已保留前 ${max} 個。`);
       }
       input.dispatchEvent(new Event("change", { bubbles: true }));
     },
@@ -43,6 +43,7 @@ document.addEventListener("htmx:afterSwap", (event) => {
 
 function bindAll(root) {
   bindConfirms(root);
+  bindStreamingAskForms(root);
   bindLoadingForms(root);
   bindFileLabels(root);
   bindProviderNotes();
@@ -51,6 +52,148 @@ function bindAll(root) {
   bindAskFormThinkingBubble(root);
   bindChatInput(root);
   bindCopyButtons(root);
+}
+
+// ---- Streaming chat submit (U2) ------------------------------------------
+
+function bindStreamingAskForms(root) {
+  bindOnce(root, "form.ask-form[data-stream-url]", "stream", (form) => {
+    form.addEventListener("submit", async (event) => {
+      if (!window.fetch || !window.ReadableStream) return;
+      event.preventDefault();
+      const textarea = form.querySelector("textarea[name='question']");
+      const question = (textarea && textarea.value || "").trim();
+      if (!question) return;
+
+      const messages = document.getElementById("chat-messages");
+      if (!messages) return;
+      const stream = createStreamingMessage(messages, question);
+      const button = form.querySelector("button[type='submit']");
+      const resetForm = () => {
+        form.classList.remove("is-submitting");
+        if (button && button.dataset.originalText !== undefined) {
+          button.textContent = button.dataset.originalText;
+          button.classList.remove("icon-only-loading");
+          button.removeAttribute("aria-label");
+          button.disabled = false;
+          delete button.dataset.originalText;
+        }
+        if (textarea) {
+          textarea.value = "";
+          textarea.style.height = "auto";
+          textarea.focus();
+        }
+      };
+
+      try {
+        const response = await fetch(form.dataset.streamUrl, {
+          method: "POST",
+          body: new FormData(form),
+          headers: { "Accept": "text/event-stream" },
+        });
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+        await consumeEventStream(response.body, (eventName, data) => {
+          if (eventName === "init") {
+            const hidden = document.getElementById("conversation-id-field");
+            if (hidden && data.conversation_id) hidden.value = data.conversation_id;
+            if (data.url) window.history.pushState({}, "", data.url);
+          } else if (eventName === "status") {
+            stream.status.textContent = data.text || "處理中…";
+          } else if (eventName === "chunk") {
+            stream.status.textContent = "正在生成回答…";
+            stream.answer += data.text || "";
+            stream.body.textContent = stream.answer;
+            stream.body.scrollIntoView({ behavior: "smooth", block: "end" });
+          } else if (eventName === "error") {
+            stream.status.textContent = data.text || "回答生成失敗。";
+          } else if (eventName === "done") {
+            replaceMessagesHtml(data.html);
+            if (data.url) window.history.pushState({}, "", data.url);
+          }
+        });
+      } catch (error) {
+        console.error("[notebook] stream failed", error);
+        stream.status.textContent = "回答生成失敗，請稍後再試。";
+      } finally {
+        resetForm();
+      }
+    });
+  });
+}
+
+function createStreamingMessage(messages, question) {
+  const empty = messages.querySelector(".chat-empty");
+  if (empty) empty.remove();
+
+  const user = document.createElement("article");
+  user.className = "message user";
+  user.innerHTML = "<div class=\"message-head\"><div class=\"role\">你</div></div>";
+  const userBody = document.createElement("p");
+  userBody.className = "message-body";
+  userBody.textContent = question;
+  user.appendChild(userBody);
+
+  const assistant = document.createElement("article");
+  assistant.className = "message assistant streaming-message";
+  assistant.innerHTML =
+    "<div class=\"message-head\"><div class=\"role\">助理</div></div>" +
+    "<p class=\"stream-status muted small\">正在檢索來源…</p>";
+  const body = document.createElement("div");
+  body.className = "message-body markdown-body streaming-body";
+  assistant.appendChild(body);
+
+  messages.appendChild(user);
+  messages.appendChild(assistant);
+  assistant.scrollIntoView({ behavior: "smooth", block: "start" });
+  return {
+    body,
+    status: assistant.querySelector(".stream-status"),
+    answer: "",
+  };
+}
+
+async function consumeEventStream(body, onEvent) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+    events.forEach((raw) => dispatchSseEvent(raw, onEvent));
+  }
+  if (buffer.trim()) dispatchSseEvent(buffer, onEvent);
+}
+
+function dispatchSseEvent(raw, onEvent) {
+  let eventName = "message";
+  const dataLines = [];
+  raw.split(/\r?\n/).forEach((line) => {
+    if (line.startsWith("event:")) eventName = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  });
+  if (!dataLines.length) return;
+  try {
+    onEvent(eventName, JSON.parse(dataLines.join("\n")));
+  } catch (error) {
+    console.error("[notebook] bad stream event", error);
+  }
+}
+
+function replaceMessagesHtml(html) {
+  const current = document.getElementById("chat-messages");
+  if (!current) return;
+  const template = document.createElement("template");
+  template.innerHTML = html.trim();
+  const next = template.content.firstElementChild;
+  if (!next) return;
+  current.replaceWith(next);
+  if (window.htmx) window.htmx.process(next);
+  bindAll(next);
+  restoreSourceScopeState();
+  scrollToLatestMessage();
 }
 
 // ---- Copy assistant answer (U7) -------------------------------------------
@@ -138,6 +281,7 @@ function bindChatInput(root) {
 function bindAskFormThinkingBubble(root) {
   bindOnce(root, "form.ask-form", "askThinking", (form) => {
     form.addEventListener("submit", () => {
+      if (form.dataset.streamUrl) return;
       const messages = document.querySelector(".messages");
       const textarea = form.querySelector("textarea[name='question']");
       const question = (textarea && textarea.value || "").trim();
@@ -227,21 +371,53 @@ function bindLoadingForms(root) {
 function bindFileLabels(root) {
   bindOnce(root, "input[type='file'][data-file-label]", "file", (input) => {
     const label = document.querySelector(input.getAttribute("data-file-label"));
+    const summary = document.querySelector(input.getAttribute("data-file-summary"));
     const max = parseInt(input.getAttribute("data-max-files") || "0", 10);
     input.addEventListener("change", () => {
       if (max > 0 && input.files.length > max) {
-        window.alert(`Please select at most ${max} files.`);
+        window.alert(`一次最多上傳 ${max} 個檔案，已保留前 ${max} 個。`);
         const transfer = new DataTransfer();
         for (let i = 0; i < max; i += 1) transfer.items.add(input.files[i]);
         input.files = transfer.files;
       }
       if (!label) return;
       const count = input.files.length;
-      if (!count) label.textContent = "No file selected";
+      if (!count) label.textContent = `拖曳最多 ${max || 5} 個檔案到此，或點擊選擇`;
       else if (count === 1) label.textContent = input.files[0].name;
-      else label.textContent = `${count} files selected`;
+      else label.textContent = `已選擇 ${count} 個檔案`;
+      if (summary) renderFileSummary(summary, input.files, max);
     });
   });
+}
+
+function renderFileSummary(summary, files, max) {
+  if (!files.length) {
+    summary.innerHTML = "";
+    return;
+  }
+  const total = [...files].reduce((sum, file) => sum + file.size, 0);
+  const list = [...files].map((file) =>
+    `<li><span>${escapeHtml(file.name)}</span><span>${formatBytes(file.size)}</span></li>`
+  ).join("");
+  summary.innerHTML =
+    `<p>${files.length} / ${max || files.length} 個檔案 · ${formatBytes(total)} · 送出後會排入索引</p>` +
+    `<ul>${list}</ul>`;
+}
+
+function formatBytes(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function escapeHtml(text) {
+  return text.replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  }[ch]));
 }
 
 // ---- Source scope: checkbox-per-item in the left panel + localStorage ----

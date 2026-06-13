@@ -88,6 +88,40 @@ def test_generation_prompts_carry_strong_language_rule():
         assert "Traditional Chinese" in prompt
 
 
+def test_followup_prompt_uses_source_language_context(monkeypatch):
+    """Follow-up questions should follow source language, not just the user's question."""
+    captured = {}
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None):
+        captured["user_prompt"] = user_prompt
+        captured["system_prompt"] = system_prompt
+        return '["What evidence supports the conclusion?"]'
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    result = asyncio.run(
+        llm.suggest_followup_questions(
+            "請摘要這份文件",
+            "這份文件主要討論臨床研究。",
+            {"api_key": "sk-test", "chat_model": "chat"},
+            ["This clinical study report discusses safety and efficacy."],
+        )
+    )
+
+    assert result == ["What evidence supports the conclusion?"]
+    assert "Source excerpts" in captured["user_prompt"]
+    assert "TARGET LANGUAGE: English" in captured["user_prompt"]
+    assert "This clinical study report" in captured["user_prompt"]
+    assert "TARGET LANGUAGE overrides" in captured["system_prompt"]
+
+
+def test_followup_target_language_prefers_source_context():
+    assert llm.followup_target_language(
+        ["This clinical study report discusses safety and efficacy."],
+        "這份文件主要討論臨床研究。",
+        "請摘要這份文件",
+    ) == "English"
+
+
 def test_summarize_source_returns_empty_without_settings():
     """summarize_source must not call any API when LLM settings are missing."""
     chunks = [{"location": "page 1", "text": "Some text from a source document."}]
@@ -279,3 +313,41 @@ def test_post_json_does_not_retry_on_4xx_request_error(monkeypatch):
         asyncio.run(client.aclose())
         llm.set_http_client(None)
     assert calls["n"] == 1  # 400 is not retryable
+
+
+def test_chat_completion_stream_yields_delta_content():
+    settings = {
+        "provider": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "api_key": "secret",
+        "chat_model": "chat-model",
+    }
+
+    def handler(request):
+        assert request.url.path == "/v1/chat/completions"
+        body = request.read().decode()
+        assert '"stream":true' in body.replace(" ", "")
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"prompt_filter_results":[],"choices":[]}\n\n'
+                'data: {"choices":[{"delta":{"content":"你"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"好"}}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    llm.set_http_client(client)
+
+    async def collect():
+        chunks = []
+        async for chunk in llm.chat_completion_stream(settings, "Question", llm.SYSTEM_PROMPT):
+            chunks.append(chunk)
+        return chunks
+
+    try:
+        assert asyncio.run(collect()) == ["你", "好"]
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)

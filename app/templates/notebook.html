@@ -62,13 +62,15 @@
                required
                x-ref="input"
                data-file-label="#nb-selected-file"
-               data-max-files="5"
+               data-file-summary="#nb-file-summary"
+               data-max-files="{{ upload_batch_limit }}"
                {% if not llm_status.ready %}disabled{% endif %}>
       </label>
-      <span id="nb-selected-file" class="file-name">拖曳最多 5 個檔案到此，或點擊選擇</span>
+      <span id="nb-selected-file" class="file-name">拖曳最多 {{ upload_batch_limit }} 個檔案到此，或點擊選擇</span>
+      <div id="nb-file-summary" class="upload-file-summary" aria-live="polite"></div>
       <button type="submit" class="wide" data-loading-text="上傳中..."
               {% if not llm_status.ready %}disabled{% endif %}>上傳</button>
-      <p class="hint">PDF · TXT · Markdown · DOCX · HTML · 一次最多 5 個</p>
+      <p class="hint">PDF · TXT · Markdown · DOCX · HTML · 一次最多 {{ upload_batch_limit }} 個</p>
     </form>
 
     <ul class="source-list">
@@ -111,6 +113,16 @@
                 <button type="submit" class="ghost small wide" data-loading-text="建立中...">+ 新對話</button>
               </form>
               {% if conversation %}
+                <form action="/notebooks/{{ notebook.id }}/chat/{{ conversation.id }}/rename"
+                      method="post"
+                      class="convo-rename-form"
+                      data-loading-form>
+                  <label>
+                    <span>重新命名對話</span>
+                    <input name="title" value="{{ conversation.title }}" maxlength="80" required>
+                  </label>
+                  <button type="submit" class="wide small" data-loading-text="儲存中...">儲存名稱</button>
+                </form>
                 <a class="ghost small wide convo-export"
                    href="/notebooks/{{ notebook.id }}/chat/{{ conversation.id }}/export">⬇ 匯出此對話 (Markdown)</a>
               {% endif %}
@@ -121,7 +133,8 @@
                     <li class="convo-row">
                       <a class="{% if conversation and item.id == conversation.id %}active{% endif %}"
                          href="/notebooks/{{ notebook.id }}?conversation_id={{ item.id }}">
-                        {{ item.title }}
+                        <span class="convo-row-title">{{ item.title }}</span>
+                        <span class="convo-row-meta">{{ item.message_count }} 則訊息 · {{ item.relative_updated_at }}</span>
                       </a>
                       <form action="/notebooks/{{ notebook.id }}/chat/{{ item.id }}/delete" method="post"
                             data-confirm="刪除這個對話與其中所有訊息？"
@@ -182,9 +195,7 @@
        always rendered (empty for a new conversation) so the ask() partial can
        OOB-update it once the conversation exists. #}
     <form action="/notebooks/{{ notebook.id }}/chat/ask" method="post" class="ask-form" data-loading-form
-          hx-post="/notebooks/{{ notebook.id }}/chat/ask"
-          hx-target="#chat-messages"
-          hx-swap="outerHTML">
+          data-stream-url="/notebooks/{{ notebook.id }}/chat/ask-stream">
       <input type="hidden" id="conversation-id-field" name="conversation_id"
              value="{{ conversation.id if conversation else '' }}">
 

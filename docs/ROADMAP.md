@@ -16,8 +16,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Issue:** Ask was `POST → 303 → full page re-render`: screen flash, scroll reset, three panes re-rendered per question.
 - **Fix:** **Done.** The ask form now `hx-post`s and swaps only the messages pane (`_messages.html`); the URL updates via `HX-Push-Url`; non-JS fallback keeps the redirect. Prerequisite for U2 (streaming).
 
-#### [ ] U2 · Streaming responses (SSE)
-- **Same item as [`PERFORMANCE.md` P3-1](PERFORMANCE.md)** — full description lives there; tick both together. Build on U1; pair with P3-2 (optional rerank/rewrite) to shorten time-to-first-token.
+#### [x] U2 · Streaming responses (SSE)
+- **Fix:** **Done.** Asking now posts to a streaming endpoint from the enhanced UI: the user sees retrieval/generation status, answer chunks stream into the chat pane, and the final saved message swaps back into the normal Markdown/citation/follow-up rendering path. Same item as [`PERFORMANCE.md` P3-1](PERFORMANCE.md).
 
 #### [ ] U3 · Citation → source highlight
 - Clicking `[2]` should open the source preview at that chunk and highlight it (today: collapsible snippet only). The trust-building feature of NotebookLM.
@@ -26,13 +26,13 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Issue:** UI strings were English while the user base and content are Chinese.
 - **Fix:** **Done.** Templates, JS strings (thinking bubble, confirms, loading texts), and user-facing server messages are now Traditional Chinese (POC: hardcoded zh-TW, no i18n framework).
 
-#### [ ] U5 · Conversation management
-- Rename conversations (auto-title from first question is sticky), relative timestamps, message counts, clearer active state.
+#### [x] U5 · Conversation management
+- **Fix:** **Done.** Conversation menu supports renaming the active conversation, shows message counts and relative update times, and keeps the active row visually distinct.
 
 ### Medium priority
 
-#### [ ] U6 · Upload feedback & batch size
-- Show selected files + sizes before submit, per-file progress, clearer >5-file error (limit itself is configurable via `[runtime] upload_batch_limit`).
+#### [x] U6 · Upload feedback & batch size
+- **Fix:** **Done.** The compact upload card shows selected files, file sizes, total size, configured batch limit, and a clearer over-limit message before upload.
 
 #### [x] U7 · Answer action row — copy
 - **Fix:** **Done.** Copy button on every assistant message (copies the raw Markdown; transient ✓ feedback). Regenerate / expand-all-citations remain todo.
@@ -40,8 +40,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [ ] U8 · Editable notes
 - Notes are add/pin/delete only; pinned answers usually need trimming. Add inline edit.
 
-#### [ ] U9 · Global search
-- Search across notebooks (sources, notes, conversation titles). Cheap version: SQLite LIKE over notes + filenames.
+#### [x] U9 · Global search
+- **Fix:** **Done.** `/search` searches the signed-in user's notebooks, source filenames/summaries, conversation titles, and notes using scoped SQLite `LIKE` queries.
 
 #### [ ] U10 · Mobile / responsive pass
 - The three-pane workspace is desktop-first. Decide: support tablets/phones properly, or state desktop-only.
@@ -49,9 +49,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 ### Polish
 
 #### [ ] U11 · Dark mode (CSS variables are ready)
-#### [ ] U12 · Onboarding empty state (3-step "upload → wait → ask" guide)
+#### [x] U12 · Onboarding empty state (3-step "upload → wait → ask" guide)
+- **Fix:** **Done.** Empty chat state now shows a compact three-step upload → index → ask guide.
 #### [ ] U13 · Accessibility pass (focus rings, aria labels, Esc to close modals)
-#### [ ] U14 · Friendlier error messages (no raw exception strings in chat)
+#### [x] U14 · Friendlier error messages (no raw exception strings in chat)
+- **Fix:** **Done.** Chat and Studio generation errors now show user-facing messages while raw provider/exception details stay in logs and metadata.
 #### [ ] U15 · Proper i18n layer (low priority, but eventually required)
 - U4 hardcoded zh-TW strings directly in templates / `app.js` / server messages — fine for the current single-language deployment, but adding any second language means re-touching every string. When needed: extract to a message catalog (Jinja i18n extension or a simple `messages.py` dict + a JS strings object), keyed lookups, language picked per deployment (config) or per user. Prerequisite for an English/zh-TW toggle; also centralizes the exported-Markdown headings (引用來源/筆記) that currently live in `main.py`.
 

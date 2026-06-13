@@ -4,15 +4,15 @@ import re
 import shutil
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 import time
 import uuid
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -23,7 +23,7 @@ from .jobs import enqueue_source
 from .worker import run_worker_loop
 import httpx
 
-from .llm import close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_briefing, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions
+from .llm import FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_briefing, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions
 from .security import get_app_secret, hash_password, sign_user_id, unsign_user_id, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
@@ -178,9 +178,56 @@ def render(request: Request, name: str, context: dict, status_code: int = 200) -
     return templates.TemplateResponse(
         request,
         name,
-        {"request": request, **context},
+        {"request": request, "followups_cache_version": FOLLOWUPS_CACHE_VERSION, **context},
         status_code=status_code,
     )
+
+
+def friendly_error_message(exc: Exception | str, action: str = "處理") -> str:
+    """Return a user-facing error without leaking provider/raw exception text."""
+    text = str(exc)
+    if isinstance(exc, httpx.TimeoutException) or "timeout" in text.lower():
+        return f"{action}逾時，請稍後再試。"
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status == 401:
+            return "模型服務驗證失敗，請檢查系統設定中的 API key。"
+        if status == 429:
+            return f"{action}暫時被模型服務限流，請稍後再試。"
+        if status >= 500:
+            return f"模型服務暫時無法回應，請稍後再試。"
+        return f"{action}失敗，請檢查系統設定後再試。"
+    if isinstance(exc, RuntimeError) and "settings" in text.lower():
+        return "尚未完成 LLM 設定，請先到系統設定填入模型連線資訊。"
+    return f"{action}失敗，請稍後再試；如果持續發生，請查看系統記錄。"
+
+
+def relative_time(value: str | None) -> str:
+    """Small zh-TW relative timestamp for compact conversation lists."""
+    if not value:
+        return ""
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value[:10]
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - dt
+    seconds = max(0, int(delta.total_seconds()))
+    if seconds < 60:
+        return "剛剛"
+    if seconds < 3600:
+        return f"{seconds // 60} 分鐘前"
+    if seconds < 86400:
+        return f"{seconds // 3600} 小時前"
+    if seconds < 604800:
+        return f"{seconds // 86400} 天前"
+    return value[:10]
+
+
+def sql_like_escape(value: str) -> str:
+    """Escape user text for a LIKE query using backslash as ESCAPE."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 @app.exception_handler(HTTPException)
@@ -205,6 +252,96 @@ def home(request: Request):
 def legacy_redirect():
     """Redirect legacy bookmarks to the notebook home."""
     return RedirectResponse("/notebooks", status_code=303)
+
+
+@app.get("/search", response_class=HTMLResponse)
+def global_search(
+    request: Request,
+    user: Annotated[dict, Depends(require_login)],
+    q: str = "",
+):
+    """Search the current user's notebooks, sources, notes, and conversation titles."""
+    query = " ".join((q or "").split())[:120]
+    results: list[dict[str, str]] = []
+    if query:
+        like = f"%{sql_like_escape(query)}%"
+        with connect() as conn:
+            for row in conn.execute(
+                """
+                SELECT id, title, description, emoji, updated_at
+                FROM notebooks
+                WHERE user_id = ? AND (title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
+                ORDER BY updated_at DESC
+                LIMIT 12
+                """,
+                (user["id"], like, like),
+            ).fetchall():
+                results.append({
+                    "type": "筆記本",
+                    "title": f"{row['emoji'] or '📓'} {row['title']}",
+                    "snippet": row["description"] or "開啟筆記本",
+                    "url": f"/notebooks/{row['id']}",
+                    "time": relative_time(row["updated_at"]),
+                })
+            for row in conn.execute(
+                """
+                SELECT s.id, s.notebook_id, s.filename, s.summary, s.updated_at, n.title AS notebook_title
+                FROM sources s JOIN notebooks n ON n.id = s.notebook_id
+                WHERE s.user_id = ? AND s.notebook_id IS NOT NULL
+                  AND (s.filename LIKE ? ESCAPE '\\' OR s.summary LIKE ? ESCAPE '\\')
+                ORDER BY s.updated_at DESC
+                LIMIT 12
+                """,
+                (user["id"], like, like),
+            ).fetchall():
+                results.append({
+                    "type": "來源",
+                    "title": row["filename"],
+                    "snippet": row["summary"] or f"位於「{row['notebook_title']}」",
+                    "url": f"/notebooks/{row['notebook_id']}",
+                    "time": relative_time(row["updated_at"]),
+                })
+            for row in conn.execute(
+                """
+                SELECT c.id, c.notebook_id, c.title, c.updated_at, n.title AS notebook_title,
+                    (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id AND user_id = c.user_id) AS message_count
+                FROM conversations c JOIN notebooks n ON n.id = c.notebook_id
+                WHERE c.user_id = ? AND c.title LIKE ? ESCAPE '\\'
+                ORDER BY c.updated_at DESC
+                LIMIT 12
+                """,
+                (user["id"], like),
+            ).fetchall():
+                results.append({
+                    "type": "對話",
+                    "title": row["title"],
+                    "snippet": f"位於「{row['notebook_title']}」 · {row['message_count']} 則訊息",
+                    "url": f"/notebooks/{row['notebook_id']}?conversation_id={row['id']}",
+                    "time": relative_time(row["updated_at"]),
+                })
+            for row in conn.execute(
+                """
+                SELECT notes.id, notes.notebook_id, notes.title, notes.content, notes.updated_at, notebooks.title AS notebook_title
+                FROM notes JOIN notebooks ON notebooks.id = notes.notebook_id
+                WHERE notes.user_id = ? AND (notes.title LIKE ? ESCAPE '\\' OR notes.content LIKE ? ESCAPE '\\')
+                ORDER BY notes.updated_at DESC
+                LIMIT 12
+                """,
+                (user["id"], like, like),
+            ).fetchall():
+                content = " ".join((row["content"] or "").split())
+                results.append({
+                    "type": "筆記",
+                    "title": row["title"] or content[:40] or "未命名筆記",
+                    "snippet": content[:140] or f"位於「{row['notebook_title']}」",
+                    "url": f"/notebooks/{row['notebook_id']}",
+                    "time": relative_time(row["updated_at"]),
+                })
+    return render(
+        request,
+        "search.html",
+        {"user": user, "query": query, "results": results},
+    )
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -456,9 +593,17 @@ def notebook_view(
         )
         conversations, conversations_truncated = fetch_capped(
             conn,
-            "SELECT * FROM conversations WHERE notebook_id = ? AND user_id = ? ORDER BY updated_at DESC, id DESC",
+            """
+            SELECT c.*,
+                (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id AND user_id = c.user_id) AS message_count
+            FROM conversations c
+            WHERE c.notebook_id = ? AND c.user_id = ?
+            ORDER BY c.updated_at DESC, c.id DESC
+            """,
             (notebook_id, user["id"]), CONVERSATIONS_LIMIT,
         )
+        for item in conversations:
+            item["relative_updated_at"] = relative_time(item.get("updated_at"))
         if conversation_id is None and conversations:
             conversation_id = conversations[0]["id"]
         conversation = None
@@ -507,6 +652,7 @@ def notebook_view(
             "notes_truncated": notes_truncated,
             "cached_suggestions": cached_suggestions,
             "cached_briefing": cached_briefing,
+            "upload_batch_limit": UPLOAD_BATCH_LIMIT,
             "error": "",
             "wide": True,
             "breadcrumb": notebook["title"],
@@ -824,7 +970,7 @@ async def notebook_suggestions(
                 error = "模型未回傳建議問題，請再試一次。"
         except Exception as exc:
             logger.exception("suggestions_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
-            error = f"建議問題生成失敗：{exc}"
+            error = friendly_error_message(exc, "建議問題生成")
 
     if questions:
         with connect() as conn:
@@ -983,7 +1129,7 @@ async def notebook_briefing(
                     error = "模型未回傳簡報內容，請再試一次。"
             except Exception as exc:
                 logger.exception("briefing_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
-                error = f"簡報生成失敗：{exc}"
+                error = friendly_error_message(exc, "簡報生成")
 
         if briefing:
             with connect() as conn:
@@ -1090,7 +1236,7 @@ async def notebook_compare(
             error = "模型回傳的比較結果為空，請再試一次。"
     except Exception as exc:
         logger.exception("compare_failed user_id=%s notebook_id=%s sources=%s", user["id"], notebook_id, len(summaries))
-        error = f"來源比較失敗：{exc}"
+        error = friendly_error_message(exc, "來源比較")
 
     logger.info(
         "compare_completed user_id=%s notebook_id=%s sources=%s focus_chars=%s chars=%s",
@@ -1242,6 +1388,32 @@ def delete_conversation(
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
 
+@app.post("/notebooks/{notebook_id}/chat/{conversation_id}/rename")
+def rename_conversation(
+    notebook_id: int,
+    conversation_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    title: str = Form(...),
+):
+    """Rename one conversation within a notebook."""
+    clean_title = " ".join(title.split())[:80] or "新對話"
+    with connect() as conn:
+        get_notebook(conn, notebook_id, user["id"])
+        result = conn.execute(
+            """
+            UPDATE conversations
+            SET title = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND notebook_id = ? AND user_id = ?
+            """,
+            (clean_title, conversation_id, notebook_id, user["id"]),
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="找不到對話")
+        touch_notebook(conn, notebook_id)
+    logger.info("conversation_renamed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
+    return RedirectResponse(f"/notebooks/{notebook_id}?conversation_id={conversation_id}", status_code=303)
+
+
 @app.post("/notebooks/{notebook_id}/chat/new")
 def new_conversation(notebook_id: int, user: Annotated[dict, Depends(require_login)]):
     """Create an empty conversation scoped to a notebook."""
@@ -1257,31 +1429,23 @@ def new_conversation(notebook_id: int, user: Annotated[dict, Depends(require_log
     return RedirectResponse(f"/notebooks/{notebook_id}?conversation_id={conversation_id}", status_code=303)
 
 
-@app.post("/notebooks/{notebook_id}/chat/ask")
-async def ask(
-    request: Request,
+def _normalize_conversation_id(value: str | int | None) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return int(text) if text else None
+
+
+def _prepare_question(
     notebook_id: int,
-    user: Annotated[dict, Depends(require_login)],
-    question: str = Form(...),
-    conversation_id: str | None = Form(None),
-    source_ids: list[int] = Form(default=[]),
-):
-    """Persist a user question within a notebook, run retrieval, and save the assistant answer.
-
-    Responds two ways (U1): HTMX requests get just the messages partial (no
-    full page reload, URL updated via HX-Push-Url); plain form posts keep the
-    original 303 redirect as the no-JS fallback.
-    """
-    question = question.strip()
-    # The hidden field is always rendered ("" for a new conversation), so the
-    # value arrives as a string; normalise to int | None ourselves.
-    conversation_id = int(conversation_id) if conversation_id and str(conversation_id).strip() else None
-    if not question:
-        return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
-
+    user: dict,
+    question: str,
+    conversation_id: int | None,
+    source_ids: list[int],
+) -> tuple[int, list[dict[str, str]], dict[str, Any]]:
+    """Persist the user question and return context needed to answer it."""
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
-        # Restrict source_ids to those owned by this notebook to prevent cross-notebook leakage.
         if source_ids:
             placeholders = ",".join("?" for _ in source_ids)
             allowed = {
@@ -1291,7 +1455,7 @@ async def ask(
                     (notebook_id, user["id"], *source_ids),
                 ).fetchall()
             }
-            source_ids = [sid for sid in source_ids if sid in allowed]
+            source_ids[:] = [sid for sid in source_ids if sid in allowed]
 
         logger.info(
             "chat_question_received user_id=%s notebook_id=%s conversation_id=%s selected_sources=%s question_chars=%s",
@@ -1332,56 +1496,66 @@ async def ask(
         ]
         history.reverse()
         settings = load_llm_settings(conn)
+    return conversation_id, history, settings or {}
 
-    metadata: dict = {}
-    try:
-        retrieve_started = time.perf_counter()
-        retrieved = await retrieve(question, None, settings or {}, history, user["id"], source_ids)
-        metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
-        metadata["retrieved_chunks"] = len(retrieved)
-        top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
-        if retrieved:
-            metadata["top_score"] = round(top_score, 3)
 
-        if not retrieved or top_score < LOW_CONFIDENCE_THRESHOLD:
-            answer = "依據所選的來源，我無法判斷這個問題的答案。"
-            citations = []
-            metadata["outcome"] = "low_confidence" if retrieved else "no_retrieval"
-            metadata["threshold"] = LOW_CONFIDENCE_THRESHOLD
-            logger.info(
-                "chat_no_retrieval_results user_id=%s notebook_id=%s conversation_id=%s top_score=%.3f threshold=%.2f",
-                user["id"], notebook_id, conversation_id, top_score, LOW_CONFIDENCE_THRESHOLD,
-            )
-        else:
-            generate_started = time.perf_counter()
-            answer = await generate_answer(question, retrieved, settings or {})
-            metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
-            metadata["answer_chars"] = len(answer)
-            all_citations = citation_payload(retrieved)
-            # Only keep citations the model actually referenced as [N] in the
-            # answer. Listing every retrieved chunk would mislead about what
-            # was actually used. Match NotebookLM behaviour.
-            referenced = {int(m.group(1)) for m in re.finditer(r"\[(\d+)\]", answer)}
-            citations = [c for c in all_citations if c["index"] in referenced] if referenced else all_citations
-            metadata["outcome"] = "answered"
-            logger.info(
-                "chat_answer_generated user_id=%s notebook_id=%s conversation_id=%s retrieved_chunks=%s shown_citations=%s of %s answer_chars=%s",
-                user["id"], notebook_id, conversation_id, len(retrieved), len(citations), len(all_citations), len(answer),
-            )
-    except Exception as exc:
-        answer = f"處理時發生錯誤：{exc}"
-        citations = []
-        metadata["outcome"] = "error"
-        metadata["error"] = str(exc)[:200]
-        logger.exception("chat_failed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
+async def _answer_question(
+    question: str,
+    settings: dict[str, Any],
+    history: list[dict[str, str]],
+    user_id: int,
+    source_ids: list[int],
+) -> tuple[str, list[dict], dict[str, Any]]:
+    """Run retrieval and non-streaming answer generation."""
+    metadata: dict[str, Any] = {}
+    retrieve_started = time.perf_counter()
+    retrieved = await retrieve(question, None, settings, history, user_id, source_ids)
+    metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
+    metadata["retrieved_chunks"] = len(retrieved)
+    top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
+    if retrieved:
+        metadata["top_score"] = round(top_score, 3)
 
+    if not retrieved or top_score < LOW_CONFIDENCE_THRESHOLD:
+        metadata["outcome"] = "low_confidence" if retrieved else "no_retrieval"
+        metadata["threshold"] = LOW_CONFIDENCE_THRESHOLD
+        logger.info(
+            "chat_no_retrieval_results user_id=%s top_score=%.3f threshold=%.2f",
+            user_id, top_score, LOW_CONFIDENCE_THRESHOLD,
+        )
+        return "依據所選的來源，我無法判斷這個問題的答案。", [], metadata
+
+    generate_started = time.perf_counter()
+    answer = await generate_answer(question, retrieved, settings)
+    metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
+    metadata["answer_chars"] = len(answer)
+    citations = _referenced_citations(answer, retrieved)
+    metadata["outcome"] = "answered"
+    return answer, citations, metadata
+
+
+def _referenced_citations(answer: str, retrieved: list[dict]) -> list[dict]:
+    all_citations = citation_payload(retrieved)
+    referenced = {int(m.group(1)) for m in re.finditer(r"\[(\d+)\]", answer)}
+    return [c for c in all_citations if c["index"] in referenced] if referenced else all_citations
+
+
+def _save_assistant_message(
+    notebook_id: int,
+    user_id: int,
+    conversation_id: int,
+    question: str,
+    answer: str,
+    citations: list[dict],
+    metadata: dict[str, Any],
+) -> None:
     with connect() as conn:
         conn.execute(
             """
             INSERT INTO messages (conversation_id, user_id, role, content, citations_json, metadata_json)
             VALUES (?, ?, 'assistant', ?, ?, ?)
             """,
-            (conversation_id, user["id"], answer, dumps(citations), dumps(metadata)),
+            (conversation_id, user_id, answer, dumps(citations), dumps(metadata)),
         )
         conn.execute(
             """
@@ -1390,48 +1564,168 @@ async def ask(
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND user_id = ?
             """,
-            (question[:80], conversation_id, user["id"]),
+            (question[:80], conversation_id, user_id),
         )
         touch_notebook(conn, notebook_id)
 
-    if request.headers.get("HX-Request") == "true":
-        # U1: swap only the messages pane. oob=True also updates the hidden
-        # conversation field so the next ask reuses this conversation.
-        with connect() as conn:
-            notebook = get_notebook(conn, notebook_id, user["id"])
-            llm_status = llm_settings_status(conn)
-            convo_row = conn.execute(
-                "SELECT * FROM conversations WHERE id = ? AND user_id = ?",
-                (conversation_id, user["id"]),
-            ).fetchone()
-            rows = conn.execute(
-                "SELECT * FROM messages WHERE conversation_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC LIMIT 201",
-                (conversation_id, user["id"]),
+
+def _messages_context(notebook_id: int, user_id: int, conversation_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user_id)
+        llm_status = llm_settings_status(conn)
+        convo_row = conn.execute(
+            "SELECT * FROM conversations WHERE id = ? AND user_id = ?",
+            (conversation_id, user_id),
+        ).fetchone()
+        rows = conn.execute(
+            "SELECT * FROM messages WHERE conversation_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC LIMIT 201",
+            (conversation_id, user_id),
+        ).fetchall()
+        pinned_message_ids = {
+            r["source_message_id"]
+            for r in conn.execute(
+                "SELECT source_message_id FROM notes WHERE notebook_id = ? AND user_id = ? AND source_message_id IS NOT NULL",
+                (notebook_id, user_id),
             ).fetchall()
-            pinned_message_ids = {
-                r["source_message_id"]
-                for r in conn.execute(
-                    "SELECT source_message_id FROM notes WHERE notebook_id = ? AND user_id = ? AND source_message_id IS NOT NULL",
-                    (notebook_id, user["id"]),
-                ).fetchall()
-            }
-        recent = [dict(r) for r in rows]
-        response = render(
-            request,
-            "_messages.html",
-            {
-                "notebook": notebook,
-                "conversation": dict(convo_row) if convo_row else None,
-                "messages": [message_with_citations(row) for row in reversed(recent[:200])],
-                "messages_truncated": len(recent) > 200,
-                "pinned_message_ids": pinned_message_ids,
-                "llm_status": llm_status,
-                "oob": True,
-            },
-        )
+        }
+    recent = [dict(r) for r in rows]
+    return {
+        "notebook": notebook,
+        "conversation": dict(convo_row) if convo_row else None,
+        "messages": [message_with_citations(row) for row in reversed(recent[:200])],
+        "messages_truncated": len(recent) > 200,
+        "pinned_message_ids": pinned_message_ids,
+        "llm_status": llm_status,
+    }
+
+
+def _render_messages_partial(request: Request, notebook_id: int, user_id: int, conversation_id: int, *, oob: bool) -> HTMLResponse:
+    return render(request, "_messages.html", {**_messages_context(notebook_id, user_id, conversation_id), "oob": oob})
+
+
+def sse_event(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {dumps(data)}\n\n"
+
+
+@app.post("/notebooks/{notebook_id}/chat/ask")
+async def ask(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    question: str = Form(...),
+    conversation_id: str | None = Form(None),
+    source_ids: list[int] = Form(default=[]),
+):
+    """Persist a user question within a notebook, run retrieval, and save the assistant answer.
+
+    Responds two ways (U1): HTMX requests get just the messages partial (no
+    full page reload, URL updated via HX-Push-Url); plain form posts keep the
+    original 303 redirect as the no-JS fallback.
+    """
+    question = question.strip()
+    conversation_id = _normalize_conversation_id(conversation_id)
+    if not question:
+        return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
+
+    metadata: dict[str, Any] = {}
+    try:
+        conversation_id, history, settings = _prepare_question(notebook_id, user, question, conversation_id, source_ids)
+        answer, citations, metadata = await _answer_question(question, settings, history, user["id"], source_ids)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if conversation_id is None:
+            conversation_id, _history, _settings = _prepare_question(notebook_id, user, question, None, source_ids)
+        answer = friendly_error_message(exc, "回答生成")
+        citations = []
+        metadata["outcome"] = "error"
+        metadata["error"] = str(exc)[:200]
+        logger.exception("chat_failed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
+
+    _save_assistant_message(notebook_id, user["id"], conversation_id, question, answer, citations, metadata)
+
+    if request.headers.get("HX-Request") == "true":
+        response = _render_messages_partial(request, notebook_id, user["id"], conversation_id, oob=True)
         response.headers["HX-Push-Url"] = f"/notebooks/{notebook_id}?conversation_id={conversation_id}"
         return response
     return RedirectResponse(f"/notebooks/{notebook_id}?conversation_id={conversation_id}", status_code=303)
+
+
+@app.post("/notebooks/{notebook_id}/chat/ask-stream")
+async def ask_stream(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    question: str = Form(...),
+    conversation_id: str | None = Form(None),
+    source_ids: list[int] = Form(default=[]),
+):
+    """Stream a chat answer while preserving the saved message/citation flow."""
+    question = question.strip()
+    normalized_conversation_id = _normalize_conversation_id(conversation_id)
+    if not question:
+        raise HTTPException(status_code=400, detail="請先輸入問題。")
+
+    async def events():
+        conversation = normalized_conversation_id
+        metadata: dict[str, Any] = {}
+        citations: list[dict] = []
+        answer = ""
+        try:
+            conversation, history, settings = _prepare_question(notebook_id, user, question, conversation, source_ids)
+            yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
+            yield sse_event("status", {"text": "正在檢索來源…"})
+
+            retrieve_started = time.perf_counter()
+            retrieved = await retrieve(question, None, settings, history, user["id"], source_ids)
+            metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
+            metadata["retrieved_chunks"] = len(retrieved)
+            top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
+            if retrieved:
+                metadata["top_score"] = round(top_score, 3)
+
+            if not retrieved or top_score < LOW_CONFIDENCE_THRESHOLD:
+                answer = "依據所選的來源，我無法判斷這個問題的答案。"
+                metadata["outcome"] = "low_confidence" if retrieved else "no_retrieval"
+                metadata["threshold"] = LOW_CONFIDENCE_THRESHOLD
+                yield sse_event("chunk", {"text": answer})
+            else:
+                yield sse_event("status", {"text": "正在生成回答…"})
+                generate_started = time.perf_counter()
+                async for piece in generate_answer_stream(question, retrieved, settings):
+                    answer += piece
+                    yield sse_event("chunk", {"text": piece})
+                metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
+                metadata["answer_chars"] = len(answer)
+                citations = _referenced_citations(answer, retrieved)
+                metadata["outcome"] = "answered"
+
+            _save_assistant_message(notebook_id, user["id"], conversation, question, answer, citations, metadata)
+        except Exception as exc:
+            logger.exception("chat_stream_failed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation)
+            if conversation is None:
+                # The initial _prepare_question failed, so there's no row to
+                # attach the error to — try once more.
+                try:
+                    conversation, _history, _settings = _prepare_question(notebook_id, user, question, None, source_ids)
+                    yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
+                except Exception:
+                    # Still can't establish a conversation. Report the error and
+                    # end the stream cleanly rather than aborting the generator
+                    # (which would leave the client with no error/done event).
+                    yield sse_event("error", {"text": friendly_error_message(exc, "回答生成")})
+                    return
+            answer = friendly_error_message(exc, "回答生成")
+            # Update (not replace) so retrieval metrics gathered before the
+            # failure survive into the saved metadata.
+            metadata.update({"outcome": "error", "error": str(exc)[:200]})
+            _save_assistant_message(notebook_id, user["id"], conversation, question, answer, [], metadata)
+            yield sse_event("error", {"text": answer})
+
+        final = _render_messages_partial(request, notebook_id, user["id"], conversation, oob=False)
+        yield sse_event("done", {"html": final.body.decode("utf-8"), "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @app.get("/notebooks/{notebook_id}/chat/{conversation_id}/_followups", response_class=HTMLResponse)
@@ -1461,9 +1755,11 @@ async def followups_partial(
         ).fetchone() if convo else None
         if message is None:
             return HTMLResponse("")
-        metadata = message_with_citations(message)["metadata"]
-        if metadata.get("followups"):
+        message_data = message_with_citations(message)
+        metadata = message_data["metadata"]
+        if metadata.get("followups") and metadata.get("followups_version") == FOLLOWUPS_CACHE_VERSION:
             return render(request, "_followups.html", {"questions": metadata["followups"]})
+        source_context = [c.get("snippet", "") for c in message_data.get("citations", [])]
         prior_question = conn.execute(
             "SELECT content FROM messages WHERE conversation_id = ? AND user_id = ? AND role = 'user' AND id < ? ORDER BY id DESC LIMIT 1",
             (conversation_id, user["id"], message_id),
@@ -1471,15 +1767,15 @@ async def followups_partial(
         settings = load_llm_settings(conn)
     if prior_question is None:
         return HTMLResponse("")
-    questions = await suggest_followup_questions(prior_question["content"], message["content"], settings or {})
+    questions = await suggest_followup_questions(prior_question["content"], message["content"], settings or {}, source_context)
     if questions:
         # json_set patches only the followups key inside SQLite, so a slow LLM
         # call here can't clobber metadata written concurrently elsewhere.
         with connect() as conn:
             conn.execute(
-                "UPDATE messages SET metadata_json = json_set(metadata_json, '$.followups', json(?)) "
+                "UPDATE messages SET metadata_json = json_set(metadata_json, '$.followups', json(?), '$.followups_version', ?) "
                 "WHERE id = ? AND user_id = ?",
-                (dumps(questions), message_id, user["id"]),
+                (dumps(questions), FOLLOWUPS_CACHE_VERSION, message_id, user["id"]),
             )
     return render(request, "_followups.html", {"questions": questions})
 

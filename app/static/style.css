@@ -1800,6 +1800,47 @@ legend {
   color: var(--muted);
 }
 
+.upload-file-summary {
+  display: none;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.upload-file-summary:not(:empty) {
+  display: grid;
+  gap: 6px;
+}
+
+.upload-file-summary p {
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 12px;
+}
+
+.upload-file-summary ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.upload-file-summary li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.upload-file-summary li span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .source-list {
   list-style: none;
   margin: 0;
@@ -2009,6 +2050,11 @@ legend {
   white-space: nowrap;
 }
 
+.convo-rename-form {
+  display: grid;
+  gap: 8px;
+}
+
 .caret {
   color: var(--muted);
   font-size: 11px;
@@ -2066,7 +2112,8 @@ legend {
 }
 
 .convo-menu li a {
-  display: block;
+  display: grid;
+  gap: 2px;
   padding: 8px 10px;
   border-radius: var(--r-md);
   color: var(--muted-strong);
@@ -2074,10 +2121,20 @@ legend {
   font-size: 13px;
   font-weight: 500;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   flex: 1;
   min-width: 0;
+}
+
+.convo-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.convo-row-meta {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .convo-del { margin: 0; flex: none; }
@@ -2270,9 +2327,113 @@ legend {
   margin-bottom: 6px;
 }
 
+.onboarding-steps {
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  margin: var(--sp-4) auto 0;
+  padding: 0;
+  max-width: 520px;
+  text-align: left;
+}
+
+.onboarding-steps li {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.onboarding-steps strong {
+  color: var(--accent-deep);
+  font-size: 13px;
+}
+
+.onboarding-steps span {
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+
 .messages {
   flex: 1;
   min-height: 0;
+}
+
+.streaming-message {
+  border-color: var(--line-accent);
+}
+
+.stream-status {
+  margin: 0 0 8px;
+}
+
+.streaming-body:empty::after {
+  content: "正在等待模型回覆…";
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------- global search */
+
+.search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  align-items: end;
+  margin-bottom: var(--sp-5);
+}
+
+.search-results {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.section-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.result-item a {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  color: inherit;
+  text-decoration: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.result-item a:hover {
+  border-color: var(--line-accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.result-type {
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 /* ---------------------------------------------------------------- studio pane */
