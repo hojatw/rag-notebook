@@ -29,6 +29,29 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [x] U5 · Conversation management
 - **Fix:** **Done.** Conversation menu supports renaming the active conversation, shows message counts and relative update times, and keeps the active row visually distinct.
 
+#### [ ] U16 · Studio information-architecture restructure (tools launcher + outputs shelf)
+- **Issue:** The Studio (right pane) stacks one always-on card per generator (Suggested questions, Briefing, Compare, Meeting minutes). It mixes two different kinds of thing — **generators (actions)** and **outputs (artifacts)** — in one vertical list, so every new AI feature (A4 study guide/FAQ/timeline, A5 translate, …) adds another card and the column grows endlessly cluttered.
+- **Target model:** separate **tools** from **outputs**, so adding a feature = +1 tile, not +1 always-on card.
+  - Briefing → a slim one-line expandable strip (it's ambient context, not an action).
+  - **Tools** → a compact tile grid; each generator is a tile that opens its config in the existing `preview-modal` drawer (`open-preview`/`close-preview`), runs, and writes its result to the outputs shelf.
+  - **Outputs / Notes** → one unified artifact shelf: every generated result (compare, minutes, study guide, …) + pinned answers, each with a type badge, collapsible, editable (U8), exportable.
+  - Relocate **Suggested questions** out of Studio into the chat area (empty state / follow-up chips) — it's a chat-entry aid, not a Studio artifact.
+- **Reuses existing infra:** `compare`/`minutes` already save to Notes + fire `notes-changed` (→ `_notes` refresh); the `preview-modal` Alpine pattern already exists. Mostly a template/CSS reshuffle, not new routes. No build step.
+- **Phased (tick as done):**
+  - [ ] Phase 1 — collapse the four generators into a single **Tools** tile grid (tiles open the existing modal); Briefing → slim strip; move Suggested questions to the chat area. *(Do this before A4 so A4 lands as tiles, not new cards.)*
+  - [ ] Phase 2 — unify Notes into an **outputs shelf** (type badges; all generators save here; inline edit = U8).
+  - [ ] Phase 3 *(optional)* — tabbed or fully-collapsible Studio if the tile grid itself grows large.
+- **Note for new AI features:** A4/A5 and later generators should be implemented as **tools (tiles) writing to the outputs shelf**, not as new stacked cards.
+
+> **Design exploration — alternative Studio paradigms (beyond the NotebookLM tools+notes frame).** Recorded for future direction; not committed:
+> 1. **Chat-centric commands** — dissolve the Studio panel; expose generators as `/`-commands (or a `+` menu) in the chat input, results appear inline as rich, saveable message cards. The right pane shrinks to a pure outputs/clipboard shelf. Best declutter; fits HTMX/server-render.
+> 2. **Selection-driven inspector** — the right pane shows actions relevant to whatever is focused (a source → summarize/translate/minutes; an answer → follow-ups/pin; selected text → explain/find-related). Context-sensitive, not a static list.
+> 3. **Report/compose builder** — the pane becomes a document the user assembles from briefing + comparisons + pinned answers + minutes, then edits and exports. Output-centric; fits the research-report use case.
+> 4. **Proactive insights feed** — the app surfaces insights unprompted ("these 3 sources disagree on X", "new source contradicts a pinned note"); pull → push. Most "assistant"-like; higher LLM cost, needs eval.
+> 5. **Spatial canvas** — draggable cards (sources/artifacts/notes) on a freeform board for synthesis. Most divergent, but heavy and fights the no-build/no-CDN constraint — likely too heavy for the POC.
+>
+> **Direction (future design reference only — NOT committed, NOT a decision).** For the "personal AI research assistant + produces research reports" positioning, a plausible long-term shape is: **near-term** — U16's tools-tiles + outputs-shelf as the base, *plus* folding in chat-centric `/`-commands (paradigm 1), since both declutter and fit the existing HTMX/server-render stack; **mid-term** — grow the outputs shelf toward a report/compose builder (paradigm 3), which best fits the long-report use case; **accent** — selectively adopt the selection-driven inspector (paradigm 2), e.g. highlight source text → explain; **far-term / data-gated** — proactive insights feed (paradigm 4) once compute headroom + an eval harness exist; spatial canvas (paradigm 5) stays out (violates no-build). These are directional notes to revisit, not scheduled work — only U16's checkboxes above are tracked items.
+
 ### Medium priority
 
 #### [x] U6 · Upload feedback & batch size
@@ -76,7 +99,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Fix:** **Done.** Export buttons on the conversation menu and the Notes card; no LLM involved.
 
 #### [ ] A4 · Study guide / FAQ / timeline artifacts
-- More Studio cards generated from source summaries (siblings of briefing/compare). Each is a prompt + a card.
+- Generated from source summaries (siblings of briefing/compare): each is a prompt + a result saved to the outputs shelf.
+- **Build as tools (tiles), not stacked cards** — depends on / should follow U16 Phase 1 so it lands in the new Studio IA.
 
 #### [ ] A5 · Explicit "translate this source's summary" action
 - Language-rule prompts already make this implicitly possible; surface it as a button.
