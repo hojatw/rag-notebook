@@ -1704,13 +1704,21 @@ async def ask_stream(
         except Exception as exc:
             logger.exception("chat_stream_failed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation)
             if conversation is None:
+                # The initial _prepare_question failed, so there's no row to
+                # attach the error to — try once more.
                 try:
                     conversation, _history, _settings = _prepare_question(notebook_id, user, question, None, source_ids)
                     yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
                 except Exception:
-                    raise
+                    # Still can't establish a conversation. Report the error and
+                    # end the stream cleanly rather than aborting the generator
+                    # (which would leave the client with no error/done event).
+                    yield sse_event("error", {"text": friendly_error_message(exc, "回答生成")})
+                    return
             answer = friendly_error_message(exc, "回答生成")
-            metadata = {"outcome": "error", "error": str(exc)[:200]}
+            # Update (not replace) so retrieval metrics gathered before the
+            # failure survive into the saved metadata.
+            metadata.update({"outcome": "error", "error": str(exc)[:200]})
             _save_assistant_message(notebook_id, user["id"], conversation, question, answer, [], metadata)
             yield sse_event("error", {"text": answer})
 
