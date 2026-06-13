@@ -387,6 +387,19 @@ form.is-submitting button[type="submit"]::before {
   flex: none;
 }
 
+form.is-submitting button[type="submit"].icon-only-loading {
+  width: 44px;
+  min-width: 44px;
+  padding: 0;
+  font-size: 0;
+  gap: 0;
+}
+
+form.is-submitting button[type="submit"].icon-only-loading::before {
+  width: 16px;
+  height: 16px;
+}
+
 @keyframes spinner-spin {
   to { transform: rotate(360deg); }
 }
@@ -1495,6 +1508,19 @@ legend {
   text-align: left;
 }
 
+.followups-loading {
+  color: var(--muted);
+}
+
+.followups-loading-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+  animation: studio-loading-pulse 1s ease-in-out infinite;
+}
+
 /* Export links (conversation menu + notes header) */
 .convo-export {
   display: block;
@@ -2094,9 +2120,22 @@ legend {
   font-size: 12px;
 }
 
-.rename-form input {
+.rename-form input:not([type="checkbox"]) {
   font-size: 13px;
   padding: 6px 10px;
+}
+
+.rename-form .setting-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-soft);
+}
+
+.rename-form .setting-check input {
+  width: 16px;
+  height: 16px;
+  flex: none;
 }
 
 .notebook-description {
@@ -2592,15 +2631,20 @@ legend {
 .note-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 6px;
   margin-top: 4px;
 }
 
-.note-foot button {
+.note-foot button,
+.note-foot a {
   font-size: 11px;
   min-height: 22px;
   padding: 2px 8px;
+}
+
+.note-foot a {
+  text-decoration: none;
 }
 
 /* ---------------------------------------------------------------- HTMX request indicator */
@@ -2762,10 +2806,27 @@ legend {
   display: none;
 }
 
-.compare-form {
+.compare-form,
+.minutes-form {
   display: grid;
   gap: 8px;
   margin-top: 8px;
+}
+
+.minutes-warning {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.minutes-warning .compare-error {
+  margin: 0;
+}
+
+.minutes-warning-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .compare-source-list {

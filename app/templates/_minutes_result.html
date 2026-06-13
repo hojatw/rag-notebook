@@ -1,9 +1,32 @@
 {# Result fragment for the meeting-minutes card (A1). On success the minutes
    are also saved as a note (the card response fires notes-changed to refresh
    the Notes section). #}
-{% if error %}
+{% if warning %}
+  <div class="minutes-warning">
+    <p class="compare-error">{{ warning }}</p>
+    {% if warning_detail %}
+      <p class="muted small">{{ warning_detail }}</p>
+    {% endif %}
+    <div class="minutes-warning-actions">
+      <button type="button"
+              class="ghost small"
+              hx-post="/notebooks/{{ notebook_id }}/minutes"
+              hx-target="#minutes-result"
+              hx-swap="innerHTML"
+              hx-indicator="#minutes-loading"
+              hx-vals='{"source_id": "{{ source_id }}", "force": "1"}'>
+        仍然整理
+      </button>
+      <button type="button" class="ghost small" onclick="this.closest('.minutes-warning').remove()">取消</button>
+    </div>
+  </div>
+{% elif error %}
   <p class="compare-error">{{ error }}</p>
 {% elif minutes %}
-  <p class="muted small">已從「{{ filename }}」整理完成，並存入筆記。</p>
+  {% if saved is sameas false %}
+    <p class="muted small">模型判斷「{{ filename }}」不像會議記錄，因此未存入筆記。</p>
+  {% else %}
+    <p class="muted small">已從「{{ filename }}」整理完成，並存入筆記。</p>
+  {% endif %}
   <div class="markdown-body" data-markdown>{{ minutes }}</div>
 {% endif %}

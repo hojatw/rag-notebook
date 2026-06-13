@@ -110,7 +110,7 @@
   {# A2: follow-up question chips under the latest answered assistant message.
      Cached followups render immediately; otherwise lazy-load them in a
      separate request so the answer itself is never delayed. #}
-  {% if conversation and messages and llm_status and llm_status.ready %}
+  {% if notebook.followups_enabled|default(1) and conversation and messages and llm_status and llm_status.ready %}
     {% set last = messages[-1] %}
     {% if last.role == "assistant" and last.metadata.outcome == "answered" %}
       {% if last.metadata.followups %}
@@ -121,7 +121,10 @@
         <div class="followups followups-loading"
              hx-get="/notebooks/{{ notebook.id }}/chat/{{ conversation.id }}/_followups?message_id={{ last.id }}"
              hx-trigger="load delay:400ms"
-             hx-swap="outerHTML"></div>
+             hx-swap="outerHTML">
+          <span class="followups-loading-dot" aria-hidden="true"></span>
+          <span class="muted small">追問生成中…</span>
+        </div>
       {% endif %}
     {% endif %}
   {% endif %}

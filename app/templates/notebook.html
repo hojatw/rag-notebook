@@ -156,6 +156,12 @@
                 <input name="description" value="{{ notebook.description or '' }}" maxlength="280"
                        placeholder="顯示在筆記本卡片上的一行摘要">
               </label>
+              <input type="hidden" name="followups_setting_present" value="1">
+              <label class="setting-check">
+                <input type="checkbox" name="followups_enabled" value="1"
+                       {% if notebook.followups_enabled|default(1) %}checked{% endif %}>
+                <span>回答後顯示追問建議</span>
+              </label>
               <button type="submit" class="wide small" data-loading-text="儲存中...">儲存</button>
             </form>
             <hr>
@@ -188,7 +194,7 @@
                   placeholder="針對所選來源提出問題"
                   {% if conversation %}autofocus{% endif %}
                   required></textarea>
-        <button type="submit" data-loading-text="送出中...">送出</button>
+        <button type="submit" data-loading-text="送出中..." data-loading-icon-only="true">送出</button>
       </div>
       <p class="ask-hint" aria-hidden="true">Enter 送出 · Shift+Enter 換行</p>
     </form>

@@ -197,10 +197,27 @@ function bindLoadingForms(root) {
       const button = form.querySelector("button[type='submit']");
       if (button) {
         button.dataset.originalText = button.textContent;
-        button.textContent = button.getAttribute("data-loading-text") || "Working...";
+        if (button.getAttribute("data-loading-icon-only") === "true") {
+          button.setAttribute("aria-label", button.getAttribute("data-loading-text") || button.dataset.originalText || "Working...");
+          button.classList.add("icon-only-loading");
+          button.textContent = "";
+        } else {
+          button.textContent = button.getAttribute("data-loading-text") || "Working...";
+        }
         button.disabled = true;
       }
       form.classList.add("is-submitting");
+    });
+    form.addEventListener("htmx:afterRequest", () => {
+      const button = form.querySelector("button[type='submit']");
+      if (button && button.dataset.originalText !== undefined) {
+        button.textContent = button.dataset.originalText;
+        button.classList.remove("icon-only-loading");
+        button.removeAttribute("aria-label");
+        button.disabled = false;
+        delete button.dataset.originalText;
+      }
+      form.classList.remove("is-submitting");
     });
   });
 }

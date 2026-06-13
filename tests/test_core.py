@@ -389,3 +389,6 @@ def test_concurrent_init_db_does_not_race_on_migrations(monkeypatch, tmp_path):
     with db.connect() as conn:
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(sources)")]
     assert "notebook_id" in cols and "summary" in cols  # migrations applied
+    with db.connect() as conn:
+        notebook_cols = [r["name"] for r in conn.execute("PRAGMA table_info(notebooks)")]
+    assert "followups_enabled" in notebook_cols
