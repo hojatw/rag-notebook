@@ -23,7 +23,7 @@ from .jobs import enqueue_source
 from .worker import run_worker_loop
 import httpx
 
-from .llm import FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_briefing, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions
+from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
 from .security import get_app_secret, hash_password, sign_user_id, unsign_user_id, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
@@ -906,31 +906,16 @@ def chat_empty_partial(
             ).fetchall()
         ]
     indexed_sources = [s for s in sources if s["status"] == "indexed"]
-    return render(request, "_chat_empty.html", {"notebook": notebook, "sources": sources, "indexed_sources": indexed_sources})
-
-
-@app.get("/notebooks/{notebook_id}/_suggestions", response_class=HTMLResponse)
-def suggestions_partial(
-    request: Request,
-    notebook_id: int,
-    user: Annotated[dict, Depends(require_login)],
-):
-    """Return the suggestions section reflecting current indexed-source state.
-
-    Triggered by `indexed-sources-changed` so the right pane swaps from the
-    "Index a source first" placeholder to the "Generate suggestions" CTA the
-    moment the first source finishes indexing — without page reload.
-    """
-    with connect() as conn:
-        notebook = get_notebook(conn, notebook_id, user["id"])
-        has_indexed = bool(conn.execute(
-            "SELECT 1 FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' LIMIT 1",
-            (notebook_id, user["id"]),
-        ).fetchone())
     return render(
         request,
-        "_suggestions.html",
-        {"notebook": notebook, "questions": _cached_suggestions(notebook), "error": "", "has_indexed": has_indexed},
+        "_chat_empty.html",
+        {
+            "notebook": notebook,
+            "sources": sources,
+            "indexed_sources": indexed_sources,
+            # U16: starter questions now live in the chat empty-state, not Studio.
+            "cached_suggestions": _cached_suggestions(notebook),
+        },
     )
 
 
@@ -1146,33 +1131,6 @@ async def notebook_briefing(
         _release_briefing_lock(notebook_id)
 
 
-@app.get("/notebooks/{notebook_id}/_compare", response_class=HTMLResponse)
-def compare_partial(
-    request: Request,
-    notebook_id: int,
-    user: Annotated[dict, Depends(require_login)],
-):
-    """Return the compare-sources section reflecting current indexed sources.
-
-    Triggered by `indexed-sources-changed` so the checkbox list stays in sync with
-    the left pane after upload / delete without a page reload.
-    """
-    with connect() as conn:
-        notebook = get_notebook(conn, notebook_id, user["id"])
-        sources_indexed = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT id, filename, summary FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' ORDER BY filename",
-                (notebook_id, user["id"]),
-            ).fetchall()
-        ]
-    return render(
-        request,
-        "_compare.html",
-        {"notebook": notebook, "sources_indexed": sources_indexed},
-    )
-
-
 @app.post("/notebooks/{notebook_id}/compare", response_class=HTMLResponse)
 async def notebook_compare(
     request: Request,
@@ -1366,6 +1324,37 @@ def delete_note(
     if source_message_id is not None:
         response.headers["HX-Trigger"] = dumps({"pin-cleared": {"message_id": source_message_id}})
     return response
+
+
+@app.post("/notebooks/{notebook_id}/notes/{note_id}/edit", response_class=HTMLResponse)
+def edit_note(
+    request: Request,
+    notebook_id: int,
+    note_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    title: str = Form(""),
+    content: str = Form(...),
+):
+    """Update a note's title/content in place (U8) and return the refreshed shelf."""
+    cleaned_content = (content or "").strip()
+    if not cleaned_content:
+        raise HTTPException(status_code=400, detail="筆記內容不可為空。")
+    cleaned_title = " ".join((title or "").split())[:80]
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        updated = conn.execute(
+            "UPDATE notes SET title = ?, content = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND notebook_id = ? AND user_id = ? RETURNING id",
+            (cleaned_title, cleaned_content, note_id, notebook_id, user["id"]),
+        ).fetchone()
+        if updated is None:
+            raise HTTPException(status_code=404, detail="找不到筆記")
+        notes = [dict(r) for r in conn.execute(
+            "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
+            (notebook_id, user["id"]),
+        ).fetchall()]
+    logger.info("note_edited user_id=%s notebook_id=%s note_id=%s chars=%s", user["id"], notebook_id, note_id, len(cleaned_content))
+    return render(request, "_notes_section.html", {"notebook": notebook, "notes": notes})
 
 
 @app.post("/notebooks/{notebook_id}/chat/{conversation_id}/delete")
@@ -1987,22 +1976,6 @@ def minutes_declines_meeting(minutes: str) -> bool:
     return any(marker in normalized for marker in decline_markers)
 
 
-@app.get("/notebooks/{notebook_id}/_minutes", response_class=HTMLResponse)
-def minutes_partial(
-    request: Request,
-    notebook_id: int,
-    user: Annotated[dict, Depends(require_login)],
-):
-    """Return the meeting-minutes Studio card (source picker stays in sync)."""
-    with connect() as conn:
-        notebook = get_notebook(conn, notebook_id, user["id"])
-        sources_indexed = [dict(r) for r in conn.execute(
-            "SELECT * FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' ORDER BY filename",
-            (notebook_id, user["id"]),
-        ).fetchall()]
-    return render(request, "_minutes.html", {"notebook": notebook, "sources_indexed": sources_indexed})
-
-
 @app.post("/notebooks/{notebook_id}/minutes", response_class=HTMLResponse)
 async def source_minutes(
     request: Request,
@@ -2077,28 +2050,200 @@ async def source_minutes(
             "meeting_minutes_declined user_id=%s notebook_id=%s source_id=%s chars=%s",
             user["id"], notebook_id, source_id, len(minutes),
         )
+        # Model judged the source is not a meeting record: show its reply, no
+        # save option (per the manual-save model — only meetings are savable).
         return render(
             request,
             "_minutes_result.html",
-            {"minutes": minutes, "error": "", "filename": source["filename"], "saved": False, "warning": ""},
+            {"minutes": minutes, "error": "", "filename": source["filename"],
+             "declined": True, "warning": "", "notebook_id": notebook_id},
         )
 
-    with connect() as conn:
-        conn.execute(
-            "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, ?, ?)",
-            (notebook_id, user["id"], f"會議整理 — {source['filename']}"[:80], minutes),
-        )
-        touch_notebook(conn, notebook_id)
     logger.info(
         "meeting_minutes_completed user_id=%s notebook_id=%s source_id=%s chars=%s",
         user["id"], notebook_id, source_id, len(minutes),
     )
-    response = render(
+    # Manual save: show the minutes with a save-to-notes button; do not persist
+    # automatically (no notes-changed fired — the shelf refreshes on save).
+    return render(
         request, "_minutes_result.html",
-        {"minutes": minutes, "error": "", "filename": source["filename"], "saved": True, "warning": ""},
+        {"minutes": minutes, "error": "", "filename": source["filename"],
+         "declined": False, "warning": "", "notebook_id": notebook_id},
     )
-    response.headers["HX-Trigger"] = "notes-changed"
-    return response
+
+
+# --- U16: Studio tools launcher + A4 artifact generators ------------------
+# Tools (compare / minutes / A4 artifacts) are surfaced as a tile grid that
+# opens each tool's config inside the shared preview-modal. Artifact results
+# are saved to Notes (the outputs shelf), mirroring meeting minutes.
+
+ARTIFACT_LABELS = {
+    "study_guide": "學習指南",
+    "faq": "常見問答",
+    "timeline": "時間軸",
+}
+# Tools that operate on the whole notebook (need only ≥1 indexed source) vs
+# compare which needs ≥2. Drives the tile enabled-state in the launcher.
+TOOL_MIN_INDEXED = {"compare": 2, "minutes": 1, "study_guide": 1, "faq": 1, "timeline": 1, "translate": 1}
+# A5: target languages offered by the translate-summary tool (allowlisted so the
+# value going into the prompt can't be arbitrary user text).
+TRANSLATE_LANGUAGES = ["繁體中文", "English", "日本語", "简体中文"]
+
+
+@app.get("/notebooks/{notebook_id}/_tools", response_class=HTMLResponse)
+def tools_partial(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Return the Studio tools tile grid, refreshed on indexed-sources-changed.
+
+    Tiles enable/disable based on the indexed-source count so the grid stays in
+    sync with the left pane after upload / delete without a page reload.
+    """
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        indexed_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed'",
+            (notebook_id, user["id"]),
+        ).fetchone()["n"]
+    return render(request, "_studio_tools.html", {"notebook": notebook, "indexed_count": indexed_count})
+
+
+@app.get("/notebooks/{notebook_id}/tools/{kind}", response_class=HTMLResponse)
+def tool_panel(
+    request: Request,
+    notebook_id: int,
+    kind: str,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Return one tool's config panel, loaded into the preview-modal by a tile."""
+    if kind not in TOOL_MIN_INDEXED:
+        raise HTTPException(status_code=404, detail="未知的工具")
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        sources_indexed = [dict(r) for r in conn.execute(
+            "SELECT id, filename, summary FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' ORDER BY filename",
+            (notebook_id, user["id"]),
+        ).fetchall()]
+    return render(
+        request,
+        "_tool_panel.html",
+        {
+            "notebook": notebook,
+            "kind": kind,
+            "sources_indexed": sources_indexed,
+            "artifact_label": ARTIFACT_LABELS.get(kind, ""),
+            "translate_languages": TRANSLATE_LANGUAGES,
+        },
+    )
+
+
+@app.post("/notebooks/{notebook_id}/artifacts/{kind}", response_class=HTMLResponse)
+async def notebook_artifact(
+    request: Request,
+    notebook_id: int,
+    kind: str,
+    user: Annotated[dict, Depends(require_login)],
+):
+    """Generate an A4 artifact (study guide / FAQ / timeline) from the notebook's
+    source summaries. The result is shown in the modal; the user decides whether
+    to save it to the outputs shelf (no auto-save)."""
+    if kind not in ARTIFACT_PROMPTS:
+        raise HTTPException(status_code=404, detail="未知的產出類型")
+    label = ARTIFACT_LABELS.get(kind, kind)
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        summaries = _fetch_source_summaries(conn, notebook_id, user["id"])
+        settings = load_llm_settings(conn) or {}
+
+    base_ctx = {"notebook_id": notebook_id, "label": label, "notebook_title": notebook["title"], "artifact": ""}
+    if not summaries:
+        return render(
+            request, "_artifact_result.html",
+            {**base_ctx, "error": "先完成來源索引，才能生成。"},
+            status_code=400,
+        )
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        return render(
+            request, "_artifact_result.html",
+            {**base_ctx, "error": "請先完成 LLM 設定，才能生成。"},
+            status_code=400,
+        )
+
+    error = ""
+    artifact = ""
+    try:
+        artifact = await generate_artifact(kind, summaries, settings)
+        if not artifact:
+            error = "模型未回傳內容，請再試一次。"
+    except Exception as exc:
+        logger.exception("artifact_failed user_id=%s notebook_id=%s kind=%s", user["id"], notebook_id, kind)
+        error = friendly_error_message(exc, f"{label}生成")
+
+    logger.info(
+        "artifact_completed user_id=%s notebook_id=%s kind=%s sources=%s chars=%s",
+        user["id"], notebook_id, kind, len(summaries), len(artifact),
+    )
+    return render(
+        request, "_artifact_result.html",
+        {**base_ctx, "artifact": artifact, "error": error},
+    )
+
+
+@app.post("/notebooks/{notebook_id}/translate", response_class=HTMLResponse)
+async def translate_source_summary(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    source_id: int = Form(...),
+    target_language: str = Form(...),
+):
+    """Translate one indexed source's summary into a target language (A5).
+
+    The result is shown in the modal with a manual save-to-notes button.
+    """
+    if target_language not in TRANSLATE_LANGUAGES:
+        raise HTTPException(status_code=400, detail="不支援的目標語言")
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        summaries = _fetch_source_summaries(conn, notebook_id, user["id"], [source_id])
+        settings = load_llm_settings(conn) or {}
+
+    base_ctx = {"notebook_id": notebook_id, "target_language": target_language, "translated": "", "filename": ""}
+    if not summaries:
+        return render(
+            request, "_translate_result.html",
+            {**base_ctx, "error": "找不到已索引、且有摘要可翻譯的來源。"},
+            status_code=404,
+        )
+    source = summaries[0]
+    base_ctx["filename"] = source["filename"]
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        return render(
+            request, "_translate_result.html",
+            {**base_ctx, "error": "請先完成 LLM 設定，才能翻譯。"},
+            status_code=400,
+        )
+
+    error = ""
+    translated = ""
+    try:
+        translated = await translate_summary(source["summary"], target_language, settings)
+        if not translated:
+            error = "模型未回傳翻譯，請再試一次。"
+    except Exception as exc:
+        logger.exception("translate_failed user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
+        error = friendly_error_message(exc, "摘要翻譯")
+
+    logger.info(
+        "translate_summary_completed user_id=%s notebook_id=%s source_id=%s lang=%s chars=%s",
+        user["id"], notebook_id, source_id, target_language, len(translated),
+    )
+    return render(
+        request, "_translate_result.html",
+        {**base_ctx, "translated": translated, "error": error},
+    )
 
 
 # Per-question minimum top-score before we let the answer LLM run. Below this
@@ -2284,6 +2429,7 @@ def merge_candidates(vector_candidates: list[dict], keyword_candidates: list[dic
         if existing and existing["score"] >= score:
             continue
         candidates[chunk_id] = {
+            "id": chunk_id,
             "source_id": item["source_id"],
             "filename": item["filename"],
             "location": item["location"],
@@ -2383,6 +2529,9 @@ def citation_payload(chunks: list[dict]) -> list[dict]:
         {
             "index": index,
             "source_id": chunk.get("source_id"),
+            # U3: chunk row id → lets the citation chip open the source preview
+            # scrolled to + highlighting this exact chunk (#preview-chunk-{id}).
+            "chunk_id": chunk.get("id"),
             "filename": chunk["filename"],
             "location": chunk["location"],
             "snippet": chunk["text"][:260],

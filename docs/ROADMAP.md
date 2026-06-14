@@ -19,8 +19,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [x] U2 · Streaming responses (SSE)
 - **Fix:** **Done.** Asking now posts to a streaming endpoint from the enhanced UI: the user sees retrieval/generation status, answer chunks stream into the chat pane, and the final saved message swaps back into the normal Markdown/citation/follow-up rendering path. Same item as [`PERFORMANCE.md` P3-1](PERFORMANCE.md).
 
-#### [ ] U3 · Citation → source highlight
-- Clicking `[2]` should open the source preview at that chunk and highlight it (today: collapsible snippet only). The trust-building feature of NotebookLM.
+#### [x] U3 · Citation → source highlight
+- **Done.** Clicking a `[N]` citation chip now opens the source preview drawer scrolled to and flashing the exact cited chunk (`#preview-chunk-{id}`), plus flashes the matching left-pane source row. Required carrying the chunk row id through `merge_candidates` → `citation_payload` (`chunk_id`); older messages stored before this field gracefully fall back to expanding the inline snippet.
 
 #### [x] U4 · Traditional Chinese UI
 - **Issue:** UI strings were English while the user base and content are Chinese.
@@ -29,16 +29,17 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [x] U5 · Conversation management
 - **Fix:** **Done.** Conversation menu supports renaming the active conversation, shows message counts and relative update times, and keeps the active row visually distinct.
 
-#### [ ] U16 · Studio information-architecture restructure (tools launcher + outputs shelf)
+#### [~] U16 · Studio information-architecture restructure (tools launcher + outputs shelf)
+- **Phase 1 done** — tools tile grid + slim briefing strip + suggestions relocated to chat. Phases 2–3 remain.
 - **Issue:** The Studio (right pane) stacks one always-on card per generator (Suggested questions, Briefing, Compare, Meeting minutes). It mixes two different kinds of thing — **generators (actions)** and **outputs (artifacts)** — in one vertical list, so every new AI feature (A4 study guide/FAQ/timeline, A5 translate, …) adds another card and the column grows endlessly cluttered.
 - **Target model:** separate **tools** from **outputs**, so adding a feature = +1 tile, not +1 always-on card.
   - Briefing → a slim one-line expandable strip (it's ambient context, not an action).
   - **Tools** → a compact tile grid; each generator is a tile that opens its config in the existing `preview-modal` drawer (`open-preview`/`close-preview`), runs, and writes its result to the outputs shelf.
   - **Outputs / Notes** → one unified artifact shelf: every generated result (compare, minutes, study guide, …) + pinned answers, each with a type badge, collapsible, editable (U8), exportable.
   - Relocate **Suggested questions** out of Studio into the chat area (empty state / follow-up chips) — it's a chat-entry aid, not a Studio artifact.
-- **Reuses existing infra:** `compare`/`minutes` already save to Notes + fire `notes-changed` (→ `_notes` refresh); the `preview-modal` Alpine pattern already exists. Mostly a template/CSS reshuffle, not new routes. No build step.
+- **Reuses existing infra:** the `notes/add` save path + `#studio-notes` refresh and the `preview-modal` Alpine pattern already exist. Mostly a template/CSS reshuffle plus a few thin routes. No build step.
 - **Phased (tick as done):**
-  - [ ] Phase 1 — collapse the four generators into a single **Tools** tile grid (tiles open the existing modal); Briefing → slim strip; move Suggested questions to the chat area. *(Do this before A4 so A4 lands as tiles, not new cards.)*
+  - [x] Phase 1 — **Done.** The four generators collapsed into a **Tools** tile grid (`_studio_tools.html`); each tile opens its config in the `preview-modal` (`_tool_panel.html`); Briefing is now a slim expandable strip; Suggested questions moved to the chat empty-state. **All generators now use manual save** — the result is shown with a shared save-to-notes button (`_save_note_button.html`), the user decides what lands in the shelf (no auto-save). New routes: `GET /_tools`, `GET /tools/{kind}`, `POST /artifacts/{kind}`; dead `GET /_compare`/`/_minutes`/`/_suggestions` partial routes + `_compare.html`/`_minutes.html` removed.
   - [ ] Phase 2 — unify Notes into an **outputs shelf** (type badges; all generators save here; inline edit = U8).
   - [ ] Phase 3 *(optional)* — tabbed or fully-collapsible Studio if the tile grid itself grows large.
 - **Note for new AI features:** A4/A5 and later generators should be implemented as **tools (tiles) writing to the outputs shelf**, not as new stacked cards.
@@ -60,8 +61,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [x] U7 · Answer action row — copy
 - **Fix:** **Done.** Copy button on every assistant message (copies the raw Markdown; transient ✓ feedback). Regenerate / expand-all-citations remain todo.
 
-#### [ ] U8 · Editable notes
-- Notes are add/pin/delete only; pinned answers usually need trimming. Add inline edit.
+#### [x] U8 · Editable notes
+- **Done.** Each note in the shelf has an inline **編輯** toggle (Alpine) revealing a title + content (Markdown) form; saving `POST /notes/{id}/edit` updates in place and re-renders the shelf. Add/pin/delete unchanged.
 
 #### [x] U9 · Global search
 - **Fix:** **Done.** `/search` searches the signed-in user's notebooks, source filenames/summaries, conversation titles, and notes using scoped SQLite `LIKE` queries.
@@ -87,8 +88,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 ### Tier 1 — chat-only, cheap, high value
 
 #### [x] A1 · Meeting-minutes organizer
-- **What:** pick an indexed source (transcript upload) → structured minutes (主題/決議/行動項目(負責人/期限)/待辦/未決事項) → saved as a note.
-- **Fix:** **Done.** Studio card with source picker; `MEETING_MINUTES_PROMPT` (strong language rule); result lands in Notes.
+- **What:** pick an indexed source (transcript upload) → structured minutes (主題/決議/行動項目(負責人/期限)/待辦/未決事項) → save to Notes.
+- **Fix:** **Done.** A Studio **tool tile** (U16) with a source picker; `MEETING_MINUTES_PROMPT` (strong language rule). A non-meeting source shows the model's reason with no save option; a real transcript shows the minutes with a **manual** save-to-notes button.
 
 #### [x] A2 · Follow-up question chips after each answer
 - **What:** 2–3 suggested follow-ups under the latest assistant answer; click = ask.
@@ -98,12 +99,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **What:** download a conversation (Q/A + citations) or all notes as `.md`.
 - **Fix:** **Done.** Export buttons on the conversation menu and the Notes card; no LLM involved.
 
-#### [ ] A4 · Study guide / FAQ / timeline artifacts
-- Generated from source summaries (siblings of briefing/compare): each is a prompt + a result saved to the outputs shelf.
-- **Build as tools (tiles), not stacked cards** — depends on / should follow U16 Phase 1 so it lands in the new Studio IA.
+#### [x] A4 · Study guide / FAQ / timeline artifacts
+- **Done.** Three generators (學習指南 / 常見問答 / 時間軸) built as **tools (tiles)** in the U16 Studio launcher. Each takes the notebook's source summaries (siblings of briefing/compare), runs a strong per-language prompt (`STUDY_GUIDE_PROMPT` / `FAQ_PROMPT` / `TIMELINE_PROMPT` in `app/llm.py`, dispatched via `ARTIFACT_PROMPTS` → `generate_artifact`), and shows the result with a **manual** save-to-notes button (no auto-save). Route: `POST /notebooks/{id}/artifacts/{kind}`.
 
-#### [ ] A5 · Explicit "translate this source's summary" action
-- Language-rule prompts already make this implicitly possible; surface it as a button.
+#### [x] A5 · Explicit "translate this source's summary" action
+- **Done.** A Studio **tool tile** (U16) — pick a source + a target language (繁中 / English / 日本語 / 简体中文, allowlisted) → `TRANSLATE_SUMMARY_PROMPT` / `translate_summary` translates that source's summary; result shown with a manual save-to-notes button. Route: `POST /notebooks/{id}/translate`.
 
 ### Tier 2 — new extraction paths (app-side, no inference change)
 

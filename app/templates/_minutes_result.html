@@ -1,6 +1,7 @@
-{# Result fragment for the meeting-minutes card (A1). On success the minutes
-   are also saved as a note (the card response fires notes-changed to refresh
-   the Notes section). #}
+{# Result fragment for the meeting-minutes tool (A1), rendered into #tool-result
+   inside the tool modal. Manual save: when the model produces real minutes we
+   show them with a save-to-notes button; a non-meeting source shows the model's
+   reply with no save option. #}
 {% if warning %}
   <div class="minutes-warning">
     <p class="compare-error">{{ warning }}</p>
@@ -11,9 +12,9 @@
       <button type="button"
               class="ghost small"
               hx-post="/notebooks/{{ notebook_id }}/minutes"
-              hx-target="#minutes-result"
+              hx-target="#tool-result"
               hx-swap="innerHTML"
-              hx-indicator="#minutes-loading"
+              hx-indicator="#tool-loading"
               hx-vals='{"source_id": "{{ source_id }}", "force": "1"}'>
         仍然整理
       </button>
@@ -23,10 +24,15 @@
 {% elif error %}
   <p class="compare-error">{{ error }}</p>
 {% elif minutes %}
-  {% if saved is sameas false %}
-    <p class="muted small">模型判斷「{{ filename }}」不像會議記錄，因此未存入筆記。</p>
+  {% if declined %}
+    {# Model judged this is not a meeting record — show its reply, no save. #}
+    <p class="muted small">模型判斷「{{ filename }}」不像會議記錄。</p>
+    <div class="markdown-body" data-markdown>{{ minutes }}</div>
   {% else %}
-    <p class="muted small">已從「{{ filename }}」整理完成，並存入筆記。</p>
+    <p class="muted small">已從「{{ filename }}」整理完成，確認後可存成筆記。</p>
+    <div class="markdown-body" data-markdown>{{ minutes }}</div>
+    {% with note_title = "會議整理 — " ~ filename, note_content = minutes %}
+      {% include "_save_note_button.html" %}
+    {% endwith %}
   {% endif %}
-  <div class="markdown-body" data-markdown>{{ minutes }}</div>
 {% endif %}

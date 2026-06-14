@@ -7,7 +7,7 @@
          hx-trigger="notes-changed from:body"
          hx-swap="outerHTML">
   <h3>
-    筆記
+    產出與筆記
     <span class="pane-count">{{ notes|length }}</span>
     {% if notes %}
       <a class="ghost small notes-export" href="/notebooks/{{ notebook.id }}/notes/export"
@@ -17,33 +17,55 @@
   {% if notes %}
     <ul class="note-list">
       {% for note in notes %}
-        <li class="note-item">
+        <li class="note-item" x-data="{ editing: false }">
           <details>
             <summary>
               <span class="note-summary-title">{{ note.title or (note.content[:60] ~ ('…' if note.content|length > 60 else '')) }}</span>
               <small class="muted note-summary-date">{{ note.created_at[:10] }}</small>
             </summary>
             <div class="note-body">
-              <div class="note-content markdown-body" data-markdown>{{ note.content }}</div>
-              <div class="note-foot">
-                <a class="ghost small note-export"
-                   href="/notebooks/{{ notebook.id }}/notes/{{ note.id }}/export"
-                   title="匯出這則筆記 (Markdown)">⬇ 匯出</a>
-                <button type="button"
-                        class="ghost small danger-link"
-                        hx-post="/notebooks/{{ notebook.id }}/notes/{{ note.id }}/delete"
-                        hx-target="#studio-notes"
-                        hx-swap="outerHTML"
-                        hx-confirm="移除這則筆記？">
-                  移除
-                </button>
+              {# Read view #}
+              <div x-show="!editing">
+                <div class="note-content markdown-body" data-markdown>{{ note.content }}</div>
+                <div class="note-foot">
+                  <button type="button" class="ghost small" @click="editing = true">編輯</button>
+                  <a class="ghost small note-export"
+                     href="/notebooks/{{ notebook.id }}/notes/{{ note.id }}/export"
+                     title="匯出這則筆記 (Markdown)">⬇ 匯出</a>
+                  <button type="button"
+                          class="ghost small danger-link"
+                          hx-post="/notebooks/{{ notebook.id }}/notes/{{ note.id }}/delete"
+                          hx-target="#studio-notes"
+                          hx-swap="outerHTML"
+                          hx-confirm="移除這則筆記？">
+                    移除
+                  </button>
+                </div>
               </div>
+              {# Edit view (U8) — inline form; on save the whole shelf re-renders. #}
+              <form class="note-edit-form" x-show="editing" style="display: none;"
+                    hx-post="/notebooks/{{ notebook.id }}/notes/{{ note.id }}/edit"
+                    hx-target="#studio-notes"
+                    hx-swap="outerHTML">
+                <label>
+                  <span class="muted small">標題</span>
+                  <input type="text" name="title" value="{{ note.title }}" maxlength="80" placeholder="（選填）">
+                </label>
+                <label>
+                  <span class="muted small">內容（Markdown）</span>
+                  <textarea name="content" rows="6" required>{{ note.content }}</textarea>
+                </label>
+                <div class="note-edit-actions">
+                  <button type="submit" class="small">儲存</button>
+                  <button type="button" class="ghost small" @click="editing = false">取消</button>
+                </div>
+              </form>
             </div>
           </details>
         </li>
       {% endfor %}
     </ul>
   {% else %}
-    <p class="muted small">在對話中釘選助理的回答，就會保存在這裡。</p>
+    <p class="muted small">釘選對話中的回答，或用上方工具生成的內容，都會保存在這裡。</p>
   {% endif %}
 </section>

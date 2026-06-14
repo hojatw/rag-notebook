@@ -1,0 +1,18 @@
+{# Reusable "save to notes" control for Studio tool results (compare / minutes /
+   A4 artifacts). Generators no longer auto-save — the user decides what lands
+   in the outputs shelf. Expects: notebook_id, note_title, note_content.
+   Targets #studio-notes (outputs shelf) and shows a one-shot saved state so the
+   same result can't be double-saved. #}
+<form class="save-note-form"
+      hx-post="/notebooks/{{ notebook_id }}/notes/add"
+      hx-target="#studio-notes"
+      hx-swap="outerHTML"
+      x-data="{ saved: false }"
+      @htmx:after-request="if ($event.detail.successful) saved = true">
+  <input type="hidden" name="title" value="{{ note_title }}">
+  <input type="hidden" name="content" value="{{ note_content }}">
+  <button type="submit" class="ghost small"
+          :disabled="saved"
+          :class="{ 'pinned': saved }"
+          x-text="saved ? '✓ 已存入筆記' : '存成筆記'">存成筆記</button>
+</form>

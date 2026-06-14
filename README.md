@@ -11,14 +11,16 @@ This is a proof of concept, not a production-ready service. It is suitable for l
 - **Notebook home grid.** Each notebook owns its own sources, conversations, and pinned notes.
 - **Three-pane workspace** per notebook:
   - **Sources** (left): drag-and-drop upload with selected-file/size feedback, automatic indexing-status polling, per-source reindex/delete, **click any indexed source to open a chunk-preview drawer**.
-  - **Chat** (centre): grounded chat with streaming answers, conversation switcher (rename, message counts, relative timestamps, per-row delete, and **Markdown export**), Markdown-rendered answers (with a per-answer **copy** button), and inline `[1]` `[2]` citation chips that scroll the matching source into view. Asking stays in place with progressive status updates; after each answered question 2–3 **follow-up question chips** are suggested (lazy-generated, cached per message). Enter sends, Shift+Enter inserts a newline, IME-safe for CJK input. UI strings are Traditional Chinese.
-  - **Studio** (right): five NotebookLM-style helpers in one column.
-      - *Suggested questions* — one-click LLM-authored starter questions from your sources, auto-refreshing as sources finish indexing (24 h cache).
-      - *Briefing* — one-paragraph cross-source synthesis, auto-generated on first notebook view and cached for 24 h. *Regenerate* on demand. Concurrent generation across tabs / sibling source completions is deduped by a shared SQLite-backed lock so a 5-file upload only calls the LLM once, not five times (works across multiple workers).
-      - *Compare sources* — pick 2+ indexed sources (with an optional focus hint) and the model produces a Shared / Distinct / Contradictions markdown report. *Save to notes* keeps it for later.
-      - *Meeting minutes* — pick one indexed source (a transcript upload) and the model produces structured minutes (topic / decisions / action items / follow-ups / open questions), saved straight into Notes.
-      - *Notes* — *Pin* assistant answers into collapsible notes (removing a note un-pins the source message automatically); comparison results and meeting minutes land here too; **export all notes as Markdown**.
-  - **Per-source summary** — every uploaded source gets a 2–4 sentence TL;DR generated automatically right after indexing, shown at the top of the preview drawer and reused as compact context for Briefing / Compare.
+  - **Chat** (centre): grounded chat with streaming answers, conversation switcher (rename, message counts, relative timestamps, per-row delete, and **Markdown export**), Markdown-rendered answers (with a per-answer **copy** button), and inline `[1]` `[2]` citation chips that open the source preview drawer scrolled to and highlighting the exact cited chunk. Asking stays in place with progressive status updates; after each answered question 2–3 **follow-up question chips** are suggested (lazy-generated, cached per message). The empty state hosts **starter questions** — one-click LLM-authored questions from your sources, auto-refreshing as sources finish indexing (24 h cache). Enter sends, Shift+Enter inserts a newline, IME-safe for CJK input. UI strings are Traditional Chinese.
+  - **Studio** (right): a NotebookLM-style work area split into ambient context, a tools launcher, and an outputs shelf (the "Studio IA" restructure — see `ROADMAP.md` U16).
+      - *Briefing strip* — a slim, one-line expandable cross-source synthesis, auto-generated on first notebook view and cached for 24 h. *Regenerate* on demand. Concurrent generation across tabs / sibling source completions is deduped by a shared SQLite-backed lock so a 5-file upload only calls the LLM once, not five times (works across multiple workers).
+      - *Tools* — a tile grid; each tile opens its config in the preview-modal, runs, and shows the result with a **manual save-to-notes** button (the user decides what lands in the shelf — no auto-save):
+          - *Compare sources* — pick 2+ indexed sources (with an optional focus hint) → a Shared / Distinct / Contradictions markdown report.
+          - *Meeting minutes* — pick one indexed source (a transcript) → structured minutes (topic / decisions / action items / follow-ups / open questions); a non-meeting source shows the model's reason and offers no save.
+          - *Study guide / FAQ / Timeline* — generated across the notebook's source summaries (A4).
+          - *Translate summary* — translate one source's summary into a target language (A5).
+      - *Outputs & notes shelf* — *Pin* assistant answers into collapsible notes (removing a note un-pins the source message automatically); every tool result you save lands here too; notes are **inline-editable**; **export all notes as Markdown**.
+  - **Per-source summary** — every uploaded source gets a 2–4 sentence TL;DR generated automatically right after indexing, shown at the top of the preview drawer and reused as compact context for Briefing / Compare / artifacts.
 - **Hybrid retrieval**: query rewriting, Chroma vector search, SQLite keyword matching, and LLM reranking. Below a configurable confidence threshold the model is asked to abstain rather than hallucinate. See [`RETRIEVAL.md`](docs/RETRIEVAL.md) for the full pipeline, tuning knobs, and eval workflow.
 - **Per-message debug pane**: chat answers ship with a collapsible "📊 N chunks · retrieved Xms · generated Yms · top score Z" badge that opens a table of vector / keyword / rerank / final scores per citation.
 - **Retrieval eval harness** (`tests/eval_retrieval.py`) with starter questions for the demo notebook so changes to query rewrite / hybrid scoring / rerank can be measured (recall@k, MRR).
@@ -228,17 +230,19 @@ POST /notebooks/{id}/chat/{cid}/delete                    delete a conversation
 GET  /notebooks/{id}/chat/{cid}/_followups?message_id=N   lazy-load follow-up question chips (cached in metadata)
 GET  /notebooks/{id}/chat/{cid}/export                    download conversation as Markdown
 
-GET  /notebooks/{id}/_suggestions                         HTMX swap: suggestions section
-POST /notebooks/{id}/suggestions                          generate 4 starter questions
-GET  /notebooks/{id}/_briefing                            HTMX swap: briefing section (dedupes concurrent generation)
+POST /notebooks/{id}/suggestions                          generate 4 starter questions (chat empty-state)
+GET  /notebooks/{id}/_briefing                            HTMX swap: briefing strip (dedupes concurrent generation)
 POST /notebooks/{id}/briefing[?force=1]                   generate / regenerate notebook briefing
-GET  /notebooks/{id}/_compare                             HTMX swap: compare-sources section
-POST /notebooks/{id}/compare                              compare 2+ sources (returns result fragment)
-GET  /notebooks/{id}/_minutes                             HTMX swap: meeting-minutes card
-POST /notebooks/{id}/minutes                              generate structured meeting minutes from one source
+GET  /notebooks/{id}/_tools                               HTMX swap: Studio tools launcher (tile grid)
+GET  /notebooks/{id}/tools/{kind}                         tool config panel for the preview-modal (compare|minutes|study_guide|faq|timeline|translate)
+POST /notebooks/{id}/compare                              compare 2+ sources (returns result fragment + save button)
+POST /notebooks/{id}/minutes                              structured meeting minutes from one source (result + save button)
+POST /notebooks/{id}/artifacts/{kind}                     A4 artifact: study_guide | faq | timeline (result + save button)
+POST /notebooks/{id}/translate                            A5 translate one source's summary into a target language (result + save button)
 
 POST /notebooks/{id}/notes/pin                            pin assistant message into notes
 POST /notebooks/{id}/notes/add                            save a raw note (title + content)
+POST /notebooks/{id}/notes/{note_id}/edit                 edit a note's title/content in place (U8)
 POST /notebooks/{id}/notes/{note_id}/delete               remove pinned note (also broadcasts pin-cleared)
 GET  /notebooks/{id}/_notes                               HTMX swap: notes section (notes-changed event)
 GET  /notebooks/{id}/notes/export                         download all notes as Markdown
@@ -298,11 +302,16 @@ app/templates/
   _source_item.html    Single source list item (HTMX polling target + preview trigger).
   _source_preview.html Chunks list rendered inside the preview modal.
   _source_picker.html  Chat-form source-checkbox fieldset (HTMX swap target).
-  _suggestions.html    Studio suggestions section (HTMX swap target).
-  _briefing.html       Studio briefing section (HTMX swap target; auto-fires POST on first view).
-  _compare.html        Studio compare-sources panel (checkbox list + focus input).
-  _compare_result.html Comparison result fragment (markdown body + Save-to-notes form).
-  _notes_section.html  Studio notes section (HTMX swap target).
+  _suggestions.html    Starter-questions section (rendered in the chat empty-state).
+  _briefing.html       Studio briefing slim strip (HTMX swap target; auto-fires POST on first view).
+  _studio_tools.html   Studio tools launcher — tile grid that opens each tool in the preview-modal (HTMX swap target).
+  _tool_panel.html     One tool's config panel loaded into the preview-modal (compare/minutes/study_guide/faq/timeline).
+  _compare_result.html Comparison result fragment (markdown body + shared save button).
+  _minutes_result.html Meeting-minutes result fragment (markdown body + save button; non-meeting sources offer no save).
+  _artifact_result.html A4 artifact result fragment (markdown body + shared save button).
+  _translate_result.html A5 translate-summary result fragment (markdown body + shared save button).
+  _save_note_button.html Shared "save to notes" control used by all tool results (one-shot saved state).
+  _notes_section.html  Studio outputs & notes shelf (HTMX swap target; inline note edit = U8).
   account.html         Per-user password change page.
   admin_users.html     Admin user management page.
   admin_index.html     Admin vector-index health page.

@@ -1,0 +1,11 @@
+{# Result fragment for an A4 artifact (study guide / FAQ / timeline), rendered
+   into #tool-result inside the tool modal. The user decides whether to keep it
+   via the save-to-notes button (no auto-save). #}
+{% if error %}
+  <p class="compare-error">{{ error }}</p>
+{% elif artifact %}
+  <div class="markdown-body" data-markdown>{{ artifact }}</div>
+  {% with note_title = label ~ " — " ~ notebook_title, note_content = artifact %}
+    {% include "_save_note_button.html" %}
+  {% endwith %}
+{% endif %}

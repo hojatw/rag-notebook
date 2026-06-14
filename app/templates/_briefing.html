@@ -11,26 +11,23 @@
         hx-indicator="#briefing-loading">{{ label }}</button>
 {%- endmacro %}
 
-<section class="studio-section studio-briefing" id="studio-briefing"
+<section class="studio-section studio-briefing studio-briefing-strip" id="studio-briefing"
          hx-get="/notebooks/{{ notebook.id }}/_briefing"
          hx-trigger="indexed-sources-changed from:body"
          hx-swap="outerHTML">
-  <h3>
-    重點簡報
-    {% if briefing %}{{ gen_button("重新生成", notebook.id, force=true) }}{% endif %}
-  </h3>
   {% if briefing %}
-    {# Collapsible: collapsed shows one truncated line, click to expand.
-       CSS handles the visual one-line clamp via white-space:nowrap +
-       text-overflow:ellipsis so wrap-friendly languages still display
-       cleanly regardless of character count. Newlines are stripped so
-       a multi-paragraph briefing doesn't leak into the preview line. #}
+    {# U16: briefing is ambient context, rendered as a slim one-line expandable
+       strip (no card heading). Collapsed shows one truncated line, click to
+       expand. CSS clamps the preview via white-space:nowrap + ellipsis;
+       newlines are stripped so a multi-paragraph briefing doesn't leak in. #}
     <details class="briefing-details">
       <summary>
+        <span class="briefing-tag muted small">簡報</span>
         <span class="briefing-preview">{{ briefing.replace('\n', ' ').strip() }}</span>
         <span class="briefing-more muted">展開全文</span>
       </summary>
       <div class="briefing-body markdown-body" data-markdown>{{ briefing }}</div>
+      <div class="briefing-foot">{{ gen_button("重新生成", notebook.id, force=true) }}</div>
     </details>
   {% elif error %}
     <p class="muted small">{{ error }}</p>

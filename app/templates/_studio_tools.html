@@ -1,0 +1,41 @@
+{# U16 Phase 1: Studio tools launcher. One tile per generator (compare,
+   meeting minutes, A4 study guide / FAQ / timeline). A tile loads its config
+   into the shared #preview-content modal and the result is written to the
+   outputs/notes shelf below — so adding a feature is +1 tile, not +1 card.
+   Re-fetched on indexed-sources-changed so tile enabled-state stays in sync. #}
+{% set tools = [
+  ("compare", "來源比較", "🔀", 2),
+  ("minutes", "會議記錄", "📝", 1),
+  ("study_guide", "學習指南", "📚", 1),
+  ("faq", "常見問答", "❓", 1),
+  ("timeline", "時間軸", "🕒", 1),
+  ("translate", "翻譯摘要", "🌐", 1),
+] %}
+<section class="studio-section studio-tools" id="studio-tools"
+         hx-get="/notebooks/{{ notebook.id }}/_tools"
+         hx-trigger="indexed-sources-changed from:body"
+         hx-swap="outerHTML">
+  <h3>工具</h3>
+  <div class="tool-grid">
+    {% for kind, label, icon, min_indexed in tools %}
+      {% set enabled = indexed_count >= min_indexed %}
+      <button type="button"
+              class="tool-tile{% if not enabled %} is-disabled{% endif %}"
+              {% if enabled %}
+              hx-get="/notebooks/{{ notebook.id }}/tools/{{ kind }}"
+              hx-target="#preview-content"
+              hx-swap="innerHTML"
+              hx-on::after-request="window.dispatchEvent(new CustomEvent('open-preview'))"
+              {% else %}
+              disabled
+              title="{% if min_indexed > 1 %}需要 {{ min_indexed }} 個以上已索引的來源{% else %}先完成來源索引{% endif %}"
+              {% endif %}>
+        <span class="tool-tile-icon" aria-hidden="true">{{ icon }}</span>
+        <span class="tool-tile-label">{{ label }}</span>
+      </button>
+    {% endfor %}
+  </div>
+  {% if indexed_count == 0 %}
+    <p class="muted small">先上傳並完成索引，工具才能使用。</p>
+  {% endif %}
+</section>

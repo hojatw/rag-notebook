@@ -212,25 +212,22 @@
   </section>
 
   {# ---------------- RIGHT: Studio ---------------- #}
+  {# U16 Phase 1: Studio separates ambient context (briefing strip) from
+     actions (tools tile grid) from artifacts (notes/outputs shelf). Each
+     generator is a tile that opens in the preview-modal and writes its result
+     to the notes shelf — adding a feature is +1 tile, not +1 stacked card.
+     Starter questions moved to the chat empty-state. #}
   <aside class="workspace-pane workspace-studio" aria-label="Studio">
     <header class="pane-head">
       <h2>工作台</h2>
     </header>
 
-    {% with questions=cached_suggestions, error="", has_indexed=indexed_sources %}
-      {% include "_suggestions.html" %}
-    {% endwith %}
-
     {% with briefing=cached_briefing, error="", has_indexed=indexed_sources %}
       {% include "_briefing.html" %}
     {% endwith %}
 
-    {% with sources_indexed=indexed_sources %}
-      {% include "_compare.html" %}
-    {% endwith %}
-
-    {% with sources_indexed=indexed_sources %}
-      {% include "_minutes.html" %}
+    {% with indexed_count=indexed_sources|length %}
+      {% include "_studio_tools.html" %}
     {% endwith %}
 
     {% include "_notes_section.html" %}

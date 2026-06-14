@@ -11,14 +11,16 @@
 - **Notebook 首頁格狀列表。** 每個 notebook 都有自己的來源、對話與釘選筆記。
 - **每個 notebook 都有三欄式工作區**：
   - **Sources**（左側）：拖放上傳、自動輪詢索引狀態、針對單一來源重新索引/刪除、**點擊任一已索引來源即可開啟 chunk 預覽抽屜**。
-  - **Chat**（中間）：有來源根據的對話，包含對話切換器（每列可刪除、可**匯出 Markdown**）、Markdown 轉譯回答（每則回答可一鍵**複製**），以及行內 `[1]` `[2]` 引用 chip，可捲動到對應來源。提問經由 HTMX 只更新訊息區（不再整頁重載）；每次成功回答後會建議 2–3 個**追問問題 chip**（延遲生成、逐訊息快取）。Enter 送出、Shift+Enter 換行、中文選字 Enter 不會誤送。介面為繁體中文。
-  - **Studio**（右側）：一欄內提供五個 NotebookLM 風格輔助功能。
-      - *Suggested questions*：由 LLM 根據你的來源一鍵產生開場問題；來源完成索引後會自動重新整理（24 小時快取）。
-      - *Briefing*：跨來源的一段式綜合摘要，第一次檢視 notebook 時自動產生並快取 24 小時。可視需要按 *Regenerate*。跨分頁/相鄰來源完成時的並行產生，會由共享的 SQLite 鎖去重，所以一次上傳 5 個檔案只會呼叫 LLM 一次，而不是五次（可跨多個 worker 運作）。
-      - *Compare sources*：選擇 2 個以上已索引來源（可選擇性提供聚焦提示），模型會產生 Shared / Distinct / Contradictions 的 Markdown 報告。按 *Save to notes* 可保留供之後使用。
-      - *會議記錄整理*：選擇一個已索引來源（會議逐字稿），模型會產生結構化會議記錄（主題 / 決議 / 行動項目 / 待辦 / 未決事項），直接存入筆記。
-      - *Notes*：將助理回答 *Pin* 到可收合筆記中（移除筆記會自動取消釘選原始訊息）；比較結果與會議記錄也會存在這裡；可**一鍵匯出全部筆記為 Markdown**。
-  - **單一來源摘要**：每個上傳來源在索引完成後，都會自動產生 2 到 4 句 TL;DR，顯示在預覽抽屜頂端，並作為 Briefing / Compare 的精簡脈絡重用。
+  - **Chat**（中間）：有來源根據的對話，包含對話切換器（每列可刪除、可**匯出 Markdown**）、Markdown 轉譯回答（每則回答可一鍵**複製**），以及行內 `[1]` `[2]` 引用 chip，點擊會打開來源預覽抽屜並捲動、高亮被引用的那個分塊。提問經由 HTMX 只更新訊息區（不再整頁重載）；每次成功回答後會建議 2–3 個**追問問題 chip**（延遲生成、逐訊息快取）。空狀態會顯示**建議問題**——由 LLM 根據來源一鍵產生的開場問題，來源完成索引後自動重新整理（24 小時快取）。Enter 送出、Shift+Enter 換行、中文選字 Enter 不會誤送。介面為繁體中文。
+  - **Studio**（右側）：NotebookLM 風格工作區，分為環境脈絡、工具啟動器、產出架三部分（Studio IA 重構，見 `ROADMAP.md` U16）。
+      - *簡報細條*：跨來源的一段式綜合摘要,以可展開的單行細條呈現,第一次檢視 notebook 時自動產生並快取 24 小時。可視需要按 *Regenerate*。跨分頁/相鄰來源完成時的並行產生，會由共享的 SQLite 鎖去重，所以一次上傳 5 個檔案只會呼叫 LLM 一次，而不是五次（可跨多個 worker 運作）。
+      - *工具*：磚格啟動器,每個磚會在 preview-modal 中開啟設定、執行,並把結果連同**手動「存成筆記」**按鈕一起顯示(由使用者決定哪些落到產出架,不自動存)：
+          - *來源比較*：選擇 2 個以上已索引來源（可選擇性提供聚焦提示）→ Shared / Distinct / Contradictions 的 Markdown 報告。
+          - *會議記錄整理*：選擇一個已索引來源（會議逐字稿）→ 結構化會議記錄（主題 / 決議 / 行動項目 / 待辦 / 未決事項）；非會議來源會顯示模型判斷的理由,且不提供存檔。
+          - *學習指南 / 常見問答 / 時間軸*：跨整個 notebook 的來源摘要生成（A4）。
+          - *翻譯摘要*：把單一來源的摘要翻譯成目標語言（A5）。
+      - *產出與筆記架*：將助理回答 *Pin* 到可收合筆記中（移除筆記會自動取消釘選原始訊息）；你存下的每個工具結果也會落在這裡；筆記可**行內編輯**；可**一鍵匯出全部筆記為 Markdown**。
+  - **單一來源摘要**：每個上傳來源在索引完成後，都會自動產生 2 到 4 句 TL;DR，顯示在預覽抽屜頂端，並作為 Briefing / Compare / 產出工具的精簡脈絡重用。
 - **混合式檢索**：query rewriting、Chroma vector search、SQLite keyword matching 與 LLM reranking。低於可設定信心閾值時，模型會被要求避免回答，而不是產生幻覺。完整 pipeline、調校旋鈕與 eval 工作流程請見 [`RETRIEVAL.md`](docs/RETRIEVAL.md)。
 - **每則訊息的除錯窗格**：聊天回答附有可收合的「📊 N chunks · retrieved Xms · generated Yms · top score Z」徽章，點開後可看到每個引用的 vector / keyword / rerank / final 分數表格。
 - **檢索 eval harness**（`tests/eval_retrieval.py`），包含 demo notebook 的起始問題，方便衡量 query rewrite / hybrid scoring / rerank 變更（recall@k、MRR）。
@@ -211,17 +213,19 @@ POST /notebooks/{id}/chat/{cid}/delete                    刪除對話
 GET  /notebooks/{id}/chat/{cid}/_followups?message_id=N   延遲載入追問問題 chip（快取於 metadata）
 GET  /notebooks/{id}/chat/{cid}/export                    下載對話 Markdown
 
-GET  /notebooks/{id}/_suggestions                         HTMX swap：suggestions section
-POST /notebooks/{id}/suggestions                          產生 4 個起始問題
-GET  /notebooks/{id}/_briefing                            HTMX swap：briefing section（去重並行產生）
+POST /notebooks/{id}/suggestions                          產生 4 個起始問題（聊天空狀態）
+GET  /notebooks/{id}/_briefing                            HTMX swap：briefing 細條（去重並行產生）
 POST /notebooks/{id}/briefing[?force=1]                   產生 / 重新產生 notebook briefing
-GET  /notebooks/{id}/_compare                             HTMX swap：compare-sources section
-POST /notebooks/{id}/compare                              比較 2 個以上來源（回傳 result fragment）
-GET  /notebooks/{id}/_minutes                             HTMX swap：會議記錄整理卡片
-POST /notebooks/{id}/minutes                              從單一來源產生結構化會議記錄
+GET  /notebooks/{id}/_tools                               HTMX swap：Studio 工具啟動器（磚格）
+GET  /notebooks/{id}/tools/{kind}                         preview-modal 的工具設定面板（compare|minutes|study_guide|faq|timeline|translate）
+POST /notebooks/{id}/compare                              比較 2 個以上來源（回傳 result fragment + 存檔按鈕）
+POST /notebooks/{id}/minutes                              從單一來源產生結構化會議記錄（結果 + 存檔按鈕）
+POST /notebooks/{id}/artifacts/{kind}                     A4 產出：study_guide | faq | timeline（結果 + 存檔按鈕）
+POST /notebooks/{id}/translate                            A5 將單一來源的摘要翻譯成目標語言（結果 + 存檔按鈕）
 
 POST /notebooks/{id}/notes/pin                            將助理訊息釘選到 notes
 POST /notebooks/{id}/notes/add                            儲存 raw note（title + content）
+POST /notebooks/{id}/notes/{note_id}/edit                 就地編輯筆記 title/content（U8）
 POST /notebooks/{id}/notes/{note_id}/delete               移除釘選筆記（也會 broadcast pin-cleared）
 GET  /notebooks/{id}/_notes                               HTMX swap：notes section（notes-changed 事件）
 GET  /notebooks/{id}/notes/export                         下載全部筆記 Markdown
@@ -281,11 +285,16 @@ app/templates/
   _source_item.html    單一來源列表項目（HTMX polling target + preview trigger）。
   _source_preview.html 在 preview modal 中轉譯的 chunks list。
   _source_picker.html  Chat-form source-checkbox fieldset（HTMX swap target）。
-  _suggestions.html    Studio suggestions section（HTMX swap target）。
-  _briefing.html       Studio briefing section（HTMX swap target；第一次檢視時自動觸發 POST）。
-  _compare.html        Studio compare-sources panel（checkbox list + focus input）。
-  _compare_result.html Comparison result fragment（markdown body + Save-to-notes form）。
-  _notes_section.html  Studio notes section（HTMX swap target）。
+  _suggestions.html    起始問題區塊（顯示在聊天空狀態）。
+  _briefing.html       Studio briefing 細條（HTMX swap target；第一次檢視時自動觸發 POST）。
+  _studio_tools.html   Studio 工具啟動器——在 preview-modal 開啟各工具的磚格（HTMX swap target）。
+  _tool_panel.html     載入 preview-modal 的單一工具設定面板（compare/minutes/study_guide/faq/timeline）。
+  _compare_result.html 來源比較結果 fragment（markdown body + 共用存檔按鈕）。
+  _minutes_result.html 會議記錄結果 fragment（markdown body + 存檔按鈕；非會議來源不提供存檔）。
+  _artifact_result.html A4 產出結果 fragment（markdown body + 共用存檔按鈕）。
+  _translate_result.html A5 翻譯摘要結果 fragment（markdown body + 共用存檔按鈕）。
+  _save_note_button.html 所有工具結果共用的「存成筆記」控制（一次性已存狀態）。
+  _notes_section.html  Studio 產出與筆記架（HTMX swap target；行內編輯 = U8）。
   account.html         每位使用者的密碼變更頁。
   admin_users.html     Admin 使用者管理頁。
   admin_index.html     Admin vector-index 健康頁。

@@ -125,6 +125,73 @@ Use this Markdown structure, OMITTING any section that would be empty:
 
 Stay grounded in the provided summaries. If a focus question is given, prioritise points relevant to it."""
 
+# --- A4 artifact prompts (study guide / FAQ / timeline) -------------------
+# Siblings of briefing/compare: each takes the notebook's source summaries and
+# produces one Markdown artifact saved to Notes. Same strong per-language rule
+# so an English notebook never gets a Chinese study guide (cf. Q0-6).
+
+STUDY_GUIDE_PROMPT = """You write a study guide from a notebook of source summaries.
+
+LANGUAGE RULE — strictly match the dominant language of the source summaries. Do NOT translate:
+- Traditional Chinese summaries -> 繁體中文, headings: ## 核心概念 / ## 重點整理 / ## 自我測驗問題 / ## 名詞解釋
+- Simplified Chinese summaries -> Simplified Chinese with equivalent headings.
+- Japanese summaries -> Japanese with equivalent headings.
+- English summaries -> English, headings: ## Key concepts / ## Summary points / ## Self-test questions / ## Glossary
+If summaries are mixed-language, follow whichever language carries the majority.
+
+Produce a study guide using the Markdown headings above, OMITTING any section that would be empty:
+- 核心概念 / Key concepts: the main ideas a reader must understand, one bullet each.
+- 重點整理 / Summary points: concise takeaways grounded in the summaries.
+- 自我測驗問題 / Self-test questions: 4-6 open questions answerable from the sources (no answers).
+- 名詞解釋 / Glossary: key terms with a one-line definition, only if the sources define them.
+Stay strictly grounded in the provided summaries; never invent facts. No preamble before the first heading."""
+
+FAQ_PROMPT = """You write a FAQ from a notebook of source summaries.
+
+LANGUAGE RULE — strictly match the dominant language of the source summaries. Do NOT translate:
+- Traditional Chinese summaries -> 繁體中文 questions and answers.
+- Simplified Chinese summaries -> Simplified Chinese.
+- Japanese summaries -> Japanese.
+- English summaries -> English.
+If summaries are mixed-language, follow whichever language carries the majority.
+
+Produce 5-8 frequently-asked questions a reader would have, each with a 1-3 sentence grounded answer.
+Format each as Markdown: a bold question line, then the answer on the next line.
+Example shape (translate to the source language):
+**Q: ...?**
+A: ...
+
+Stay strictly grounded in the provided summaries; never invent facts. If the sources do not support an answer, omit that question. No preamble before the first question."""
+
+TIMELINE_PROMPT = """You build a chronological timeline from a notebook of source summaries.
+
+LANGUAGE RULE — strictly match the dominant language of the source summaries. Do NOT translate:
+- Traditional Chinese summaries -> 繁體中文.
+- Simplified Chinese summaries -> Simplified Chinese.
+- Japanese summaries -> Japanese.
+- English summaries -> English.
+If summaries are mixed-language, follow whichever language carries the majority.
+
+List the events, milestones, or stages mentioned in the sources in chronological order, one Markdown bullet each:
+- Prefix each bullet with its date/period in bold if the sources state one (**2023** — ...); otherwise order by the logical/described sequence.
+- Keep each entry to one line, grounded strictly in the summaries.
+Stay strictly grounded; never invent dates or events. If the sources contain no temporal or sequential information at all, reply with exactly one line saying there is no timeline information in these sources (in the sources' language) and nothing else. No preamble before the first bullet."""
+
+TRANSLATE_SUMMARY_PROMPT = """You translate a source document's summary into a target language (A5).
+The user prompt includes TARGET LANGUAGE. Translate the provided summary into exactly that language.
+
+Rules:
+- Output ONLY the translation — no preamble, no notes, no the original text, no quotes around it.
+- Preserve meaning, terminology, numbers, and names; do not add, omit, or summarise further.
+- If the summary is already in the target language, return it unchanged."""
+
+# kind -> (prompt, temperature, log label). The single dispatch point for A4.
+ARTIFACT_PROMPTS: dict[str, tuple[str, float, str]] = {
+    "study_guide": (STUDY_GUIDE_PROMPT, 0.4, "study_guide"),
+    "faq": (FAQ_PROMPT, 0.4, "faq"),
+    "timeline": (TIMELINE_PROMPT, 0.3, "timeline"),
+}
+
 logger = logging.getLogger(__name__)
 # Tunables sourced from app.config (defaults <- config.toml <- env); see config.py.
 EMBEDDING_BATCH_SIZE = config.embedding.batch_size
@@ -634,6 +701,66 @@ async def compare_sources(
     comparison = (content or "").strip()
     logger.info("compare_generated summaries=%s chars=%s focus_chars=%s", len(items), len(comparison), len(focus or ""))
     return comparison
+
+
+async def generate_artifact(
+    kind: str,
+    summaries: list[dict[str, Any]],
+    settings: dict[str, Any],
+) -> str:
+    """Generate an A4 artifact (study guide / FAQ / timeline) from source summaries.
+
+    ``kind`` must be a key in ``ARTIFACT_PROMPTS``. Mirrors ``generate_briefing``:
+    operates on ``[{"filename", "summary"}, ...]`` (empty summaries skipped) and
+    returns an empty string on missing settings or upstream failure — the caller
+    surfaces a friendly error instead.
+    """
+    spec = ARTIFACT_PROMPTS.get(kind)
+    if spec is None:
+        raise ValueError(f"unknown artifact kind: {kind}")
+    prompt, temperature, label = spec
+    items = [item for item in summaries if (item.get("summary") or "").strip()]
+    if not items:
+        return ""
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        logger.info("artifact_skipped kind=%s reason=no_chat_settings", label)
+        return ""
+    context = "\n\n".join(
+        f"[{index}] {item['filename']}\n{item['summary'].strip()}"
+        for index, item in enumerate(items, start=1)
+    )
+    user_prompt = f"Source summaries:\n{context}\n\nWrite the {label.replace('_', ' ')} now."
+    try:
+        content = await chat_completion(settings, user_prompt, prompt, temperature=temperature)
+    except Exception:
+        logger.exception("artifact_failed kind=%s summaries=%s", label, len(items))
+        return ""
+    artifact = (content or "").strip()
+    logger.info("artifact_generated kind=%s summaries=%s chars=%s", label, len(items), len(artifact))
+    return artifact
+
+
+async def translate_summary(text: str, target_language: str, settings: dict[str, Any]) -> str:
+    """Translate a source summary into ``target_language`` (A5).
+
+    Returns an empty string on empty input, missing settings, or upstream
+    failure — the caller surfaces a friendly error instead.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        logger.info("translate_skipped reason=no_chat_settings")
+        return ""
+    user_prompt = f"TARGET LANGUAGE: {target_language}\n\nSummary to translate:\n{text}\n\nWrite the translation now."
+    try:
+        content = await chat_completion(settings, user_prompt, TRANSLATE_SUMMARY_PROMPT, temperature=0.2)
+    except Exception:
+        logger.exception("translate_failed target_language=%s chars=%s", target_language, len(text))
+        return ""
+    translated = (content or "").strip()
+    logger.info("translate_completed target_language=%s in_chars=%s out_chars=%s", target_language, len(text), len(translated))
+    return translated
 
 
 async def chat_completion(

@@ -494,8 +494,9 @@ def test_notebook_can_disable_followups(monkeypatch, tmp_path):
         assert calls["n"] == 0
 
 
-def test_minutes_saves_note_and_triggers_refresh(monkeypatch, tmp_path):
-    """A1: minutes generation renders the result, saves a note, fires notes-changed."""
+def test_minutes_renders_with_save_button_no_autosave(monkeypatch, tmp_path):
+    """A1: minutes generation renders the result + a save button but does NOT
+    auto-save; the model only offers a savable result when it produces minutes."""
     main, db = _fresh_app(monkeypatch, tmp_path)
 
     async def fake_minutes(chunks, settings):
@@ -525,15 +526,13 @@ def test_minutes_saves_note_and_triggers_refresh(monkeypatch, tmp_path):
 
         resp = client.post(f"/notebooks/{notebook_id}/minutes", data={"source_id": source_id})
         assert resp.status_code == 200
-        assert "存入筆記" in resp.text
-        assert resp.headers.get("HX-Trigger") == "notes-changed"
+        assert "重要決議" in resp.text
+        assert "存成筆記" in resp.text  # manual save offered
+        assert resp.headers.get("HX-Trigger") is None  # not auto-saved
         with db.connect() as conn:
-            note = conn.execute(
-                "SELECT title, content FROM notes WHERE notebook_id = ?", (notebook_id,)
-            ).fetchone()
-        assert note is not None
-        assert note["title"].startswith("會議整理")
-        assert "重要決議" in note["content"]
+            assert conn.execute(
+                "SELECT COUNT(*) c FROM notes WHERE notebook_id = ?", (notebook_id,)
+            ).fetchone()["c"] == 0
 
 
 def test_minutes_warns_before_non_meeting_source(monkeypatch, tmp_path):
@@ -582,8 +581,10 @@ def test_minutes_warns_before_non_meeting_source(monkeypatch, tmp_path):
 
         forced = client.post(f"/notebooks/{notebook_id}/minutes", data={"source_id": source_id, "force": "1"})
         assert forced.status_code == 200
-        assert "存入筆記" in forced.text
+        assert "存成筆記" in forced.text  # forced result offers manual save
         assert calls["n"] == 1
+        with db.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) c FROM notes WHERE notebook_id = ?", (notebook_id,)).fetchone()["c"] == 0
 
 
 def test_minutes_decline_is_not_saved(monkeypatch, tmp_path):
@@ -617,7 +618,8 @@ def test_minutes_decline_is_not_saved(monkeypatch, tmp_path):
 
         resp = client.post(f"/notebooks/{notebook_id}/minutes", data={"source_id": source_id})
         assert resp.status_code == 200
-        assert "未存入筆記" in resp.text
+        assert "不像會議記錄" in resp.text
+        assert "存成筆記" not in resp.text  # non-meeting source offers no save
         assert resp.headers.get("HX-Trigger") is None
         with db.connect() as conn:
             assert conn.execute("SELECT COUNT(*) c FROM notes WHERE notebook_id = ?", (notebook_id,)).fetchone()["c"] == 0
@@ -669,3 +671,233 @@ def test_export_conversation_and_notes_markdown(monkeypatch, tmp_path):
         assert "單筆內容" in note.text
         assert "筆記內容" not in note.text
         assert "attachment" in note.headers["content-disposition"]
+
+
+def _seed_indexed_source(db, user_id, notebook_id, filename="a.pdf", summary="摘要內容"):
+    """Insert an indexed source (with a summary) + one chunk; return source id."""
+    with db.connect() as conn:
+        source_id = conn.execute(
+            "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, summary) "
+            "VALUES (?, ?, ?, '/tmp/x', 'indexed', ?)",
+            (user_id, notebook_id, filename, summary),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json) "
+            "VALUES (?, ?, 0, 'document', ?, '[]')",
+            (user_id, source_id, summary),
+        )
+    return source_id
+
+
+def test_studio_tools_tile_gating(monkeypatch, tmp_path):
+    """U16: the tools launcher enables the compare tile only with >=2 indexed sources."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+
+        # No indexed sources: grid present, compare disabled.
+        resp = client.get(f"/notebooks/{notebook_id}/_tools")
+        assert resp.status_code == 200
+        assert 'class="tool-grid"' in resp.text
+        assert "來源比較" in resp.text and "學習指南" in resp.text
+        assert resp.text.count("disabled") >= 5  # every tile disabled at 0 indexed
+
+        # One indexed source: artifact/minutes tiles enabled, compare still disabled.
+        _seed_indexed_source(db, user["id"], notebook_id, "a.pdf")
+        resp = client.get(f"/notebooks/{notebook_id}/_tools")
+        assert "/notebooks/%d/tools/study_guide" % notebook_id in resp.text
+        # compare tile (needs 2) is still disabled -> no compare tool link
+        assert "/tools/compare" not in resp.text
+
+        # Two indexed sources: compare enabled.
+        _seed_indexed_source(db, user["id"], notebook_id, "b.pdf")
+        resp = client.get(f"/notebooks/{notebook_id}/_tools")
+        assert "/tools/compare" in resp.text
+
+
+def test_tool_panel_renders_each_kind(monkeypatch, tmp_path):
+    """U16: each tool kind returns a modal panel; unknown kind 404s."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        _seed_indexed_source(db, user["id"], notebook_id, "a.pdf")
+        _seed_indexed_source(db, user["id"], notebook_id, "b.pdf")
+
+        compare = client.get(f"/notebooks/{notebook_id}/tools/compare")
+        assert compare.status_code == 200
+        assert "開始比較" in compare.text and 'id="tool-result"' in compare.text
+
+        guide = client.get(f"/notebooks/{notebook_id}/tools/study_guide")
+        assert guide.status_code == 200
+        assert "生成學習指南" in guide.text
+
+        assert client.get(f"/notebooks/{notebook_id}/tools/nope").status_code == 404
+
+
+def test_artifact_renders_with_save_button_no_autosave(monkeypatch, tmp_path):
+    """A4: artifact generation shows the result + a save button but does NOT
+    auto-save; the user saves manually via /notes/add."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_artifact(kind, summaries, settings):
+        assert kind == "study_guide"
+        return "## 核心概念\n- 測試"
+
+    monkeypatch.setattr(main, "generate_artifact", fake_artifact)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db, title="A4測試")
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+        _seed_indexed_source(db, user["id"], notebook_id, "a.pdf", summary="一份關於主題的摘要。")
+
+        resp = client.post(f"/notebooks/{notebook_id}/artifacts/study_guide")
+        assert resp.status_code == 200
+        assert "核心概念" in resp.text
+        # Manual save: a save button is offered, nothing auto-saved.
+        assert "存成筆記" in resp.text
+        assert 'name="title" value="學習指南 — A4測試"' in resp.text
+        assert resp.headers.get("HX-Trigger") is None
+        with db.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) c FROM notes WHERE notebook_id = ?", (notebook_id,)
+            ).fetchone()["c"] == 0
+
+        # Saving manually via /notes/add persists it.
+        saved = client.post(
+            f"/notebooks/{notebook_id}/notes/add",
+            data={"title": "學習指南 — A4測試", "content": "## 核心概念\n- 測試"},
+        )
+        assert saved.status_code == 200
+        with db.connect() as conn:
+            note = conn.execute(
+                "SELECT title, content FROM notes WHERE notebook_id = ?", (notebook_id,)
+            ).fetchone()
+        assert note is not None and note["title"].startswith("學習指南")
+        assert "核心概念" in note["content"]
+
+        # Unknown artifact kind -> 404.
+        assert client.post(f"/notebooks/{notebook_id}/artifacts/nope").status_code == 404
+
+
+def test_chat_empty_shows_starter_questions(monkeypatch, tmp_path):
+    """U16: starter questions render in the chat empty-state, not the Studio."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        _seed_indexed_source(db, user["id"], notebook_id, "a.pdf")
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE notebooks SET suggestions_json = ?, suggestions_at = CURRENT_TIMESTAMP WHERE id = ?",
+                ('["這份文件的重點是什麼？"]', notebook_id),
+            )
+
+        empty = client.get(f"/notebooks/{notebook_id}/_chat-empty")
+        assert empty.status_code == 200
+        assert 'class="suggestion-chip"' in empty.text
+        assert "這份文件的重點是什麼？" in empty.text
+        # The relocated section no longer self-polls indexed-sources-changed
+        # (the empty-state owns that refresh).
+        assert 'id="studio-suggestions"' in empty.text
+
+
+def test_edit_note_updates_in_place(monkeypatch, tmp_path):
+    """U8: editing a note updates title/content and returns the refreshed shelf."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            note_id = conn.execute(
+                "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, '舊標題', '舊內容')",
+                (notebook_id, user["id"]),
+            ).lastrowid
+
+        # The notes shelf offers an edit affordance.
+        shelf = client.get(f"/notebooks/{notebook_id}/_notes")
+        assert "編輯" in shelf.text and "note-edit-form" in shelf.text
+
+        resp = client.post(
+            f"/notebooks/{notebook_id}/notes/{note_id}/edit",
+            data={"title": "新標題", "content": "新內容"},
+        )
+        assert resp.status_code == 200
+        assert "新標題" in resp.text and "新內容" in resp.text
+        with db.connect() as conn:
+            note = conn.execute("SELECT title, content FROM notes WHERE id = ?", (note_id,)).fetchone()
+        assert note["title"] == "新標題" and note["content"] == "新內容"
+
+        # Empty content is rejected; a foreign/missing note 404s.
+        assert client.post(
+            f"/notebooks/{notebook_id}/notes/{note_id}/edit", data={"title": "x", "content": "   "}
+        ).status_code == 400
+        assert client.post(
+            f"/notebooks/{notebook_id}/notes/999999/edit", data={"title": "x", "content": "y"}
+        ).status_code == 404
+
+
+def test_translate_renders_with_save_button(monkeypatch, tmp_path):
+    """A5: translate-summary shows the translation + a save button; bad language 400s."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_translate(text, target_language, settings):
+        assert target_language == "English"
+        return "Translated summary."
+
+    monkeypatch.setattr(main, "translate_summary", fake_translate)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+        source_id = _seed_indexed_source(db, user["id"], notebook_id, "a.pdf", summary="一份摘要。")
+
+        # Tool panel offers a source + language picker.
+        panel = client.get(f"/notebooks/{notebook_id}/tools/translate")
+        assert panel.status_code == 200
+        assert "翻譯摘要" in panel.text and 'name="target_language"' in panel.text
+
+        resp = client.post(
+            f"/notebooks/{notebook_id}/translate",
+            data={"source_id": source_id, "target_language": "English"},
+        )
+        assert resp.status_code == 200
+        assert "Translated summary." in resp.text
+        assert "存成筆記" in resp.text
+        assert resp.headers.get("HX-Trigger") is None
+
+        # Non-allowlisted language is rejected (no arbitrary prompt input).
+        assert client.post(
+            f"/notebooks/{notebook_id}/translate",
+            data={"source_id": source_id, "target_language": "Klingon"},
+        ).status_code == 400
+
+
+def test_citation_payload_and_merge_carry_chunk_id(monkeypatch, tmp_path):
+    """U3: citations carry the chunk row id so the chip can open the preview at it."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    chunks = [{"id": 7, "source_id": 3, "filename": "a.pdf", "location": "p1", "text": "hello", "score": 0.9}]
+    cites = main.citation_payload(chunks)
+    assert cites[0]["chunk_id"] == 7 and cites[0]["source_id"] == 3
+
+    vec = [{"id": 5, "source_id": 2, "filename": "f", "location": "l", "text": "alpha beta", "vector_score": 0.8}]
+    merged = main.merge_candidates(vec, [], ["alpha"])
+    assert merged[5]["id"] == 5

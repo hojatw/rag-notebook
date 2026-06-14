@@ -41,7 +41,7 @@ NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload -
 Server-rendered Jinja with progressive enhancement via HTMX + Alpine — **no build step, no npm, no CDN** (vendor JS is self-hosted). HTMX partials live in `app/templates/_*.html`. Cross-fragment live updates are driven by custom `HX-Trigger` events broadcast from source-row polling:
 
 - `source-status-changed` — every status change; the left source rows listen (fast row sync).
-- `indexed-sources-changed` — only on `indexed`/`failed`; the Studio sections (suggestions/briefing/compare) and the center chat empty-state listen, so they don't re-render on every 2s processing tick.
+- `indexed-sources-changed` — only on `indexed`/`failed`; the Studio briefing strip + tools launcher (`_studio_tools.html`) and the center chat empty-state (which now hosts the relocated starter questions) listen, so they don't re-render on every 2s processing tick.
 
 When adding a fragment that depends on indexed-source availability, listen for `indexed-sources-changed`, not the per-tick event.
 

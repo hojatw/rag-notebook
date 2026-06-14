@@ -82,7 +82,11 @@ def test_generation_prompts_carry_strong_language_rule():
     emit Chinese questions for English sources. All three generation prompts
     should pin every supported language explicitly and forbid translation.
     """
-    for prompt in (llm.STARTER_QUESTIONS_PROMPT, llm.SOURCE_SUMMARY_PROMPT, llm.NOTEBOOK_BRIEFING_PROMPT):
+    prompts = [llm.STARTER_QUESTIONS_PROMPT, llm.SOURCE_SUMMARY_PROMPT, llm.NOTEBOOK_BRIEFING_PROMPT]
+    # A4 artifact prompts must follow the same rule so an English notebook never
+    # gets a Chinese study guide / FAQ / timeline.
+    prompts += [prompt for prompt, _temp, _label in llm.ARTIFACT_PROMPTS.values()]
+    for prompt in prompts:
         assert "Do NOT translate" in prompt
         assert "English" in prompt
         assert "Traditional Chinese" in prompt
@@ -168,6 +172,55 @@ def test_compare_sources_requires_two_summaries_and_settings():
             {"api_key": "x", "chat_model": "m"},
         )
     ) == ""
+
+
+def test_generate_artifact_dispatches_and_short_circuits(monkeypatch):
+    """A4: generate_artifact picks the right prompt, skips on no summaries/settings,
+    and rejects unknown kinds."""
+    captured = {}
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None):
+        captured["system_prompt"] = system_prompt
+        captured["temperature"] = temperature
+        return "## Key concepts\n- alpha"
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    summaries = [{"filename": "a.pdf", "summary": "Summary A"}]
+    settings = {"api_key": "x", "chat_model": "m"}
+
+    out = asyncio.run(llm.generate_artifact("study_guide", summaries, settings))
+    assert out == "## Key concepts\n- alpha"
+    assert captured["system_prompt"] is llm.STUDY_GUIDE_PROMPT
+
+    # No usable summaries -> empty, no LLM call.
+    assert asyncio.run(llm.generate_artifact("faq", [{"filename": "x", "summary": " "}], settings)) == ""
+    # Missing settings -> empty.
+    assert asyncio.run(llm.generate_artifact("timeline", summaries, {})) == ""
+    # Unknown kind -> ValueError.
+    with pytest.raises(ValueError):
+        asyncio.run(llm.generate_artifact("nope", summaries, settings))
+
+
+def test_translate_summary_dispatches_and_short_circuits(monkeypatch):
+    """A5: translate_summary passes the target language and short-circuits cleanly."""
+    captured = {}
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None):
+        captured["user_prompt"] = user_prompt
+        captured["system_prompt"] = system_prompt
+        return "Translated."
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    settings = {"api_key": "x", "chat_model": "m"}
+
+    out = asyncio.run(llm.translate_summary("一段摘要", "English", settings))
+    assert out == "Translated."
+    assert captured["system_prompt"] is llm.TRANSLATE_SUMMARY_PROMPT
+    assert "TARGET LANGUAGE: English" in captured["user_prompt"]
+
+    # Empty text or missing settings -> empty, no LLM call.
+    assert asyncio.run(llm.translate_summary("  ", "English", settings)) == ""
+    assert asyncio.run(llm.translate_summary("text", "English", {})) == ""
 
 
 # -------------------- P0-1: concurrent embedding batches --------------------
