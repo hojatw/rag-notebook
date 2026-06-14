@@ -1,4 +1,5 @@
 import importlib
+import json
 
 from fastapi.testclient import TestClient
 
@@ -687,6 +688,385 @@ def _seed_indexed_source(db, user_id, notebook_id, filename="a.pdf", summary="�
             (user_id, source_id, summary),
         )
     return source_id
+
+
+def test_admin_eval_workbench_creates_default_profile(monkeypatch, tmp_path):
+    """E1a: admin eval shell exposes the active profile and durable run history tables."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+
+        resp = client.get("/admin/evals")
+        assert resp.status_code == 200
+        assert "Eval 工作台" in resp.text
+        assert "目前系統預設" in resp.text
+        assert 'href="/admin/evals"' in resp.text
+        assert "歷史執行紀錄" in resp.text
+        assert '<pre class="config-preview">' not in resp.text
+        assert "最終 chunk 數" in resp.text
+        assert "搜尋全站已索引筆記本" in resp.text
+
+        with db.connect() as conn:
+            profile = conn.execute("SELECT * FROM retrieval_profiles WHERE is_active = 1").fetchone()
+            tables = conn.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name IN (
+                    'retrieval_profiles', 'eval_sets', 'eval_items', 'eval_runs', 'eval_results'
+                )
+                """
+            ).fetchall()
+
+        assert profile is not None
+        assert json.loads(profile["params_json"])["final_chunk_count"] == main.FINAL_CHUNK_COUNT
+        assert {row["name"] for row in tables} == {
+            "retrieval_profiles",
+            "eval_sets",
+            "eval_items",
+            "eval_runs",
+            "eval_results",
+        }
+
+
+def test_admin_eval_workbench_search_generate_approve_and_delete(monkeypatch, tmp_path):
+    """E1b follow-up: all-site notebook search, draft generation, approval, and set deletion."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, admin_notebook_id = _seed_notebook(db, "Admin indexed")
+        admin_source_id = _seed_indexed_source(db, admin_user["id"], admin_notebook_id, "admin.pdf")
+        admin_source_id_2 = _seed_indexed_source(db, admin_user["id"], admin_notebook_id, "admin-2.pdf", summary="second evidence")
+        with db.connect() as conn:
+            other_user = conn.execute("SELECT * FROM users WHERE username = 'user'").fetchone()
+            other_notebook_id = conn.execute(
+                "INSERT INTO notebooks (user_id, title) VALUES (?, ?)",
+                (other_user["id"], "Customer indexed"),
+            ).lastrowid
+        _seed_indexed_source(db, other_user["id"], other_notebook_id, "customer.pdf", summary="customer evidence")
+
+        resp = client.get("/admin/evals", params={"notebook_q": "Customer"})
+        assert resp.status_code == 200
+        assert "Customer indexed" in resp.text
+        assert "user · 1 indexed sources" in resp.text
+        assert "Admin indexed" not in resp.text
+
+        created = client.post(
+            "/admin/evals/sets",
+            data={"notebook_id": admin_notebook_id, "name": "Generated Eval", "description": ""},
+            follow_redirects=False,
+        )
+        assert created.status_code == 303
+        eval_set_id = int(created.headers["location"].rstrip("/").split("/")[-1])
+
+        generated = client.post(
+            f"/admin/evals/sets/{eval_set_id}/generate",
+            data={"count": "2"},
+            follow_redirects=False,
+        )
+        assert generated.status_code == 303
+        assert generated.headers["location"] == f"/admin/evals/sets/{eval_set_id}#eval-items"
+        generated_again = client.post(
+            f"/admin/evals/sets/{eval_set_id}/generate",
+            data={"count": "2"},
+            follow_redirects=False,
+        )
+        assert generated_again.status_code == 303
+
+        detail = client.get(f"/admin/evals/sets/{eval_set_id}")
+        assert detail.status_code == 200
+        assert '<nav aria-label="Breadcrumb" class="breadcrumb">' in detail.text
+        assert 'href="/admin/evals">Eval 工作台</a>' in detail.text
+        assert 'id="eval-items"' in detail.text
+        assert "返回 Eval 工作台" not in detail.text
+        assert "自動生成 draft 題目" in detail.text
+        assert "draft" in detail.text
+        assert "approve" in detail.text
+        assert "執行 retrieval eval</button>" in detail.text
+        assert "disabled" in detail.text
+
+        with db.connect() as conn:
+            generated_items = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM eval_items WHERE eval_set_id = ? ORDER BY id ASC", (eval_set_id,)
+                ).fetchall()
+            ]
+        assert len(generated_items) == 2
+        assert {item["expected_source_id"] for item in generated_items} == {admin_source_id, admin_source_id_2}
+        generated_item = generated_items[0]
+        assert generated_item["approved"] == 0
+        assert generated_item["expected_chunk_id"] is not None
+        assert generated_item["question"].startswith("「")
+        assert "來源：admin" in generated_item["question"]
+        assert json.loads(generated_item["expected_substrings_json"])
+
+        approved = client.post(
+            f"/admin/evals/sets/{eval_set_id}/items/{generated_item['id']}/approve",
+            follow_redirects=False,
+        )
+        assert approved.status_code == 303
+        assert approved.headers["location"] == f"/admin/evals/sets/{eval_set_id}#eval-items"
+        with db.connect() as conn:
+            approved_item = conn.execute("SELECT approved FROM eval_items WHERE id = ?", (generated_item["id"],)).fetchone()
+        assert approved_item["approved"] == 1
+
+        htmx_approved = client.post(
+            f"/admin/evals/sets/{eval_set_id}/items/{generated_items[1]['id']}/approve",
+            headers={"HX-Request": "true"},
+        )
+        assert htmx_approved.status_code == 200
+        assert 'id="eval-items"' in htmx_approved.text
+        assert '<!doctype html>' not in htmx_approved.text
+        assert "執行 retrieval eval" in htmx_approved.text
+
+        deleted = client.post(f"/admin/evals/sets/{eval_set_id}/delete", follow_redirects=False)
+        assert deleted.status_code == 303
+        with db.connect() as conn:
+            eval_set = conn.execute("SELECT id FROM eval_sets WHERE id = ?", (eval_set_id,)).fetchone()
+            item = conn.execute("SELECT id FROM eval_items WHERE eval_set_id = ?", (eval_set_id,)).fetchone()
+        assert eval_set is None
+        assert item is None
+
+
+def test_admin_eval_set_runner_records_results(monkeypatch, tmp_path):
+    """E1b: admin can create a manual eval item, run it, and inspect stored metrics."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_retrieve(question, conversation_id, settings, history, user_id, source_ids=None):
+        assert question == "alpha?"
+        assert conversation_id is None
+        assert user_id == admin_user["id"]
+        assert source_ids == [source_id]
+        return [
+            {
+                "id": 42,
+                "source_id": source_id,
+                "filename": "a.pdf",
+                "location": "document",
+                "text": "alpha evidence is here",
+                "score": 0.91,
+                "vector_score": 0.8,
+                "keyword_score": 0.6,
+            }
+        ]
+
+    monkeypatch.setattr(main, "retrieve", fake_retrieve)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, notebook_id = _seed_notebook(db)
+        source_id = _seed_indexed_source(db, admin_user["id"], notebook_id, "a.pdf", summary="alpha evidence")
+
+        created = client.post(
+            "/admin/evals/sets",
+            data={"notebook_id": notebook_id, "name": "Alpha Eval", "description": "Manual smoke"},
+            follow_redirects=False,
+        )
+        assert created.status_code == 303
+        eval_set_id = int(created.headers["location"].rstrip("/").split("/")[-1])
+
+        bad_item = client.post(
+            f"/admin/evals/sets/{eval_set_id}/items",
+            data={"question": "bad?", "expected_source_id": "not-a-number", "expected_substrings": ""},
+        )
+        assert bad_item.status_code == 400
+
+        item = client.post(
+            f"/admin/evals/sets/{eval_set_id}/items",
+            data={
+                "question": "alpha?",
+                "expected_source_id": str(source_id),
+                "expected_substrings": "alpha evidence",
+                "notes": "ground truth",
+            },
+            follow_redirects=False,
+        )
+        assert item.status_code == 303
+
+        run = client.post(f"/admin/evals/sets/{eval_set_id}/run", follow_redirects=False)
+        assert run.status_code == 303
+        run_id = int(run.headers["location"].rstrip("/").split("/")[-1])
+
+        detail = client.get(f"/admin/evals/runs/{run_id}")
+        assert detail.status_code == 200
+        assert "Alpha Eval" in detail.text
+        assert '<nav aria-label="Breadcrumb" class="breadcrumb">' in detail.text
+        assert 'href="/admin/evals">Eval 工作台</a>' in detail.text
+        assert f'href="/admin/evals/sets/{eval_set_id}">Alpha Eval</a>' in detail.text
+        assert "返回 Eval Set" not in detail.text
+        assert "hit" in detail.text
+        assert "alpha evidence is here" in detail.text
+        assert "Expected" in detail.text
+        assert "substrings: alpha evidence" in detail.text
+        assert "診斷：命中預期依據" in detail.text
+        assert '<pre class="config-preview">' not in detail.text
+        assert "低信心閾值" in detail.text
+
+        with db.connect() as conn:
+            row = conn.execute("SELECT * FROM eval_runs WHERE id = ?", (run_id,)).fetchone()
+            result = conn.execute("SELECT * FROM eval_results WHERE run_id = ?", (run_id,)).fetchone()
+
+        metrics = json.loads(row["metrics_json"])
+        retrieved = json.loads(result["retrieved_json"])
+        assert row["status"] == "succeeded"
+        assert metrics["recall_at_k"] == 1.0
+        assert metrics["mrr"] == 1.0
+        assert metrics["hits"] == 1
+        assert result["status"] == "hit"
+        assert result["hit_rank"] == 1
+        assert result["top_score"] == 0.91
+        assert retrieved[0]["chunk_id"] == 42
+
+
+def test_admin_eval_run_results_partial_polls_while_running(monkeypatch, tmp_path):
+    """Eval run pages loaded mid-run must refresh results, not only the status card."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, notebook_id = _seed_notebook(db)
+        source_id = _seed_indexed_source(db, admin_user["id"], notebook_id, "a.pdf", summary="alpha evidence")
+        with db.connect() as conn:
+            chunk_id = conn.execute("SELECT id FROM chunks WHERE source_id = ?", (source_id,)).fetchone()["id"]
+            eval_set_id = conn.execute(
+                """
+                INSERT INTO eval_sets (name, target_user_id, notebook_id, created_by)
+                VALUES ('Polling Eval', ?, ?, ?)
+                """,
+                (admin_user["id"], notebook_id, admin_user["id"]),
+            ).lastrowid
+            item_id = conn.execute(
+                """
+                INSERT INTO eval_items
+                (eval_set_id, question, expected_source_id, expected_chunk_id, expected_substrings_json, approved)
+                VALUES (?, 'alpha?', ?, ?, ?, 1)
+                """,
+                (eval_set_id, source_id, chunk_id, db.dumps(["alpha evidence"])),
+            ).lastrowid
+            run_id = conn.execute(
+                """
+                INSERT INTO eval_runs
+                (eval_set_id, created_by, status, progress_total, profile_snapshot_json, current_step)
+                VALUES (?, ?, 'running', 1, ?, '檢索第 1 / 1 題')
+                """,
+                (eval_set_id, admin_user["id"], db.dumps(main.current_retrieval_profile_params())),
+            ).lastrowid
+
+        page = client.get(f"/admin/evals/runs/{run_id}")
+        assert page.status_code == 200
+        assert f'hx-get="/admin/evals/runs/{run_id}/_status"' in page.text
+        assert f'hx-get="/admin/evals/runs/{run_id}/_results"' in page.text
+        assert "尚未產生 per-question results" in page.text
+        assert "低信心閾值" in page.text
+
+        with db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO eval_results
+                (run_id, eval_item_id, status, hit_rank, top_score, latency_ms, retrieved_json)
+                VALUES (?, ?, 'hit', 1, 0.91, 12.5, ?)
+                """,
+                (
+                    run_id,
+                    item_id,
+                    db.dumps([
+                        {
+                            "rank": 1,
+                            "chunk_id": chunk_id,
+                            "source_id": source_id,
+                            "filename": "a.pdf",
+                            "location": "document",
+                            "score": 0.91,
+                            "snippet": "alpha evidence",
+                        }
+                    ]),
+                ),
+            )
+            conn.execute(
+                "UPDATE eval_runs SET status = 'succeeded', metrics_json = ? WHERE id = ?",
+                (db.dumps({"recall_at_k": 1.0, "mrr": 1.0, "hits": 1, "scored": 1, "avg_latency_ms": 12.5}), run_id),
+            )
+
+        results = client.get(f"/admin/evals/runs/{run_id}/_results")
+        assert results.status_code == 200
+        assert "alpha evidence" in results.text
+        assert "Expected" in results.text
+        assert f'hx-get="/admin/evals/runs/{run_id}/_results"' not in results.text
+
+
+def test_admin_eval_run_results_explain_miss(monkeypatch, tmp_path):
+    """Miss rows show expected evidence and why the retrieved chunks did not score."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, notebook_id = _seed_notebook(db)
+        source_id = _seed_indexed_source(db, admin_user["id"], notebook_id, "a.pdf", summary="expected alpha")
+        with db.connect() as conn:
+            expected_chunk_id = conn.execute("SELECT id FROM chunks WHERE source_id = ?", (source_id,)).fetchone()["id"]
+            other_chunk_id = conn.execute(
+                """
+                INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json)
+                VALUES (?, ?, 1, 'document p2', 'retrieved beta', '[]')
+                """,
+                (admin_user["id"], source_id),
+            ).lastrowid
+            eval_set_id = conn.execute(
+                """
+                INSERT INTO eval_sets (name, target_user_id, notebook_id, created_by)
+                VALUES ('Miss Eval', ?, ?, ?)
+                """,
+                (admin_user["id"], notebook_id, admin_user["id"]),
+            ).lastrowid
+            item_id = conn.execute(
+                """
+                INSERT INTO eval_items
+                (eval_set_id, question, expected_source_id, expected_chunk_id, expected_substrings_json, approved)
+                VALUES (?, 'why alpha?', ?, ?, ?, 1)
+                """,
+                (eval_set_id, source_id, expected_chunk_id, db.dumps(["expected alpha"])),
+            ).lastrowid
+            run_id = conn.execute(
+                """
+                INSERT INTO eval_runs
+                (eval_set_id, created_by, status, progress_total, profile_snapshot_json)
+                VALUES (?, ?, 'succeeded', 1, ?)
+                """,
+                (eval_set_id, admin_user["id"], db.dumps(main.current_retrieval_profile_params())),
+            ).lastrowid
+            conn.execute(
+                """
+                INSERT INTO eval_results
+                (run_id, eval_item_id, status, hit_rank, top_score, latency_ms, retrieved_json)
+                VALUES (?, ?, 'miss', NULL, 0.77, 9.0, ?)
+                """,
+                (
+                    run_id,
+                    item_id,
+                    db.dumps([
+                        {
+                            "rank": 1,
+                            "chunk_id": other_chunk_id,
+                            "source_id": source_id,
+                            "filename": "a.pdf",
+                            "location": "document p2",
+                            "score": 0.77,
+                            "snippet": "retrieved beta",
+                        }
+                    ]),
+                ),
+            )
+
+        results = client.get(f"/admin/evals/runs/{run_id}/_results")
+        assert results.status_code == 200
+        assert "why alpha?" in results.text
+        assert f"chunk #{expected_chunk_id}" in results.text
+        assert "expected alpha" in results.text
+        assert "retrieved beta" in results.text
+        assert "診斷：有找回同一來源，但不是預期 chunk/片段。" in results.text
+        assert "預期 chunk 不在目前 top-k 結果中。" in results.text
 
 
 def test_studio_tools_tile_gating(monkeypatch, tmp_path):

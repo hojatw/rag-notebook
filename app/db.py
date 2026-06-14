@@ -171,6 +171,89 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_ingest_jobs_status
             ON ingest_jobs(status, id);
+
+            -- Admin-only in-deployment eval workbench (E1). Eval data stays in
+            -- the customer deployment; runs snapshot the profile and per-item
+            -- results so tuning decisions can be audited and revisited.
+            CREATE TABLE IF NOT EXISTS retrieval_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                params_json TEXT NOT NULL DEFAULT '{}',
+                requires_reindex INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 0,
+                source_run_id INTEGER,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS eval_sets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                target_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS eval_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                eval_set_id INTEGER NOT NULL REFERENCES eval_sets(id) ON DELETE CASCADE,
+                question TEXT NOT NULL,
+                expected_source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+                expected_chunk_id INTEGER REFERENCES chunks(id) ON DELETE SET NULL,
+                expected_substrings_json TEXT NOT NULL DEFAULT '[]',
+                notes TEXT NOT NULL DEFAULT '',
+                approved INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS eval_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                eval_set_id INTEGER NOT NULL REFERENCES eval_sets(id) ON DELETE CASCADE,
+                profile_id INTEGER REFERENCES retrieval_profiles(id) ON DELETE SET NULL,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                progress_current INTEGER NOT NULL DEFAULT 0,
+                progress_total INTEGER NOT NULL DEFAULT 0,
+                current_step TEXT NOT NULL DEFAULT '',
+                profile_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                metrics_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT NOT NULL DEFAULT '',
+                started_at TEXT,
+                finished_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS eval_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES eval_runs(id) ON DELETE CASCADE,
+                eval_item_id INTEGER NOT NULL REFERENCES eval_items(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'pending',
+                hit_rank INTEGER,
+                top_score REAL NOT NULL DEFAULT 0,
+                latency_ms REAL NOT NULL DEFAULT 0,
+                retrieved_json TEXT NOT NULL DEFAULT '[]',
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_eval_sets_notebook
+            ON eval_sets(notebook_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_eval_items_set
+            ON eval_items(eval_set_id, approved, id);
+
+            CREATE INDEX IF NOT EXISTS idx_eval_runs_set
+            ON eval_runs(eval_set_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_eval_results_run
+            ON eval_results(run_id, eval_item_id);
             """
         )
         _ensure_column(conn, "llm_settings", "provider", "TEXT NOT NULL DEFAULT 'openai_compatible'")

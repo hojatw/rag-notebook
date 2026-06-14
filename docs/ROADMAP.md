@@ -90,6 +90,28 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ---
 
+## Admin evaluation workbench
+
+### High priority — unlocks blocked retrieval / tuning work
+
+#### [~] E1 · In-deployment eval workbench (private customer data stays in place)
+- **Issue:** Several quality/performance items are blocked on representative customer-style eval data (`QUALITY.md` Q0-2 / Q1-1 / Q1-2 / Q1-4, `PERFORMANCE.md` P3-2). Customer source data may be unable to leave the deployment, so the app needs an admin-only way to build and run evals **inside** the customer's environment.
+- **Target model:** an admin creates eval sets from already-indexed DB data, runs retrieval/profile experiments with visible progress, compares every run historically, applies/rolls back approved runtime-safe parameters, and exports sanitized settings/reports for the implementation team.
+- **Guardrails:**
+  - Generated candidate questions are suggestions only; admins must review/approve/edit before they become ground truth.
+  - Each run stores immutable snapshots: eval set version, active/candidate profile, LLM setting summary, app version/commit when available, aggregate metrics, and per-question results.
+  - Runtime-safe parameters can be applied immediately; index-affecting parameters (chunk sizes, overlap, embedding model/prefix/dimension) must be shown with strong "requires Clear/Rebuild or reindex" warnings and should not be silently applied.
+  - Export has two modes: sanitized profile/report (settings + aggregate metrics, no source text) and full internal report (questions, expected evidence, failures; for in-environment or explicitly approved sharing only).
+- **Phased (tick as done):**
+  - [x] E1a — **Done.** Schema + admin shell landed: `eval_sets`, `eval_items`, `eval_runs`, `eval_results`, `retrieval_profiles`; `/admin/evals` shows the active baseline profile, eval sets, and historical run list. This creates the audit trail before any tuning UI exists.
+  - [x] E1b — **Done.** Eval-set builder + retrieval-only runner landed: admins can add approved questions against existing notebooks/sources, generate draft candidates from indexed chunks, approve/delete items without losing scroll position, delete eval sets, queue background runs, watch progress (`queued/running/succeeded/failed`, current item/total/current step), and inspect persisted Recall@k, MRR, top score, low-confidence rate, latency, error counts, expected evidence, compact retrieved snippets, miss diagnosis, and per-question hit/miss/unscored/error status. LLM-assisted authoring/judging remains E1e.
+  - [ ] E1c — Profile comparison + apply/rollback: compare baseline vs candidate profile snapshots; apply only runtime-safe retrieval parameters; rollback by restoring a previous run/profile snapshot.
+  - [ ] E1d — Export: sanitized profile export for the team, plus full internal run report export gated by explicit admin action.
+  - [ ] E1e — LLM-assisted eval authoring and answer-quality judging: generate candidate questions from selected sources, support unanswerable and cross-lingual cases, then optionally score answer quality/citation correctness after retrieval-only metrics are reliable.
+- **Recommended next implementation round:** do **E1c + E1d**. Keep E1c limited to runtime-safe retrieval parameters first, with explicit "requires rebuild/reindex" warnings for index-affecting parameters; then add sanitized profile export plus an explicit full internal report export. Defer LLM-generated questions, answer judging, and index-affecting parameter application to E1e/later.
+
+---
+
 ## New AI features
 
 ### Tier 1 — chat-only, cheap, high value

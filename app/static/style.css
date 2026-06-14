@@ -725,6 +725,78 @@ label {
 .settings-foot button { flex: none; }
 .settings-foot .ghost { margin-left: auto; }
 
+.eval-workbench {
+  max-width: 1120px;
+}
+
+.stacked-form {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.inline-form {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.inline-form label {
+  min-width: 220px;
+  flex: 1;
+}
+
+.eval-search-form {
+  margin-bottom: var(--sp-3);
+}
+
+.split-actions {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-4);
+}
+
+.split-actions h3 {
+  margin: 0 0 var(--sp-1);
+}
+
+.action-cell {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.action-cell form {
+  margin: 0;
+}
+
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.section-title-row h2 {
+  margin: 0;
+}
+
+.config-preview {
+  margin: 0;
+  padding: var(--sp-3);
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 /* admin user management */
 .user-create-form {
   display: grid;

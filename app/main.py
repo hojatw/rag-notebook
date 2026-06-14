@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -2620,6 +2620,844 @@ def admin_index_clear(user: Annotated[dict, Depends(require_admin)]):
     count = clear_all_vectors()
     logger.info("admin_index_cleared admin_user_id=%s deleted=%s", user["id"], count)
     return RedirectResponse(f"/admin/index?msg=cleared-{count}", status_code=303)
+
+
+def current_retrieval_profile_params() -> dict[str, Any]:
+    """Snapshot runtime-safe retrieval knobs used by the E1 eval workbench."""
+    return {
+        "low_confidence_threshold": LOW_CONFIDENCE_THRESHOLD,
+        "vector_weight": VECTOR_WEIGHT,
+        "keyword_weight": KEYWORD_WEIGHT,
+        "candidate_pool_size": CANDIDATE_POOL_SIZE,
+        "final_chunk_count": FINAL_CHUNK_COUNT,
+        "rerank_weight": config.retrieval.rerank_weight,
+        "rerank_base_weight": config.retrieval.rerank_base_weight,
+    }
+
+
+PROFILE_PARAM_LABELS = {
+    "low_confidence_threshold": "低信心閾值",
+    "vector_weight": "Vector 權重",
+    "keyword_weight": "Keyword 權重",
+    "candidate_pool_size": "候選池大小",
+    "final_chunk_count": "最終 chunk 數",
+    "rerank_weight": "Rerank 權重",
+    "rerank_base_weight": "Rerank base 權重",
+}
+
+
+def profile_param_rows(params: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {"key": key, "label": PROFILE_PARAM_LABELS.get(key, key), "value": params[key]}
+        for key in PROFILE_PARAM_LABELS
+        if key in params
+    ]
+
+
+def profile_params_for_display(profile: dict) -> list[dict[str, Any]]:
+    return profile_param_rows(loads(profile.get("params_json") or "{}"))
+
+
+def ensure_default_retrieval_profile(conn, admin_user_id: int | None = None) -> dict:
+    """Ensure there is a baseline profile reflecting current app config."""
+    row = conn.execute(
+        "SELECT * FROM retrieval_profiles WHERE is_active = 1 ORDER BY id ASC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        row = conn.execute(
+            "SELECT * FROM retrieval_profiles ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+    if row is None:
+        cursor = conn.execute(
+            """
+            INSERT INTO retrieval_profiles (name, description, params_json, is_active, created_by)
+            VALUES (?, ?, ?, 1, ?)
+            """,
+            (
+                "目前系統預設",
+                "從 app/config.py 目前 retrieval 設定建立的 baseline profile。",
+                dumps(current_retrieval_profile_params()),
+                admin_user_id,
+            ),
+        )
+        row = conn.execute("SELECT * FROM retrieval_profiles WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def load_eval_set(conn, eval_set_id: int) -> dict:
+    row = conn.execute(
+        """
+        SELECT es.*, n.title AS notebook_title, n.emoji AS notebook_emoji, u.username AS target_username
+        FROM eval_sets es
+        JOIN notebooks n ON n.id = es.notebook_id
+        JOIN users u ON u.id = es.target_user_id
+        WHERE es.id = ?
+        """,
+        (eval_set_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="找不到 eval set")
+    return dict(row)
+
+
+def split_expected_substrings(value: str) -> list[str]:
+    """Normalize newline-separated expected evidence snippets from the admin form."""
+    return [line.strip() for line in (value or "").splitlines() if line.strip()]
+
+
+def generated_eval_snippet(text: str, limit: int = 80) -> str:
+    snippet = " ".join((text or "").split())
+    if len(snippet) <= limit:
+        return snippet
+    return snippet[:limit].rsplit(" ", 1)[0] or snippet[:limit]
+
+
+def generated_eval_question(filename: str, snippet: str) -> str:
+    anchor = snippet[:72]
+    suffix = "..." if len(snippet) > 72 else ""
+    return f"「{anchor}{suffix}」這段內容的重點是什麼？來源：{filename}"
+
+
+def eval_item_hit_rank(item: dict, retrieved: list[dict]) -> int | None:
+    expected_source_id = item.get("expected_source_id")
+    expected_chunk_id = item.get("expected_chunk_id")
+    substrings = item.get("expected_substrings") or []
+    has_criteria = bool(expected_source_id or expected_chunk_id or substrings)
+    if not has_criteria:
+        return None
+    for rank, chunk in enumerate(retrieved, start=1):
+        if expected_source_id and int(chunk.get("source_id") or 0) != int(expected_source_id):
+            continue
+        if expected_chunk_id and int(chunk.get("id") or 0) != int(expected_chunk_id):
+            continue
+        if substrings and not any(snippet in chunk.get("text", "") for snippet in substrings):
+            continue
+        return rank
+    return 0
+
+
+def eval_result_diagnosis(result: dict) -> str:
+    if result.get("status") == "hit":
+        rank = result.get("hit_rank")
+        return f"命中預期依據，rank {rank}。" if rank else "命中預期依據。"
+    if result.get("status") == "unscored":
+        return "此題沒有設定 expected source/chunk/substrings，因此不納入 Recall/MRR。"
+    if result.get("status") == "error":
+        return result.get("error") or "執行此題時發生錯誤。"
+
+    retrieved = result.get("retrieved") or []
+    if not retrieved:
+        return "沒有找回任何 chunk。"
+    expected_source_id = result.get("expected_source_id")
+    expected_chunk_id = result.get("expected_chunk_id")
+    expected_substrings = result.get("expected_substrings") or []
+    retrieved_source_ids = {int(chunk.get("source_id") or 0) for chunk in retrieved}
+    retrieved_chunk_ids = {int(chunk.get("chunk_id") or 0) for chunk in retrieved}
+
+    reasons = []
+    if expected_source_id and int(expected_source_id) not in retrieved_source_ids:
+        reasons.append("未找回預期來源。")
+    elif expected_source_id:
+        reasons.append("有找回同一來源，但不是預期 chunk/片段。")
+    if expected_chunk_id and int(expected_chunk_id) not in retrieved_chunk_ids:
+        reasons.append("預期 chunk 不在目前 top-k 結果中。")
+    if expected_substrings:
+        retrieved_text = " ".join(str(chunk.get("snippet") or "") for chunk in retrieved)
+        missing = [snippet for snippet in expected_substrings if snippet not in retrieved_text]
+        if missing:
+            reasons.append("預期 substring 沒出現在 retrieved snippets。")
+    return " ".join(reasons) or "找回結果未符合此題的 expected criteria。"
+
+
+def compact_retrieved_chunks(retrieved: list[dict]) -> list[dict[str, Any]]:
+    compact = []
+    for rank, chunk in enumerate(retrieved, start=1):
+        compact.append({
+            "rank": rank,
+            "chunk_id": chunk.get("id"),
+            "source_id": chunk.get("source_id"),
+            "filename": chunk.get("filename", ""),
+            "location": chunk.get("location", ""),
+            "score": round(float(chunk.get("score") or 0.0), 4),
+            "vector_score": round(float(chunk.get("vector_score") or 0.0), 4),
+            "keyword_score": round(float(chunk.get("keyword_score") or 0.0), 4),
+            "snippet": " ".join((chunk.get("text") or "").split())[:220],
+        })
+    return compact
+
+
+def run_metrics_from_results(results: list[dict]) -> dict[str, Any]:
+    scored = [r for r in results if r["status"] in {"hit", "miss"}]
+    hits = [r for r in scored if r["status"] == "hit"]
+    total = len(results)
+    scored_count = len(scored)
+    latencies = [float(r.get("latency_ms") or 0.0) for r in results]
+    top_scores = [float(r.get("top_score") or 0.0) for r in results]
+    mrr = sum(1 / int(r["hit_rank"]) for r in hits if r.get("hit_rank")) / scored_count if scored_count else 0.0
+    recall = len(hits) / scored_count if scored_count else 0.0
+    low_confidence = sum(1 for score in top_scores if score < LOW_CONFIDENCE_THRESHOLD)
+    return {
+        "total": total,
+        "scored": scored_count,
+        "hits": len(hits),
+        "misses": sum(1 for r in scored if r["status"] == "miss"),
+        "unscored": sum(1 for r in results if r["status"] == "unscored"),
+        "errors": sum(1 for r in results if r["status"] == "error"),
+        "recall_at_k": round(recall, 4),
+        "mrr": round(mrr, 4),
+        "avg_latency_ms": round(sum(latencies) / len(latencies), 1) if latencies else 0.0,
+        "avg_top_score": round(sum(top_scores) / len(top_scores), 4) if top_scores else 0.0,
+        "low_confidence_rate": round(low_confidence / total, 4) if total else 0.0,
+        "threshold": LOW_CONFIDENCE_THRESHOLD,
+        "final_chunk_count": FINAL_CHUNK_COUNT,
+    }
+
+
+async def run_eval_job(run_id: int) -> None:
+    """Background E1b retrieval-only eval runner."""
+    try:
+        with connect() as conn:
+            run = conn.execute("SELECT * FROM eval_runs WHERE id = ?", (run_id,)).fetchone()
+            if run is None:
+                return
+            eval_set = load_eval_set(conn, run["eval_set_id"])
+            items = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT * FROM eval_items
+                    WHERE eval_set_id = ? AND approved = 1
+                    ORDER BY id ASC
+                    """,
+                    (eval_set["id"],),
+                ).fetchall()
+            ]
+            settings = load_llm_settings(conn) or {}
+            source_ids = [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed'",
+                    (eval_set["notebook_id"], eval_set["target_user_id"]),
+                ).fetchall()
+            ]
+            conn.execute(
+                """
+                UPDATE eval_runs
+                SET status = 'running', progress_total = ?, progress_current = 0,
+                    current_step = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (len(items), "準備 retrieval eval", run_id),
+            )
+        if not items:
+            with connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE eval_runs
+                    SET status = 'failed', error = ?, current_step = '',
+                        finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    ("沒有 approved eval 題目可執行。", run_id),
+                )
+            return
+        if not source_ids:
+            with connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE eval_runs
+                    SET status = 'failed', error = ?, current_step = '',
+                        finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    ("這個 eval set 的 notebook 沒有已索引來源。", run_id),
+                )
+            return
+
+        results: list[dict] = []
+        for index, item in enumerate(items, start=1):
+            question = item["question"]
+            with connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE eval_runs
+                    SET progress_current = ?, current_step = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (index - 1, f"檢索第 {index} / {len(items)} 題", run_id),
+                )
+            started = time.perf_counter()
+            try:
+                item["expected_substrings"] = loads(item["expected_substrings_json"] or "[]")
+                retrieved = await retrieve(
+                    question,
+                    None,
+                    settings,
+                    [],
+                    eval_set["target_user_id"],
+                    source_ids,
+                )
+                latency_ms = round((time.perf_counter() - started) * 1000, 1)
+                top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
+                hit_rank = eval_item_hit_rank(item, retrieved)
+                if hit_rank is None:
+                    status = "unscored"
+                    stored_rank = None
+                elif hit_rank > 0:
+                    status = "hit"
+                    stored_rank = hit_rank
+                else:
+                    status = "miss"
+                    stored_rank = None
+                result = {
+                    "eval_item_id": item["id"],
+                    "status": status,
+                    "hit_rank": stored_rank,
+                    "top_score": top_score,
+                    "latency_ms": latency_ms,
+                    "retrieved_json": dumps(compact_retrieved_chunks(retrieved)),
+                    "error": "",
+                }
+            except Exception as exc:
+                logger.exception("eval_item_failed run_id=%s item_id=%s", run_id, item["id"])
+                result = {
+                    "eval_item_id": item["id"],
+                    "status": "error",
+                    "hit_rank": None,
+                    "top_score": 0.0,
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                    "retrieved_json": "[]",
+                    "error": str(exc)[:300],
+                }
+            results.append(result)
+            with connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO eval_results
+                    (run_id, eval_item_id, status, hit_rank, top_score, latency_ms, retrieved_json, error)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        result["eval_item_id"],
+                        result["status"],
+                        result["hit_rank"],
+                        result["top_score"],
+                        result["latency_ms"],
+                        result["retrieved_json"],
+                        result["error"],
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE eval_runs
+                    SET progress_current = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (index, run_id),
+                )
+        metrics = run_metrics_from_results(results)
+        with connect() as conn:
+            conn.execute(
+                """
+                UPDATE eval_runs
+                SET status = 'succeeded', progress_current = progress_total,
+                    current_step = '', metrics_json = ?, finished_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (dumps(metrics), run_id),
+            )
+        logger.info("eval_run_completed run_id=%s total=%s hits=%s", run_id, metrics["total"], metrics["hits"])
+    except Exception as exc:
+        logger.exception("eval_run_failed run_id=%s", run_id)
+        with connect() as conn:
+            conn.execute(
+                """
+                UPDATE eval_runs
+                SET status = 'failed', error = ?, current_step = '',
+                    finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (str(exc)[:500], run_id),
+            )
+
+
+def eval_run_context(run_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        run = conn.execute(
+            """
+            SELECT er.*, es.name AS eval_set_name, es.notebook_id, n.title AS notebook_title
+            FROM eval_runs er
+            JOIN eval_sets es ON es.id = er.eval_set_id
+            JOIN notebooks n ON n.id = es.notebook_id
+            WHERE er.id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        if run is None:
+            raise HTTPException(status_code=404, detail="找不到 eval run")
+        results = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT r.*, i.question, i.expected_source_id, i.expected_chunk_id,
+                       i.expected_substrings_json, s.filename AS expected_filename,
+                       c.location AS expected_chunk_location,
+                       c.text AS expected_chunk_text
+                FROM eval_results r
+                JOIN eval_items i ON i.id = r.eval_item_id
+                LEFT JOIN sources s ON s.id = i.expected_source_id
+                LEFT JOIN chunks c ON c.id = i.expected_chunk_id
+                WHERE r.run_id = ?
+                ORDER BY r.id ASC
+                """,
+                (run_id,),
+            ).fetchall()
+        ]
+    run_dict = dict(run)
+    run_dict["metrics"] = loads(run_dict.get("metrics_json") or "{}")
+    run_dict["profile_snapshot"] = loads(run_dict.get("profile_snapshot_json") or "{}")
+    run_dict["profile_params"] = profile_param_rows(run_dict["profile_snapshot"])
+    for result in results:
+        result["retrieved"] = loads(result.get("retrieved_json") or "[]")
+        result["expected_substrings"] = loads(result.get("expected_substrings_json") or "[]")
+        result["expected_chunk_snippet"] = " ".join((result.get("expected_chunk_text") or "").split())[:220]
+        result["diagnosis"] = eval_result_diagnosis(result)
+    return {"run": run_dict, "results": results}
+
+
+def eval_set_items_redirect(eval_set_id: int) -> RedirectResponse:
+    return RedirectResponse(f"/admin/evals/sets/{eval_set_id}#eval-items", status_code=303)
+
+
+def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        eval_set = load_eval_set(conn, eval_set_id)
+        sources = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT id, filename, status
+                FROM sources
+                WHERE notebook_id = ? AND user_id = ?
+                ORDER BY filename
+                """,
+                (eval_set["notebook_id"], eval_set["target_user_id"]),
+            ).fetchall()
+        ]
+        items = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT i.*, s.filename AS expected_filename
+                FROM eval_items i LEFT JOIN sources s ON s.id = i.expected_source_id
+                WHERE i.eval_set_id = ?
+                ORDER BY i.id ASC
+                """,
+                (eval_set_id,),
+            ).fetchall()
+        ]
+        runs = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM eval_runs WHERE eval_set_id = ? ORDER BY created_at DESC, id DESC LIMIT 20",
+                (eval_set_id,),
+            ).fetchall()
+        ]
+    for item in items:
+        item["expected_substrings"] = loads(item.get("expected_substrings_json") or "[]")
+    for run in runs:
+        run["metrics"] = loads(run.get("metrics_json") or "{}")
+    return {
+        "eval_set": eval_set,
+        "sources": sources,
+        "items": items,
+        "approved_count": sum(1 for item in items if item["approved"]),
+        "runs": runs,
+    }
+
+
+def eval_set_items_response(request: Request, user: dict, eval_set_id: int):
+    context = eval_set_detail_context(eval_set_id)
+    if request.headers.get("HX-Request") == "true":
+        return render(request, "_eval_items_section.html", {"user": user, **context})
+    return eval_set_items_redirect(eval_set_id)
+
+
+@app.get("/admin/evals", response_class=HTMLResponse)
+def admin_evals(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+    notebook_q: str = "",
+):
+    """Admin E1 landing page: eval sets, run history, active profile."""
+    notebook_q = notebook_q.strip()[:80]
+    notebook_like = f"%{notebook_q}%"
+    with connect() as conn:
+        profile = ensure_default_retrieval_profile(conn, user["id"])
+        profile["params"] = profile_params_for_display(profile)
+        notebooks = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT n.id, n.title, n.emoji, u.username,
+                       COUNT(s.id) AS indexed_count
+                FROM notebooks n
+                JOIN users u ON u.id = n.user_id
+                JOIN sources s ON s.notebook_id = n.id AND s.user_id = n.user_id AND s.status = 'indexed'
+                WHERE (? = '' OR n.title LIKE ? OR u.username LIKE ?)
+                GROUP BY n.id
+                ORDER BY n.updated_at DESC, n.id DESC
+                LIMIT 100
+                """,
+                (notebook_q, notebook_like, notebook_like),
+            ).fetchall()
+        ]
+        eval_sets = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT es.*, n.title AS notebook_title, n.emoji AS notebook_emoji,
+                       u.username AS target_username,
+                       (SELECT COUNT(*) FROM eval_items WHERE eval_set_id = es.id) AS item_count,
+                       (SELECT COUNT(*) FROM eval_items WHERE eval_set_id = es.id AND approved = 1) AS approved_count
+                FROM eval_sets es
+                JOIN notebooks n ON n.id = es.notebook_id
+                JOIN users u ON u.id = es.target_user_id
+                ORDER BY es.updated_at DESC, es.id DESC
+                LIMIT 50
+                """
+            ).fetchall()
+        ]
+        runs = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT er.*, es.name AS eval_set_name, n.title AS notebook_title
+                FROM eval_runs er
+                JOIN eval_sets es ON es.id = er.eval_set_id
+                JOIN notebooks n ON n.id = es.notebook_id
+                ORDER BY er.created_at DESC, er.id DESC
+                LIMIT 20
+                """
+            ).fetchall()
+        ]
+    for run in runs:
+        run["metrics"] = loads(run.get("metrics_json") or "{}")
+    return render(
+        request,
+        "admin_evals.html",
+        {
+            "user": user,
+            "profile": profile,
+            "notebooks": notebooks,
+            "notebook_q": notebook_q,
+            "eval_sets": eval_sets,
+            "runs": runs,
+        },
+    )
+
+
+@app.post("/admin/evals/sets")
+def admin_create_eval_set(
+    user: Annotated[dict, Depends(require_admin)],
+    notebook_id: int = Form(...),
+    name: str = Form(...),
+    description: str = Form(""),
+):
+    clean_name = " ".join(name.split())[:120] or "未命名 Eval Set"
+    description = description.strip()[:500]
+    with connect() as conn:
+        notebook = conn.execute("SELECT id, user_id FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
+        if notebook is None:
+            raise HTTPException(status_code=404, detail="找不到筆記本")
+        cursor = conn.execute(
+            """
+            INSERT INTO eval_sets (name, description, target_user_id, notebook_id, created_by)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (clean_name, description, notebook["user_id"], notebook_id, user["id"]),
+        )
+    logger.info("eval_set_created admin_user_id=%s eval_set_id=%s", user["id"], cursor.lastrowid)
+    return RedirectResponse(f"/admin/evals/sets/{cursor.lastrowid}", status_code=303)
+
+
+@app.post("/admin/evals/sets/{eval_set_id}/delete")
+def admin_delete_eval_set(
+    eval_set_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    with connect() as conn:
+        load_eval_set(conn, eval_set_id)
+        active_run = conn.execute(
+            """
+            SELECT id FROM eval_runs
+            WHERE eval_set_id = ? AND status IN ('queued', 'running')
+            LIMIT 1
+            """,
+            (eval_set_id,),
+        ).fetchone()
+        if active_run is not None:
+            raise HTTPException(status_code=400, detail="Eval run 仍在執行，不能刪除此 eval set。")
+        conn.execute("DELETE FROM eval_sets WHERE id = ?", (eval_set_id,))
+    logger.info("eval_set_deleted admin_user_id=%s eval_set_id=%s", user["id"], eval_set_id)
+    return RedirectResponse("/admin/evals", status_code=303)
+
+
+@app.get("/admin/evals/sets/{eval_set_id}", response_class=HTMLResponse)
+def admin_eval_set_detail(
+    request: Request,
+    eval_set_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    context = eval_set_detail_context(eval_set_id)
+    eval_set = context["eval_set"]
+    return render(
+        request,
+        "admin_eval_set.html",
+        {
+            "user": user,
+            "breadcrumb_items": [
+                {"label": "Eval 工作台", "href": "/admin/evals"},
+                {"label": eval_set["name"], "href": None},
+            ],
+            **context,
+        },
+    )
+
+
+@app.post("/admin/evals/sets/{eval_set_id}/generate")
+def admin_generate_eval_items(
+    request: Request,
+    eval_set_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+    count: int = Form(5),
+):
+    count = max(1, min(int(count), 20))
+    created = 0
+    with connect() as conn:
+        eval_set = load_eval_set(conn, eval_set_id)
+        rows = conn.execute(
+            """
+            WITH eligible AS (
+                SELECT
+                    c.id AS chunk_id,
+                    c.text,
+                    s.id AS source_id,
+                    s.filename,
+                    s.updated_at AS source_updated_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY s.id
+                        ORDER BY c.chunk_index ASC, c.id ASC
+                    ) AS chunk_rank
+                FROM chunks c
+                JOIN sources s ON s.id = c.source_id
+                WHERE s.notebook_id = ? AND s.user_id = ? AND s.status = 'indexed'
+                  AND TRIM(c.text) != ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM eval_items i
+                      WHERE i.eval_set_id = ? AND i.expected_chunk_id = c.id
+                  )
+            )
+            SELECT chunk_id, text, source_id, filename
+            FROM eligible
+            ORDER BY chunk_rank ASC, source_updated_at DESC, source_id DESC, chunk_id ASC
+            LIMIT ?
+            """,
+            (eval_set["notebook_id"], eval_set["target_user_id"], eval_set_id, count),
+        ).fetchall()
+        for row in rows:
+            snippet = generated_eval_snippet(row["text"])
+            if not snippet:
+                continue
+            conn.execute(
+                """
+                INSERT INTO eval_items
+                (eval_set_id, question, expected_source_id, expected_chunk_id,
+                 expected_substrings_json, notes, approved)
+                VALUES (?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    eval_set_id,
+                    generated_eval_question(row["filename"], snippet),
+                    row["source_id"],
+                    row["chunk_id"],
+                    dumps([snippet]),
+                    "自動生成候選題；請人工確認後 approve。",
+                ),
+            )
+            created += 1
+        if created:
+            conn.execute("UPDATE eval_sets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (eval_set_id,))
+    logger.info(
+        "eval_items_generated admin_user_id=%s eval_set_id=%s created=%s",
+        user["id"],
+        eval_set_id,
+        created,
+    )
+    return eval_set_items_response(request, user, eval_set_id)
+
+
+@app.post("/admin/evals/sets/{eval_set_id}/items")
+def admin_add_eval_item(
+    request: Request,
+    eval_set_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+    question: str = Form(...),
+    expected_source_id: str = Form(""),
+    expected_substrings: str = Form(""),
+    notes: str = Form(""),
+):
+    question = " ".join(question.split())[:500]
+    if not question:
+        raise HTTPException(status_code=400, detail="問題不可為空。")
+    try:
+        source_id = int(expected_source_id) if str(expected_source_id).strip() else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="預期來源格式不正確。") from None
+    snippets = split_expected_substrings(expected_substrings)
+    with connect() as conn:
+        eval_set = load_eval_set(conn, eval_set_id)
+        if source_id is not None:
+            row = conn.execute(
+                "SELECT id FROM sources WHERE id = ? AND notebook_id = ? AND user_id = ?",
+                (source_id, eval_set["notebook_id"], eval_set["target_user_id"]),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=400, detail="預期來源不屬於此 eval set。")
+        conn.execute(
+            """
+            INSERT INTO eval_items
+            (eval_set_id, question, expected_source_id, expected_substrings_json, notes, approved)
+            VALUES (?, ?, ?, ?, ?, 1)
+            """,
+            (eval_set_id, question, source_id, dumps(snippets), notes.strip()[:500]),
+        )
+        conn.execute("UPDATE eval_sets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (eval_set_id,))
+    logger.info("eval_item_created admin_user_id=%s eval_set_id=%s", user["id"], eval_set_id)
+    return eval_set_items_response(request, user, eval_set_id)
+
+
+@app.post("/admin/evals/sets/{eval_set_id}/items/{item_id}/approve")
+def admin_approve_eval_item(
+    request: Request,
+    eval_set_id: int,
+    item_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    with connect() as conn:
+        load_eval_set(conn, eval_set_id)
+        updated = conn.execute(
+            """
+            UPDATE eval_items
+            SET approved = 1, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND eval_set_id = ?
+            RETURNING id
+            """,
+            (item_id, eval_set_id),
+        ).fetchone()
+        if updated is None:
+            raise HTTPException(status_code=404, detail="找不到 eval item")
+        conn.execute("UPDATE eval_sets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (eval_set_id,))
+    logger.info("eval_item_approved admin_user_id=%s eval_set_id=%s item_id=%s", user["id"], eval_set_id, item_id)
+    return eval_set_items_response(request, user, eval_set_id)
+
+
+@app.post("/admin/evals/sets/{eval_set_id}/items/{item_id}/delete")
+def admin_delete_eval_item(
+    request: Request,
+    eval_set_id: int,
+    item_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    with connect() as conn:
+        load_eval_set(conn, eval_set_id)
+        used_in_run = conn.execute(
+            "SELECT id FROM eval_results WHERE eval_item_id = ? LIMIT 1",
+            (item_id,),
+        ).fetchone()
+        if used_in_run is not None:
+            raise HTTPException(status_code=400, detail="此題目已有 run result，不能刪除以免破壞歷史紀錄。")
+        deleted = conn.execute(
+            "DELETE FROM eval_items WHERE id = ? AND eval_set_id = ? RETURNING id",
+            (item_id, eval_set_id),
+        ).fetchone()
+        if deleted is None:
+            raise HTTPException(status_code=404, detail="找不到 eval item")
+        conn.execute("UPDATE eval_sets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (eval_set_id,))
+    logger.info("eval_item_deleted admin_user_id=%s eval_set_id=%s item_id=%s", user["id"], eval_set_id, item_id)
+    return eval_set_items_response(request, user, eval_set_id)
+
+
+@app.post("/admin/evals/sets/{eval_set_id}/run")
+def admin_start_eval_run(
+    eval_set_id: int,
+    background_tasks: BackgroundTasks,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    with connect() as conn:
+        load_eval_set(conn, eval_set_id)
+        profile = ensure_default_retrieval_profile(conn, user["id"])
+        approved_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM eval_items WHERE eval_set_id = ? AND approved = 1",
+            (eval_set_id,),
+        ).fetchone()["n"]
+        if approved_count == 0:
+            raise HTTPException(status_code=400, detail="至少需要一題 approved eval item。")
+        cursor = conn.execute(
+            """
+            INSERT INTO eval_runs
+            (eval_set_id, profile_id, created_by, status, progress_total, profile_snapshot_json, current_step)
+            VALUES (?, ?, ?, 'queued', ?, ?, '等待背景執行')
+            """,
+            (eval_set_id, profile["id"], user["id"], approved_count, profile["params_json"]),
+        )
+        run_id = cursor.lastrowid
+    background_tasks.add_task(run_eval_job, run_id)
+    logger.info("eval_run_queued admin_user_id=%s eval_set_id=%s run_id=%s", user["id"], eval_set_id, run_id)
+    return RedirectResponse(f"/admin/evals/runs/{run_id}", status_code=303)
+
+
+@app.get("/admin/evals/runs/{run_id}", response_class=HTMLResponse)
+def admin_eval_run_detail(
+    request: Request,
+    run_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    context = eval_run_context(run_id)
+    run = context["run"]
+    return render(
+        request,
+        "admin_eval_run.html",
+        {
+            "user": user,
+            "breadcrumb_items": [
+                {"label": "Eval 工作台", "href": "/admin/evals"},
+                {"label": run["eval_set_name"], "href": f"/admin/evals/sets/{run['eval_set_id']}"},
+                {"label": f"Run #{run['id']}", "href": None},
+            ],
+            **context,
+        },
+    )
+
+
+@app.get("/admin/evals/runs/{run_id}/_status", response_class=HTMLResponse)
+def admin_eval_run_status(
+    request: Request,
+    run_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    return render(request, "_eval_run_status.html", {"user": user, **eval_run_context(run_id)})
+
+
+@app.get("/admin/evals/runs/{run_id}/_results", response_class=HTMLResponse)
+def admin_eval_run_results(
+    request: Request,
+    run_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    return render(request, "_eval_run_results.html", {"user": user, **eval_run_context(run_id)})
 
 
 @app.get("/admin/users", response_class=HTMLResponse)

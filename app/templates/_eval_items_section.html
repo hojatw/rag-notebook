@@ -1,0 +1,56 @@
+<section class="settings-section" id="eval-items">
+  <div class="section-title-row">
+    <h2>題目</h2>
+    <form method="post" action="/admin/evals/sets/{{ eval_set.id }}/run" data-loading-form>
+      <button type="submit" {% if approved_count == 0 %}disabled{% endif %} data-loading-text="啟動中...">執行 retrieval eval</button>
+    </form>
+  </div>
+  <p class="hint muted small">自動生成的題目先以 draft 呈現；請確認問題、預期來源與 substrings 後按 approve，才會進入 runner。</p>
+  {% if items %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>#</th><th>問題</th><th>預期來源</th><th>Substrings</th><th>狀態</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+          {% for item in items %}
+            <tr>
+              <td>{{ item.id }}</td>
+              <td>{{ item.question }}{% if item.notes %}<br><span class="muted small">{{ item.notes }}</span>{% endif %}</td>
+              <td>{{ item.expected_filename or "—" }}</td>
+              <td>
+                {% if item.expected_substrings %}
+                  {{ item.expected_substrings | join("、") }}
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+              <td><span class="status {{ 'indexed' if item.approved else 'processing' }}">{{ "approved" if item.approved else "draft" }}</span></td>
+              <td class="action-cell">
+                {% if not item.approved %}
+                  <form method="post"
+                        action="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/approve"
+                        hx-post="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/approve"
+                        hx-target="#eval-items"
+                        hx-swap="outerHTML">
+                    <button type="submit" class="ghost small">approve</button>
+                  </form>
+                {% endif %}
+                <form method="post"
+                      action="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/delete"
+                      data-confirm="刪除此題目？"
+                      hx-post="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/delete"
+                      hx-target="#eval-items"
+                      hx-swap="outerHTML">
+                  <button type="submit" class="danger small">刪除</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted">尚未新增題目。E1b MVP 只執行人工確認過的題目。</p>
+  {% endif %}
+</section>

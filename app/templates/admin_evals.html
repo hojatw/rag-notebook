@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings eval-workbench">
+  <header class="settings-head">
+    <p class="eyebrow">管理主控台</p>
+    <h1>Eval 工作台</h1>
+    <p class="muted">在部署內使用既有 DB 資料建立評測題組、執行 retrieval-only eval，避免客戶資料外流。</p>
+  </header>
+
+  <section class="settings-section">
+    <h2>目前 Retrieval Profile</h2>
+    <p><strong>{{ profile.name }}</strong></p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>參數</th><th>值</th></tr>
+        </thead>
+        <tbody>
+          {% for param in profile.params %}
+            <tr>
+              <td>{{ param.label }}<br><span class="muted small">{{ param.key }}</span></td>
+              <td>{{ param.value }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="hint muted small">E1a/E1b 先保存 profile snapshot 與 run history；套用/回復參數會在 E1c 實作。</p>
+  </section>
+
+  <section class="settings-section">
+    <h2>建立 Eval Set</h2>
+    <form method="get" action="/admin/evals" class="inline-form eval-search-form">
+      <label>
+        搜尋全站已索引筆記本
+        <input name="notebook_q" value="{{ notebook_q }}" placeholder="Notebook 名稱或 owner">
+      </label>
+      <button type="submit" class="ghost">搜尋</button>
+      {% if notebook_q %}<a class="ghost" href="/admin/evals">清除</a>{% endif %}
+    </form>
+    <p class="hint muted small">目前 Eval Set 綁定單一目標筆記本。清單列出全站最近 100 個「已有 indexed source」的筆記本；資料量大時請先搜尋。</p>
+    {% if notebooks %}
+      <form method="post" action="/admin/evals/sets" class="stacked-form">
+        <label>
+          名稱
+          <input name="name" placeholder="例如：客戶中文研究報告 baseline" required>
+        </label>
+        <label>
+          單一目標筆記本
+          <select name="notebook_id" required>
+            {% for notebook in notebooks %}
+              <option value="{{ notebook.id }}">
+                {{ notebook.emoji or "📓" }} {{ notebook.title }} · {{ notebook.username }} · {{ notebook.indexed_count }} indexed sources
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          描述
+          <textarea name="description" rows="3" placeholder="資料範圍、語言、用途或注意事項"></textarea>
+        </label>
+        <button type="submit" data-loading-text="建立中...">建立 Eval Set</button>
+      </form>
+    {% else %}
+      <p class="muted">目前沒有可用的筆記本。</p>
+    {% endif %}
+  </section>
+
+  <section class="settings-section">
+    <h2>Eval Sets</h2>
+    {% if eval_sets %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>名稱</th><th>筆記本</th><th>題數</th><th>建立時間</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            {% for item in eval_sets %}
+              <tr>
+                <td>{{ item.name }}</td>
+                <td>{{ item.notebook_emoji or "📓" }} {{ item.notebook_title }} · {{ item.target_username }}</td>
+                <td>{{ item.approved_count }} / {{ item.item_count }} approved</td>
+                <td>{{ item.created_at }}</td>
+                <td class="action-cell">
+                  <a class="ghost small" href="/admin/evals/sets/{{ item.id }}">開啟</a>
+                  <form method="post" action="/admin/evals/sets/{{ item.id }}/delete" data-confirm="刪除此 Eval Set？相關題目、run history 與結果都會一併刪除。">
+                    <button type="submit" class="danger small">刪除</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="muted">尚未建立 eval set。</p>
+    {% endif %}
+  </section>
+
+  <section class="settings-section">
+    <h2>歷史執行紀錄</h2>
+    {% if runs %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Run</th><th>Eval Set</th><th>狀態</th><th>Recall</th><th>MRR</th><th>Latency</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for run in runs %}
+              <tr>
+                <td>#{{ run.id }}</td>
+                <td>{{ run.eval_set_name }}<br><span class="muted small">{{ run.notebook_title }}</span></td>
+                <td><span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run.status }}</span></td>
+                <td>{{ run.metrics.recall_at_k if run.metrics else "—" }}</td>
+                <td>{{ run.metrics.mrr if run.metrics else "—" }}</td>
+                <td>{% if run.metrics %}{{ run.metrics.avg_latency_ms }}ms{% else %}—{% endif %}</td>
+                <td><a class="ghost small" href="/admin/evals/runs/{{ run.id }}">查看</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="muted">尚未執行任何 eval。</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

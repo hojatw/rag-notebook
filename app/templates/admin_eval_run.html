@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings eval-workbench">
+  <header class="settings-head">
+    <p class="eyebrow">Eval Run</p>
+    <h1>{{ run.eval_set_name }}</h1>
+    <p class="muted">{{ run.notebook_title }} · created {{ run.created_at }}</p>
+  </header>
+
+  {% include "_eval_run_status.html" %}
+
+  <section class="settings-section">
+    <h2>Profile Snapshot</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>參數</th><th>值</th></tr>
+        </thead>
+        <tbody>
+          {% for param in run.profile_params %}
+            <tr>
+              <td>{{ param.label }}<br><span class="muted small">{{ param.key }}</span></td>
+              <td>{{ param.value }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="hint muted small">這是本次 run 使用的參數快照；E1c 會加入 apply / rollback。</p>
+  </section>
+
+  {% include "_eval_run_results.html" %}
+</section>
+{% endblock %}

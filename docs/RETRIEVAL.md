@@ -147,9 +147,13 @@ Per-message `messages.metadata_json` row carries `{retrieval_ms, generation_ms, 
 
 Reports per-question hit rank, **Recall@k**, **MRR**. Skips silently when LLM is not configured (the fallback hash embedding is too noisy to be worth measuring).
 
+For customer/private data that should not leave the deployment, admins can use the in-app workbench at `/admin/evals`. It stores eval sets in SQLite, runs retrieval-only evals against already-indexed notebook sources in the background, polls progress with HTMX, and persists each run's profile snapshot, aggregate metrics, compact retrieved snippets, latency, and per-question hit/miss/unscored/error status. Admins can add questions manually or generate draft candidates from indexed chunks; generated candidates stay `draft` until an admin approves them. Result rows show the question, expected source/chunk/substrings, top retrieved chunk, and a miss diagnosis so admins can distinguish retrieval misses from weak ground truth. This is the path for building the harder representative eval set called out in `QUALITY.md` Q1-3; the file-based harness remains the lightweight demo/regression harness.
+
 ### Hit semantics — why ANY-of, not ALL-of
 
 A chunk "hits" iff its `filename == expected_filename` **and** at least one substring from `expected_substrings` appears in `chunk.text`. The any-of rule keeps the metric chunk-size-agnostic: when CJK chunks shrunk from 1200 → 400 chars some `expected_substrings` ended up split across two chunks, and an all-of rule would have falsely penalised retrievals that were in fact correct.
+
+The admin workbench uses the same ANY-of substring idea, but stores DB-native expected evidence instead of demo filenames: an item can require an expected source, expected chunk, one or more substrings, or a combination. Items with no scoring criteria are recorded as `unscored`, so admins can draft questions without polluting Recall/MRR.
 
 Trade-off: a chunk that contains *only one* expected substring can match even if the user really wanted all the supporting context. Ground-truth substrings are chosen to be specific enough that the false-positive rate stays low; check with the diagnostic in the *Maintaining the eval* section below before adding new questions.
 

@@ -23,7 +23,18 @@
         </span>
       </a>
       {% if user %}
-        {% if breadcrumb %}
+        {% if breadcrumb_items %}
+          <nav aria-label="Breadcrumb" class="breadcrumb">
+            {% for crumb in breadcrumb_items %}
+              {% if crumb.href %}
+                <a href="{{ crumb.href }}">{{ crumb.label }}</a>
+              {% else %}
+                <span class="crumb-current">{{ crumb.label }}</span>
+              {% endif %}
+              {% if not loop.last %}<span class="sep">›</span>{% endif %}
+            {% endfor %}
+          </nav>
+        {% elif breadcrumb %}
           <nav aria-label="Breadcrumb" class="breadcrumb">
             <a href="/notebooks">筆記本</a>
             <span class="sep">›</span>
@@ -36,6 +47,7 @@
             {% if user.is_admin %}
               <a class="{% if request.url.path.startswith('/admin/users') %}active{% endif %}" href="/admin/users">使用者</a>
               <a class="{% if request.url.path.startswith('/admin/index') %}active{% endif %}" href="/admin/index">索引</a>
+              <a class="{% if request.url.path.startswith('/admin/evals') %}active{% endif %}" href="/admin/evals">Eval</a>
               <a class="{% if request.url.path.startswith('/settings') %}active{% endif %}" href="/settings">系統設定</a>
             {% endif %}
           </nav>

@@ -55,7 +55,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 ### [ ] Q1-3 · A harder, representative eval set
 - **Issue:** The eval is saturated (Recall@5 = 100%, MRR 0.933) and built on the **demo notebook**, not the customer's hundreds-of-page research reports.
 - **Impact:** Can't measure any of the above — tuning is blind.
-- **Fix:** Build an eval set from representative customer-style documents with harder questions. **Prerequisite for tuning Q0-2 / Q1-1 / Q1-2 / Q1-4.**
+- **Fix:** Build an eval set from representative customer-style documents with harder questions. **Prerequisite for tuning Q0-2 / Q1-1 / Q1-2 / Q1-4.** If customer data cannot leave the deployment, use the admin-only in-deployment eval workbench tracked in `ROADMAP.md` E1 to create, run, compare, apply, and export eval/profile results without exporting source data by default.
 
 ### [ ] Q1-4 · Cross-lingual retrieval (e.g. Chinese question ↔ English sources)
 - **Issue:** A query only retrieves cross-language content through the **vector** arm (multilingual embedding); the **keyword** arm (`LIKE` on tokens) is dead across scripts, and cross-lingual cosine scores run lower — so a Chinese question against English-only sources retrieves fewer/weaker chunks (some trimmed by the `0.25` abstain threshold), yielding thin answers. Confirmed on a real notebook: the same Chinese questions answered richly once a same-language source was added. Same drug in EN (FDA label) + zh (仿單) is a ready-made test case.

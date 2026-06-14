@@ -1,0 +1,66 @@
+<section id="eval-run-results"
+         class="settings-section"
+         {% if run.status in ["queued", "running"] %}
+           hx-get="/admin/evals/runs/{{ run.id }}/_results"
+           hx-trigger="load delay:1s, every 2s"
+           hx-swap="outerHTML"
+         {% endif %}>
+  <h2>Per-question Results</h2>
+  {% if results %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>#</th><th>Question</th><th>Expected</th><th>狀態</th><th>Rank</th><th>Top score</th><th>Latency</th><th>Top retrieved</th></tr>
+        </thead>
+        <tbody>
+          {% for result in results %}
+            <tr>
+              <td>{{ result.eval_item_id }}</td>
+              <td>
+                {{ result.question }}
+                {% if result.error %}<br><span class="danger-link small">{{ result.error }}</span>{% endif %}
+                {% if result.diagnosis %}
+                  <br><span class="muted small">診斷：{{ result.diagnosis }}</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if result.expected_filename %}
+                  <strong>{{ result.expected_filename }}</strong><br>
+                {% endif %}
+                {% if result.expected_chunk_id %}
+                  <span class="muted small">chunk #{{ result.expected_chunk_id }}{% if result.expected_chunk_location %} · {{ result.expected_chunk_location }}{% endif %}</span>
+                {% endif %}
+                {% if result.expected_substrings %}
+                  <br><span class="muted small">substrings: {{ result.expected_substrings | join(" / ") }}</span>
+                {% endif %}
+                {% if result.expected_chunk_snippet %}
+                  <br><span class="muted small">{{ result.expected_chunk_snippet }}</span>
+                {% elif not result.expected_filename and not result.expected_substrings %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+              <td><span class="status {{ 'indexed' if result.status == 'hit' else 'failed' if result.status in ['miss', 'error'] else 'processing' }}">{{ result.status }}</span></td>
+              <td>{{ result.hit_rank or "—" }}</td>
+              <td>{{ "%.3f"|format(result.top_score) }}</td>
+              <td>{{ result.latency_ms }}ms</td>
+              <td>
+                {% if result.retrieved %}
+                  {% set top = result.retrieved[0] %}
+                  <strong>{{ top.filename }}</strong><br>
+                  <span class="muted small">{{ top.location }} · score {{ top.score }}</span>
+                  {% if top.snippet %}
+                    <br><span class="muted small">{{ top.snippet }}</span>
+                  {% endif %}
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted">尚未產生 per-question results；run 進行中時本區塊會自動刷新。</p>
+  {% endif %}
+</section>

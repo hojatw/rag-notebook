@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings eval-workbench">
+  <header class="settings-head">
+    <p class="eyebrow">Eval Set</p>
+    <h1>{{ eval_set.name }}</h1>
+    <p class="muted">{{ eval_set.notebook_emoji or "📓" }} {{ eval_set.notebook_title }} · owner: {{ eval_set.target_username }}</p>
+    {% if eval_set.description %}<p>{{ eval_set.description }}</p>{% endif %}
+  </header>
+
+  <section class="settings-section">
+    <h2>新增題目</h2>
+    <div class="split-actions">
+      <div>
+        <h3>手動新增</h3>
+        <p class="muted small">人工確認過的題目會直接標記為 approved，下一次 run 會納入評分。</p>
+      </div>
+      <form method="post"
+            action="/admin/evals/sets/{{ eval_set.id }}/generate"
+            class="inline-form"
+            data-loading-form
+            hx-post="/admin/evals/sets/{{ eval_set.id }}/generate"
+            hx-target="#eval-items"
+            hx-swap="outerHTML">
+        <label>
+          自動候選題數
+          <input type="number" name="count" min="1" max="20" value="5">
+        </label>
+        <button type="submit" class="ghost" data-loading-text="生成中...">自動生成 draft 題目</button>
+      </form>
+    </div>
+    <form method="post"
+          action="/admin/evals/sets/{{ eval_set.id }}/items"
+          class="stacked-form"
+          hx-post="/admin/evals/sets/{{ eval_set.id }}/items"
+          hx-target="#eval-items"
+          hx-swap="outerHTML"
+          hx-on::after-request="if(event.detail.successful) this.reset()">
+      <label>
+        問題
+        <textarea name="question" rows="2" required placeholder="輸入管理員確認過的 eval 問題"></textarea>
+      </label>
+      <label>
+        預期來源
+        <select name="expected_source_id">
+          <option value="">不指定來源（只用 substrings / unscored）</option>
+          {% for source in sources %}
+            <option value="{{ source.id }}" {% if source.status != 'indexed' %}disabled{% endif %}>
+              {{ source.filename }}{% if source.status != 'indexed' %}（{{ source.status }}）{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        預期片段 substrings（一行一個，命中任一個即可）
+        <textarea name="expected_substrings" rows="4" placeholder="例如：關鍵人名、日期、專案代號、2-3 個字的中文關鍵詞"></textarea>
+      </label>
+      <label>
+        備註
+        <textarea name="notes" rows="2" placeholder="題型、語言、判定理由或資料範圍"></textarea>
+      </label>
+      <button type="submit" data-loading-text="新增中...">新增 approved 題目</button>
+    </form>
+  </section>
+
+  {% include "_eval_items_section.html" %}
+
+  <section class="settings-section">
+    <h2>Run History</h2>
+    {% if runs %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Run</th><th>狀態</th><th>Progress</th><th>Recall</th><th>MRR</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for run in runs %}
+              <tr>
+                <td>#{{ run.id }}</td>
+                <td><span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run.status }}</span></td>
+                <td>{{ run.progress_current }} / {{ run.progress_total }}</td>
+                <td>{{ run.metrics.recall_at_k if run.metrics else "—" }}</td>
+                <td>{{ run.metrics.mrr if run.metrics else "—" }}</td>
+                <td><a class="ghost small" href="/admin/evals/runs/{{ run.id }}">查看</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="muted">尚未執行。</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}
