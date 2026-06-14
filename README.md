@@ -24,7 +24,8 @@ This is a proof of concept, not a production-ready service. It is suitable for l
 - **Hybrid retrieval**: query rewriting, Chroma vector search, SQLite keyword matching, and LLM reranking. Below a configurable confidence threshold the model is asked to abstain rather than hallucinate. See [`RETRIEVAL.md`](docs/RETRIEVAL.md) for the full pipeline, tuning knobs, and eval workflow.
 - **Per-message debug pane**: chat answers ship with a collapsible "📊 N chunks · retrieved Xms · generated Yms · top score Z" badge that opens a table of vector / keyword / rerank / final scores per citation.
 - **Retrieval eval harness** (`tests/eval_retrieval.py`) with starter questions for the demo notebook so changes to query rewrite / hybrid scoring / rerank can be measured (recall@k, MRR).
-- **Admin eval workbench** at `/admin/evals`: create eval sets against already-indexed notebook data, search all-site indexed notebooks, add manual questions or draft generated candidates, run retrieval-only evals in the background with visible progress, and keep historical run metrics/results inside the deployment. Run results show the question, expected evidence, top retrieved chunk, and a miss diagnosis. Admins can author **candidate retrieval profiles** (runtime-safe params), run an eval set against any profile, **compare** two runs side by side (param/metric/per-question diff), then **apply** a profile to live retrieval or **roll back** — index-affecting parameters are refused at apply.
+- **Admin eval workbench** at `/admin/evals`: create eval sets against already-indexed notebook data, search all-site indexed notebooks, add manual questions or draft generated candidates, run retrieval-only evals in the background with visible progress, and keep historical run metrics/results inside the deployment. Run results show the question, expected evidence, top retrieved chunk, and a miss diagnosis. Admins can author **candidate retrieval profiles** (runtime-safe params), run an eval set against any profile, **compare** two runs side by side (param/metric/per-question diff), then **apply** a profile to live retrieval or **roll back** — index-affecting parameters are refused at apply. Profiles and runs can be exported as sanitized JSON; full internal run reports require explicit confirmation and are written to the audit trail.
+- **Admin audit trail** at `/admin/audit`: durable DB-backed audit events for full/sanitized eval exports, retrieval profile create/apply/delete/export, LLM settings updates, index clear/rebuild, user-admin changes, and notebook/source/chat/note lifecycle or Markdown-export actions. Audit metadata stores identifiers and summaries only, not API keys or copied source text.
 - **Multi-user** with hashed passwords and strict per-user/per-notebook isolation. Admin can manage user accounts at `/admin/users`; any signed-in user can change their own password at `/account`.
 - **OpenAI-compatible** (including local Ollama / vLLM / TEI) and **Azure OpenAI** chat + embedding providers, configured by an admin in `/settings`. Chat and embedding endpoints can live on different services via the optional **Embedding base URL** field. **API keys are encrypted at rest** with Fernet (PBKDF2-SHA256 over `NOTEBOOKLM_SECRET`). On save the embedding endpoint is probed once; dim mismatches with the existing Chroma index are rejected with a clear "Clear at /admin/index first" message.
 - **Admin vector-index console** at `/admin/index`: SQLite ↔ Chroma drift report, manual *Rebuild* and *Clear*.
@@ -272,11 +273,16 @@ POST /admin/evals/sets/{eval_set_id}/run                  queue a retrieval-only
 GET  /admin/evals/runs/{run_id}                           eval-run detail with metrics and per-question results
 GET  /admin/evals/runs/{run_id}/_status                   HTMX polling: eval-run progress and summary metrics
 GET  /admin/evals/runs/{run_id}/_results                  HTMX polling: eval-run per-question results
+GET  /admin/evals/runs/{run_id}/export/sanitized          JSON report without questions/evidence/retrieved snippets
+GET  /admin/evals/runs/{run_id}/export/full?confirm=1     full internal JSON report; audited as high sensitivity
 GET  /admin/evals/profiles                                retrieval profiles page (list, create, apply, delete)
+GET  /admin/evals/profiles/{profile_id}/export            sanitized retrieval-profile JSON export
 POST /admin/evals/profiles                                create a candidate retrieval profile (runtime-safe params)
 POST /admin/evals/profiles/{profile_id}/apply            apply a profile to live retrieval (rollback = apply a previous one)
 POST /admin/evals/profiles/{profile_id}/delete           delete a candidate profile (active profile is protected)
 GET  /admin/evals/compare?base&candidate                 compare two succeeded runs: param/metric/per-question diff
+
+GET  /admin/audit                                         admin audit trail with filters
 
 GET  /settings                                            admin LLM settings (admin only)
 POST /settings                                            save LLM settings (API key is encrypted on write)
@@ -333,6 +339,7 @@ app/templates/
   account.html         Per-user password change page.
   admin_users.html     Admin user management page.
   admin_index.html     Admin vector-index health page.
+  admin_audit.html     Admin audit trail viewer.
   admin_evals.html     Admin eval workbench landing page (eval sets + run history; tab nav to profiles).
   admin_profiles.html  Retrieval profiles management page (cards, apply/delete, create candidate).
   _eval_nav.html       Eval workbench tab nav partial (Eval Sets / Retrieval Profiles).

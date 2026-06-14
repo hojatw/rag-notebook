@@ -255,6 +255,30 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_eval_results_run
             ON eval_results(run_id, eval_item_id);
+
+            -- Durable, admin-visible audit trail for security / compliance
+            -- relevant actions. Do not store copied source text, API keys, or
+            -- full exported payloads here; metadata_json should contain only
+            -- identifiers and compact summaries.
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                actor_username TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL,
+                target_type TEXT NOT NULL DEFAULT '',
+                target_id INTEGER,
+                sensitivity TEXT NOT NULL DEFAULT 'normal',
+                ip_address TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_audit_events_created
+            ON audit_events(created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_audit_events_action_created
+            ON audit_events(action, created_at DESC);
             """
         )
         _ensure_column(conn, "llm_settings", "provider", "TEXT NOT NULL DEFAULT 'openai_compatible'")

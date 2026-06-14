@@ -31,6 +31,7 @@ llm_settings : single row (id = 1), global
 eval_sets ─< eval_items
           └─< eval_runs ─< eval_results
 retrieval_profiles ─< eval_runs
+users ─< audit_events (actor_user_id SET NULL)
 ```
 
 Every user-owned table carries `user_id` so authorization is enforced per-row at the route layer (defence in depth alongside the notebook FK).
@@ -247,6 +248,23 @@ Per-question retrieval result for one eval run.
 | `error` | TEXT DEFAULT `''` | per-item failure |
 | `created_at` | TEXT | |
 
+## `audit_events`
+Durable admin-visible audit trail for security/compliance-relevant operations. It is append-only by convention and backs `/admin/audit`. `metadata_json` must contain identifiers and compact summaries only; do **not** store API keys, full export payloads, prompts, retrieved snippets, or copied source text here.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `actor_user_id` | INTEGER → `users(id)` SET NULL | signed-in user who performed the action |
+| `actor_username` | TEXT DEFAULT `''` | username snapshot, retained if the user is later deleted |
+| `action` | TEXT NOT NULL | stable action key, e.g. `eval_run_export_full` |
+| `target_type` | TEXT DEFAULT `''` | logical target, e.g. `eval_run`, `retrieval_profile`, `user` |
+| `target_id` | INTEGER | target row id when applicable |
+| `sensitivity` | TEXT DEFAULT `'normal'` | `normal` or `high` in the current UI |
+| `ip_address` | TEXT DEFAULT `''` | request client host when available |
+| `user_agent` | TEXT DEFAULT `''` | truncated request user-agent |
+| `metadata_json` | TEXT DEFAULT `'{}'` | compact event metadata, no copied sensitive content |
+| `created_at` | TEXT | |
+
 ---
 
 ## Indexes
@@ -267,3 +285,5 @@ Per-question retrieval result for one eval run.
 | `idx_eval_items_set` | eval_items | `(eval_set_id, approved, id)` |
 | `idx_eval_runs_set` | eval_runs | `(eval_set_id, created_at DESC)` |
 | `idx_eval_results_run` | eval_results | `(run_id, eval_item_id)` |
+| `idx_audit_events_created` | audit_events | `(created_at DESC, id DESC)` |
+| `idx_audit_events_action_created` | audit_events | `(action, created_at DESC)` |
