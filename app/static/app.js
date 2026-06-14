@@ -566,6 +566,7 @@ function replaceCitationTokens(root, citations) {
         a.textContent = `[${cite.index}]`;
         a.dataset.citationIndex = String(cite.index);
         if (cite.source_id != null) a.dataset.sourceId = String(cite.source_id);
+        if (cite.chunk_id != null) a.dataset.chunkId = String(cite.chunk_id);
         if (cite.filename) a.dataset.filename = cite.filename;
         if (messageId) a.dataset.messageId = messageId;
         a.title = `${cite.filename || ""} · ${cite.location || ""}`;
@@ -579,10 +580,43 @@ function replaceCitationTokens(root, citations) {
   });
 }
 
+function flashElement(el, block) {
+  el.scrollIntoView({ behavior: "smooth", block: block || "center" });
+  el.classList.add("source-flash");
+  setTimeout(() => el.classList.remove("source-flash"), 1600);
+}
+
+function notebookIdFromPath() {
+  const m = location.pathname.match(/\/notebooks\/(\d+)/);
+  return m ? m[1] : null;
+}
+
+// U3: open the source preview drawer and highlight the cited chunk. Loads the
+// preview fragment via HTMX, opens the modal, then scrolls to + flashes
+// #preview-chunk-{id}. Returns true if it could start (source + chunk known).
+function openSourcePreviewAtChunk(sourceId, chunkId) {
+  const nbId = notebookIdFromPath();
+  if (!nbId || !sourceId || !chunkId || !window.htmx) return false;
+  const url = `/notebooks/${nbId}/sources/${sourceId}/preview`;
+  window.htmx
+    .ajax("GET", url, { target: "#preview-content", swap: "innerHTML" })
+    .then(() => {
+      window.dispatchEvent(new CustomEvent("open-preview"));
+      // Let Alpine reveal the modal (x-show) before scrolling into it.
+      setTimeout(() => {
+        const chunkEl = document.getElementById(`preview-chunk-${chunkId}`);
+        if (chunkEl) flashElement(chunkEl, "center");
+      }, 60);
+    })
+    .catch(() => {});
+  return true;
+}
+
 function onCitationClick(event) {
   event.preventDefault();
   const link = event.currentTarget;
   let sourceId = link.dataset.sourceId;
+  const chunkId = link.dataset.chunkId;
   const messageId = link.dataset.messageId;
   const index = link.dataset.citationIndex;
   const filename = link.dataset.filename;
@@ -599,21 +633,20 @@ function onCitationClick(event) {
     }
   }
 
+  // Always flash the matching left-pane source row as a locator.
   if (sourceId) {
     const sourceEl = document.getElementById(`source-${sourceId}`);
-    if (sourceEl) {
-      sourceEl.scrollIntoView({ behavior: "smooth", block: "center" });
-      sourceEl.classList.add("source-flash");
-      setTimeout(() => sourceEl.classList.remove("source-flash"), 1600);
-    }
+    if (sourceEl) flashElement(sourceEl, "center");
   }
-  if (messageId && index) {
+
+  // U3: open the preview drawer at the exact cited chunk. For older citations
+  // without a chunk_id, fall back to expanding the inline snippet under the answer.
+  const openedDrawer = openSourcePreviewAtChunk(sourceId, chunkId);
+  if (!openedDrawer && messageId && index) {
     const details = document.getElementById(`${messageId}-cite-${index}`);
     if (details) {
       details.open = true;
-      details.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      details.classList.add("source-flash");
-      setTimeout(() => details.classList.remove("source-flash"), 1600);
+      flashElement(details, "nearest");
     }
   }
 }

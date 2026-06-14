@@ -9,10 +9,10 @@
         hx-indicator="#suggestions-loading">{{ label }}</button>
 {%- endmacro %}
 
-<section class="studio-section studio-suggestions" id="studio-suggestions"
-         hx-get="/notebooks/{{ notebook.id }}/_suggestions"
-         hx-trigger="indexed-sources-changed from:body"
-         hx-swap="outerHTML">
+{# U16: starter questions now live in the chat empty-state (a chat-entry aid),
+   not the Studio. The empty-state owns the indexed-sources-changed refresh, so
+   this section no longer self-polls; POST /suggestions still swaps it in place. #}
+<section class="studio-section studio-suggestions chat-suggestions" id="studio-suggestions">
   <h3>
     建議問題
     {% if questions %}{{ gen_button("重新生成", notebook.id) }}{% endif %}

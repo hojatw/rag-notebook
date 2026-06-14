@@ -2787,6 +2787,105 @@ legend {
   padding: 2px 8px;
 }
 
+/* ---------------------------------------------------------------- U16: Studio tools launcher */
+
+/* Tile grid — each generator is a square-ish tile that opens its config in the
+   preview-modal. Two columns keeps the Studio column compact as tools grow. */
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.tool-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  min-height: auto;
+  box-shadow: none;
+  color: var(--text-soft);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.tool-tile:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--line-accent);
+  color: var(--accent-deep);
+  box-shadow: var(--shadow-sm);
+  transform: none;
+}
+
+.tool-tile.is-disabled,
+.tool-tile:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.tool-tile-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.tool-tile-label {
+  line-height: 1.2;
+}
+
+/* Tool config panel rendered inside the preview-modal. */
+.tool-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: var(--sp-4) var(--sp-5);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.tool-panel-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.tool-result {
+  margin-top: 4px;
+}
+
+.tool-result:empty {
+  margin-top: 0;
+}
+
+/* Save-to-notes control shared by compare / minutes / artifact results. */
+.save-note-form {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---------------------------------------------------------------- U16: briefing slim strip */
+
+/* Briefing is ambient context, not an action — render it as one quiet line. */
+.studio-briefing-strip .briefing-tag {
+  flex: none;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  margin-right: 6px;
+}
+
+.studio-briefing-strip .briefing-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
 /* ---------------------------------------------------------------- notes (extra) */
 
 .note-foot {
@@ -2806,6 +2905,30 @@ legend {
 
 .note-foot a {
   text-decoration: none;
+}
+
+/* U8: inline note edit form. */
+.note-edit-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.note-edit-form label {
+  display: grid;
+  gap: 4px;
+}
+
+.note-edit-form textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+}
+
+.note-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 /* ---------------------------------------------------------------- HTMX request indicator */

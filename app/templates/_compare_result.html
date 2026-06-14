@@ -6,13 +6,8 @@
   <div class="compare-result-body">
     <p class="muted small">比較對象：{{ filenames | join('、') }}{% if focus %} · 聚焦：{{ focus }}{% endif %}</p>
     <div class="markdown-body" data-markdown>{{ comparison }}</div>
-    <form class="compare-save"
-          hx-post="/notebooks/{{ notebook_id }}/notes/add"
-          hx-target="#studio-notes"
-          hx-swap="outerHTML">
-      <input type="hidden" name="title" value="來源比較：{{ filenames | join(' vs ') }}{% if focus %}（{{ focus }}）{% endif %}">
-      <input type="hidden" name="content" value="{{ comparison }}">
-      <button type="submit" class="ghost small">存成筆記</button>
-    </form>
+    {% with note_title = "來源比較：" ~ filenames | join(' vs ') ~ ("（" ~ focus ~ "）" if focus else ""), note_content = comparison %}
+      {% include "_save_note_button.html" %}
+    {% endwith %}
   </div>
 {% endif %}

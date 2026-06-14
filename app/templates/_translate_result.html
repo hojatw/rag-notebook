@@ -1,0 +1,11 @@
+{# Result fragment for the translate-summary tool (A5), rendered into
+   #tool-result inside the tool modal. Manual save to the outputs shelf. #}
+{% if error %}
+  <p class="compare-error">{{ error }}</p>
+{% elif translated %}
+  <p class="muted small">「{{ filename }}」的摘要翻譯（{{ target_language }}）：</p>
+  <div class="markdown-body" data-markdown>{{ translated }}</div>
+  {% with note_title = "摘要翻譯（" ~ target_language ~ "） — " ~ filename, note_content = translated %}
+    {% include "_save_note_button.html" %}
+  {% endwith %}
+{% endif %}
