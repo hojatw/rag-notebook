@@ -79,7 +79,12 @@
 
 * { box-sizing: border-box; }
 
-html, body { height: 100%; }
+/* body must be able to grow past the viewport so the sticky topbar's
+   containing block spans the whole document — otherwise `height: 100%` caps
+   body at one viewport and the sticky header (and side panes) un-stick once
+   the page is scrolled past 100vh. */
+html { height: 100%; }
+body { min-height: 100%; }
 
 body {
   margin: 0;
