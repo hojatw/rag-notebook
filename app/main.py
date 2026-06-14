@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -10,6 +11,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -546,6 +548,7 @@ def list_notebooks(request: Request, user: Annotated[dict, Depends(require_login
 
 @app.post("/notebooks/new")
 def create_notebook(
+    request: Request,
     user: Annotated[dict, Depends(require_login)],
     title: str = Form("未命名筆記本"),
     emoji: str = Form("📓"),
@@ -560,6 +563,15 @@ def create_notebook(
             (user["id"], title, (emoji or "📓").strip()[:8] or "📓", description),
         )
         notebook_id = cursor.lastrowid
+    record_audit_event(
+        request,
+        user,
+        "notebook_created",
+        "notebook",
+        notebook_id,
+        {"title": title, "has_description": bool(description)},
+        "normal",
+    )
     logger.info("notebook_created user_id=%s notebook_id=%s title=%r", user["id"], notebook_id, title)
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
@@ -663,6 +675,7 @@ def notebook_view(
 
 @app.post("/notebooks/{notebook_id}/rename")
 def rename_notebook(
+    request: Request,
     notebook_id: int,
     user: Annotated[dict, Depends(require_login)],
     title: str = Form(...),
@@ -684,15 +697,24 @@ def rename_notebook(
             "UPDATE notebooks SET title = ?, emoji = ?, description = ?, followups_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
             (title, emoji, description, followups_flag, notebook_id, user["id"]),
         )
+    record_audit_event(
+        request,
+        user,
+        "notebook_renamed",
+        "notebook",
+        notebook_id,
+        {"title": title, "has_description": bool(description), "followups_enabled": bool(followups_flag)},
+        "normal",
+    )
     logger.info("notebook_renamed user_id=%s notebook_id=%s", user["id"], notebook_id)
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
 
 @app.post("/notebooks/{notebook_id}/delete")
-def delete_notebook(notebook_id: int, user: Annotated[dict, Depends(require_login)]):
+def delete_notebook(request: Request, notebook_id: int, user: Annotated[dict, Depends(require_login)]):
     """Delete a notebook and cascade its sources, chunks, conversations, and notes."""
     with connect() as conn:
-        get_notebook(conn, notebook_id, user["id"])
+        notebook = get_notebook(conn, notebook_id, user["id"])
         sources = [
             {"id": row["id"], "stored_path": row["stored_path"], "user_id": user["id"]}
             for row in conn.execute(
@@ -703,6 +725,15 @@ def delete_notebook(notebook_id: int, user: Annotated[dict, Depends(require_logi
         conn.execute("DELETE FROM notebooks WHERE id = ? AND user_id = ?", (notebook_id, user["id"]))
     for source in sources:
         cleanup_source_artifacts(source)
+    record_audit_event(
+        request,
+        user,
+        "notebook_deleted",
+        "notebook",
+        notebook_id,
+        {"title": notebook["title"], "source_count": len(sources)},
+        "high",
+    )
     logger.info("notebook_deleted user_id=%s notebook_id=%s sources=%s", user["id"], notebook_id, len(sources))
     return RedirectResponse("/notebooks", status_code=303)
 
@@ -712,6 +743,7 @@ UPLOAD_BATCH_LIMIT = config.runtime.upload_batch_limit
 
 @app.post("/notebooks/{notebook_id}/sources/upload")
 async def upload_source(
+    request: Request,
     notebook_id: int,
     user: Annotated[dict, Depends(require_login)],
     files: list[UploadFile] = File(...),
@@ -759,6 +791,20 @@ async def upload_source(
             touch_notebook(conn, notebook_id)
         enqueue_source(source_id)
         queued_source_ids.append(source_id)
+        record_audit_event(
+            request,
+            user,
+            "source_uploaded",
+            "source",
+            source_id,
+            {
+                "notebook_id": notebook_id,
+                "filename": safe_name,
+                "content_type": upload.content_type or "",
+                "batch_size": len(files),
+            },
+            "normal",
+        )
         logger.info(
             "source_uploaded user_id=%s notebook_id=%s source_id=%s filename=%s content_type=%s",
             user["id"], notebook_id, source_id, safe_name, upload.content_type or "",
@@ -772,6 +818,7 @@ async def upload_source(
 
 @app.post("/notebooks/{notebook_id}/sources/{source_id}/reindex")
 def reindex_source(
+    request: Request,
     notebook_id: int,
     source_id: int,
     user: Annotated[dict, Depends(require_login)],
@@ -780,7 +827,7 @@ def reindex_source(
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
         source = conn.execute(
-            "SELECT id FROM sources WHERE id = ? AND notebook_id = ? AND user_id = ?",
+            "SELECT id, filename FROM sources WHERE id = ? AND notebook_id = ? AND user_id = ?",
             (source_id, notebook_id, user["id"]),
         ).fetchone()
         if source is None:
@@ -788,12 +835,21 @@ def reindex_source(
             raise HTTPException(status_code=404, detail="找不到來源")
         touch_notebook(conn, notebook_id)
     enqueue_source(source_id)
+    record_audit_event(
+        request,
+        user,
+        "source_reindex_requested",
+        "source",
+        source_id,
+        {"notebook_id": notebook_id, "filename": source["filename"]},
+        "high",
+    )
     logger.info("source_reindex_requested user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
 
 @app.post("/notebooks/{notebook_id}/sources/{source_id}/delete")
-def delete_source(notebook_id: int, source_id: int, user: Annotated[dict, Depends(require_login)]):
+def delete_source(request: Request, notebook_id: int, source_id: int, user: Annotated[dict, Depends(require_login)]):
     """Delete a source within a specific notebook and clean up vectors and the file."""
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
@@ -807,6 +863,15 @@ def delete_source(notebook_id: int, source_id: int, user: Annotated[dict, Depend
         conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         touch_notebook(conn, notebook_id)
     cleanup_source_artifacts({"id": source_id, "stored_path": source["stored_path"], "user_id": user["id"]})
+    record_audit_event(
+        request,
+        user,
+        "source_deleted",
+        "source",
+        source_id,
+        {"notebook_id": notebook_id, "filename": source["filename"], "status": source["status"]},
+        "high",
+    )
     logger.info("source_deleted user_id=%s notebook_id=%s source_id=%s filename=%s", user["id"], notebook_id, source_id, source["filename"])
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
@@ -1229,15 +1294,25 @@ def add_note(
     cleaned_title = " ".join((title or "").split())[:80] or "已儲存筆記"
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, ?, ?)",
             (notebook_id, user["id"], cleaned_title, cleaned_content),
         )
+        note_id = cursor.lastrowid
         touch_notebook(conn, notebook_id)
         notes = [dict(r) for r in conn.execute(
             "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
             (notebook_id, user["id"]),
         ).fetchall()]
+    record_audit_event(
+        request,
+        user,
+        "note_added",
+        "note",
+        note_id,
+        {"notebook_id": notebook_id, "title": cleaned_title, "content_chars": len(cleaned_content)},
+        "normal",
+    )
     logger.info("note_added user_id=%s notebook_id=%s chars=%s", user["id"], notebook_id, len(cleaned_content))
     return render(request, "_notes_section.html", {"notebook": notebook, "notes": notes})
 
@@ -1267,6 +1342,8 @@ def pin_note(
             "SELECT id FROM notes WHERE notebook_id = ? AND source_message_id = ?",
             (notebook_id, message_id),
         ).fetchone()
+        note_id = existing["id"] if existing else None
+        created = False
         if existing is None:
             # Prefer the user question that prompted this assistant reply as
             # the note title (matches NotebookLM). Falls back to the
@@ -1281,15 +1358,26 @@ def pin_note(
             ).fetchone()
             raw_title = (prompting["content"] if prompting else None) or message["title"] or "Pinned note"
             title = " ".join(raw_title.split())[:80]
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO notes (notebook_id, user_id, title, content, source_message_id) VALUES (?, ?, ?, ?, ?)",
                 (notebook_id, user["id"], title, message["content"], message_id),
             )
+            note_id = cursor.lastrowid
+            created = True
             touch_notebook(conn, notebook_id)
         notes = [dict(r) for r in conn.execute(
             "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
             (notebook_id, user["id"]),
         ).fetchall()]
+    record_audit_event(
+        request,
+        user,
+        "note_pinned",
+        "note",
+        note_id,
+        {"notebook_id": notebook_id, "source_message_id": message_id, "created": created},
+        "normal",
+    )
     logger.info("note_pinned user_id=%s notebook_id=%s message_id=%s", user["id"], notebook_id, message_id)
     return render(request, "_notes_section.html", {"notebook": notebook, "notes": notes})
 
@@ -1320,6 +1408,15 @@ def delete_note(
             "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
             (notebook_id, user["id"]),
         ).fetchall()]
+    record_audit_event(
+        request,
+        user,
+        "note_deleted",
+        "note",
+        note_id,
+        {"notebook_id": notebook_id, "source_message_id": source_message_id},
+        "high",
+    )
     logger.info("note_deleted user_id=%s notebook_id=%s note_id=%s message_id=%s", user["id"], notebook_id, note_id, source_message_id)
     response = render(request, "_notes_section.html", {"notebook": notebook, "notes": notes})
     if source_message_id is not None:
@@ -1354,12 +1451,22 @@ def edit_note(
             "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
             (notebook_id, user["id"]),
         ).fetchall()]
+    record_audit_event(
+        request,
+        user,
+        "note_edited",
+        "note",
+        note_id,
+        {"notebook_id": notebook_id, "title": cleaned_title, "content_chars": len(cleaned_content)},
+        "normal",
+    )
     logger.info("note_edited user_id=%s notebook_id=%s note_id=%s chars=%s", user["id"], notebook_id, note_id, len(cleaned_content))
     return render(request, "_notes_section.html", {"notebook": notebook, "notes": notes})
 
 
 @app.post("/notebooks/{notebook_id}/chat/{conversation_id}/delete")
 def delete_conversation(
+    request: Request,
     notebook_id: int,
     conversation_id: int,
     user: Annotated[dict, Depends(require_login)],
@@ -1367,6 +1474,17 @@ def delete_conversation(
     """Delete a conversation and its messages within a notebook."""
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
+        convo = conn.execute(
+            """
+            SELECT c.title, COUNT(m.id) AS message_count
+            FROM conversations c LEFT JOIN messages m ON m.conversation_id = c.id AND m.user_id = c.user_id
+            WHERE c.id = ? AND c.notebook_id = ? AND c.user_id = ?
+            GROUP BY c.id
+            """,
+            (conversation_id, notebook_id, user["id"]),
+        ).fetchone()
+        if convo is None:
+            raise HTTPException(status_code=404, detail="找不到對話")
         result = conn.execute(
             "DELETE FROM conversations WHERE id = ? AND notebook_id = ? AND user_id = ?",
             (conversation_id, notebook_id, user["id"]),
@@ -1374,12 +1492,22 @@ def delete_conversation(
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="找不到對話")
         touch_notebook(conn, notebook_id)
+    record_audit_event(
+        request,
+        user,
+        "conversation_deleted",
+        "conversation",
+        conversation_id,
+        {"notebook_id": notebook_id, "title": convo["title"], "message_count": convo["message_count"]},
+        "high",
+    )
     logger.info("conversation_deleted user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
     return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
 
 @app.post("/notebooks/{notebook_id}/chat/{conversation_id}/rename")
 def rename_conversation(
+    request: Request,
     notebook_id: int,
     conversation_id: int,
     user: Annotated[dict, Depends(require_login)],
@@ -1400,12 +1528,21 @@ def rename_conversation(
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="找不到對話")
         touch_notebook(conn, notebook_id)
+    record_audit_event(
+        request,
+        user,
+        "conversation_renamed",
+        "conversation",
+        conversation_id,
+        {"notebook_id": notebook_id, "title": clean_title},
+        "normal",
+    )
     logger.info("conversation_renamed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
     return RedirectResponse(f"/notebooks/{notebook_id}?conversation_id={conversation_id}", status_code=303)
 
 
 @app.post("/notebooks/{notebook_id}/chat/new")
-def new_conversation(notebook_id: int, user: Annotated[dict, Depends(require_login)]):
+def new_conversation(request: Request, notebook_id: int, user: Annotated[dict, Depends(require_login)]):
     """Create an empty conversation scoped to a notebook."""
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
@@ -1415,6 +1552,15 @@ def new_conversation(notebook_id: int, user: Annotated[dict, Depends(require_log
         )
         conversation_id = cursor.lastrowid
         touch_notebook(conn, notebook_id)
+    record_audit_event(
+        request,
+        user,
+        "conversation_created",
+        "conversation",
+        conversation_id,
+        {"notebook_id": notebook_id},
+        "normal",
+    )
     logger.info("conversation_created user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
     return RedirectResponse(f"/notebooks/{notebook_id}?conversation_id={conversation_id}", status_code=303)
 
@@ -1773,8 +1919,6 @@ async def followups_partial(
 
 def _markdown_download(markdown: str, filename: str) -> Response:
     """Wrap markdown text as a UTF-8 file download (RFC 5987 filename)."""
-    from urllib.parse import quote
-
     return Response(
         content=markdown,
         media_type="text/markdown; charset=utf-8",
@@ -1784,8 +1928,60 @@ def _markdown_download(markdown: str, filename: str) -> Response:
     )
 
 
+def _json_download(payload: dict[str, Any], filename: str) -> Response:
+    """Wrap a JSON payload as a UTF-8 file download."""
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        media_type="application/json; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"export.json\"; filename*=UTF-8''{quote(filename)}",
+        },
+    )
+
+
+def record_audit_event(
+    request: Request | None,
+    user: dict | None,
+    action: str,
+    target_type: str = "",
+    target_id: int | None = None,
+    metadata: dict[str, Any] | None = None,
+    sensitivity: str = "normal",
+) -> None:
+    """Persist a compact audit event for admin-visible compliance review.
+
+    Keep metadata identifiers-only: do not copy source text, API keys, full
+    exports, prompts, or retrieved snippets into the audit table.
+    """
+    actor_id = int(user["id"]) if user and user.get("id") is not None else None
+    actor_username = str(user.get("username") or "") if user else ""
+    ip_address = request.client.host if request and request.client else ""
+    user_agent = request.headers.get("user-agent", "")[:300] if request else ""
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO audit_events
+            (actor_user_id, actor_username, action, target_type, target_id,
+             sensitivity, ip_address, user_agent, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                actor_id,
+                actor_username[:120],
+                action[:120],
+                target_type[:80],
+                target_id,
+                sensitivity[:40],
+                ip_address[:120],
+                user_agent,
+                dumps(metadata or {}),
+            ),
+        )
+
+
 @app.get("/notebooks/{notebook_id}/chat/{conversation_id}/export")
 def export_conversation(
+    request: Request,
     notebook_id: int,
     conversation_id: int,
     user: Annotated[dict, Depends(require_login)],
@@ -1815,12 +2011,22 @@ def export_conversation(
                 for c in message["citations"]:
                     lines.append(f"> [{c.get('index')}] {c.get('filename')} · {c.get('location')}")
                 lines.append("")
+    record_audit_event(
+        request,
+        user,
+        "conversation_exported",
+        "conversation",
+        conversation_id,
+        {"notebook_id": notebook_id, "title": convo["title"], "message_count": len(rows), "format": "markdown"},
+        "high",
+    )
     logger.info("conversation_exported user_id=%s notebook_id=%s conversation_id=%s messages=%s", user["id"], notebook_id, conversation_id, len(rows))
     return _markdown_download("\n".join(lines), f"{notebook['title']}-{convo['title']}.md")
 
 
 @app.get("/notebooks/{notebook_id}/notes/export")
 def export_notes(
+    request: Request,
     notebook_id: int,
     user: Annotated[dict, Depends(require_login)],
 ):
@@ -1835,12 +2041,22 @@ def export_notes(
     for note in notes:
         title = note["title"] or note["content"][:40]
         lines += [f"## {title}", "", note["content"], "", f"_{note['created_at']}_", "", "---", ""]
+    record_audit_event(
+        request,
+        user,
+        "notes_exported",
+        "notebook",
+        notebook_id,
+        {"note_count": len(notes), "format": "markdown"},
+        "high",
+    )
     logger.info("notes_exported user_id=%s notebook_id=%s notes=%s", user["id"], notebook_id, len(notes))
     return _markdown_download("\n".join(lines), f"{notebook['title']}-notes.md")
 
 
 @app.get("/notebooks/{notebook_id}/notes/{note_id}/export")
 def export_note(
+    request: Request,
     notebook_id: int,
     note_id: int,
     user: Annotated[dict, Depends(require_login)],
@@ -1856,6 +2072,15 @@ def export_note(
             raise HTTPException(status_code=404, detail="找不到筆記")
     title = note["title"] or note["content"][:40] or "筆記"
     lines = [f"# {title}", "", note["content"], "", f"_{note['created_at']}_", ""]
+    record_audit_event(
+        request,
+        user,
+        "note_exported",
+        "note",
+        note_id,
+        {"notebook_id": notebook_id, "title": title, "format": "markdown"},
+        "high",
+    )
     logger.info("note_exported user_id=%s notebook_id=%s note_id=%s", user["id"], notebook_id, note_id)
     return _markdown_download("\n".join(lines), f"{notebook['title']}-{title}.md")
 
@@ -2633,20 +2858,38 @@ def admin_index(
 
 
 @app.post("/admin/index/rebuild")
-def admin_index_rebuild(user: Annotated[dict, Depends(require_admin)]):
+def admin_index_rebuild(request: Request, user: Annotated[dict, Depends(require_admin)]):
     """Run a full SQLite -> Chroma re-upsert (admin only)."""
     result = sync_from_sqlite(mode="full")
+    record_audit_event(
+        request,
+        user,
+        "index_rebuilt",
+        "vector_index",
+        None,
+        {"upserted": result["upserted"], "deleted": result["deleted"]},
+        "high",
+    )
     logger.info("admin_index_rebuilt admin_user_id=%s upserted=%s deleted=%s", user["id"], result["upserted"], result["deleted"])
     return RedirectResponse(f"/admin/index?msg=rebuilt-{result['upserted']}", status_code=303)
 
 
 @app.post("/admin/index/clear")
-def admin_index_clear(user: Annotated[dict, Depends(require_admin)]):
+def admin_index_clear(request: Request, user: Annotated[dict, Depends(require_admin)]):
     """Delete every vector from the Chroma collection (admin only).
 
     SQLite data is untouched — a subsequent "Rebuild index" re-populates Chroma.
     """
     count = clear_all_vectors()
+    record_audit_event(
+        request,
+        user,
+        "index_cleared",
+        "vector_index",
+        None,
+        {"deleted_vectors": count},
+        "high",
+    )
     logger.info("admin_index_cleared admin_user_id=%s deleted=%s", user["id"], count)
     return RedirectResponse(f"/admin/index?msg=cleared-{count}", status_code=303)
 
@@ -3153,6 +3396,97 @@ def eval_run_context(run_id: int) -> dict[str, Any]:
     return {"run": run_dict, "results": results}
 
 
+def profile_export_payload(profile: dict) -> dict[str, Any]:
+    params = loads(profile.get("params_json") or "{}")
+    return {
+        "export_schema": "retrieval_profile.v1",
+        "export_type": "sanitized_profile",
+        "profile": {
+            "id": profile["id"],
+            "name": profile["name"],
+            "description": profile["description"],
+            "params": params,
+            "requires_reindex": bool(profile["requires_reindex"]),
+            "is_active": bool(profile["is_active"]),
+            "is_default": bool(profile["is_default"]),
+            "source_run_id": profile["source_run_id"],
+            "created_at": profile["created_at"],
+            "updated_at": profile["updated_at"],
+        },
+    }
+
+
+def sanitized_run_export_payload(context: dict[str, Any]) -> dict[str, Any]:
+    run = context["run"]
+    results = context["results"]
+    return {
+        "export_schema": "eval_run.v1",
+        "export_type": "sanitized_run_report",
+        "run": {
+            "id": run["id"],
+            "eval_set_id": run["eval_set_id"],
+            "eval_set_name": run["eval_set_name"],
+            "status": run["status"],
+            "profile_id": run["profile_id"],
+            "profile_snapshot": run["profile_snapshot"],
+            "metrics": run["metrics"],
+            "progress_current": run["progress_current"],
+            "progress_total": run["progress_total"],
+            "started_at": run["started_at"],
+            "finished_at": run["finished_at"],
+            "created_at": run["created_at"],
+        },
+        "result_summary": {
+            "total_results": len(results),
+            "hits": sum(1 for item in results if item["status"] == "hit"),
+            "misses": sum(1 for item in results if item["status"] == "miss"),
+            "unscored": sum(1 for item in results if item["status"] == "unscored"),
+            "errors": sum(1 for item in results if item["status"] == "error"),
+        },
+        "results": [
+            {
+                "eval_item_id": item["eval_item_id"],
+                "status": item["status"],
+                "hit_rank": item["hit_rank"],
+                "top_score": item["top_score"],
+                "latency_ms": item["latency_ms"],
+                "retrieved_count": len(item.get("retrieved") or []),
+                "has_error": bool(item.get("error")),
+            }
+            for item in results
+        ],
+    }
+
+
+def full_run_export_payload(context: dict[str, Any]) -> dict[str, Any]:
+    payload = sanitized_run_export_payload(context)
+    payload["export_type"] = "full_internal_run_report"
+    payload["warning"] = "Contains eval questions, expected evidence, and retrieved snippets. Keep inside the deployment unless explicitly approved."
+    payload["results"] = [
+        {
+            "eval_item_id": item["eval_item_id"],
+            "question": item["question"],
+            "status": item["status"],
+            "hit_rank": item["hit_rank"],
+            "top_score": item["top_score"],
+            "latency_ms": item["latency_ms"],
+            "diagnosis": item["diagnosis"],
+            "error": item.get("error") or "",
+            "expected": {
+                "source_id": item["expected_source_id"],
+                "filename": item["expected_filename"],
+                "chunk_id": item["expected_chunk_id"],
+                "chunk_location": item["expected_chunk_location"],
+                "substrings": item["expected_substrings"],
+                "snippet": item["expected_chunk_snippet"],
+            },
+            "retrieved": item.get("retrieved") or [],
+        }
+        for item in context["results"]
+    ]
+    return payload
+
+
 def eval_set_items_redirect(eval_set_id: int) -> RedirectResponse:
     return RedirectResponse(f"/admin/evals/sets/{eval_set_id}#eval-items", status_code=303)
 
@@ -3635,10 +3969,94 @@ def admin_eval_run_results(
     return render(request, "_eval_run_results.html", {"user": user, **eval_run_context(run_id)})
 
 
+@app.get("/admin/evals/runs/{run_id}/export/sanitized")
+def admin_export_eval_run_sanitized(
+    request: Request,
+    run_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    context = eval_run_context(run_id)
+    payload = sanitized_run_export_payload(context)
+    record_audit_event(
+        request,
+        user,
+        "eval_run_export_sanitized",
+        "eval_run",
+        run_id,
+        {
+            "eval_set_id": context["run"]["eval_set_id"],
+            "status": context["run"]["status"],
+            "result_count": len(context["results"]),
+        },
+        "normal",
+    )
+    logger.info("eval_run_exported_sanitized admin_user_id=%s run_id=%s", user["id"], run_id)
+    return _json_download(payload, f"eval-run-{run_id}-sanitized.json")
+
+
+@app.get("/admin/evals/runs/{run_id}/export/full")
+def admin_export_eval_run_full(
+    request: Request,
+    run_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+    confirm: int = 0,
+):
+    if confirm != 1:
+        raise HTTPException(status_code=400, detail="Full internal report export requires explicit confirmation.")
+    context = eval_run_context(run_id)
+    payload = full_run_export_payload(context)
+    record_audit_event(
+        request,
+        user,
+        "eval_run_export_full",
+        "eval_run",
+        run_id,
+        {
+            "eval_set_id": context["run"]["eval_set_id"],
+            "status": context["run"]["status"],
+            "result_count": len(context["results"]),
+            "contains_questions": True,
+            "contains_expected_evidence": True,
+            "contains_retrieved_snippets": True,
+        },
+        "high",
+    )
+    logger.info("eval_run_exported_full admin_user_id=%s run_id=%s", user["id"], run_id)
+    return _json_download(payload, f"eval-run-{run_id}-full-internal.json")
+
+
 # --- E1c: retrieval profile authoring + apply/rollback + run comparison ---
+
+@app.get("/admin/evals/profiles/{profile_id}/export")
+def admin_export_profile(
+    request: Request,
+    profile_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    with connect() as conn:
+        profile = conn.execute("SELECT * FROM retrieval_profiles WHERE id = ?", (profile_id,)).fetchone()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="找不到 retrieval profile")
+    payload = profile_export_payload(dict(profile))
+    record_audit_event(
+        request,
+        user,
+        "retrieval_profile_export_sanitized",
+        "retrieval_profile",
+        profile_id,
+        {
+            "name": profile["name"],
+            "requires_reindex": bool(profile["requires_reindex"]),
+            "is_active": bool(profile["is_active"]),
+        },
+        "normal",
+    )
+    logger.info("eval_profile_exported admin_user_id=%s profile_id=%s", user["id"], profile_id)
+    return _json_download(payload, f"retrieval-profile-{profile_id}.json")
 
 @app.post("/admin/evals/profiles")
 def admin_create_profile(
+    request: Request,
     user: Annotated[dict, Depends(require_admin)],
     name: str = Form(...),
     description: str = Form(""),
@@ -3672,12 +4090,23 @@ def admin_create_profile(
             """,
             (name, description.strip()[:500], dumps(params), user["id"]),
         )
-    logger.info("eval_profile_created admin_user_id=%s profile_id=%s", user["id"], cursor.lastrowid)
+    profile_id = cursor.lastrowid
+    record_audit_event(
+        request,
+        user,
+        "retrieval_profile_created",
+        "retrieval_profile",
+        profile_id,
+        {"name": name, "params": params, "requires_reindex": False},
+        "normal",
+    )
+    logger.info("eval_profile_created admin_user_id=%s profile_id=%s", user["id"], profile_id)
     return RedirectResponse("/admin/evals/profiles", status_code=303)
 
 
 @app.post("/admin/evals/profiles/{profile_id}/delete")
 def admin_delete_profile(
+    request: Request,
     profile_id: int,
     user: Annotated[dict, Depends(require_admin)],
 ):
@@ -3692,12 +4121,22 @@ def admin_delete_profile(
         if row["is_active"]:
             raise HTTPException(status_code=400, detail="作用中的 profile 不能刪除，請先套用其他 profile。")
         conn.execute("DELETE FROM retrieval_profiles WHERE id = ?", (profile_id,))
+    record_audit_event(
+        request,
+        user,
+        "retrieval_profile_deleted",
+        "retrieval_profile",
+        profile_id,
+        {"name": row["name"], "requires_reindex": bool(row["requires_reindex"])},
+        "normal",
+    )
     logger.info("eval_profile_deleted admin_user_id=%s profile_id=%s", user["id"], profile_id)
     return RedirectResponse("/admin/evals/profiles", status_code=303)
 
 
 @app.post("/admin/evals/profiles/{profile_id}/apply")
 def admin_apply_profile(
+    request: Request,
     profile_id: int,
     user: Annotated[dict, Depends(require_admin)],
 ):
@@ -3713,12 +4152,29 @@ def admin_apply_profile(
                 status_code=400,
                 detail="此 profile 含需重建索引的參數，不能直接套用；請改用 Clear/Rebuild 流程。",
             )
+        previous = conn.execute(
+            "SELECT id, name, params_json FROM retrieval_profiles WHERE is_active = 1 ORDER BY id ASC LIMIT 1"
+        ).fetchone()
         conn.execute("UPDATE retrieval_profiles SET is_active = 0 WHERE is_active = 1")
         conn.execute(
             "UPDATE retrieval_profiles SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (profile_id,),
         )
     set_active_retrieval_params(loads(row["params_json"] or "{}"))
+    record_audit_event(
+        request,
+        user,
+        "retrieval_profile_applied",
+        "retrieval_profile",
+        profile_id,
+        {
+            "name": row["name"],
+            "previous_profile_id": previous["id"] if previous else None,
+            "previous_profile_name": previous["name"] if previous else "",
+            "params": loads(row["params_json"] or "{}"),
+        },
+        "high",
+    )
     logger.info(
         "eval_profile_applied admin_user_id=%s profile_id=%s params=%s",
         user["id"], profile_id, dumps(ACTIVE_RETRIEVAL_PARAMS),
@@ -3843,6 +4299,85 @@ def admin_eval_compare(
     )
 
 
+@app.get("/admin/audit", response_class=HTMLResponse)
+def admin_audit(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+    action: str = "",
+    actor: str = "",
+    target_type: str = "",
+    sensitivity: str = "",
+    limit: int = 100,
+):
+    """Admin-visible durable audit event viewer."""
+    action = action.strip()[:120]
+    actor = actor.strip()[:120]
+    target_type = target_type.strip()[:80]
+    sensitivity = sensitivity.strip()[:40]
+    limit = max(1, min(int(limit), 300))
+    where = []
+    params: list[Any] = []
+    if action:
+        where.append("action LIKE ?")
+        params.append(f"%{action}%")
+    if actor:
+        where.append("(actor_username LIKE ? OR CAST(actor_user_id AS TEXT) = ?)")
+        params.extend((f"%{actor}%", actor))
+    if target_type:
+        where.append("target_type = ?")
+        params.append(target_type)
+    if sensitivity:
+        where.append("sensitivity = ?")
+        params.append(sensitivity)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    with connect() as conn:
+        events = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT *
+                FROM audit_events
+                {where_sql}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (*params, limit),
+            ).fetchall()
+        ]
+        actions = [row["action"] for row in conn.execute("SELECT DISTINCT action FROM audit_events ORDER BY action").fetchall()]
+        target_types = [
+            row["target_type"]
+            for row in conn.execute("SELECT DISTINCT target_type FROM audit_events WHERE target_type != '' ORDER BY target_type").fetchall()
+        ]
+        sensitivities = [
+            row["sensitivity"]
+            for row in conn.execute("SELECT DISTINCT sensitivity FROM audit_events ORDER BY sensitivity").fetchall()
+        ]
+    for event in events:
+        try:
+            event["metadata"] = json.dumps(loads(event.get("metadata_json") or "{}"), ensure_ascii=False, indent=2)
+        except Exception:
+            event["metadata"] = "{}"
+    return render(
+        request,
+        "admin_audit.html",
+        {
+            "user": user,
+            "events": events,
+            "filters": {
+                "action": action,
+                "actor": actor,
+                "target_type": target_type,
+                "sensitivity": sensitivity,
+                "limit": limit,
+            },
+            "actions": actions,
+            "target_types": target_types,
+            "sensitivities": sensitivities,
+        },
+    )
+
+
 @app.get("/admin/users", response_class=HTMLResponse)
 def admin_users(request: Request, user: Annotated[dict, Depends(require_admin)]):
     """List all user accounts (admin only)."""
@@ -3871,25 +4406,37 @@ def admin_create_user(
         error = "帳號長度須為 1–64 個字元。"
     elif len(password) < 6:
         error = "密碼至少需要 6 個字元。"
+    created_id = None
     if not error:
         try:
             with connect() as conn:
-                conn.execute(
+                cursor = conn.execute(
                     "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
                     (username, hash_password(password), 1 if is_admin else 0),
                 )
+                created_id = cursor.lastrowid
         except Exception as exc:
             error = f"建立使用者失敗：{exc}"
     with connect() as conn:
         rows = [dict(r) for r in conn.execute("SELECT id, username, is_admin, created_at FROM users ORDER BY id ASC").fetchall()]
     if error:
         return render(request, "admin_users.html", {"user": user, "users": rows, "error": error, "saved": False}, 400)
+    record_audit_event(
+        request,
+        user,
+        "user_created",
+        "user",
+        created_id,
+        {"username": username, "is_admin": bool(is_admin)},
+        "high",
+    )
     logger.info("user_created admin_user_id=%s new_username=%s is_admin=%s", user["id"], username, bool(is_admin))
     return render(request, "admin_users.html", {"user": user, "users": rows, "error": "", "saved": True})
 
 
 @app.post("/admin/users/{target_id}/reset-password")
 def admin_reset_password(
+    request: Request,
     target_id: int,
     user: Annotated[dict, Depends(require_admin)],
     new_password: str = Form(...),
@@ -3898,18 +4445,31 @@ def admin_reset_password(
     if len(new_password) < 6:
         raise HTTPException(status_code=400, detail="密碼至少需要 6 個字元。")
     with connect() as conn:
+        target = conn.execute("SELECT username FROM users WHERE id = ?", (target_id,)).fetchone()
+        if target is None:
+            raise HTTPException(status_code=404, detail="User not found")
         result = conn.execute(
             "UPDATE users SET password_hash = ? WHERE id = ?",
             (hash_password(new_password), target_id),
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="User not found")
+    record_audit_event(
+        request,
+        user,
+        "user_password_reset",
+        "user",
+        target_id,
+        {"target_username": target["username"]},
+        "high",
+    )
     logger.info("password_reset admin_user_id=%s target_user_id=%s", user["id"], target_id)
     return RedirectResponse("/admin/users", status_code=303)
 
 
 @app.post("/admin/users/{target_id}/toggle-admin")
 def admin_toggle_admin(
+    request: Request,
     target_id: int,
     user: Annotated[dict, Depends(require_admin)],
 ):
@@ -3917,7 +4477,7 @@ def admin_toggle_admin(
     if target_id == user["id"]:
         raise HTTPException(status_code=400, detail="You cannot change your own admin flag.")
     with connect() as conn:
-        target = conn.execute("SELECT is_admin FROM users WHERE id = ?", (target_id,)).fetchone()
+        target = conn.execute("SELECT username, is_admin FROM users WHERE id = ?", (target_id,)).fetchone()
         if target is None:
             raise HTTPException(status_code=404, detail="User not found")
         new_flag = 0 if target["is_admin"] else 1
@@ -3929,12 +4489,22 @@ def admin_toggle_admin(
             if other_admins == 0:
                 raise HTTPException(status_code=400, detail="Cannot remove the last admin.")
         conn.execute("UPDATE users SET is_admin = ? WHERE id = ?", (new_flag, target_id))
+    record_audit_event(
+        request,
+        user,
+        "user_admin_toggled",
+        "user",
+        target_id,
+        {"target_username": target["username"], "new_is_admin": bool(new_flag)},
+        "high",
+    )
     logger.info("admin_toggled admin_user_id=%s target_user_id=%s new_is_admin=%s", user["id"], target_id, new_flag)
     return RedirectResponse("/admin/users", status_code=303)
 
 
 @app.post("/admin/users/{target_id}/delete")
 def admin_delete_user(
+    request: Request,
     target_id: int,
     user: Annotated[dict, Depends(require_admin)],
 ):
@@ -3942,7 +4512,7 @@ def admin_delete_user(
     if target_id == user["id"]:
         raise HTTPException(status_code=400, detail="You cannot delete your own account.")
     with connect() as conn:
-        target = conn.execute("SELECT is_admin FROM users WHERE id = ?", (target_id,)).fetchone()
+        target = conn.execute("SELECT username, is_admin FROM users WHERE id = ?", (target_id,)).fetchone()
         if target is None:
             raise HTTPException(status_code=404, detail="User not found")
         if target["is_admin"]:
@@ -3953,6 +4523,15 @@ def admin_delete_user(
             if other_admins == 0:
                 raise HTTPException(status_code=400, detail="Cannot delete the last admin.")
         conn.execute("DELETE FROM users WHERE id = ?", (target_id,))
+    record_audit_event(
+        request,
+        user,
+        "user_deleted",
+        "user",
+        target_id,
+        {"target_username": target["username"], "was_admin": bool(target["is_admin"])},
+        "high",
+    )
     logger.info("user_deleted admin_user_id=%s target_user_id=%s", user["id"], target_id)
     return RedirectResponse("/admin/users", status_code=303)
 
@@ -4076,6 +4655,32 @@ async def update_settings(
             ),
         )
         settings = load_llm_settings_for_display(conn)
+    audited_fields = {
+        "provider": {"before": existing.get("provider"), "after": provider},
+        "base_url_set": {"before": bool((existing.get("base_url") or "").strip()), "after": bool(base_url.strip())},
+        "embedding_base_url_set": {
+            "before": bool((existing.get("embedding_base_url") or "").strip()),
+            "after": bool(embedding_base_url.strip()),
+        },
+        "chat_model": {"before": existing.get("chat_model") or "", "after": chat_model.strip()},
+        "embedding_model": {"before": existing.get("embedding_model") or "", "after": embedding_model.strip()},
+        "embedding_query_prefix_changed": embedding_query_prefix != (existing.get("embedding_query_prefix") or ""),
+        "embedding_passage_prefix_changed": embedding_passage_prefix != (existing.get("embedding_passage_prefix") or ""),
+        "api_version": {"before": existing.get("api_version") or "", "after": api_version.strip()},
+        "temperature": {"before": existing.get("temperature"), "after": temperature},
+        "timeout_seconds": {"before": existing.get("timeout_seconds"), "after": timeout_seconds},
+        "api_key_changed": bool(api_key.strip()),
+        "embedding_changed": embedding_changed,
+    }
+    record_audit_event(
+        request,
+        user,
+        "llm_settings_updated",
+        "llm_settings",
+        1,
+        audited_fields,
+        "high" if embedding_changed or api_key.strip() else "normal",
+    )
     logger.info(
         "settings_updated admin_user_id=%s provider=%s base_url_set=%s embedding_base_url_set=%s chat_model_set=%s embedding_model_set=%s api_version=%s temperature=%s timeout_seconds=%s api_key_changed=%s",
         user["id"],

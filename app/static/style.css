@@ -3572,6 +3572,123 @@ legend {
 .diff-row-improved td:first-child { box-shadow: inset 3px 0 0 var(--ok); }
 .diff-row-regressed td:first-child { box-shadow: inset 3px 0 0 var(--danger); }
 
+.export-section .split-actions { align-items: center; justify-content: flex-start; }
+
+.audit-page {
+  max-width: 1180px;
+}
+.audit-filter-form { align-items: flex-end; }
+.audit-filter-form label { min-width: 150px; }
+.audit-table-wrap {
+  max-height: 70vh;
+  overflow: auto;
+}
+.audit-table {
+  table-layout: fixed;
+  min-width: 900px;
+}
+.audit-table th,
+.audit-table td {
+  padding: 12px 14px;
+}
+.audit-col-time { width: 110px; }
+.audit-col-actor { width: 88px; }
+.audit-col-action { width: 240px; }
+.audit-col-target { width: 110px; }
+.audit-col-sensitivity { width: 110px; }
+.audit-col-ip { width: 112px; }
+.audit-col-metadata { width: 76px; }
+.audit-table code {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.audit-ip {
+  display: inline-block;
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.audit-metadata-button {
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  color: var(--accent-strong);
+  box-shadow: none;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+  font-weight: 800;
+}
+.audit-metadata-button:hover {
+  background: var(--accent-soft);
+  border-color: var(--line-accent);
+  color: var(--accent-deep);
+  transform: none;
+  box-shadow: var(--shadow-sm);
+}
+.audit-modal-panel {
+  width: min(760px, 100%);
+}
+.audit-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+.audit-modal-head h2 {
+  margin: 2px 0 0;
+  font-size: 18px;
+}
+.audit-modal-head p {
+  margin: 0;
+}
+.audit-modal-body {
+  padding: var(--sp-5);
+  overflow: auto;
+}
+.audit-modal-metadata {
+  max-height: min(62vh, 560px);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Legacy details fallback, retained for older cached markup during reload. */
+.audit-summary {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 700;
+}
+.audit-summary::before {
+  content: "›";
+  display: inline-block;
+  transition: transform 120ms var(--ease);
+}
+details[open] > .audit-summary::before {
+  transform: rotate(90deg);
+}
+.audit-metadata {
+  margin-top: var(--sp-2);
+  max-width: min(520px, 70vw);
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Per-question results as a stacked list — declutters the old wide table */
 .eval-results { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-3); }
 .eval-result {

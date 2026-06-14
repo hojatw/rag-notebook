@@ -9,6 +9,21 @@
 
   {% include "_eval_run_status.html" %}
 
+  <section class="settings-section export-section">
+    <h2>匯出</h2>
+    <p class="hint muted small">
+      Sanitized report 不包含題目、預期依據或 retrieved snippets；Full internal report 會包含完整 eval 診斷資料，應留在部署內或在明確核准後分享。
+    </p>
+    <div class="split-actions">
+      <a class="ghost" href="/admin/evals/runs/{{ run.id }}/export/sanitized">匯出 sanitized report</a>
+      <a class="danger small"
+         href="/admin/evals/runs/{{ run.id }}/export/full?confirm=1"
+         data-confirm="Full internal report 會包含題目、預期依據與 retrieved snippets，可能含客戶資料。確定要匯出？">
+        匯出 full internal report
+      </a>
+    </div>
+  </section>
+
   <section class="settings-section">
     <h2>Profile Snapshot</h2>
     <div class="table-wrap">

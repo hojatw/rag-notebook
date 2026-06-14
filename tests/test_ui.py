@@ -177,10 +177,16 @@ def test_upload_enqueues_ingest_job_instead_of_running_inline(monkeypatch, tmp_p
             job = conn.execute(
                 "SELECT status FROM ingest_jobs WHERE source_id = ?", (source["id"],)
             ).fetchone()
+            audit = conn.execute(
+                "SELECT * FROM audit_events WHERE action = 'source_uploaded' AND target_id = ?",
+                (source["id"],),
+            ).fetchone()
         # Source is parked until a worker picks it up; a queued job exists.
         assert source["status"] == "uploaded"
         assert job is not None
         assert job["status"] == "queued"
+        assert audit is not None
+        assert json.loads(audit["metadata_json"])["filename"] == "a.txt"
 
 
 def _seed_notebook(db, title="NB"):
@@ -672,6 +678,124 @@ def test_export_conversation_and_notes_markdown(monkeypatch, tmp_path):
         assert "單筆內容" in note.text
         assert "筆記內容" not in note.text
         assert "attachment" in note.headers["content-disposition"]
+
+        with db.connect() as conn:
+            events = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT action, sensitivity, metadata_json FROM audit_events ORDER BY id"
+                ).fetchall()
+            ]
+        actions = [event["action"] for event in events]
+        assert "conversation_exported" in actions
+        assert "notes_exported" in actions
+        assert "note_exported" in actions
+        assert all(event["sensitivity"] == "high" for event in events)
+        metadata_blob = "\n".join(event["metadata_json"] for event in events)
+        assert "問題X" not in metadata_blob
+        assert "回答Y" not in metadata_blob
+        assert "筆記內容" not in metadata_blob
+
+
+def test_user_data_lifecycle_actions_are_audited(monkeypatch, tmp_path):
+    """Audit round 2: notebook/source/chat/note lifecycle mutations are traceable."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        created = client.post(
+            "/notebooks/new",
+            data={"title": "Audit NB", "emoji": "A", "description": "private description"},
+            follow_redirects=False,
+        )
+        assert created.status_code == 303
+        notebook_id = int(created.headers["location"].rstrip("/").split("/")[-1])
+
+        renamed = client.post(
+            f"/notebooks/{notebook_id}/rename",
+            data={
+                "title": "Audit NB renamed",
+                "emoji": "B",
+                "description": "",
+                "followups_setting_present": "1",
+                "followups_enabled": "1",
+            },
+            follow_redirects=False,
+        )
+        assert renamed.status_code == 303
+
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+            source_id = conn.execute(
+                """
+                INSERT INTO sources (user_id, notebook_id, filename, stored_path, status)
+                VALUES (?, ?, 'audit-source.txt', '/tmp/missing-audit-source.txt', 'indexed')
+                """,
+                (user["id"], notebook_id),
+            ).lastrowid
+
+        reindexed = client.post(f"/notebooks/{notebook_id}/sources/{source_id}/reindex", follow_redirects=False)
+        assert reindexed.status_code == 303
+        deleted_source = client.post(f"/notebooks/{notebook_id}/sources/{source_id}/delete", follow_redirects=False)
+        assert deleted_source.status_code == 303
+
+        new_convo = client.post(f"/notebooks/{notebook_id}/chat/new", follow_redirects=False)
+        assert new_convo.status_code == 303
+        conversation_id = int(new_convo.headers["location"].split("conversation_id=")[-1])
+        renamed_convo = client.post(
+            f"/notebooks/{notebook_id}/chat/{conversation_id}/rename",
+            data={"title": "Audit conversation"},
+            follow_redirects=False,
+        )
+        assert renamed_convo.status_code == 303
+        deleted_convo = client.post(f"/notebooks/{notebook_id}/chat/{conversation_id}/delete", follow_redirects=False)
+        assert deleted_convo.status_code == 303
+
+        added_note = client.post(
+            f"/notebooks/{notebook_id}/notes/add",
+            data={"title": "Audit note", "content": "Sensitive note content"},
+        )
+        assert added_note.status_code == 200
+        with db.connect() as conn:
+            note_id = conn.execute("SELECT id FROM notes WHERE notebook_id = ?", (notebook_id,)).fetchone()["id"]
+        edited_note = client.post(
+            f"/notebooks/{notebook_id}/notes/{note_id}/edit",
+            data={"title": "Audit note edited", "content": "Updated sensitive note content"},
+        )
+        assert edited_note.status_code == 200
+        deleted_note = client.post(f"/notebooks/{notebook_id}/notes/{note_id}/delete")
+        assert deleted_note.status_code == 200
+
+        deleted_notebook = client.post(f"/notebooks/{notebook_id}/delete", follow_redirects=False)
+        assert deleted_notebook.status_code == 303
+
+        with db.connect() as conn:
+            events = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT action, target_type, sensitivity, metadata_json FROM audit_events ORDER BY id"
+                ).fetchall()
+            ]
+        actions = [event["action"] for event in events]
+        for action in [
+            "notebook_created",
+            "notebook_renamed",
+            "source_reindex_requested",
+            "source_deleted",
+            "conversation_created",
+            "conversation_renamed",
+            "conversation_deleted",
+            "note_added",
+            "note_edited",
+            "note_deleted",
+            "notebook_deleted",
+        ]:
+            assert action in actions
+        high_actions = {event["action"] for event in events if event["sensitivity"] == "high"}
+        assert {"source_reindex_requested", "source_deleted", "conversation_deleted", "note_deleted", "notebook_deleted"} <= high_actions
+        metadata_blob = "\n".join(event["metadata_json"] for event in events)
+        assert "Sensitive note content" not in metadata_blob
+        assert "Updated sensitive note content" not in metadata_blob
 
 
 def _seed_indexed_source(db, user_id, notebook_id, filename="a.pdf", summary="摘要內容"):
@@ -1202,6 +1326,169 @@ def test_admin_eval_run_results_explain_miss(monkeypatch, tmp_path):
         assert "retrieved beta" in results.text
         assert "診斷：有找回同一來源，但不是預期 chunk/片段。" in results.text
         assert "預期 chunk 不在目前 top-k 結果中。" in results.text
+
+
+def test_eval_run_exports_sanitized_and_full_report_with_audit(monkeypatch, tmp_path):
+    """E1d: sanitized export omits evidence text; full export is explicit and audited."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, notebook_id = _seed_notebook(db)
+        source_id = _seed_indexed_source(db, admin_user["id"], notebook_id, "secret.pdf", summary="expected alpha")
+        with db.connect() as conn:
+            expected_chunk_id = conn.execute("SELECT id FROM chunks WHERE source_id = ?", (source_id,)).fetchone()["id"]
+            eval_set_id = conn.execute(
+                """
+                INSERT INTO eval_sets (name, target_user_id, notebook_id, created_by)
+                VALUES ('Exportable', ?, ?, ?)
+                """,
+                (admin_user["id"], notebook_id, admin_user["id"]),
+            ).lastrowid
+            item_id = conn.execute(
+                """
+                INSERT INTO eval_items
+                (eval_set_id, question, expected_source_id, expected_chunk_id, expected_substrings_json, approved)
+                VALUES (?, 'where is secret alpha?', ?, ?, ?, 1)
+                """,
+                (eval_set_id, source_id, expected_chunk_id, db.dumps(["expected alpha"])),
+            ).lastrowid
+            run_id = conn.execute(
+                """
+                INSERT INTO eval_runs
+                (eval_set_id, created_by, status, progress_total, progress_current,
+                 profile_snapshot_json, metrics_json)
+                VALUES (?, ?, 'succeeded', 1, 1, ?, ?)
+                """,
+                (
+                    eval_set_id,
+                    admin_user["id"],
+                    db.dumps(main.current_retrieval_profile_params()),
+                    db.dumps({"recall_at_k": 1.0, "mrr": 1.0, "hits": 1}),
+                ),
+            ).lastrowid
+            conn.execute(
+                """
+                INSERT INTO eval_results
+                (run_id, eval_item_id, status, hit_rank, top_score, latency_ms, retrieved_json)
+                VALUES (?, ?, 'hit', 1, 0.91, 12.3, ?)
+                """,
+                (
+                    run_id,
+                    item_id,
+                    db.dumps([
+                        {
+                            "rank": 1,
+                            "chunk_id": expected_chunk_id,
+                            "source_id": source_id,
+                            "filename": "secret.pdf",
+                            "location": "document",
+                            "score": 0.91,
+                            "snippet": "retrieved customer secret alpha",
+                        }
+                    ]),
+                ),
+            )
+
+        page = client.get(f"/admin/evals/runs/{run_id}")
+        assert page.status_code == 200
+        assert f"/admin/evals/runs/{run_id}/export/sanitized" in page.text
+        assert f"/admin/evals/runs/{run_id}/export/full?confirm=1" in page.text
+        assert "Full internal report 會包含題目、預期依據與 retrieved snippets" in page.text
+
+        sanitized = client.get(f"/admin/evals/runs/{run_id}/export/sanitized")
+        assert sanitized.status_code == 200
+        assert "attachment" in sanitized.headers["content-disposition"]
+        assert sanitized.json()["export_type"] == "sanitized_run_report"
+        assert "where is secret alpha?" not in sanitized.text
+        assert "expected alpha" not in sanitized.text
+        assert "retrieved customer secret alpha" not in sanitized.text
+
+        refused = client.get(f"/admin/evals/runs/{run_id}/export/full")
+        assert refused.status_code == 400
+
+        full = client.get(f"/admin/evals/runs/{run_id}/export/full?confirm=1")
+        assert full.status_code == 200
+        full_json = full.json()
+        assert full_json["export_type"] == "full_internal_run_report"
+        assert full_json["results"][0]["question"] == "where is secret alpha?"
+        assert full_json["results"][0]["expected"]["substrings"] == ["expected alpha"]
+        assert full_json["results"][0]["retrieved"][0]["snippet"] == "retrieved customer secret alpha"
+
+        with db.connect() as conn:
+            events = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM audit_events WHERE target_type = 'eval_run' ORDER BY id"
+                ).fetchall()
+            ]
+        assert [event["action"] for event in events] == ["eval_run_export_sanitized", "eval_run_export_full"]
+        assert events[1]["sensitivity"] == "high"
+        assert json.loads(events[1]["metadata_json"])["contains_retrieved_snippets"] is True
+
+
+def test_profile_export_and_audit_page(monkeypatch, tmp_path):
+    """E1d: profile exports are sanitized and the audit page can review events."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        profiles = client.get("/admin/evals/profiles")
+        assert profiles.status_code == 200
+        with db.connect() as conn:
+            profile = conn.execute("SELECT * FROM retrieval_profiles WHERE is_default = 1").fetchone()
+
+        exported = client.get(f"/admin/evals/profiles/{profile['id']}/export")
+        assert exported.status_code == 200
+        body = exported.json()
+        assert body["export_type"] == "sanitized_profile"
+        assert body["profile"]["id"] == profile["id"]
+        assert "api_key" not in exported.text
+
+        audit = client.get("/admin/audit", params={"action": "profile_export", "sensitivity": "normal"})
+        assert audit.status_code == 200
+        assert "retrieval_profile_export_sanitized" in audit.text
+        assert "retrieval_profile" in audit.text
+        assert "admin" in audit.text
+
+
+def test_high_risk_admin_actions_are_audited(monkeypatch, tmp_path):
+    """E1d: user-management and profile-apply changes are queryable audit events."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        create_user = client.post(
+            "/admin/users/new",
+            data={"username": "audited-user", "password": "password1", "is_admin": "1"},
+        )
+        assert create_user.status_code == 200
+
+        client.get("/admin/evals/profiles")
+        defaults = main.current_retrieval_profile_params()
+        created_profile = client.post(
+            "/admin/evals/profiles",
+            data={
+                "name": "audited-profile",
+                "description": "",
+                **{key: str(value) for key, value in defaults.items()},
+            },
+            follow_redirects=False,
+        )
+        assert created_profile.status_code == 303
+        with db.connect() as conn:
+            profile_id = conn.execute(
+                "SELECT id FROM retrieval_profiles WHERE name = 'audited-profile'"
+            ).fetchone()["id"]
+        applied = client.post(f"/admin/evals/profiles/{profile_id}/apply", follow_redirects=False)
+        assert applied.status_code == 303
+
+        audit = client.get("/admin/audit", params={"sensitivity": "high"})
+        assert audit.status_code == 200
+        assert "user_created" in audit.text
+        assert "retrieval_profile_applied" in audit.text
+        assert "audited-user" in audit.text
+        assert "audited-profile" in audit.text
 
 
 def test_studio_tools_tile_gating(monkeypatch, tmp_path):

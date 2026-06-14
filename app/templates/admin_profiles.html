@@ -31,6 +31,7 @@
             {% endfor %}
           </dl>
           <footer class="profile-card-foot">
+            <a class="ghost small" href="/admin/evals/profiles/{{ prof.id }}/export">匯出設定</a>
             {% if not prof.is_active %}
               <form method="post" action="/admin/evals/profiles/{{ prof.id }}/apply" data-confirm="套用此 profile 到線上檢索？這會立即改變所有使用者的 chat 檢索行為。">
                 <button type="submit" class="small">套用</button>

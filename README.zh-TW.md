@@ -24,7 +24,8 @@
 - **混合式檢索**：query rewriting、Chroma vector search、SQLite keyword matching 與 LLM reranking。低於可設定信心閾值時，模型會被要求避免回答，而不是產生幻覺。完整 pipeline、調校旋鈕與 eval 工作流程請見 [`RETRIEVAL.md`](docs/RETRIEVAL.md)。
 - **每則訊息的除錯窗格**：聊天回答附有可收合的「📊 N chunks · retrieved Xms · generated Yms · top score Z」徽章，點開後可看到每個引用的 vector / keyword / rerank / final 分數表格。
 - **檢索 eval harness**（`tests/eval_retrieval.py`），包含 demo notebook 的起始問題，方便衡量 query rewrite / hybrid scoring / rerank 變更（recall@k、MRR）。
-- **管理員 Eval 工作台**位於 `/admin/evals`：使用已索引的 notebook 內部資料建立 eval set、搜尋全站已索引筆記本、手動新增題目或產生 draft 候選題，背景執行 retrieval-only eval，顯示進度，並把歷史 metrics/result 留在部署內。Run 結果會列出題目、預期依據、實際 top retrieved chunk 與 miss 診斷。管理員可建立**候選 retrieval profile**（runtime-safe 參數）、用指定 profile 跑 eval、**比較**兩個 run（參數／指標／逐題差異），再把 profile **套用**到線上檢索或**回滾**；含需重建索引的參數會在套用時被拒絕。
+- **管理員 Eval 工作台**位於 `/admin/evals`：使用已索引的 notebook 內部資料建立 eval set、搜尋全站已索引筆記本、手動新增題目或產生 draft 候選題，背景執行 retrieval-only eval，顯示進度，並把歷史 metrics/result 留在部署內。Run 結果會列出題目、預期依據、實際 top retrieved chunk 與 miss 診斷。管理員可建立**候選 retrieval profile**（runtime-safe 參數）、用指定 profile 跑 eval、**比較**兩個 run（參數／指標／逐題差異），再把 profile **套用**到線上檢索或**回滾**；含需重建索引的參數會在套用時被拒絕。Profile 與 run 可匯出 sanitized JSON；full internal run report 需要明確確認，並寫入 audit trail。
+- **管理員稽核紀錄**位於 `/admin/audit`：以 DB 持久保存 full/sanitized eval 匯出、retrieval profile 建立/套用/刪除/匯出、LLM settings 更新、index clear/rebuild、使用者管理，以及 notebook/source/chat/note lifecycle 或 Markdown 匯出事件。Audit metadata 只保存識別資訊與摘要，不保存 API key 或複製來源全文。
 - **多使用者**，包含雜湊密碼與嚴格的每使用者/每 notebook 隔離。管理員可在 `/admin/users` 管理使用者帳號；任何已登入使用者都可在 `/account` 修改自己的密碼。
 - **OpenAI-compatible**（包含本機 Ollama / vLLM / TEI）與 **Azure OpenAI** chat + embedding providers，由管理員在 `/settings` 設定。Chat 與 embedding endpoint 可透過選填的 **Embedding base URL** 欄位放在不同服務。**API keys 會使用 Fernet 靜態加密**（以 `NOTEBOOKLM_SECRET` 執行 PBKDF2-SHA256）。儲存時會 probe embedding endpoint 一次；若與現有 Chroma index 維度不符，會用清楚的「Clear at /admin/index first」訊息拒絕。
 - **管理員向量索引主控台**位於 `/admin/index`：SQLite ↔ Chroma 漂移報告、手動 *Rebuild* 與 *Clear*。
@@ -255,11 +256,16 @@ POST /admin/evals/sets/{eval_set_id}/run                  排入 retrieval-only 
 GET  /admin/evals/runs/{run_id}                           eval run 詳情、metrics、逐題結果
 GET  /admin/evals/runs/{run_id}/_status                   HTMX polling：eval run 進度與摘要 metrics
 GET  /admin/evals/runs/{run_id}/_results                  HTMX polling：eval run 逐題結果
+GET  /admin/evals/runs/{run_id}/export/sanitized          不含題目/依據/retrieved snippets 的 JSON report
+GET  /admin/evals/runs/{run_id}/export/full?confirm=1     full internal JSON report；以 high sensitivity 記錄 audit
 GET  /admin/evals/profiles                                Retrieval profiles 頁（列表、建立、套用、刪除）
+GET  /admin/evals/profiles/{profile_id}/export            sanitized retrieval-profile JSON 匯出
 POST /admin/evals/profiles                                建立候選 retrieval profile（runtime-safe 參數）
 POST /admin/evals/profiles/{profile_id}/apply            套用 profile 到線上檢索（回滾＝套用先前的 profile）
 POST /admin/evals/profiles/{profile_id}/delete           刪除候選 profile（作用中 profile 受保護）
 GET  /admin/evals/compare?base&candidate                 比較兩個成功 run：參數／指標／逐題差異
+
+GET  /admin/audit                                         管理員稽核紀錄與篩選頁
 
 GET  /settings                                            admin LLM settings（僅 admin）
 POST /settings                                            儲存 LLM settings（API key 寫入時會加密）
@@ -316,6 +322,7 @@ app/templates/
   account.html         每位使用者的密碼變更頁。
   admin_users.html     Admin 使用者管理頁。
   admin_index.html     Admin vector-index 健康頁。
+  admin_audit.html     Admin 稽核紀錄查核頁。
   admin_evals.html     Admin Eval 工作台首頁（eval sets + run history；分頁切到 profiles）。
   admin_profiles.html  Retrieval profiles 管理頁（卡片、套用/刪除、建立候選）。
   _eval_nav.html       Eval 工作台分頁導覽 partial（Eval Sets / Retrieval Profiles）。

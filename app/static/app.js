@@ -318,11 +318,16 @@ function bindOnce(root, selector, marker, setup) {
 // ---- Confirm dialogs ------------------------------------------------------
 
 function bindConfirms(root) {
-  bindOnce(root, "[data-confirm]", "confirm", (form) => {
-    form.addEventListener("submit", (event) => {
-      const message = form.getAttribute("data-confirm");
+  bindOnce(root, "[data-confirm]", "confirm", (el) => {
+    const confirm = (event) => {
+      const message = el.getAttribute("data-confirm");
       if (message && !window.confirm(message)) event.preventDefault();
-    });
+    };
+    if (el.matches("form")) {
+      el.addEventListener("submit", confirm);
+    } else {
+      el.addEventListener("click", confirm);
+    }
   });
 }
 
