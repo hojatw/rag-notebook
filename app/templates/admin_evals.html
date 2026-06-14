@@ -7,26 +7,12 @@
     <p class="muted">在部署內使用既有 DB 資料建立評測題組、執行 retrieval-only eval，避免客戶資料外流。</p>
   </header>
 
-  <section class="settings-section">
-    <h2>目前 Retrieval Profile</h2>
-    <p><strong>{{ profile.name }}</strong></p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>參數</th><th>值</th></tr>
-        </thead>
-        <tbody>
-          {% for param in profile.params %}
-            <tr>
-              <td>{{ param.label }}<br><span class="muted small">{{ param.key }}</span></td>
-              <td>{{ param.value }}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    <p class="hint muted small">E1a/E1b 先保存 profile snapshot 與 run history；套用/回復參數會在 E1c 實作。</p>
-  </section>
+  {% include "_eval_nav.html" %}
+
+  <p class="active-profile-line muted small">
+    目前作用中的 Retrieval Profile：<strong>{{ profile.name }}</strong>
+    · <a href="/admin/evals/profiles">管理 / 調整參數 →</a>
+  </p>
 
   <section class="settings-section">
     <h2>建立 Eval Set</h2>

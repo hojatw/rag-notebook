@@ -24,7 +24,7 @@ This is a proof of concept, not a production-ready service. It is suitable for l
 - **Hybrid retrieval**: query rewriting, Chroma vector search, SQLite keyword matching, and LLM reranking. Below a configurable confidence threshold the model is asked to abstain rather than hallucinate. See [`RETRIEVAL.md`](docs/RETRIEVAL.md) for the full pipeline, tuning knobs, and eval workflow.
 - **Per-message debug pane**: chat answers ship with a collapsible "📊 N chunks · retrieved Xms · generated Yms · top score Z" badge that opens a table of vector / keyword / rerank / final scores per citation.
 - **Retrieval eval harness** (`tests/eval_retrieval.py`) with starter questions for the demo notebook so changes to query rewrite / hybrid scoring / rerank can be measured (recall@k, MRR).
-- **Admin eval workbench** at `/admin/evals`: create eval sets against already-indexed notebook data, search all-site indexed notebooks, add manual questions or draft generated candidates, run retrieval-only evals in the background with visible progress, and keep historical run metrics/results inside the deployment. Run results show the question, expected evidence, top retrieved chunk, and a miss diagnosis.
+- **Admin eval workbench** at `/admin/evals`: create eval sets against already-indexed notebook data, search all-site indexed notebooks, add manual questions or draft generated candidates, run retrieval-only evals in the background with visible progress, and keep historical run metrics/results inside the deployment. Run results show the question, expected evidence, top retrieved chunk, and a miss diagnosis. Admins can author **candidate retrieval profiles** (runtime-safe params), run an eval set against any profile, **compare** two runs side by side (param/metric/per-question diff), then **apply** a profile to live retrieval or **roll back** — index-affecting parameters are refused at apply.
 - **Multi-user** with hashed passwords and strict per-user/per-notebook isolation. Admin can manage user accounts at `/admin/users`; any signed-in user can change their own password at `/account`.
 - **OpenAI-compatible** (including local Ollama / vLLM / TEI) and **Azure OpenAI** chat + embedding providers, configured by an admin in `/settings`. Chat and embedding endpoints can live on different services via the optional **Embedding base URL** field. **API keys are encrypted at rest** with Fernet (PBKDF2-SHA256 over `NOTEBOOKLM_SECRET`). On save the embedding endpoint is probed once; dim mismatches with the existing Chroma index are rejected with a clear "Clear at /admin/index first" message.
 - **Admin vector-index console** at `/admin/index`: SQLite ↔ Chroma drift report, manual *Rebuild* and *Clear*.
@@ -268,10 +268,15 @@ POST /admin/evals/sets/{eval_set_id}/generate             generate draft eval-it
 POST /admin/evals/sets/{eval_set_id}/items                add an approved manual retrieval-eval item
 POST /admin/evals/sets/{eval_set_id}/items/{item_id}/approve approve a draft eval item
 POST /admin/evals/sets/{eval_set_id}/items/{item_id}/delete delete an eval item
-POST /admin/evals/sets/{eval_set_id}/run                  queue a retrieval-only eval run
+POST /admin/evals/sets/{eval_set_id}/run                  queue a retrieval-only eval run (optional profile_id)
 GET  /admin/evals/runs/{run_id}                           eval-run detail with metrics and per-question results
 GET  /admin/evals/runs/{run_id}/_status                   HTMX polling: eval-run progress and summary metrics
 GET  /admin/evals/runs/{run_id}/_results                  HTMX polling: eval-run per-question results
+GET  /admin/evals/profiles                                retrieval profiles page (list, create, apply, delete)
+POST /admin/evals/profiles                                create a candidate retrieval profile (runtime-safe params)
+POST /admin/evals/profiles/{profile_id}/apply            apply a profile to live retrieval (rollback = apply a previous one)
+POST /admin/evals/profiles/{profile_id}/delete           delete a candidate profile (active profile is protected)
+GET  /admin/evals/compare?base&candidate                 compare two succeeded runs: param/metric/per-question diff
 
 GET  /settings                                            admin LLM settings (admin only)
 POST /settings                                            save LLM settings (API key is encrypted on write)
@@ -328,7 +333,10 @@ app/templates/
   account.html         Per-user password change page.
   admin_users.html     Admin user management page.
   admin_index.html     Admin vector-index health page.
-  admin_evals.html     Admin eval workbench landing page (active profile, eval sets, run history).
+  admin_evals.html     Admin eval workbench landing page (eval sets + run history; tab nav to profiles).
+  admin_profiles.html  Retrieval profiles management page (cards, apply/delete, create candidate).
+  _eval_nav.html       Eval workbench tab nav partial (Eval Sets / Retrieval Profiles).
+  admin_eval_compare.html Run comparison page (param/metric/per-question diff of two runs).
   admin_eval_set.html  Eval-set detail page with manual item authoring and run controls.
   _eval_items_section.html HTMX eval-set items/approval table partial.
   admin_eval_run.html  Eval-run detail page with profile snapshot and per-question results.

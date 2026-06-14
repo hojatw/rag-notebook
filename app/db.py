@@ -182,6 +182,7 @@ def init_db() -> None:
                 params_json TEXT NOT NULL DEFAULT '{}',
                 requires_reindex INTEGER NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 0,
+                is_default INTEGER NOT NULL DEFAULT 0,
                 source_run_id INTEGER,
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -287,6 +288,15 @@ def init_db() -> None:
         # are indexed.
         _ensure_column(conn, "notebooks", "briefing", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "notebooks", "briefing_at", "TEXT NOT NULL DEFAULT ''")
+        # E1c: protect a non-deletable system-default retrieval profile so an admin
+        # can always fall back to known-good config values. Backfill marks the
+        # lowest-id profile as default when no row is flagged yet.
+        _ensure_column(conn, "retrieval_profiles", "is_default", "INTEGER NOT NULL DEFAULT 0")
+        if conn.execute("SELECT COUNT(*) FROM retrieval_profiles WHERE is_default = 1").fetchone()[0] == 0:
+            conn.execute(
+                "UPDATE retrieval_profiles SET is_default = 1 "
+                "WHERE id = (SELECT id FROM retrieval_profiles ORDER BY id ASC LIMIT 1)"
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sources_notebook_created ON sources(notebook_id, created_at DESC)"
         )

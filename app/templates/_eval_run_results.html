@@ -7,59 +7,49 @@
          {% endif %}>
   <h2>Per-question Results</h2>
   {% if results %}
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>#</th><th>Question</th><th>Expected</th><th>狀態</th><th>Rank</th><th>Top score</th><th>Latency</th><th>Top retrieved</th></tr>
-        </thead>
-        <tbody>
-          {% for result in results %}
-            <tr>
-              <td>{{ result.eval_item_id }}</td>
-              <td>
-                {{ result.question }}
-                {% if result.error %}<br><span class="danger-link small">{{ result.error }}</span>{% endif %}
-                {% if result.diagnosis %}
-                  <br><span class="muted small">診斷：{{ result.diagnosis }}</span>
-                {% endif %}
-              </td>
-              <td>
-                {% if result.expected_filename %}
-                  <strong>{{ result.expected_filename }}</strong><br>
-                {% endif %}
+    <ul class="eval-results">
+      {% for result in results %}
+        <li class="eval-result eval-result-{{ result.status }}">
+          <div class="eval-result-head">
+            <span class="status {{ 'indexed' if result.status == 'hit' else 'failed' if result.status in ['miss', 'error'] else 'processing' }}">{{ result.status }}</span>
+            <span class="eval-result-q">{{ result.question }}</span>
+          </div>
+          <div class="eval-result-metrics muted small">
+            <span>Rank {{ result.hit_rank or "—" }}</span>
+            <span>Top score {{ "%.3f"|format(result.top_score) }}</span>
+            <span>Latency {{ result.latency_ms }}ms</span>
+          </div>
+          {% if result.error %}<p class="danger-link small">{{ result.error }}</p>{% endif %}
+          {% if result.diagnosis %}<p class="muted small">診斷：{{ result.diagnosis }}</p>{% endif %}
+          <details class="eval-result-evidence">
+            <summary class="muted small">依據與實際檢索</summary>
+            <div class="eval-result-evidence-body">
+              <div>
+                <p class="eval-evidence-label">Expected</p>
+                {% if result.expected_filename %}<p><strong>{{ result.expected_filename }}</strong></p>{% endif %}
                 {% if result.expected_chunk_id %}
-                  <span class="muted small">chunk #{{ result.expected_chunk_id }}{% if result.expected_chunk_location %} · {{ result.expected_chunk_location }}{% endif %}</span>
+                  <p class="muted small">chunk #{{ result.expected_chunk_id }}{% if result.expected_chunk_location %} · {{ result.expected_chunk_location }}{% endif %}</p>
                 {% endif %}
-                {% if result.expected_substrings %}
-                  <br><span class="muted small">substrings: {{ result.expected_substrings | join(" / ") }}</span>
-                {% endif %}
-                {% if result.expected_chunk_snippet %}
-                  <br><span class="muted small">{{ result.expected_chunk_snippet }}</span>
-                {% elif not result.expected_filename and not result.expected_substrings %}
-                  <span class="muted">—</span>
-                {% endif %}
-              </td>
-              <td><span class="status {{ 'indexed' if result.status == 'hit' else 'failed' if result.status in ['miss', 'error'] else 'processing' }}">{{ result.status }}</span></td>
-              <td>{{ result.hit_rank or "—" }}</td>
-              <td>{{ "%.3f"|format(result.top_score) }}</td>
-              <td>{{ result.latency_ms }}ms</td>
-              <td>
+                {% if result.expected_substrings %}<p class="muted small">substrings: {{ result.expected_substrings | join(" / ") }}</p>{% endif %}
+                {% if result.expected_chunk_snippet %}<p class="muted small eval-snippet">{{ result.expected_chunk_snippet }}</p>{% endif %}
+                {% if not result.expected_filename and not result.expected_substrings %}<p class="muted">— 無預期依據（unscored）</p>{% endif %}
+              </div>
+              <div>
+                <p class="eval-evidence-label">Top retrieved</p>
                 {% if result.retrieved %}
                   {% set top = result.retrieved[0] %}
-                  <strong>{{ top.filename }}</strong><br>
-                  <span class="muted small">{{ top.location }} · score {{ top.score }}</span>
-                  {% if top.snippet %}
-                    <br><span class="muted small">{{ top.snippet }}</span>
-                  {% endif %}
+                  <p><strong>{{ top.filename }}</strong></p>
+                  <p class="muted small">{{ top.location }} · score {{ top.score }}</p>
+                  {% if top.snippet %}<p class="muted small eval-snippet">{{ top.snippet }}</p>{% endif %}
                 {% else %}
-                  <span class="muted">—</span>
+                  <p class="muted">—</p>
                 {% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+              </div>
+            </div>
+          </details>
+        </li>
+      {% endfor %}
+    </ul>
   {% else %}
     <p class="muted">尚未產生 per-question results；run 進行中時本區塊會自動刷新。</p>
   {% endif %}
