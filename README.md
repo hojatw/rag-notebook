@@ -29,7 +29,7 @@ This is a proof of concept, not a production-ready service. It is suitable for l
 - **Admin vector-index console** at `/admin/index`: SQLite ↔ Chroma drift report, manual *Rebuild* and *Clear*.
 - **Global search** at `/search`: searches the signed-in user's notebooks, source filenames/summaries, conversation titles, and notes.
 - **Diff-only Chroma sync on startup**: only missing chunks are upserted and orphan vectors deleted; same-state restarts are near-instant.
-- **Source formats**: PDF, TXT, Markdown, DOCX, HTML.
+- **Source formats**: PDF, TXT, Markdown, DOCX, HTML, subtitles (SRT/VTT — parsed to a clean transcript, A7).
 - **Persistence**: SQLite for metadata, the local filesystem for uploads, and Chroma for vectors.
 - **Defensive list caps** (sources 200, conversations 50, messages 200, notes 50) with truncation hints in the UI.
 - **Logging** to stdout and `logs/app.log` with rotation.

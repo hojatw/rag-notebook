@@ -57,7 +57,7 @@
         <span>新增來源</span>
         <input type="file"
                name="files"
-               accept=".pdf,.txt,.md,.markdown,.docx,.html,.htm"
+               accept=".pdf,.txt,.md,.markdown,.docx,.html,.htm,.srt,.vtt"
                multiple
                required
                x-ref="input"
@@ -70,7 +70,7 @@
       <div id="nb-file-summary" class="upload-file-summary" aria-live="polite"></div>
       <button type="submit" class="wide" data-loading-text="上傳中..."
               {% if not llm_status.ready %}disabled{% endif %}>上傳</button>
-      <p class="hint">PDF · TXT · Markdown · DOCX · HTML · 一次最多 {{ upload_batch_limit }} 個</p>
+      <p class="hint">PDF · TXT · Markdown · DOCX · HTML · 字幕(SRT/VTT) · 一次最多 {{ upload_batch_limit }} 個</p>
     </form>
 
     <ul class="source-list">
