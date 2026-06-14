@@ -15,7 +15,7 @@ This is a proof of concept, not a production-ready service. It is suitable for l
   - **Studio** (right): a NotebookLM-style work area split into ambient context, a tools launcher, and an outputs shelf (the "Studio IA" restructure — see `ROADMAP.md` U16).
       - *Briefing strip* — a slim, one-line expandable cross-source synthesis, auto-generated on first notebook view and cached for 24 h. *Regenerate* on demand. Concurrent generation across tabs / sibling source completions is deduped by a shared SQLite-backed lock so a 5-file upload only calls the LLM once, not five times (works across multiple workers).
       - *Tools* — a tile grid; each tile opens its config in the preview-modal, runs, and shows the result with a **manual save-to-notes** button (the user decides what lands in the shelf — no auto-save):
-          - *Compare sources* — pick 2+ indexed sources (with an optional focus hint) → a Shared / Distinct / Contradictions markdown report.
+          - *Compare sources* — pick 2+ indexed sources → a Shared / Distinct / Contradictions markdown report.
           - *Meeting minutes* — pick one indexed source (a transcript) → structured minutes (topic / decisions / action items / follow-ups / open questions); a non-meeting source shows the model's reason and offers no save.
           - *Study guide / FAQ / Timeline* — generated across the notebook's source summaries (A4).
           - *Translate summary* — translate one source's summary into a target language (A5).
@@ -305,7 +305,7 @@ app/templates/
   _suggestions.html    Starter-questions section (rendered in the chat empty-state).
   _briefing.html       Studio briefing slim strip (HTMX swap target; auto-fires POST on first view).
   _studio_tools.html   Studio tools launcher — tile grid that opens each tool in the preview-modal (HTMX swap target).
-  _tool_panel.html     One tool's config panel loaded into the preview-modal (compare/minutes/study_guide/faq/timeline).
+  _tool_panel.html     One tool's config panel loaded into the preview-modal (compare/minutes/study_guide/faq/timeline/translate).
   _compare_result.html Comparison result fragment (markdown body + shared save button).
   _minutes_result.html Meeting-minutes result fragment (markdown body + save button; non-meeting sources offer no save).
   _artifact_result.html A4 artifact result fragment (markdown body + shared save button).
@@ -350,6 +350,7 @@ Performance/scalability and retrieval-quality work are tracked as prioritised, t
 
 - No CSRF protection on POST routes.
 - No offline embedding fallback — embedding model must be configured before uploads are accepted.
+- UI strings are still hardcoded zh-TW; the i18n foundation and full extraction are split as `ROADMAP.md` U15a/U15b.
 - Keyword search uses `LIKE '%token%'` over SQLite; FTS5 + BM25 is on deck (see [`RETRIEVAL.md`](docs/RETRIEVAL.md)).
 - Hybrid merge uses a fixed `0.7·vector + 0.3·keyword` blend; Reciprocal Rank Fusion is on deck.
 - Qdrant is a future vector-store evaluation candidate; do a bounded spike before replacing Chroma.
