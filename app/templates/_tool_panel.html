@@ -24,10 +24,9 @@
           </li>
         {% endfor %}
       </ul>
-      <label class="compare-focus-label">
-        <span class="muted small">聚焦重點（選填）</span>
-        <input type="text" name="focus" placeholder="例如：研究方法、結論" maxlength="160">
-      </label>
+      {# 聚焦重點 (focus) input removed from the UI — recorded as a future
+         feature (ROADMAP U17). /compare still accepts an (empty) focus param,
+         so nothing else changes. #}
       <button type="submit" class="wide small">開始比較</button>
     </form>
 

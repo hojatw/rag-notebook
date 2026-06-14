@@ -897,6 +897,15 @@ label {
   border-radius: var(--r-md);
 }
 
+/* U3: the chunk a citation pointed at — a persistent accent treatment (left
+   bar + soft tint) so it stays visibly highlighted after the scroll, not just
+   a momentary flash. Re-applied fresh each time the drawer opens. */
+.preview-chunk.cite-target {
+  border-color: var(--line-accent);
+  background: var(--accent-soft);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
 .preview-chunk-head {
   display: flex;
   align-items: center;
@@ -2380,9 +2389,29 @@ legend {
 .search-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--sp-3);
+  gap: var(--sp-4);
   align-items: end;
   margin-bottom: var(--sp-5);
+  /* panel-strip gives the border/shadow; add interior breathing room so the
+     field + button don't sit flush against the panel edges. */
+  padding: var(--sp-4) var(--sp-5);
+}
+
+.search-form label {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.search-form label span {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted-strong);
+}
+
+.search-form button {
+  min-height: 42px;
 }
 
 .search-results {
@@ -3091,9 +3120,10 @@ legend {
 }
 
 .compare-form,
-.minutes-form {
+.minutes-form,
+.tool-panel-form {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   margin-top: 8px;
 }
 

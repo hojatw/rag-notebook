@@ -81,6 +81,10 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [ ] U15 · Proper i18n layer (low priority, but eventually required)
 - U4 hardcoded zh-TW strings directly in templates / `app.js` / server messages — fine for the current single-language deployment, but adding any second language means re-touching every string. When needed: extract to a message catalog (Jinja i18n extension or a simple `messages.py` dict + a JS strings object), keyed lookups, language picked per deployment (config) or per user. Prerequisite for an English/zh-TW toggle; also centralizes the exported-Markdown headings (引用來源/筆記) that currently live in `main.py`.
 
+#### [ ] U17 · Meaningful "focus" for source comparison (deferred feature)
+- The compare tool used to expose a **聚焦重點 (focus)** free-text input. The value *was* passed to the prompt (`Focus: …` + "prioritise points relevant to it"), but because the comparison runs on each source's thin 2–4-sentence **summary**, the focus had little material to differentiate and the output barely changed — so the input was **removed from the UI** to avoid implying an effect it can't deliver. `POST /compare` still accepts an (empty) `focus` param, so re-enabling is a template-only change.
+- **To make it meaningful when revisited:** on a non-empty focus, retrieve the **focus-relevant chunks** from each selected source (a small per-source retrieval) and compare on those instead of the summaries. Heavier (an extra retrieval step) but gives the focus real material to work with. Measure against a representative set first.
+
 ---
 
 ## New AI features

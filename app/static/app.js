@@ -605,7 +605,12 @@ function openSourcePreviewAtChunk(sourceId, chunkId) {
       // Let Alpine reveal the modal (x-show) before scrolling into it.
       setTimeout(() => {
         const chunkEl = document.getElementById(`preview-chunk-${chunkId}`);
-        if (chunkEl) flashElement(chunkEl, "center");
+        if (chunkEl) {
+          // Persistent accent highlight (#preview-content is reloaded fresh on
+          // each open, so no stale target lingers) + a one-shot arrival pulse.
+          chunkEl.classList.add("cite-target");
+          flashElement(chunkEl, "center");
+        }
       }, 60);
     })
     .catch(() => {});
