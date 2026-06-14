@@ -700,12 +700,16 @@ def test_admin_eval_workbench_creates_default_profile(monkeypatch, tmp_path):
         resp = client.get("/admin/evals")
         assert resp.status_code == 200
         assert "Eval 工作台" in resp.text
-        assert "目前系統預設" in resp.text
-        assert 'href="/admin/evals"' in resp.text
+        assert "目前系統預設" in resp.text           # active-profile line
+        assert 'href="/admin/evals/profiles"' in resp.text
         assert "歷史執行紀錄" in resp.text
         assert '<pre class="config-preview">' not in resp.text
-        assert "最終 chunk 數" in resp.text
         assert "搜尋全站已索引筆記本" in resp.text
+
+        # Profile params live on the dedicated profiles page now.
+        profiles_resp = client.get("/admin/evals/profiles")
+        assert profiles_resp.status_code == 200
+        assert "最終 chunk 數" in profiles_resp.text
 
         with db.connect() as conn:
             profile = conn.execute("SELECT * FROM retrieval_profiles WHERE is_active = 1").fetchone()
@@ -834,11 +838,12 @@ def test_admin_eval_set_runner_records_results(monkeypatch, tmp_path):
     """E1b: admin can create a manual eval item, run it, and inspect stored metrics."""
     main, db = _fresh_app(monkeypatch, tmp_path)
 
-    async def fake_retrieve(question, conversation_id, settings, history, user_id, source_ids=None):
+    async def fake_retrieve(question, conversation_id, settings, history, user_id, source_ids=None, params=None):
         assert question == "alpha?"
         assert conversation_id is None
         assert user_id == admin_user["id"]
         assert source_ids == [source_id]
+        assert params is not None and "vector_weight" in params
         return [
             {
                 "id": 42,
@@ -918,6 +923,136 @@ def test_admin_eval_set_runner_records_results(monkeypatch, tmp_path):
         assert result["hit_rank"] == 1
         assert result["top_score"] == 0.91
         assert retrieved[0]["chunk_id"] == 42
+
+
+def test_create_apply_and_rollback_retrieval_profile(monkeypatch, tmp_path):
+    """E1c: create a candidate profile, apply it to live retrieval, then roll back."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        # Eval-sets page links to the dedicated profiles page, not inlines it.
+        landing = client.get("/admin/evals")
+        assert landing.status_code == 200
+        assert 'href="/admin/evals/profiles"' in landing.text
+        assert "目前作用中的 Retrieval Profile" in landing.text
+
+        profiles_page = client.get("/admin/evals/profiles")  # creates the baseline profile
+        assert profiles_page.status_code == 200
+        assert "Retrieval Profiles" in profiles_page.text
+        assert "建立候選 Profile" in profiles_page.text
+        assert "系統預設" in profiles_page.text
+
+        defaults = main.current_retrieval_profile_params()
+        form = {"name": "keyword-heavy", "description": "raise keyword weight",
+                **{k: str(v) for k, v in defaults.items()}}
+        form["keyword_weight"] = "0.9"
+        form["vector_weight"] = "0.1"
+        created = client.post("/admin/evals/profiles", data=form, follow_redirects=False)
+        assert created.status_code == 303
+
+        with db.connect() as conn:
+            prof = conn.execute("SELECT * FROM retrieval_profiles WHERE name = 'keyword-heavy'").fetchone()
+        assert prof["is_active"] == 0
+        assert main.active_retrieval_params()["keyword_weight"] == defaults["keyword_weight"]
+
+        applied = client.post(f"/admin/evals/profiles/{prof['id']}/apply", follow_redirects=False)
+        assert applied.status_code == 303
+        assert main.active_retrieval_params()["keyword_weight"] == 0.9
+        assert main.active_retrieval_params()["vector_weight"] == 0.1
+        with db.connect() as conn:
+            assert conn.execute(
+                "SELECT is_active FROM retrieval_profiles WHERE id = ?", (prof["id"],)
+            ).fetchone()["is_active"] == 1
+
+        # The system-default profile is now inactive but must still be undeletable.
+        with db.connect() as conn:
+            baseline = conn.execute("SELECT id FROM retrieval_profiles WHERE is_default = 1").fetchone()
+        assert baseline is not None
+        refused_default = client.post(f"/admin/evals/profiles/{baseline['id']}/delete", follow_redirects=False)
+        assert refused_default.status_code == 400
+
+        # Rollback = apply the default profile again.
+        client.post(f"/admin/evals/profiles/{baseline['id']}/apply", follow_redirects=False)
+        assert main.active_retrieval_params()["keyword_weight"] == defaults["keyword_weight"]
+
+        # The active profile also cannot be deleted.
+        with db.connect() as conn:
+            active_id = conn.execute("SELECT id FROM retrieval_profiles WHERE is_active = 1").fetchone()["id"]
+        refused = client.post(f"/admin/evals/profiles/{active_id}/delete", follow_redirects=False)
+        assert refused.status_code == 400
+
+
+def test_apply_profile_refuses_requires_reindex(monkeypatch, tmp_path):
+    """E1c: index-affecting profiles must not be silently applied to live retrieval."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        client.get("/admin/evals")
+        with db.connect() as conn:
+            pid = conn.execute(
+                "INSERT INTO retrieval_profiles (name, params_json, requires_reindex, is_active) "
+                "VALUES ('needs-reindex', '{}', 1, 0)"
+            ).lastrowid
+        resp = client.post(f"/admin/evals/profiles/{pid}/apply", follow_redirects=False)
+        assert resp.status_code == 400
+
+        invalid = client.post("/admin/evals/profiles", data={
+            "name": "bad", "description": "",
+            "low_confidence_threshold": "x", "vector_weight": "0.7", "keyword_weight": "0.3",
+            "candidate_pool_size": "20", "final_chunk_count": "6",
+            "rerank_weight": "0.6", "rerank_base_weight": "0.4",
+        }, follow_redirects=False)
+        assert invalid.status_code == 400
+
+
+def test_eval_compare_view_and_validation(monkeypatch, tmp_path):
+    """E1c: comparison renders param/metric/per-question diffs; rejects bad pairs."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, notebook_id = _seed_notebook(db)
+        source_id = _seed_indexed_source(db, admin_user["id"], notebook_id, "a.pdf", summary="alpha")
+        with db.connect() as conn:
+            chunk_id = conn.execute("SELECT id FROM chunks WHERE source_id = ?", (source_id,)).fetchone()["id"]
+            set_id = conn.execute(
+                "INSERT INTO eval_sets (name, target_user_id, notebook_id, created_by) VALUES ('Cmp', ?, ?, ?)",
+                (admin_user["id"], notebook_id, admin_user["id"]),
+            ).lastrowid
+            item_id = conn.execute(
+                "INSERT INTO eval_items (eval_set_id, question, expected_chunk_id, approved) VALUES (?, 'alpha?', ?, 1)",
+                (set_id, chunk_id),
+            ).lastrowid
+            base_params = main.current_retrieval_profile_params()
+            cand_params = {**base_params, "keyword_weight": 0.9}
+
+            def mk_run(params, metrics, status="succeeded"):
+                return conn.execute(
+                    "INSERT INTO eval_runs (eval_set_id, created_by, status, progress_total, progress_current, "
+                    "profile_snapshot_json, metrics_json) VALUES (?, ?, ?, 1, 1, ?, ?)",
+                    (set_id, admin_user["id"], status, db.dumps(params), db.dumps(metrics)),
+                ).lastrowid
+
+            base_id = mk_run(base_params, {"recall_at_k": 0.5, "mrr": 0.5, "hits": 1,
+                                           "avg_latency_ms": 10, "avg_top_score": 0.4, "low_confidence_rate": 0.2})
+            cand_id = mk_run(cand_params, {"recall_at_k": 1.0, "mrr": 1.0, "hits": 2,
+                                           "avg_latency_ms": 8, "avg_top_score": 0.6, "low_confidence_rate": 0.1})
+            running_id = mk_run(base_params, {}, status="running")
+            conn.execute("INSERT INTO eval_results (run_id, eval_item_id, status, hit_rank, top_score) VALUES (?, ?, 'miss', NULL, 0.4)", (base_id, item_id))
+            conn.execute("INSERT INTO eval_results (run_id, eval_item_id, status, hit_rank, top_score) VALUES (?, ?, 'hit', 1, 0.6)", (cand_id, item_id))
+
+        page = client.get(f"/admin/evals/compare?base={base_id}&candidate={cand_id}")
+        assert page.status_code == 200
+        assert "參數差異" in page.text
+        assert "Keyword 權重" in page.text
+        assert "進步 1 題" in page.text       # the item went miss -> hit
+        assert "指標差異" in page.text
+
+        # A non-succeeded run in the pair is rejected.
+        rejected = client.get(f"/admin/evals/compare?base={base_id}&candidate={running_id}")
+        assert rejected.status_code == 400
 
 
 def test_admin_eval_run_results_partial_polls_while_running(monkeypatch, tmp_path):

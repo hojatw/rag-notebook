@@ -67,6 +67,22 @@
 
   <section class="settings-section">
     <h2>Run History</h2>
+    {% set succeeded_runs = runs | selectattr("status", "equalto", "succeeded") | list %}
+    {% if succeeded_runs | length >= 2 %}
+      <form method="get" action="/admin/evals/compare" class="inline-form compare-form">
+        <label>Baseline
+          <select name="base">
+            {% for run in succeeded_runs %}<option value="{{ run.id }}">#{{ run.id }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Candidate
+          <select name="candidate">
+            {% for run in succeeded_runs %}<option value="{{ run.id }}" {% if loop.first and succeeded_runs|length > 1 %}{% endif %}>#{{ run.id }}</option>{% endfor %}
+          </select>
+        </label>
+        <button type="submit" class="ghost">比較兩個 run</button>
+      </form>
+    {% endif %}
     {% if runs %}
       <div class="table-wrap">
         <table>

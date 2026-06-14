@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings eval-workbench">
+  <header class="settings-head">
+    <p class="eyebrow">Run 比較</p>
+    <h1>{{ base_run.eval_set_name }}</h1>
+    <p class="muted">
+      Baseline <strong>#{{ base_run.id }}</strong> ↔ Candidate <strong>#{{ candidate_run.id }}</strong>
+      · 進步 {{ improved }} 題 · 退步 {{ regressed }} 題
+    </p>
+  </header>
+
+  <section class="settings-section">
+    <h2>參數差異</h2>
+    <div class="table-wrap">
+      <table class="diff-table">
+        <thead>
+          <tr><th>參數</th><th>Baseline #{{ base_run.id }}</th><th>Candidate #{{ candidate_run.id }}</th></tr>
+        </thead>
+        <tbody>
+          {% for row in param_diff %}
+            <tr class="{{ 'diff-changed' if row.changed else '' }}">
+              <td>{{ row.label }}</td>
+              <td>{{ row.base if row.base is not none else "—" }}</td>
+              <td>{{ row.candidate if row.candidate is not none else "—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <h2>指標差異</h2>
+    <div class="table-wrap">
+      <table class="diff-table">
+        <thead>
+          <tr><th>指標</th><th>Baseline</th><th>Candidate</th><th>Δ</th></tr>
+        </thead>
+        <tbody>
+          {% for row in metric_diff %}
+            <tr>
+              <td>{{ row.label }}</td>
+              <td>{{ row.base }}</td>
+              <td>{{ row.candidate }}</td>
+              <td class="diff-{{ row.direction }}">
+                {% if row.direction == 'better' %}▲{% elif row.direction == 'worse' %}▼{% else %}＝{% endif %}
+                {{ '%+g' | format(row.delta) }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="hint muted small">延遲與低信心率以「越低越好」判斷方向，其餘越高越好。</p>
+  </section>
+
+  <section class="settings-section">
+    <h2>逐題差異</h2>
+    <div class="table-wrap">
+      <table class="diff-table">
+        <thead>
+          <tr><th>問題</th><th>Baseline</th><th>Candidate</th><th>變化</th></tr>
+        </thead>
+        <tbody>
+          {% for row in question_diff %}
+            <tr class="diff-row-{{ row.trend }}">
+              <td>{{ row.question }}</td>
+              <td>
+                <span class="status {{ 'indexed' if row.base_status == 'hit' else 'processing' if row.base_status in ['unscored','—'] else 'failed' }}">{{ row.base_status }}</span>
+                {% if row.base_rank %}<span class="muted small"> @{{ row.base_rank }}</span>{% endif %}
+              </td>
+              <td>
+                <span class="status {{ 'indexed' if row.candidate_status == 'hit' else 'processing' if row.candidate_status in ['unscored','—'] else 'failed' }}">{{ row.candidate_status }}</span>
+                {% if row.candidate_rank %}<span class="muted small"> @{{ row.candidate_rank }}</span>{% endif %}
+              </td>
+              <td>
+                {% if row.trend == 'improved' %}<span class="diff-better">▲ 進步</span>
+                {% elif row.trend == 'regressed' %}<span class="diff-worse">▼ 退步</span>
+                {% else %}<span class="muted">＝ 持平</span>{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</section>
+{% endblock %}

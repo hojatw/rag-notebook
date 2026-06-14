@@ -86,6 +86,7 @@ async def lifespan(_app: FastAPI):
     context manager (FastAPI 0.93+).
     """
     init_db()
+    load_active_retrieval_profile()
     set_http_client(httpx.AsyncClient(timeout=None))
     sync_from_sqlite()
     # Inline ingest worker (P1-1): on by default so a single `uvicorn app.main:app`
@@ -1505,12 +1506,13 @@ async def _answer_question(
     if retrieved:
         metadata["top_score"] = round(top_score, 3)
 
-    if not retrieved or top_score < LOW_CONFIDENCE_THRESHOLD:
+    threshold = active_low_confidence_threshold()
+    if not retrieved or top_score < threshold:
         metadata["outcome"] = "low_confidence" if retrieved else "no_retrieval"
-        metadata["threshold"] = LOW_CONFIDENCE_THRESHOLD
+        metadata["threshold"] = threshold
         logger.info(
             "chat_no_retrieval_results user_id=%s top_score=%.3f threshold=%.2f",
-            user_id, top_score, LOW_CONFIDENCE_THRESHOLD,
+            user_id, top_score, threshold,
         )
         return "依據所選的來源，我無法判斷這個問題的答案。", [], metadata
 
@@ -1673,10 +1675,10 @@ async def ask_stream(
             if retrieved:
                 metadata["top_score"] = round(top_score, 3)
 
-            if not retrieved or top_score < LOW_CONFIDENCE_THRESHOLD:
+            if not retrieved or top_score < active_low_confidence_threshold():
                 answer = "依據所選的來源，我無法判斷這個問題的答案。"
                 metadata["outcome"] = "low_confidence" if retrieved else "no_retrieval"
-                metadata["threshold"] = LOW_CONFIDENCE_THRESHOLD
+                metadata["threshold"] = active_low_confidence_threshold()
                 yield sse_event("chunk", {"text": answer})
             else:
                 yield sse_event("status", {"text": "正在生成回答…"})
@@ -2272,9 +2274,22 @@ async def retrieve(
     history: list[dict[str, str]] | None = None,
     user_id: int | None = None,
     source_ids: list[int] | None = None,
+    params: dict | None = None,
 ) -> list[dict]:
-    """Retrieve chunks with query rewriting, hybrid search, and optional LLM reranking."""
+    """Retrieve chunks with query rewriting, hybrid search, and optional LLM reranking.
+
+    ``params`` overrides the runtime-safe retrieval knobs for this call only
+    (used by the eval workbench for isolated per-run experiments); None falls
+    back to the active applied profile.
+    """
     started = time.perf_counter()
+    p = resolve_retrieval_params(params)
+    pool_size = int(p["candidate_pool_size"])
+    final_count = int(p["final_chunk_count"])
+    vector_weight = float(p["vector_weight"])
+    keyword_weight = float(p["keyword_weight"])
+    rerank_weight = float(p["rerank_weight"])
+    rerank_base_weight = float(p["rerank_base_weight"])
     queries = await rewrite_search_queries(question, history or [], settings)
     query_embeddings = await embed_texts(queries, settings, role="query")
     if user_id is not None:
@@ -2283,12 +2298,15 @@ async def retrieve(
             # them concurrently in threads so their I/O overlaps instead of
             # adding up (P2-2). Both are sync; to_thread releases the event loop.
             vector_candidates, keyword_candidates = await asyncio.gather(
-                asyncio.to_thread(query_vectors, query_embeddings, user_id, source_ids, n_results=CANDIDATE_POOL_SIZE),
-                asyncio.to_thread(keyword_candidates_from_sqlite, user_id, source_ids or [], queries, limit=CANDIDATE_POOL_SIZE),
+                asyncio.to_thread(query_vectors, query_embeddings, user_id, source_ids, n_results=pool_size),
+                asyncio.to_thread(keyword_candidates_from_sqlite, user_id, source_ids or [], queries, limit=pool_size),
             )
-            candidates = merge_candidates(vector_candidates, keyword_candidates, queries)
-            ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:CANDIDATE_POOL_SIZE]
-            retrieved = await rerank_chunks(question, ranked, settings, limit=FINAL_CHUNK_COUNT)
+            candidates = merge_candidates(vector_candidates, keyword_candidates, queries, params=p)
+            ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:pool_size]
+            retrieved = await rerank_chunks(
+                question, ranked, settings, limit=final_count,
+                rerank_weight=rerank_weight, rerank_base_weight=rerank_base_weight,
+            )
             elapsed_ms = (time.perf_counter() - started) * 1000
             logger.info(
                 "retrieve_completed mode=chroma rewritten_queries=%s vector_candidates=%s keyword_candidates=%s candidates=%s reranked=%s elapsed_ms=%.1f",
@@ -2315,7 +2333,7 @@ async def retrieve(
         embedding = loads(row["embedding_json"])
         vector_score = max(cosine(query_embedding, embedding) for query_embedding in query_embeddings)
         keyword = keyword_score(queries, row["text"])
-        score = (VECTOR_WEIGHT * max(0.0, vector_score)) + (KEYWORD_WEIGHT * keyword)
+        score = (vector_weight * max(0.0, vector_score)) + (keyword_weight * keyword)
         if score <= 0:
             continue
         candidates[row["id"]] = {
@@ -2327,8 +2345,11 @@ async def retrieve(
             "vector_score": vector_score,
             "keyword_score": keyword,
         }
-    ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:CANDIDATE_POOL_SIZE]
-    retrieved = await rerank_chunks(question, ranked, settings, limit=FINAL_CHUNK_COUNT)
+    ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:pool_size]
+    retrieved = await rerank_chunks(
+        question, ranked, settings, limit=final_count,
+        rerank_weight=rerank_weight, rerank_base_weight=rerank_base_weight,
+    )
     elapsed_ms = (time.perf_counter() - started) * 1000
     logger.info(
         "retrieve_completed source_rows=%s rewritten_queries=%s candidates=%s reranked=%s elapsed_ms=%.1f",
@@ -2417,14 +2438,22 @@ def keyword_candidates_from_sqlite(user_id: int, source_ids: list[int], queries:
     return sorted(candidates, key=lambda item: keyword_score(queries, item["text"]), reverse=True)[:limit]
 
 
-def merge_candidates(vector_candidates: list[dict], keyword_candidates: list[dict], queries: list[str]) -> dict[int, dict]:
+def merge_candidates(
+    vector_candidates: list[dict],
+    keyword_candidates: list[dict],
+    queries: list[str],
+    params: dict | None = None,
+) -> dict[int, dict]:
     """Merge vector and keyword candidates into one hybrid-scored map."""
+    p = resolve_retrieval_params(params)
+    vector_weight = float(p["vector_weight"])
+    keyword_weight = float(p["keyword_weight"])
     candidates: dict[int, dict] = {}
     for item in [*vector_candidates, *keyword_candidates]:
         chunk_id = int(item["id"])
         keyword = keyword_score(queries, item["text"])
         vector_score = max(0.0, float(item.get("vector_score") or 0.0))
-        score = (VECTOR_WEIGHT * vector_score) + (KEYWORD_WEIGHT * keyword)
+        score = (vector_weight * vector_score) + (keyword_weight * keyword)
         existing = candidates.get(chunk_id)
         if existing and existing["score"] >= score:
             continue
@@ -2645,6 +2674,31 @@ PROFILE_PARAM_LABELS = {
     "rerank_base_weight": "Rerank base 權重",
 }
 
+# Type + range rules for the 7 runtime-safe profile params (E1c authoring form).
+# Pool/chunk counts are positive ints; the rest are floats >= 0.
+PROFILE_PARAM_INT_KEYS = {"candidate_pool_size", "final_chunk_count"}
+
+
+def coerce_profile_params(raw: dict[str, Any]) -> dict[str, Any]:
+    """Validate/coerce admin-entered profile params; raise HTTP 400 on bad input."""
+    params: dict[str, Any] = {}
+    for key in PROFILE_PARAM_LABELS:
+        if key not in raw or raw[key] in (None, ""):
+            raise HTTPException(status_code=400, detail=f"缺少參數：{PROFILE_PARAM_LABELS[key]}")
+        try:
+            if key in PROFILE_PARAM_INT_KEYS:
+                value: Any = int(raw[key])
+                if value < 1:
+                    raise ValueError
+            else:
+                value = float(raw[key])
+                if value < 0:
+                    raise ValueError
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"參數值無效：{PROFILE_PARAM_LABELS[key]}")
+        params[key] = value
+    return params
+
 
 def profile_param_rows(params: dict[str, Any]) -> list[dict[str, Any]]:
     return [
@@ -2656,6 +2710,61 @@ def profile_param_rows(params: dict[str, Any]) -> list[dict[str, Any]]:
 
 def profile_params_for_display(profile: dict) -> list[dict[str, Any]]:
     return profile_param_rows(loads(profile.get("params_json") or "{}"))
+
+
+# Runtime-safe retrieval params resolved at import as the literal defaults (equal
+# to app/config.py), plus a mutable in-process "active" copy the live retrieval
+# path reads. The eval workbench (E1c) can apply a saved profile to mutate the
+# active copy (and persist it via retrieval_profiles.is_active), or run an eval
+# with an isolated per-run override without touching the active copy. Defaults
+# stay equal to today's behaviour, so an un-applied deployment is unchanged.
+RETRIEVAL_PARAM_DEFAULTS: dict[str, Any] = current_retrieval_profile_params()
+ACTIVE_RETRIEVAL_PARAMS: dict[str, Any] = dict(RETRIEVAL_PARAM_DEFAULTS)
+
+
+def resolve_retrieval_params(params: dict | None) -> dict[str, Any]:
+    """Merge a (possibly partial) override over defaults; None → active params."""
+    if params is None:
+        return dict(ACTIVE_RETRIEVAL_PARAMS)
+    merged = dict(RETRIEVAL_PARAM_DEFAULTS)
+    merged.update({k: v for k, v in params.items() if k in RETRIEVAL_PARAM_DEFAULTS})
+    return merged
+
+
+def active_retrieval_params() -> dict[str, Any]:
+    return dict(ACTIVE_RETRIEVAL_PARAMS)
+
+
+def active_low_confidence_threshold() -> float:
+    return float(ACTIVE_RETRIEVAL_PARAMS.get("low_confidence_threshold", LOW_CONFIDENCE_THRESHOLD))
+
+
+def set_active_retrieval_params(params: dict | None) -> None:
+    """Replace the in-process active retrieval params (apply / startup load)."""
+    resolved = resolve_retrieval_params(params)
+    ACTIVE_RETRIEVAL_PARAMS.clear()
+    ACTIVE_RETRIEVAL_PARAMS.update(resolved)
+
+
+def load_active_retrieval_profile() -> None:
+    """Seed the active retrieval params from the persisted active profile (if any).
+
+    Called at startup so a previously applied profile survives a restart. Falls
+    back to the import-time defaults when no profile has been applied yet.
+    """
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT params_json FROM retrieval_profiles WHERE is_active = 1 ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+    except Exception:
+        logger.exception("active_profile_load_failed")
+        return
+    if row is None:
+        set_active_retrieval_params(None)
+        return
+    set_active_retrieval_params(loads(row["params_json"] or "{}"))
+    logger.info("active_profile_loaded params=%s", dumps(ACTIVE_RETRIEVAL_PARAMS))
 
 
 def ensure_default_retrieval_profile(conn, admin_user_id: int | None = None) -> dict:
@@ -2670,8 +2779,8 @@ def ensure_default_retrieval_profile(conn, admin_user_id: int | None = None) -> 
     if row is None:
         cursor = conn.execute(
             """
-            INSERT INTO retrieval_profiles (name, description, params_json, is_active, created_by)
-            VALUES (?, ?, ?, 1, ?)
+            INSERT INTO retrieval_profiles (name, description, params_json, is_active, is_default, created_by)
+            VALUES (?, ?, ?, 1, 1, ?)
             """,
             (
                 "目前系統預設",
@@ -2786,7 +2895,15 @@ def compact_retrieved_chunks(retrieved: list[dict]) -> list[dict[str, Any]]:
     return compact
 
 
-def run_metrics_from_results(results: list[dict]) -> dict[str, Any]:
+def run_metrics_from_results(
+    results: list[dict],
+    threshold: float | None = None,
+    final_chunk_count: int | None = None,
+) -> dict[str, Any]:
+    if threshold is None:
+        threshold = active_low_confidence_threshold()
+    if final_chunk_count is None:
+        final_chunk_count = int(ACTIVE_RETRIEVAL_PARAMS.get("final_chunk_count", FINAL_CHUNK_COUNT))
     scored = [r for r in results if r["status"] in {"hit", "miss"}]
     hits = [r for r in scored if r["status"] == "hit"]
     total = len(results)
@@ -2795,7 +2912,7 @@ def run_metrics_from_results(results: list[dict]) -> dict[str, Any]:
     top_scores = [float(r.get("top_score") or 0.0) for r in results]
     mrr = sum(1 / int(r["hit_rank"]) for r in hits if r.get("hit_rank")) / scored_count if scored_count else 0.0
     recall = len(hits) / scored_count if scored_count else 0.0
-    low_confidence = sum(1 for score in top_scores if score < LOW_CONFIDENCE_THRESHOLD)
+    low_confidence = sum(1 for score in top_scores if score < threshold)
     return {
         "total": total,
         "scored": scored_count,
@@ -2808,8 +2925,8 @@ def run_metrics_from_results(results: list[dict]) -> dict[str, Any]:
         "avg_latency_ms": round(sum(latencies) / len(latencies), 1) if latencies else 0.0,
         "avg_top_score": round(sum(top_scores) / len(top_scores), 4) if top_scores else 0.0,
         "low_confidence_rate": round(low_confidence / total, 4) if total else 0.0,
-        "threshold": LOW_CONFIDENCE_THRESHOLD,
-        "final_chunk_count": FINAL_CHUNK_COUNT,
+        "threshold": threshold,
+        "final_chunk_count": final_chunk_count,
     }
 
 
@@ -2820,6 +2937,10 @@ async def run_eval_job(run_id: int) -> None:
             run = conn.execute("SELECT * FROM eval_runs WHERE id = ?", (run_id,)).fetchone()
             if run is None:
                 return
+            # Isolated per-run override: the run uses its frozen profile snapshot,
+            # not the live applied profile, so candidate vs baseline comparisons
+            # are meaningful without mutating real chat retrieval.
+            run_params = resolve_retrieval_params(loads(run["profile_snapshot_json"] or "{}"))
             eval_set = load_eval_set(conn, run["eval_set_id"])
             items = [
                 dict(row)
@@ -2896,6 +3017,7 @@ async def run_eval_job(run_id: int) -> None:
                     [],
                     eval_set["target_user_id"],
                     source_ids,
+                    params=run_params,
                 )
                 latency_ms = round((time.perf_counter() - started) * 1000, 1)
                 top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -2956,7 +3078,11 @@ async def run_eval_job(run_id: int) -> None:
                     """,
                     (index, run_id),
                 )
-        metrics = run_metrics_from_results(results)
+        metrics = run_metrics_from_results(
+            results,
+            threshold=float(run_params["low_confidence_threshold"]),
+            final_chunk_count=int(run_params["final_chunk_count"]),
+        )
         with connect() as conn:
             conn.execute(
                 """
@@ -3065,6 +3191,12 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
                 (eval_set_id,),
             ).fetchall()
         ]
+        profiles = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT id, name, is_active FROM retrieval_profiles ORDER BY is_active DESC, id DESC LIMIT 50"
+            ).fetchall()
+        ]
     for item in items:
         item["expected_substrings"] = loads(item.get("expected_substrings_json") or "[]")
     for run in runs:
@@ -3075,6 +3207,7 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
         "items": items,
         "approved_count": sum(1 for item in items if item["approved"]),
         "runs": runs,
+        "profiles": profiles,
     }
 
 
@@ -3096,7 +3229,6 @@ def admin_evals(
     notebook_like = f"%{notebook_q}%"
     with connect() as conn:
         profile = ensure_default_retrieval_profile(conn, user["id"])
-        profile["params"] = profile_params_for_display(profile)
         notebooks = [
             dict(row)
             for row in conn.execute(
@@ -3150,11 +3282,46 @@ def admin_evals(
         "admin_evals.html",
         {
             "user": user,
+            "active_tab": "sets",
             "profile": profile,
             "notebooks": notebooks,
             "notebook_q": notebook_q,
             "eval_sets": eval_sets,
             "runs": runs,
+        },
+    )
+
+
+@app.get("/admin/evals/profiles", response_class=HTMLResponse)
+def admin_profiles_page(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    """E1c: dedicated Retrieval Profiles management page (separate from eval sets)."""
+    with connect() as conn:
+        ensure_default_retrieval_profile(conn, user["id"])
+        profiles = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT p.*, u.username AS created_by_username
+                FROM retrieval_profiles p
+                LEFT JOIN users u ON u.id = p.created_by
+                ORDER BY p.is_active DESC, p.id DESC
+                LIMIT 50
+                """
+            ).fetchall()
+        ]
+        for prof in profiles:
+            prof["params"] = profile_params_for_display(prof)
+    return render(
+        request,
+        "admin_profiles.html",
+        {
+            "user": user,
+            "active_tab": "profiles",
+            "profiles": profiles,
+            "new_profile_fields": profile_param_rows(active_retrieval_params()),
         },
     )
 
@@ -3395,10 +3562,18 @@ def admin_start_eval_run(
     eval_set_id: int,
     background_tasks: BackgroundTasks,
     user: Annotated[dict, Depends(require_admin)],
+    profile_id: int | None = Form(None),
 ):
     with connect() as conn:
         load_eval_set(conn, eval_set_id)
         profile = ensure_default_retrieval_profile(conn, user["id"])
+        if profile_id is not None:
+            chosen = conn.execute(
+                "SELECT * FROM retrieval_profiles WHERE id = ?", (profile_id,)
+            ).fetchone()
+            if chosen is None:
+                raise HTTPException(status_code=404, detail="找不到 retrieval profile")
+            profile = dict(chosen)
         approved_count = conn.execute(
             "SELECT COUNT(*) AS n FROM eval_items WHERE eval_set_id = ? AND approved = 1",
             (eval_set_id,),
@@ -3458,6 +3633,214 @@ def admin_eval_run_results(
     user: Annotated[dict, Depends(require_admin)],
 ):
     return render(request, "_eval_run_results.html", {"user": user, **eval_run_context(run_id)})
+
+
+# --- E1c: retrieval profile authoring + apply/rollback + run comparison ---
+
+@app.post("/admin/evals/profiles")
+def admin_create_profile(
+    user: Annotated[dict, Depends(require_admin)],
+    name: str = Form(...),
+    description: str = Form(""),
+    low_confidence_threshold: str = Form(...),
+    vector_weight: str = Form(...),
+    keyword_weight: str = Form(...),
+    candidate_pool_size: str = Form(...),
+    final_chunk_count: str = Form(...),
+    rerank_weight: str = Form(...),
+    rerank_base_weight: str = Form(...),
+):
+    """Create a candidate retrieval profile (runtime-safe params only, inactive)."""
+    name = name.strip()[:120]
+    if not name:
+        raise HTTPException(status_code=400, detail="Profile 名稱不可為空。")
+    params = coerce_profile_params({
+        "low_confidence_threshold": low_confidence_threshold,
+        "vector_weight": vector_weight,
+        "keyword_weight": keyword_weight,
+        "candidate_pool_size": candidate_pool_size,
+        "final_chunk_count": final_chunk_count,
+        "rerank_weight": rerank_weight,
+        "rerank_base_weight": rerank_base_weight,
+    })
+    with connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO retrieval_profiles
+            (name, description, params_json, requires_reindex, is_active, created_by)
+            VALUES (?, ?, ?, 0, 0, ?)
+            """,
+            (name, description.strip()[:500], dumps(params), user["id"]),
+        )
+    logger.info("eval_profile_created admin_user_id=%s profile_id=%s", user["id"], cursor.lastrowid)
+    return RedirectResponse("/admin/evals/profiles", status_code=303)
+
+
+@app.post("/admin/evals/profiles/{profile_id}/delete")
+def admin_delete_profile(
+    profile_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM retrieval_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="找不到 retrieval profile")
+        if row["is_default"]:
+            raise HTTPException(status_code=400, detail="系統預設 profile 不能刪除，它是回復預設值的保底。")
+        if row["is_active"]:
+            raise HTTPException(status_code=400, detail="作用中的 profile 不能刪除，請先套用其他 profile。")
+        conn.execute("DELETE FROM retrieval_profiles WHERE id = ?", (profile_id,))
+    logger.info("eval_profile_deleted admin_user_id=%s profile_id=%s", user["id"], profile_id)
+    return RedirectResponse("/admin/evals/profiles", status_code=303)
+
+
+@app.post("/admin/evals/profiles/{profile_id}/apply")
+def admin_apply_profile(
+    profile_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    """Apply a runtime-safe profile to live retrieval; persisted via is_active."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM retrieval_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="找不到 retrieval profile")
+        if row["requires_reindex"]:
+            raise HTTPException(
+                status_code=400,
+                detail="此 profile 含需重建索引的參數，不能直接套用；請改用 Clear/Rebuild 流程。",
+            )
+        conn.execute("UPDATE retrieval_profiles SET is_active = 0 WHERE is_active = 1")
+        conn.execute(
+            "UPDATE retrieval_profiles SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (profile_id,),
+        )
+    set_active_retrieval_params(loads(row["params_json"] or "{}"))
+    logger.info(
+        "eval_profile_applied admin_user_id=%s profile_id=%s params=%s",
+        user["id"], profile_id, dumps(ACTIVE_RETRIEVAL_PARAMS),
+    )
+    return RedirectResponse("/admin/evals/profiles", status_code=303)
+
+
+def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
+    """Build a side-by-side comparison of two succeeded runs in the same eval set."""
+    base = eval_run_context(base_id)
+    candidate = eval_run_context(candidate_id)
+    base_run, candidate_run = base["run"], candidate["run"]
+    if base_run["eval_set_id"] != candidate_run["eval_set_id"]:
+        raise HTTPException(status_code=400, detail="只能比較同一個 eval set 的 run。")
+    for run in (base_run, candidate_run):
+        if run["status"] != "succeeded":
+            raise HTTPException(status_code=400, detail="只能比較已成功完成的 run。")
+
+    # Param diff: union of both snapshots, flag changed rows.
+    base_params = base_run["profile_snapshot"]
+    cand_params = candidate_run["profile_snapshot"]
+    param_diff = []
+    for key in PROFILE_PARAM_LABELS:
+        if key not in base_params and key not in cand_params:
+            continue
+        bval, cval = base_params.get(key), cand_params.get(key)
+        param_diff.append({
+            "label": PROFILE_PARAM_LABELS.get(key, key),
+            "base": bval,
+            "candidate": cval,
+            "changed": bval != cval,
+        })
+
+    # Metric diff: lower-is-better for latency + low-confidence rate.
+    base_metrics = base_run["metrics"]
+    cand_metrics = candidate_run["metrics"]
+    metric_specs = [
+        ("recall_at_k", "Recall@k", True),
+        ("mrr", "MRR", True),
+        ("avg_top_score", "平均 top score", True),
+        ("avg_latency_ms", "平均延遲 (ms)", False),
+        ("low_confidence_rate", "低信心率", False),
+        ("hits", "命中數", True),
+    ]
+    metric_diff = []
+    for key, label, higher_better in metric_specs:
+        bval = float(base_metrics.get(key) or 0.0)
+        cval = float(cand_metrics.get(key) or 0.0)
+        delta = round(cval - bval, 4)
+        if delta == 0:
+            direction = "same"
+        elif (delta > 0) == higher_better:
+            direction = "better"
+        else:
+            direction = "worse"
+        metric_diff.append({
+            "label": label, "base": bval, "candidate": cval,
+            "delta": delta, "direction": direction,
+        })
+
+    # Per-question delta keyed by eval_item_id.
+    base_by_item = {r["eval_item_id"]: r for r in base["results"]}
+    cand_by_item = {r["eval_item_id"]: r for r in candidate["results"]}
+    rank_order = {"hit": 0, "miss": 1, "unscored": 2, "error": 3, "pending": 4}
+    question_diff = []
+    for item_id in sorted(set(base_by_item) | set(cand_by_item)):
+        b = base_by_item.get(item_id)
+        c = cand_by_item.get(item_id)
+        bstatus = b["status"] if b else "—"
+        cstatus = c["status"] if c else "—"
+        brank = b.get("hit_rank") if b else None
+        crank = c.get("hit_rank") if c else None
+        if b and c:
+            bscore, cscore = rank_order.get(bstatus, 9), rank_order.get(cstatus, 9)
+            if cscore < bscore or (bstatus == cstatus == "hit" and crank and brank and crank < brank):
+                trend = "improved"
+            elif cscore > bscore or (bstatus == cstatus == "hit" and crank and brank and crank > brank):
+                trend = "regressed"
+            else:
+                trend = "unchanged"
+        else:
+            trend = "unchanged"
+        question_diff.append({
+            "question": (b or c)["question"],
+            "base_status": bstatus, "candidate_status": cstatus,
+            "base_rank": brank, "candidate_rank": crank,
+            "trend": trend,
+        })
+
+    return {
+        "base_run": base_run,
+        "candidate_run": candidate_run,
+        "param_diff": param_diff,
+        "metric_diff": metric_diff,
+        "question_diff": question_diff,
+        "improved": sum(1 for q in question_diff if q["trend"] == "improved"),
+        "regressed": sum(1 for q in question_diff if q["trend"] == "regressed"),
+    }
+
+
+@app.get("/admin/evals/compare", response_class=HTMLResponse)
+def admin_eval_compare(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+    base: int,
+    candidate: int,
+):
+    context = compare_runs_context(base, candidate)
+    base_run = context["base_run"]
+    return render(
+        request,
+        "admin_eval_compare.html",
+        {
+            "user": user,
+            "breadcrumb_items": [
+                {"label": "Eval 工作台", "href": "/admin/evals"},
+                {"label": base_run["eval_set_name"], "href": f"/admin/evals/sets/{base_run['eval_set_id']}"},
+                {"label": f"比較 #{context['base_run']['id']} ↔ #{context['candidate_run']['id']}", "href": None},
+            ],
+            **context,
+        },
+    )
 
 
 @app.get("/admin/users", response_class=HTMLResponse)

@@ -170,7 +170,7 @@ DB-backed ingest queue (P1-1). At most one job per source.
 | `created_at` / `updated_at` | TEXT | |
 
 ## `retrieval_profiles`
-Admin-created retrieval parameter snapshots for the in-deployment eval workbench (E1). The MVP records profiles for audit/history; applying profiles is a later phase.
+Admin-created retrieval parameter snapshots for the in-deployment eval workbench (E1). Profiles are audit/history records **and** applyable: the `is_active` row seeds the live `ACTIVE_RETRIEVAL_PARAMS` in `app/main.py` at startup (E1c apply/rollback).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -178,8 +178,9 @@ Admin-created retrieval parameter snapshots for the in-deployment eval workbench
 | `name` | TEXT NOT NULL | display name |
 | `description` | TEXT DEFAULT `''` | |
 | `params_json` | TEXT DEFAULT `'{}'` | JSON snapshot of retrieval/runtime-safe parameters |
-| `requires_reindex` | INTEGER DEFAULT 0 | 1 = profile contains index-affecting changes |
-| `is_active` | INTEGER DEFAULT 0 | reserved for apply/rollback phase |
+| `requires_reindex` | INTEGER DEFAULT 0 | 1 = profile contains index-affecting changes; refused at apply |
+| `is_active` | INTEGER DEFAULT 0 | 1 = applied to live retrieval (at most one row); loaded into `ACTIVE_RETRIEVAL_PARAMS` on startup |
+| `is_default` | INTEGER DEFAULT 0 | 1 = the protected system-default baseline; cannot be deleted (fallback to known-good config) |
 | `source_run_id` | INTEGER | optional run that produced this profile |
 | `created_by` | INTEGER → `users(id)` SET NULL | admin who created it |
 | `created_at` / `updated_at` | TEXT | |

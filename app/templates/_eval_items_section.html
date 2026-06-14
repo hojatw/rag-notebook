@@ -1,7 +1,17 @@
 <section class="settings-section" id="eval-items">
   <div class="section-title-row">
     <h2>題目</h2>
-    <form method="post" action="/admin/evals/sets/{{ eval_set.id }}/run" data-loading-form>
+    <form method="post" action="/admin/evals/sets/{{ eval_set.id }}/run" class="run-form" data-loading-form>
+      {% if profiles %}
+        <label class="run-profile-label">
+          Profile
+          <select name="profile_id">
+            {% for prof in profiles %}
+              <option value="{{ prof.id }}">{{ prof.name }}{% if prof.is_active %}（作用中）{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+      {% endif %}
       <button type="submit" {% if approved_count == 0 %}disabled{% endif %} data-loading-text="啟動中...">執行 retrieval eval</button>
     </form>
   </div>
@@ -10,12 +20,11 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>#</th><th>問題</th><th>預期來源</th><th>Substrings</th><th>狀態</th><th>操作</th></tr>
+          <tr><th>問題</th><th>預期來源</th><th>Substrings</th><th>狀態</th><th>操作</th></tr>
         </thead>
         <tbody>
           {% for item in items %}
             <tr>
-              <td>{{ item.id }}</td>
               <td>{{ item.question }}{% if item.notes %}<br><span class="muted small">{{ item.notes }}</span>{% endif %}</td>
               <td>{{ item.expected_filename or "—" }}</td>
               <td>

@@ -207,7 +207,7 @@ def test_retrieve_runs_vector_and_keyword_search_concurrently(local_embed, monke
     async def fake_rewrite(question, history, settings):
         return [question]
 
-    async def fake_rerank(question, candidates, settings, limit=6):
+    async def fake_rerank(question, candidates, settings, limit=6, **kwargs):
         return candidates
 
     monkeypatch.setattr(main, "query_vectors", fake_vectors)
@@ -220,6 +220,70 @@ def test_retrieve_runs_vector_and_keyword_search_concurrently(local_embed, monke
     # Both searches contributed (merge happened) and both ran at the same time.
     assert {c["filename"] for c in chunks} == {"a.md", "b.md"}
     assert inflight["max"] == 2
+
+
+def test_active_retrieval_params_default_matches_config():
+    """E1c: the active params start equal to the import-time config defaults."""
+    import app.main as main
+
+    assert main.active_retrieval_params() == main.current_retrieval_profile_params()
+    assert main.RETRIEVAL_PARAM_DEFAULTS == main.current_retrieval_profile_params()
+
+
+def test_merge_candidates_honors_param_override():
+    """E1c: per-call params override the hybrid weights used to score candidates."""
+    import app.main as main
+
+    vector = [{"id": 1, "source_id": 1, "filename": "a", "location": "d",
+               "text": "zzz unrelated", "vector_score": 0.9}]
+    keyword = [{"id": 2, "source_id": 2, "filename": "b", "location": "d",
+                "text": "alpha beta", "vector_score": 0.0}]
+    queries = ["alpha beta"]
+
+    vector_only = main.merge_candidates(vector, keyword, queries,
+                                        params={"vector_weight": 1.0, "keyword_weight": 0.0})
+    keyword_only = main.merge_candidates(vector, keyword, queries,
+                                         params={"vector_weight": 0.0, "keyword_weight": 1.0})
+
+    assert set(vector_only) == {1}
+    assert set(keyword_only) == {2}
+
+
+def test_retrieve_threads_override_params_to_rerank(local_embed, monkeypatch):
+    """E1c: final_chunk_count + rerank weights from params reach rerank_chunks."""
+    import app.main as main
+
+    captured = {}
+
+    def fake_vectors(embeddings, user_id, source_ids, n_results=20):
+        return [{"id": 1, "source_id": 1, "filename": "a", "location": "d",
+                 "text": "alpha", "vector_score": 0.9},
+                {"id": 2, "source_id": 2, "filename": "b", "location": "d",
+                 "text": "beta", "vector_score": 0.5}]
+
+    def fake_keyword(user_id, source_ids, queries, limit=20):
+        return []
+
+    async def fake_rewrite(question, history, settings):
+        return [question]
+
+    async def fake_rerank(question, candidates, settings, limit=6,
+                          rerank_weight=None, rerank_base_weight=None):
+        captured.update(limit=limit, rw=rerank_weight, rbw=rerank_base_weight)
+        return candidates[:limit]
+
+    monkeypatch.setattr(main, "query_vectors", fake_vectors)
+    monkeypatch.setattr(main, "keyword_candidates_from_sqlite", fake_keyword)
+    monkeypatch.setattr(main, "rewrite_search_queries", fake_rewrite)
+    monkeypatch.setattr(main, "rerank_chunks", fake_rerank)
+
+    out = asyncio.run(main.retrieve(
+        "alpha", [], {}, user_id=1, source_ids=[1, 2],
+        params={"final_chunk_count": 1, "rerank_weight": 0.7, "rerank_base_weight": 0.3},
+    ))
+
+    assert captured == {"limit": 1, "rw": 0.7, "rbw": 0.3}
+    assert len(out) == 1
 
 
 def test_keyword_score_supports_cjk_terms():

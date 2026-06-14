@@ -448,8 +448,21 @@ async def rewrite_search_queries(question: str, history: list[dict[str, str]], s
     return rewritten
 
 
-async def rerank_chunks(question: str, candidates: list[dict[str, Any]], settings: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]:
-    """Ask the chat model to rerank candidate chunks, falling back to hybrid scores."""
+async def rerank_chunks(
+    question: str,
+    candidates: list[dict[str, Any]],
+    settings: dict[str, Any],
+    limit: int = 6,
+    rerank_weight: float | None = None,
+    rerank_base_weight: float | None = None,
+) -> list[dict[str, Any]]:
+    """Ask the chat model to rerank candidate chunks, falling back to hybrid scores.
+
+    ``rerank_weight``/``rerank_base_weight`` override the module defaults for a
+    single call (eval workbench per-run params); None keeps current behaviour.
+    """
+    weight = RERANK_WEIGHT if rerank_weight is None else float(rerank_weight)
+    base_weight = RERANK_BASE_WEIGHT if rerank_base_weight is None else float(rerank_base_weight)
     if not candidates:
         return []
     fallback = sorted(candidates, key=lambda item: item["score"], reverse=True)[:limit]
@@ -478,7 +491,7 @@ async def rerank_chunks(question: str, candidates: list[dict[str, Any]], setting
         rerank_score = scores.get(index)
         if rerank_score is None:
             continue
-        combined = (RERANK_WEIGHT * rerank_score) + (RERANK_BASE_WEIGHT * chunk["score"])
+        combined = (weight * rerank_score) + (base_weight * chunk["score"])
         ranked.append((combined, {**chunk, "rerank_score": rerank_score, "score": combined}))
     if not ranked:
         logger.warning("rerank_empty_scores candidates=%s", len(candidates))
