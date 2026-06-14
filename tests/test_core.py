@@ -2,6 +2,43 @@ import asyncio
 import importlib
 
 
+def test_subtitle_extraction_strips_cues_and_tags(fresh_modules, tmp_path):
+    """A7: .srt / .vtt parse to clean transcript text (no indices/timestamps/tags)."""
+    ingest = fresh_modules.ingest
+
+    assert ingest.supported("meeting.srt")
+    assert ingest.supported("meeting.vtt")
+
+    srt = (tmp_path / "m.srt")
+    srt.write_text(
+        "1\n00:00:01,000 --> 00:00:04,000\n大家好，今天討論專案進度。\n\n"
+        "2\n00:00:04,000 --> 00:00:07,000\n第一項是預算。\n第一項是預算。\n",
+        encoding="utf-8",
+    )
+    sections = ingest._extract_subtitles(srt)
+    assert len(sections) == 1
+    loc, text = sections[0]
+    assert loc == "transcript"
+    assert "大家好，今天討論專案進度。" in text
+    assert "第一項是預算。" in text
+    assert "-->" not in text and "00:00:01" not in text
+    # SRT indices dropped; rolling-caption duplicate collapsed.
+    assert text.count("第一項是預算。") == 1
+    assert not any(line.strip().isdigit() for line in text.splitlines())
+
+    vtt = (tmp_path / "m.vtt")
+    vtt.write_text(
+        "WEBVTT\n\nNOTE this is metadata\n\n"
+        "00:00:01.000 --> 00:00:04.000\n<v Host>Welcome everyone.</v>\n\n"
+        "00:00:04.000 --> 00:00:07.000\nLet's begin.\n",
+        encoding="utf-8",
+    )
+    text2 = ingest._extract_subtitles(vtt)[0][1]
+    assert "Welcome everyone." in text2 and "Let's begin." in text2
+    assert "WEBVTT" not in text2 and "this is metadata" not in text2
+    assert "<v" not in text2 and "-->" not in text2
+
+
 def test_passwords_are_hashed():
     """Password hashes should not expose plaintext and should verify exactly."""
     from app.security import hash_password, verify_password

@@ -28,7 +28,7 @@
 - **OpenAI-compatible**（包含本機 Ollama / vLLM / TEI）與 **Azure OpenAI** chat + embedding providers，由管理員在 `/settings` 設定。Chat 與 embedding endpoint 可透過選填的 **Embedding base URL** 欄位放在不同服務。**API keys 會使用 Fernet 靜態加密**（以 `NOTEBOOKLM_SECRET` 執行 PBKDF2-SHA256）。儲存時會 probe embedding endpoint 一次；若與現有 Chroma index 維度不符，會用清楚的「Clear at /admin/index first」訊息拒絕。
 - **管理員向量索引主控台**位於 `/admin/index`：SQLite ↔ Chroma 漂移報告、手動 *Rebuild* 與 *Clear*。
 - **啟動時只同步差異到 Chroma**：只 upsert 缺少的 chunks 並刪除孤兒 vectors；狀態相同的重啟幾乎即時完成。
-- **來源格式**：PDF、TXT、Markdown、DOCX、HTML。
+- **來源格式**：PDF、TXT、Markdown、DOCX、HTML、字幕(SRT/VTT，會解析成乾淨逐字稿，A7)。
 - **持久化**：SQLite 儲存 metadata、本機檔案系統儲存 uploads、Chroma 儲存 vectors。
 - **防禦性列表上限**（sources 200、conversations 50、messages 200、notes 50），UI 會提供截斷提示。
 - **Logging** 到 stdout 與 `logs/app.log`，並支援輪替。

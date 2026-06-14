@@ -10,8 +10,12 @@ from .vector_store import delete_source as delete_source_vectors
 from .vector_store import upsert_chunks
 
 
-ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm", ".srt", ".vtt"}
 logger = logging.getLogger(__name__)
+
+# Inline WebVTT tags (e.g. <v Speaker>, <00:00:01.000>, <c.classname>) stripped
+# from caption text so only the spoken words remain.
+_VTT_INLINE_TAG = re.compile(r"<[^>]+>")
 
 
 def supported(filename: str) -> bool:
@@ -35,10 +39,48 @@ def extract_sections(path: Path) -> list[tuple[str, str]]:
         sections = _extract_docx(path)
     elif suffix in {".html", ".htm"}:
         sections = _extract_html(path)
+    elif suffix in {".srt", ".vtt"}:
+        sections = _extract_subtitles(path)
     else:
         sections = [("document", path.read_text(encoding="utf-8", errors="ignore"))]
     logger.info("extract_completed path=%s sections=%s", path.name, len(sections))
     return sections
+
+
+def _extract_subtitles(path: Path) -> list[tuple[str, str]]:
+    """Extract spoken text from an .srt / .vtt subtitle file (A7).
+
+    Strips cue index numbers, timestamp lines, the WebVTT header and
+    NOTE/STYLE/REGION metadata blocks, and inline VTT tags — leaving the
+    caption text as a single ``transcript`` section. Consecutive duplicate
+    lines (common with rolling captions) are collapsed. No new dependency.
+    """
+    raw = path.read_text(encoding="utf-8", errors="ignore")
+    lines: list[str] = []
+    skip_block = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            skip_block = False  # a blank line ends any NOTE/STYLE block
+            continue
+        # WebVTT header + metadata blocks run until the next blank line.
+        if stripped == "WEBVTT" or stripped.startswith(("WEBVTT", "NOTE", "STYLE", "REGION")):
+            skip_block = True
+            continue
+        if skip_block:
+            continue
+        if "-->" in stripped:  # timestamp cue line (SRT or VTT, incl. positioning)
+            continue
+        if stripped.isdigit():  # bare SRT cue index
+            continue
+        text = _VTT_INLINE_TAG.sub("", stripped).strip()
+        if not text:
+            continue
+        if lines and lines[-1] == text:  # collapse rolling-caption repeats
+            continue
+        lines.append(text)
+    transcript = "\n".join(lines)
+    return [("transcript", transcript)] if transcript else []
 
 
 def _extract_pdf(path: Path) -> list[tuple[str, str]]:

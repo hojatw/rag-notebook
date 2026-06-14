@@ -114,8 +114,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [ ] A6 · Web page as a source
 - Paste URL → server-side fetch → readability extraction (`beautifulsoup4` already a dep) → existing chunk/embed pipeline. **Must add SSRF guards (block private IPs) and respect the customer's egress policy.**
 
-#### [ ] A7 · Subtitle files as sources (.srt / .vtt)
-- Plain-text parse, no new deps; covers recorded-meeting transcripts from other tools.
+#### [x] A7 · Subtitle files as sources (.srt / .vtt)
+- **Done.** `_extract_subtitles` (`app/ingest.py`) strips cue indices, timestamp lines, the WebVTT header + NOTE/STYLE/REGION blocks, and inline VTT tags, and collapses rolling-caption repeats — leaving the spoken text as one `transcript` section that flows through the existing chunk/embed pipeline. `.srt`/`.vtt` added to `ALLOWED_EXTENSIONS` + the upload accept list. No new deps. Pairs naturally with A1 meeting minutes. Verified end-to-end (upload → indexed → clean transcript chunk).
 
 #### [ ] A8 · OCR for scanned PDFs / images
 - `pytesseract` + tesseract in the Docker image (`chi_tra` model for Traditional Chinese). Decades-old scanned research reports are likely in the customer corpus — high practical value, no LLM dependency.
