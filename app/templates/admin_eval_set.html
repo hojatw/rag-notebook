@@ -2,7 +2,7 @@
 {% block content %}
 <section class="settings eval-workbench">
   <header class="settings-head">
-    <p class="eyebrow">Eval Set</p>
+    <p class="eyebrow">評測集</p>
     <h1>{{ eval_set.name }}</h1>
     <p class="muted">{{ eval_set.notebook_emoji or "📓" }} {{ eval_set.notebook_title }} · owner: {{ eval_set.target_username }}</p>
     {% if eval_set.description %}<p>{{ eval_set.description }}</p>{% endif %}
@@ -16,25 +16,20 @@
               class="eval-tab"
               :class="{ 'is-current': tab === 'authoring' }"
               @click="tab = 'authoring'; history.replaceState(null, '', '#authoring')">
-        Authoring
+        出題
       </button>
       <button type="button"
               class="eval-tab"
               :class="{ 'is-current': tab === 'runs' }"
               @click="tab = 'runs'; history.replaceState(null, '', '#runs')">
-        Runs
+        執行
       </button>
     </nav>
 
     <div x-show="tab === 'authoring'">
   <section class="settings-section">
-    <div class="section-heading">
-      <div>
-        <p class="eyebrow">Authoring</p>
-        <h2>新增題目</h2>
-      </div>
-      <p class="muted small">三種方式分開操作；只有 approved 題目會進入 run。</p>
-    </div>
+    <h2>新增題目</h2>
+    <p class="hint muted small">三種方式分開操作；只有 approved 題目會進入 run。</p>
 
     <div class="eval-authoring-grid">
       <article class="eval-authoring-card eval-authoring-card-primary">
@@ -166,18 +161,12 @@
 
     <div x-show="tab === 'runs'" x-cloak>
   <section class="settings-section run-history-section">
-    <div class="section-heading">
-      <div>
-        <p class="eyebrow">Runs</p>
-        <h2>Run History</h2>
-      </div>
-      <p class="muted small">先執行 eval，再從成功的 run 選 baseline / candidate 比較。</p>
-    </div>
+    <h2>執行紀錄</h2>
+    <p class="hint muted small">先執行 eval，再從成功的 run 選 baseline / candidate 比較。</p>
     {% set succeeded_runs = runs | selectattr("status", "equalto", "succeeded") | list %}
     {% if succeeded_runs | length >= 2 %}
       <form method="get" action="/admin/evals/compare" class="run-compare-panel">
         <div>
-          <p class="eyebrow">Compare</p>
           <h3>比較兩個成功 run</h3>
           <p class="muted small">建議用舊 profile 當 Baseline，新 profile 當 Candidate。</p>
         </div>
@@ -198,9 +187,9 @@
         <button type="submit">比較 run 差異</button>
       </form>
     {% else %}
-      <div class="run-compare-empty">
-        <strong>需要至少 2 個 succeeded runs 才能比較。</strong>
-        <span class="muted small">目前可以先累積 baseline 與 candidate profile 的 run。</span>
+      <div class="empty">
+        <h2>需要至少 2 個成功的 run 才能比較</h2>
+        <p>先用不同 profile 各跑一次 eval，再回來比較 baseline 與 candidate。</p>
       </div>
     {% endif %}
     {% if runs %}

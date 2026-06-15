@@ -1153,7 +1153,7 @@ def test_admin_eval_set_runner_records_results(monkeypatch, tmp_path):
         assert "返回 Eval Set" not in detail.text
         assert "hit" in detail.text
         assert "alpha evidence is here" in detail.text
-        assert "Expected" in detail.text
+        assert "預期依據" in detail.text
         assert "substrings: alpha evidence" in detail.text
         assert "診斷：命中預期依據" in detail.text
         assert '<pre class="config-preview">' not in detail.text
@@ -1377,7 +1377,7 @@ def test_admin_eval_run_results_partial_polls_while_running(monkeypatch, tmp_pat
         results = client.get(f"/admin/evals/runs/{run_id}/_results")
         assert results.status_code == 200
         assert "alpha evidence" in results.text
-        assert "Expected" in results.text
+        assert "預期依據" in results.text
         assert f'hx-get="/admin/evals/runs/{run_id}/_results"' not in results.text
 
 

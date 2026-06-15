@@ -5,7 +5,7 @@
            hx-trigger="load delay:1s, every 2s"
            hx-swap="outerHTML"
          {% endif %}>
-  <h2>Per-question Results</h2>
+  <h2>逐題結果</h2>
   {% if results %}
     <ul class="eval-results">
       {% for result in results %}
@@ -25,7 +25,7 @@
             <summary class="muted small">依據與實際檢索</summary>
             <div class="eval-result-evidence-body">
               <div>
-                <p class="eval-evidence-label">Expected</p>
+                <p class="eval-evidence-label">預期依據</p>
                 {% if result.expected_filename %}<p><strong>{{ result.expected_filename }}</strong></p>{% endif %}
                 {% if result.expected_chunk_id %}
                   <p class="muted small">chunk #{{ result.expected_chunk_id }}{% if result.expected_chunk_location %} · {{ result.expected_chunk_location }}{% endif %}</p>
@@ -35,7 +35,7 @@
                 {% if not result.expected_filename and not result.expected_substrings %}<p class="muted">— 無預期依據（unscored）</p>{% endif %}
               </div>
               <div>
-                <p class="eval-evidence-label">Top retrieved</p>
+                <p class="eval-evidence-label">實際檢索 top</p>
                 {% if result.retrieved %}
                   {% set top = result.retrieved[0] %}
                   <p><strong>{{ top.filename }}</strong></p>

@@ -1,7 +1,6 @@
 <section class="settings-section" id="eval-items">
   <div class="section-title-row eval-items-head">
     <div>
-      <p class="eyebrow">Questions</p>
       <h2>題目管理</h2>
       <p class="hint muted small">Draft 題目需 approve 後才會進入 runner；不可回答題目前會在 retrieval-only run 中標成 unscored。</p>
     </div>
@@ -19,8 +18,8 @@
       <button type="submit" {% if approved_count == 0 %}disabled{% endif %} data-loading-text="啟動中...">執行 retrieval eval</button>
     </form>
   </div>
-  {% if eval_notice %}<p class="success-message">{{ eval_notice }}</p>{% endif %}
-  {% if eval_error %}<p class="error-message">{{ eval_error }}</p>{% endif %}
+  {% if eval_notice %}<div class="notice">{{ eval_notice }}</div>{% endif %}
+  {% if eval_error %}<div class="alert">{{ eval_error }}</div>{% endif %}
   {% if items %}
     <ul class="eval-item-list">
       {% for item in items %}
@@ -80,9 +79,9 @@
       {% endfor %}
     </ul>
   {% else %}
-    <div class="empty-panel">
-      <strong>尚未新增題目。</strong>
-      <span class="muted small">請從上方三種方式建立題目；只有 approved 題目會進入 runner。</span>
+    <div class="empty">
+      <h2>尚未新增題目</h2>
+      <p>請從上方三種方式建立題目；只有 approved 題目會進入 runner。</p>
     </div>
   {% endif %}
 </section>
