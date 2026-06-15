@@ -133,6 +133,26 @@ a:hover { color: var(--accent-deep); }
   border-radius: var(--r-sm);
 }
 
+.skip-link {
+  position: fixed;
+  left: var(--sp-3);
+  top: var(--sp-3);
+  z-index: 1000;
+  transform: translateY(-140%);
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: var(--shadow-lg);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+  color: #fff;
+}
+
 /* ---------------------------------------------------------------- topbar */
 
 .topbar {
@@ -195,6 +215,10 @@ nav {
   flex: 1;
 }
 
+.primary-nav {
+  min-width: 0;
+}
+
 nav a {
   color: var(--muted-strong);
   text-decoration: none;
@@ -219,6 +243,8 @@ nav a.active {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .user-chip {
@@ -558,6 +584,17 @@ select:focus {
   outline: 0;
 }
 
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  min-width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  box-shadow: none;
+  accent-color: var(--accent);
+}
+
 textarea {
   resize: vertical;
   line-height: 1.5;
@@ -710,6 +747,19 @@ label {
   border-radius: var(--r-sm);
   padding: 1px 6px;
   color: var(--text);
+}
+
+td code,
+p code,
+li code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.92em;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 1px 6px;
+  color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .settings-head {
@@ -866,6 +916,60 @@ label {
   max-height: 260px;
   overflow: auto;
   padding-right: 2px;
+}
+
+.check-list {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding-left: var(--sp-5);
+  color: var(--text-soft);
+}
+
+.step-list {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+  padding-left: var(--sp-5);
+}
+
+.step-list li,
+.check-list li {
+  padding-left: var(--sp-1);
+}
+
+.eval-help-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+}
+
+.eval-help-card {
+  display: grid;
+  gap: var(--sp-3);
+  align-content: start;
+}
+
+.eval-help-card h3,
+.eval-help-profile-grid h3 {
+  margin: 0;
+}
+
+.eval-help-card p,
+.eval-help-profile-grid p {
+  margin: 0;
+}
+
+.eval-help-profile-grid .profile-card {
+  min-height: 0;
+}
+
+.eval-help-actions {
+  justify-content: flex-start;
+}
+
+.eval-help-actions .ghost {
+  margin-left: 0;
 }
 
 .action-cell {
@@ -1201,6 +1305,10 @@ label {
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
+}
+
+.modal-panel:focus {
+  outline: 0;
 }
 
 #preview-content {
@@ -2597,6 +2705,10 @@ legend {
 
 .new-notebook-menu {
   position: relative;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .new-notebook-menu > summary {
@@ -2604,6 +2716,8 @@ legend {
   cursor: pointer;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  text-align: center;
   min-height: 36px;
   padding: 6px 14px;
   border: 1px solid var(--line-accent);
@@ -2613,6 +2727,17 @@ legend {
   font-size: 13px;
   font-weight: 600;
   box-shadow: var(--shadow-sm);
+}
+
+.new-notebook-menu[open] {
+  background: transparent;
+  border-color: transparent;
+}
+
+.new-notebook-menu > summary::before {
+  content: none;
+  display: none;
+  width: 0;
 }
 
 .new-notebook-menu > summary::-webkit-details-marker {
@@ -3678,7 +3803,11 @@ legend {
 
   .brand { min-width: 0; }
   nav { flex-wrap: wrap; }
-  .session { margin-left: 0; }
+  nav a { padding: 7px 11px; }
+  .session {
+    margin-left: 0;
+    justify-content: flex-start;
+  }
 
   main {
     padding: var(--sp-5) var(--sp-4) var(--sp-6);
@@ -3723,15 +3852,103 @@ legend {
   .question-row button { height: 44px; }
 
   .message { max-width: 100%; }
+
+  .settings {
+    margin: var(--sp-5) auto;
+  }
+
+  .eval-help-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 680px) {
   h1 { font-size: 24px; }
 
+  main {
+    padding: var(--sp-4) var(--sp-3) var(--sp-6);
+  }
+
+  .topbar {
+    padding: var(--sp-3);
+  }
+
+  .brand {
+    width: 100%;
+  }
+
+  nav a {
+    flex: 1 1 auto;
+    text-align: center;
+  }
+
+  .user-chip {
+    max-width: 100%;
+  }
+
   .auth-panel,
   .settings,
   .sidebar,
   .chat-main { padding: var(--sp-4); }
+
+  .settings {
+    margin: var(--sp-3) auto;
+  }
+
+  .settings-foot {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-foot .ghost,
+  .settings-foot button,
+  .settings-foot a {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .modal {
+    padding: var(--sp-3);
+  }
+
+  .modal-panel {
+    max-height: calc(100dvh - var(--sp-6));
+  }
+
+  .preview-head,
+  .audit-modal-head {
+    padding: var(--sp-3) var(--sp-4);
+  }
+
+  .preview-chunks,
+  .audit-modal-body {
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  }
+
+  .convo-menu {
+    max-width: calc(100vw - var(--sp-6));
+  }
+
+  .notebook-menu-content,
+  .new-notebook-form {
+    min-width: min(320px, calc(100vw - var(--sp-6)));
+  }
+
+  .ask-form {
+    position: sticky;
+    bottom: var(--sp-2);
+    z-index: 5;
+    padding-top: var(--sp-2);
+    background: linear-gradient(180deg, transparent, var(--surface) 34%);
+  }
+
+  .question-row {
+    padding: var(--sp-2);
+  }
+
+  .messages {
+    min-height: 280px;
+  }
 
   table, thead, tbody, tr, th, td { display: block; }
 
@@ -3766,6 +3983,24 @@ legend {
 
   .actions { justify-content: flex-start; }
   .actions button { width: 100%; }
+
+  .action-cell,
+  .source-actions,
+  .message-actions,
+  .profile-card-foot {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .action-cell a,
+  .action-cell button,
+  .source-actions button,
+  .message-actions button,
+  .message-actions form,
+  .profile-card-foot a,
+  .profile-card-foot button {
+    width: 100%;
+  }
 }
 
 /* --- E1c: eval workbench tabs, retrieval profiles, run comparison --- */
@@ -3774,6 +4009,8 @@ legend {
   gap: var(--sp-1);
   border-bottom: 1px solid var(--line);
   margin: var(--sp-3) 0 var(--sp-5);
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 .eval-tab {
   background: transparent;
@@ -3787,6 +4024,7 @@ legend {
   border-bottom: none;
   margin-bottom: -1px;
   cursor: pointer;
+  white-space: nowrap;
 }
 .eval-tab:hover {
   color: var(--accent-deep);
@@ -4058,5 +4296,36 @@ details[open] > .audit-summary::before {
   .eval-item-detail-grid,
   .run-compare-panel {
     grid-template-columns: 1fr;
+  }
+
+  .eval-tabs {
+    margin-bottom: var(--sp-4);
+  }
+
+  .eval-tab {
+    flex: 0 0 auto;
+  }
+
+  .run-form,
+  .inline-form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .inline-form label,
+  .run-profile-label {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }

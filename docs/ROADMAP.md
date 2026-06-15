@@ -67,15 +67,16 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [x] U9 · Global search
 - **Fix:** **Done.** `/search` searches the signed-in user's notebooks, source filenames/summaries, conversation titles, and notes using scoped SQLite `LIKE` queries.
 
-#### [ ] U10 · Mobile / responsive pass
-- The three-pane workspace is desktop-first. Decide: support tablets/phones properly, or state desktop-only.
+#### [x] U10 · Mobile / responsive pass
+- **Done.** The app now supports a usable narrow viewport baseline without changing the desktop workspace model: the topbar/nav wraps cleanly, the three-pane workspace stacks at tablet widths, modals fit within mobile viewports, Eval tabs scroll instead of wrapping awkwardly, forms/actions collapse to full-width controls where needed, and table/card-heavy admin pages keep their existing `data-label` mobile presentation.
 
 ### Polish
 
 #### [ ] U11 · Dark mode (CSS variables are ready)
 #### [x] U12 · Onboarding empty state (3-step "upload → wait → ask" guide)
 - **Fix:** **Done.** Empty chat state now shows a compact three-step upload → index → ask guide.
-#### [ ] U13 · Accessibility pass (focus rings, aria labels, Esc to close modals)
+#### [x] U13 · Accessibility pass (focus rings, aria labels, Esc to close modals)
+- **Done.** Added skip navigation, active-nav `aria-current`, modal focus targets/return behavior for source/tool preview and audit metadata dialogs, explicit menu expanded state, Eval tab roles/selected state, accessible labels for compact chat actions, and reduced-motion handling. Existing focus-ring token remains the global focus treatment.
 #### [x] U14 · Friendlier error messages (no raw exception strings in chat)
 - **Fix:** **Done.** Chat and Studio generation errors now show user-facing messages while raw provider/exception details stay in logs and metadata.
 #### [ ] U15a · i18n foundation (deployment-level locale)
@@ -109,8 +110,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] E1d — **Done.** Export + audit foundation landed. Retrieval profiles can be exported as sanitized JSON, eval runs can be exported as sanitized JSON (no questions/evidence/retrieved snippets) or full internal JSON (questions, expected evidence, diagnostics, retrieved snippets) gated by explicit confirmation. A durable `audit_events` table and `/admin/audit` viewer now record export events plus high-risk admin actions: retrieval profile create/apply/delete/export, LLM settings updates, index Clear/Rebuild, user-management changes, and notebook/source/chat/note lifecycle or Markdown-export actions.
   - [x] E1e-1 — **Done.** LLM-assisted eval authoring landed as a draft-only flow: admins can generate candidate questions from selected indexed sources, request answerable / cross-lingual / unanswerable item types, review item type, reference answer, expected substrings, and source/chunk grounding, then approve manually. Generated metadata records compact origin/model/prompt-version/source ids without copying prompts or source text. The deterministic chunk-based generator remains available as a no-LLM fallback.
   - [ ] E1e-2 — Answer-quality and citation judging: optionally generate an answer during eval runs and score answer quality, groundedness, citation correctness, and abstain correctness as secondary metrics. Keep these metrics separate from retrieval-only Recall/MRR, and include full judging detail only in full internal exports.
-  - [ ] E1f — Eval tuning guide in the workbench: convert the internal "how to tune eval parameters" guide into an admin help page/drawer (`/admin/evals/help` or an in-page help action). Cover when to tune parameters vs fix eval items, symptom -> likely cause -> parameter guidance, profile experiment workflow, starter profiles, non-runtime-safe changes that require reindex, and the role of future domain hints / answer policy. Keep the PDF as an optional generated/downloadable artifact later; the product source of truth should be HTML so it stays aligned with parameter names and UI copy.
-- **Recommended next implementation round:** do **E1f** or **E1e-2** depending on customer need. E1f is lower risk and improves operator guidance; E1e-2 should wait until the team wants answer-level judging costs and judge reliability tradeoffs. Further audit expansion should wait for customer requirements, e.g. explicit read-access audit for source preview/result viewing. Defer index-affecting parameter application until there is a clear Clear/Rebuild UX.
+  - [x] E1f — **Done.** Eval tuning guide landed as `/admin/evals/help` and as a first-class tab in the Eval workbench. It converts the internal tuning PDF/discussion into HTML covering: when to tune parameters vs fix Eval items, symptom -> likely cause -> parameter guidance, profile experiment workflow, starter profiles, non-runtime-safe changes that require reindex, and the role of future domain hints / answer policy. The PDF remains optional/shareable, but the product source of truth is now HTML so labels stay aligned with the live profile UI.
+- **Recommended next implementation round:** do **E1e-2** if the team wants answer-level judging costs and judge reliability tradeoffs. Further audit expansion should wait for customer requirements, e.g. explicit read-access audit for source preview/result viewing. Defer index-affecting parameter application until there is a clear Clear/Rebuild UX.
 
 #### [ ] E2 · Notebook domain hints and answer policy
 - **Issue:** Some "inaccurate" answers are not fixed by retrieval-weight tuning alone. Domain-specific aliases, abbreviations, internal product names, and deployment-specific answer rules may need to be available at the notebook level so query rewrite can find the right evidence and final answers follow the customer's rules.

@@ -11,22 +11,32 @@
   <div class="eval-set-tabs"
        x-data="{ tab: window.location.hash === '#runs' ? 'runs' : 'authoring' }"
        @hashchange.window="tab = window.location.hash === '#runs' ? 'runs' : 'authoring'">
-    <nav class="eval-tabs" aria-label="Eval set sections">
+    <nav class="eval-tabs" aria-label="Eval set sections" role="tablist">
       <button type="button"
               class="eval-tab"
+              id="eval-set-tab-authoring"
+              role="tab"
+              aria-controls="eval-set-panel-authoring"
+              :aria-selected="(tab === 'authoring').toString()"
+              :tabindex="tab === 'authoring' ? 0 : -1"
               :class="{ 'is-current': tab === 'authoring' }"
               @click="tab = 'authoring'; history.replaceState(null, '', '#authoring')">
         出題
       </button>
       <button type="button"
               class="eval-tab"
+              id="eval-set-tab-runs"
+              role="tab"
+              aria-controls="eval-set-panel-runs"
+              :aria-selected="(tab === 'runs').toString()"
+              :tabindex="tab === 'runs' ? 0 : -1"
               :class="{ 'is-current': tab === 'runs' }"
               @click="tab = 'runs'; history.replaceState(null, '', '#runs')">
         執行
       </button>
     </nav>
 
-    <div x-show="tab === 'authoring'">
+    <div id="eval-set-panel-authoring" role="tabpanel" aria-labelledby="eval-set-tab-authoring" x-show="tab === 'authoring'">
   <section class="settings-section">
     <h2>新增題目</h2>
     <p class="hint muted small">三種方式分開操作；只有 approved 題目會進入 run。</p>
@@ -159,7 +169,7 @@
   {% include "_eval_items_section.html" %}
     </div>
 
-    <div x-show="tab === 'runs'" x-cloak>
+    <div id="eval-set-panel-runs" role="tabpanel" aria-labelledby="eval-set-tab-runs" x-show="tab === 'runs'" x-cloak>
   <section class="settings-section run-history-section">
     <h2>執行紀錄</h2>
     <p class="hint muted small">先執行 eval，再從成功的 run 選 baseline / candidate 比較。</p>

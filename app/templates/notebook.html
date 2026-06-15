@@ -6,15 +6,15 @@
    Alpine handles open/close state; ESC and backdrop click both close it. #}
 <div id="preview-modal"
      class="modal"
-     x-data="{ open: false }"
+     x-data="{ open: false, lastFocus: null }"
      x-show="open"
      x-transition.opacity
      style="display: none;"
-     @open-preview.window="open = true"
-     @close-preview.window="open = false"
-     @keydown.escape.window="open = false">
-  <div class="modal-backdrop" @click="open = false"></div>
-  <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Source preview">
+     @open-preview.window="lastFocus = document.activeElement; open = true; $nextTick(() => $refs.panel && $refs.panel.focus())"
+     @close-preview.window="open = false; $nextTick(() => lastFocus && lastFocus.focus && lastFocus.focus())"
+     @keydown.escape.window="$dispatch('close-preview')">
+  <div class="modal-backdrop" @click="$dispatch('close-preview')"></div>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-label="預覽與工具視窗" tabindex="-1" x-ref="panel">
     <div id="preview-content"></div>
   </div>
 </div>
@@ -101,6 +101,9 @@
           <div class="conversation-switcher" x-data="{ open: false }" @click.outside="open = false">
             <button type="button"
                     class="convo-trigger"
+                    aria-haspopup="menu"
+                    aria-controls="conversation-menu"
+                    :aria-expanded="open.toString()"
                     @click="open = !open"
                     :class="{ 'is-open': open }">
               <span class="convo-current">
@@ -108,7 +111,7 @@
               </span>
               <span class="caret">▾</span>
             </button>
-            <div class="convo-menu" x-show="open" style="display: none;">
+            <div id="conversation-menu" class="convo-menu" role="menu" x-show="open" style="display: none;">
               <form action="/notebooks/{{ notebook.id }}/chat/new" method="post" data-loading-form>
                 <button type="submit" class="ghost small wide" data-loading-text="建立中...">+ 新對話</button>
               </form>
@@ -153,9 +156,12 @@
         <div class="notebook-menu" x-data="{ open: false }" @click.outside="open = false">
           <button type="button"
                   class="convo-trigger ghost small"
+                  aria-haspopup="menu"
+                  aria-controls="notebook-menu"
+                  :aria-expanded="open.toString()"
                   @click="open = !open"
                   :class="{ 'is-open': open }">筆記本 ▾</button>
-          <div class="convo-menu notebook-menu-content" x-show="open" style="display: none;">
+          <div id="notebook-menu" class="convo-menu notebook-menu-content" role="menu" x-show="open" style="display: none;">
             <form action="/notebooks/{{ notebook.id }}/rename" method="post" class="rename-form" data-loading-form>
               {% with emoji_value=notebook.emoji or "📓" %}
                 {% include "_emoji_picker.html" %}

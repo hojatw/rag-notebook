@@ -3743,6 +3743,23 @@ def admin_profiles_page(
     )
 
 
+@app.get("/admin/evals/help", response_class=HTMLResponse)
+def admin_eval_help(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+):
+    """E1f: in-product tuning guide for retrieval profiles."""
+    return render(
+        request,
+        "admin_eval_help.html",
+        {
+            "user": user,
+            "active_tab": "help",
+            "current_profile_fields": profile_param_rows(active_retrieval_params()),
+        },
+    )
+
+
 @app.post("/admin/evals/sets")
 def admin_create_eval_set(
     user: Annotated[dict, Depends(require_admin)],

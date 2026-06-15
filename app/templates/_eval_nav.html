@@ -1,4 +1,5 @@
 <nav class="eval-tabs" aria-label="Eval workbench sections">
-  <a href="/admin/evals" class="eval-tab{{ ' is-current' if active_tab == 'sets' else '' }}">評測集 (Eval Sets)</a>
-  <a href="/admin/evals/profiles" class="eval-tab{{ ' is-current' if active_tab == 'profiles' else '' }}">Retrieval Profiles</a>
+  <a href="/admin/evals" class="eval-tab{{ ' is-current' if active_tab == 'sets' else '' }}" {% if active_tab == 'sets' %}aria-current="page"{% endif %}>評測集 (Eval Sets)</a>
+  <a href="/admin/evals/profiles" class="eval-tab{{ ' is-current' if active_tab == 'profiles' else '' }}" {% if active_tab == 'profiles' %}aria-current="page"{% endif %}>Retrieval Profiles</a>
+  <a href="/admin/evals/help" class="eval-tab{{ ' is-current' if active_tab == 'help' else '' }}" {% if active_tab == 'help' %}aria-current="page"{% endif %}>調參指南</a>
 </nav>
