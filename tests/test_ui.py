@@ -857,6 +857,52 @@ def test_admin_eval_workbench_creates_default_profile(monkeypatch, tmp_path):
         }
 
 
+def test_admin_eval_help_page_documents_tuning_workflow(monkeypatch, tmp_path):
+    """E1f: the in-product help page exposes tuning guidance without using the PDF."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+
+        landing = client.get("/admin/evals")
+        assert landing.status_code == 200
+        assert 'href="/admin/evals/help"' in landing.text
+
+        help_page = client.get("/admin/evals/help")
+        assert help_page.status_code == 200
+        assert "Eval 調參指南" in help_page.text
+        assert "先分類錯誤" in help_page.text
+        assert "調參方向速查" in help_page.text
+        assert "Domain hints / answer policy" in help_page.text
+        assert "current_profile_fields" not in help_page.text
+        assert "<code>vector_weight</code>" in help_page.text
+        assert 'aria-current="page">調參指南</a>' in help_page.text
+
+
+def test_base_and_notebook_include_accessibility_scaffolding(monkeypatch, tmp_path):
+    """U13: core pages include skip navigation, modal labels, and menu state."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        created = client.post(
+            "/notebooks/new",
+            data={"title": "A11y", "emoji": "📓", "description": ""},
+            follow_redirects=False,
+        )
+        assert created.status_code == 303
+
+        page = client.get(created.headers["location"])
+        assert page.status_code == 200
+        assert 'class="skip-link" href="#main-content"' in page.text
+        assert '<main id="main-content" tabindex="-1"' in page.text
+        assert 'aria-label="預覽與工具視窗"' in page.text
+        assert 'tabindex="-1" x-ref="panel"' in page.text
+        assert 'aria-controls="conversation-menu"' in page.text
+        assert 'aria-controls="notebook-menu"' in page.text
+        assert 'aria-label="複製回答 Markdown"' in page.text or "data-copy-message" not in page.text
+
+
 def test_admin_eval_workbench_search_generate_approve_and_delete(monkeypatch, tmp_path):
     """E1b follow-up: all-site notebook search, draft generation, approval, and set deletion."""
     main, db = _fresh_app(monkeypatch, tmp_path)

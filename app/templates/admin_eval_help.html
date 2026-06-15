@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings eval-workbench eval-help-page">
+  <header class="settings-head">
+    <p class="eyebrow">Eval 工作台</p>
+    <h1>Eval 調參指南</h1>
+    <p class="muted">先判斷錯在哪一層，再用同一組 Eval Set 驗證單一方向的 profile 變更。</p>
+  </header>
+
+  {% include "_eval_nav.html" %}
+
+  <section class="settings-section">
+    <h2>核心原則</h2>
+    <div class="support-note">
+      客戶說「不準」時，先分類錯誤，不要直接調參。一次只改一個方向，否則無法判斷改善或退步來自哪個 knob。
+    </div>
+    <div class="eval-help-grid">
+      <article class="card eval-help-card">
+        <h3>可以直接用 Profile 調整</h3>
+        <p class="muted small">這些是 runtime-safe retrieval knobs，可用 Eval Profiles 測試並套用。</p>
+        <dl class="profile-params">
+          {% for field in current_profile_fields %}
+            <div><dt>{{ field.label }}</dt><dd><code>{{ field.key }}</code> · 目前 {{ field.value }}</dd></div>
+          {% endfor %}
+        </dl>
+      </article>
+      <article class="card eval-help-card">
+        <h3>不能直接套用</h3>
+        <p class="muted small">這些會改變索引或向量空間，需使用 Clear/Rebuild 或 per-source reindex 流程。</p>
+        <ul class="check-list">
+          <li>chunk size、overlap、切段策略</li>
+          <li>embedding model、prefix、dimension</li>
+          <li>OCR / 文件抽取修正後的既有來源</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <h2>先分類錯誤</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>現象</th><th>可能原因</th><th>優先處理</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td data-label="現象">找到完全不相關的文章段落</td>
+            <td data-label="可能原因">Retrieval 召回失敗</td>
+            <td data-label="優先處理">判斷是語意型或關鍵字型，再調 <code>vector_weight</code> / <code>keyword_weight</code>。</td>
+          </tr>
+          <tr>
+            <td data-label="現象">正確段落有出現但排名很後面</td>
+            <td data-label="可能原因">候選池或 rerank 不夠</td>
+            <td data-label="優先處理">先加 <code>candidate_pool_size</code>，再視情況加 <code>rerank_weight</code>。</td>
+          </tr>
+          <tr>
+            <td data-label="現象">正確段落有進結果但回答仍不準</td>
+            <td data-label="可能原因">Answer synthesis 問題</td>
+            <td data-label="優先處理">不要只靠 profile 解；需要看 prompt、context 或下一階段 judging。</td>
+          </tr>
+          <tr>
+            <td data-label="現象">分數很高但全 miss</td>
+            <td data-label="可能原因">Ground truth 太窄、substring 不合理或 chunk 被切開</td>
+            <td data-label="優先處理">先修 Eval item，不要急著調參。</td>
+          </tr>
+          <tr>
+            <td data-label="現象">常常回答資料不足但其實有資料</td>
+            <td data-label="可能原因">Low-confidence threshold 太高</td>
+            <td data-label="優先處理">降低 <code>low_confidence_threshold</code>。</td>
+          </tr>
+          <tr>
+            <td data-label="現象">常常硬答或引用弱證據</td>
+            <td data-label="可能原因">Threshold 太低或 context 太雜</td>
+            <td data-label="優先處理">提高 <code>low_confidence_threshold</code>，或降低 <code>final_chunk_count</code>。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <h2>調參方向速查</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>問題類型</th><th>建議方向</th><th>注意事項</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td data-label="問題類型">藥名、代號、條款、表格數字、檔名等精確查找</td>
+            <td data-label="建議方向">提高 <code>keyword_weight</code>，例如 0.3 到 0.4；<code>vector_weight</code> 對應降低。</td>
+            <td data-label="注意事項">檢查 exact-term 題改善時，語意題是否退步。</td>
+          </tr>
+          <tr>
+            <td data-label="問題類型">同義改寫、概念型問題、中文問英文文件</td>
+            <td data-label="建議方向">維持或提高 <code>vector_weight</code>，例如 0.7 到 0.75；<code>keyword_weight</code> 對應降低。</td>
+            <td data-label="注意事項">檢查藥名 / 數字型問題是否明顯變差。</td>
+          </tr>
+          <tr>
+            <td data-label="問題類型">正確段落常在 top-k 內但不是第一名</td>
+            <td data-label="建議方向">提高 <code>candidate_pool_size</code> 到 30 或 40；再試 <code>rerank_weight</code> 0.85 / 0.9。</td>
+            <td data-label="注意事項">候選池越大，成本與延遲可能上升。</td>
+          </tr>
+          <tr>
+            <td data-label="問題類型">回答引用太多雜訊</td>
+            <td data-label="建議方向">降低 <code>final_chunk_count</code>，例如 6 到 4；或提高 <code>rerank_weight</code>。</td>
+            <td data-label="注意事項">更多 context 不等於更準，可能讓答案漂移。</td>
+          </tr>
+          <tr>
+            <td data-label="問題類型">拒答太多</td>
+            <td data-label="建議方向">降低 <code>low_confidence_threshold</code>，例如 0.25 到 0.2。</td>
+            <td data-label="注意事項">檢查 hallucination 和弱引用是否增加。</td>
+          </tr>
+          <tr>
+            <td data-label="問題類型">亂答太多</td>
+            <td data-label="建議方向">提高 <code>low_confidence_threshold</code>，例如 0.25 到 0.3。</td>
+            <td data-label="注意事項">檢查本來可回答的題目是否被擋掉。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <h2>建議實驗流程</h2>
+    <ol class="step-list">
+      <li>固定一組 Eval Set，包含客戶實際抱怨的不準案例，並覆蓋精確查找、語意改寫、跨語言、相似文件辨識、無答案問題。</li>
+      <li>先跑 baseline profile，不先改任何參數。</li>
+      <li>逐題看 miss diagnosis、top retrieved chunk、expected evidence，人工分類錯誤。</li>
+      <li>建立 2 到 3 個 candidate profile，例如 keyword-heavy、semantic-heavy、rerank-heavy。</li>
+      <li>每次只改一個方向，跑同一組 Eval Set，比較 Recall、MRR、miss 題目和原本正確題目是否退步。</li>
+      <li>只有在整體錯誤分布改善，且沒有明顯讓原本正確的題目退步時，才套用到 live retrieval。</li>
+    </ol>
+  </section>
+
+  <section class="settings-section">
+    <h2>起手 Profile 範例</h2>
+    <div class="profile-grid eval-help-profile-grid">
+      <article class="card profile-card">
+        <h3 class="profile-name">keyword-heavy</h3>
+        <p class="muted small">客戶問題偏藥名、代碼、條款、表格數字。</p>
+        <p><code>keyword_weight 0.3 到 0.4</code><br><code>vector_weight 0.7 到 0.6</code></p>
+      </article>
+      <article class="card profile-card">
+        <h3 class="profile-name">semantic-heavy</h3>
+        <p class="muted small">客戶問題偏同義改寫、概念查詢、跨語言。</p>
+        <p><code>vector_weight 0.7 到 0.75</code><br><code>keyword_weight 0.3 到 0.25</code></p>
+      </article>
+      <article class="card profile-card">
+        <h3 class="profile-name">rerank-heavy</h3>
+        <p class="muted small">正確段落有被找回但排序不佳。</p>
+        <p><code>candidate_pool_size 20 到 30/40</code><br><code>rerank_weight 0.8 到 0.85/0.9</code></p>
+      </article>
+      <article class="card profile-card">
+        <h3 class="profile-name">strict-evidence</h3>
+        <p class="muted small">系統常硬答或引用弱證據。</p>
+        <p><code>low_confidence_threshold 0.25 到 0.3</code><br><code>final_chunk_count 6 到 4</code></p>
+      </article>
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <h2>Domain hints / answer policy</h2>
+    <p class="muted">Notebook 內的 domain hints 有機會提高準確度，尤其是領域詞彙對齊和回答規則一致性；但它不是替代索引或 ground truth 的萬靈丹。</p>
+    <div class="eval-help-grid">
+      <article class="card eval-help-card">
+        <h3>適合放入 hints</h3>
+        <ul class="check-list">
+          <li>俗稱、縮寫、內部代號、產品別名</li>
+          <li>跨語言術語與常見問法</li>
+          <li>固定回答規則，例如數字必須來自引用依據</li>
+        </ul>
+      </article>
+      <article class="card eval-help-card">
+        <h3>避免的用法</h3>
+        <ul class="check-list">
+          <li>把一大段 domain know-how 當成萬用 system prompt</li>
+          <li>把 prompt 當成未引用的知識來源</li>
+          <li>未經 Eval 比較就直接上線</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <footer class="settings-foot eval-help-actions">
+    <a class="ghost" href="/admin/evals">回 Eval 工作台</a>
+    <a class="ghost" href="/admin/evals/profiles">管理 Retrieval Profiles</a>
+  </footer>
+</section>
+{% endblock %}

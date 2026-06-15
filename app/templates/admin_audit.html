@@ -1,21 +1,21 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="settings audit-page"
-         x-data="{ metadataOpen: false, metadataTitle: '', metadataBody: '' }"
-         @keydown.escape.window="metadataOpen = false">
+         x-data="{ metadataOpen: false, metadataTitle: '', metadataBody: '', lastFocus: null }"
+         @keydown.escape.window="metadataOpen = false; $nextTick(() => lastFocus && lastFocus.focus && lastFocus.focus())">
   <div class="modal audit-modal"
        x-show="metadataOpen"
        x-transition.opacity
        style="display: none;"
        role="presentation">
-    <div class="modal-backdrop" @click="metadataOpen = false"></div>
-    <div class="modal-panel audit-modal-panel" role="dialog" aria-modal="true" aria-label="Audit metadata">
+    <div class="modal-backdrop" @click="metadataOpen = false; $nextTick(() => lastFocus && lastFocus.focus && lastFocus.focus())"></div>
+    <div class="modal-panel audit-modal-panel" role="dialog" aria-modal="true" aria-label="Audit metadata" tabindex="-1" x-ref="metadataPanel">
       <header class="audit-modal-head">
         <div>
           <p class="eyebrow">Audit metadata</p>
           <h2 x-text="metadataTitle"></h2>
         </div>
-        <button type="button" class="ghost small" @click="metadataOpen = false" aria-label="關閉 metadata">關閉</button>
+        <button type="button" class="ghost small" @click="metadataOpen = false; $nextTick(() => lastFocus && lastFocus.focus && lastFocus.focus())" aria-label="關閉 metadata">關閉</button>
       </header>
       <div class="audit-modal-body">
         <pre class="config-preview audit-modal-metadata" x-text="metadataBody"></pre>
@@ -122,7 +122,7 @@
                           class="audit-metadata-button"
                           title="查看 metadata"
                           aria-label="查看 {{ event.action }} metadata"
-                          @click='metadataTitle = {{ (event.action ~ " #" ~ event.id)|tojson }}; metadataBody = {{ event.metadata|tojson }}; metadataOpen = true'>
+                          @click='lastFocus = $el; metadataTitle = {{ (event.action ~ " #" ~ event.id)|tojson }}; metadataBody = {{ event.metadata|tojson }}; metadataOpen = true; $nextTick(() => $refs.metadataPanel && $refs.metadataPanel.focus())'>
                     <span aria-hidden="true">{} </span>
                   </button>
                 </td>
