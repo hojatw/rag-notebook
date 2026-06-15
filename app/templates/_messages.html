@@ -19,7 +19,8 @@
         {% if message.role == "assistant" %}
           <div class="message-actions">
             <button type="button" class="ghost small copy-btn" data-copy-message
-                    title="複製回答（Markdown）">📋 複製</button>
+                    title="複製回答（Markdown）"
+                    aria-label="複製回答 Markdown">📋 複製</button>
             <form id="pin-msg-{{ message.id }}"
                   hx-post="/notebooks/{{ notebook.id }}/notes/pin"
                   hx-target="#studio-notes"
@@ -34,6 +35,7 @@
                       :class="{ 'pinned': pinned }"
                       :disabled="pinned"
                       x-text="pinned ? '📌 已釘選' : '📌 釘選'"
+                      :aria-label="pinned ? '已釘選到筆記' : '釘選到筆記'"
                       :title="pinned ? '已釘選到筆記' : '釘選到筆記'">📌 釘選</button>
             </form>
           </div>

@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 import app.llm as llm
-from app.llm import build_chat_request, build_embedding_request, close_http_client, compare_sources, generate_briefing, get_http_client, parse_json_strings, parse_rerank_scores, summarize_source
+from app.llm import build_chat_request, build_embedding_request, close_http_client, compare_sources, generate_briefing, get_http_client, parse_eval_candidates, parse_json_strings, parse_rerank_scores, summarize_source
 
 
 def test_openai_compatible_request_shapes():
@@ -63,6 +63,33 @@ def test_model_json_helpers_accept_fenced_output():
 
     assert queries == ["api version", "deployment name"]
     assert scores == {2: 0.8, 1: 1.0}
+
+
+def test_parse_eval_candidates_bounds_model_output():
+    """E1e-1: eval authoring parser accepts fenced JSON and normalizes unsafe fields."""
+    candidates = parse_eval_candidates(
+        """```json
+        [
+          {
+            "question": "  請問 alpha 的重點？  ",
+            "type": "cross_lingual",
+            "source_id": "3",
+            "chunk_id": "4",
+            "expected_answer": "alpha answer",
+            "expected_substrings": [" alpha evidence ", "alpha evidence"],
+            "rationale": "good coverage"
+          },
+          {"question": "unanswerable?", "type": "made_up", "source_id": null, "chunk_id": null}
+        ]
+        ```"""
+    )
+
+    assert candidates[0]["question"] == "請問 alpha 的重點？"
+    assert candidates[0]["item_type"] == "cross_lingual"
+    assert candidates[0]["source_id"] == 3
+    assert candidates[0]["chunk_id"] == 4
+    assert candidates[0]["expected_substrings"] == ["alpha evidence"]
+    assert candidates[1]["item_type"] == "answerable"
 
 
 def test_shared_http_client_is_reused():

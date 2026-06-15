@@ -1,0 +1,87 @@
+<section class="settings-section" id="eval-items">
+  <div class="section-title-row eval-items-head">
+    <div>
+      <h2>題目管理</h2>
+      <p class="hint muted small">Draft 題目需 approve 後才會進入 runner；不可回答題目前會在 retrieval-only run 中標成 unscored。</p>
+    </div>
+    <form method="post" action="/admin/evals/sets/{{ eval_set.id }}/run" class="run-form" data-loading-form>
+      {% if profiles %}
+        <label class="run-profile-label">
+          Profile
+          <select name="profile_id">
+            {% for prof in profiles %}
+              <option value="{{ prof.id }}">{{ prof.name }}{% if prof.is_active %}（作用中）{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+      {% endif %}
+      <button type="submit" {% if approved_count == 0 %}disabled{% endif %} data-loading-text="啟動中...">執行 retrieval eval</button>
+    </form>
+  </div>
+  {% if eval_notice %}<div class="notice">{{ eval_notice }}</div>{% endif %}
+  {% if eval_error %}<div class="alert">{{ eval_error }}</div>{% endif %}
+  {% if items %}
+    <ul class="eval-item-list">
+      {% for item in items %}
+        <li class="card card--flat eval-item-card">
+          <div class="eval-item-main">
+            <div class="eval-item-question">
+              <div class="eval-item-badges">
+                <span class="status {{ 'indexed' if item.approved else 'processing' }}">{{ "approved" if item.approved else "draft" }}</span>
+                <span class="tag {{ 'tag--warn' if item.item_type == 'unanswerable' else '' }}">{{ item.item_type_label }}</span>
+                <span class="tag">{{ item.origin_label }}</span>
+              </div>
+              <p>{{ item.question }}</p>
+              {% if item.notes %}<p class="muted small eval-item-note">{{ item.notes }}</p>{% endif %}
+            </div>
+            <div class="eval-item-actions">
+              {% if not item.approved %}
+                <form method="post"
+                      action="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/approve"
+                      hx-post="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/approve"
+                      hx-target="#eval-items"
+                      hx-swap="outerHTML">
+                  <button type="submit" class="secondary small">approve</button>
+                </form>
+              {% endif %}
+              <form method="post"
+                    action="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/delete"
+                    data-confirm="刪除此題目？"
+                    hx-post="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/delete"
+                    hx-target="#eval-items"
+                    hx-swap="outerHTML">
+                <button type="submit" class="danger small">刪除</button>
+              </form>
+            </div>
+          </div>
+          <details class="eval-item-details">
+            <summary>查看 expected evidence</summary>
+            <div class="eval-item-detail-grid">
+              <div>
+                <span class="eval-detail-label">預期來源</span>
+                <p>{{ item.expected_filename or "—" }}</p>
+              </div>
+              <div>
+                <span class="eval-detail-label">Substrings</span>
+                {% if item.expected_substrings %}
+                  <p>{{ item.expected_substrings | join("、") }}</p>
+                {% else %}
+                  <p class="muted">—</p>
+                {% endif %}
+              </div>
+              <div>
+                <span class="eval-detail-label">參考答案</span>
+                <p>{{ item.expected_answer or "—" }}</p>
+              </div>
+            </div>
+          </details>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="empty">
+      <h2>尚未新增題目</h2>
+      <p>請從上方三種方式建立題目；只有 approved 題目會進入 runner。</p>
+    </div>
+  {% endif %}
+</section>

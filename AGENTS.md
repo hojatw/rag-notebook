@@ -11,6 +11,7 @@ Treat it as a POC, not a production service. Keep changes scoped and behavior-pr
 - Read `README.md` for the current user-facing feature set, routes, setup, LLM settings, and known follow-ups.
 - Read `docs/RETRIEVAL.md` before changing retrieval, chunking, ranking, reranking, evals, or vector-store behavior.
 - Engineering deep-dives and the prioritised backlogs live in `docs/`: `docs/PERFORMANCE.md` (performance/scalability), `docs/QUALITY.md` (retrieval/answer quality), `docs/SECURITY.md` (security policy + triaged audit findings).
+- Read `docs/UI.md` before adding or restyling any page or component — it is the front-end design contract (page archetypes, components, data presentation, interaction, voice). Align new UI to it.
 - Read `handover.md` when present for local cross-session work state. It is gitignored and may contain current priorities, but it is not a durable project rule source.
 
 ## Runtime And Dependencies

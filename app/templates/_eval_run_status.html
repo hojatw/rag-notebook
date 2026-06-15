@@ -1,0 +1,37 @@
+<section id="eval-run-status"
+         class="settings-section"
+         {% if run.status in ["queued", "running"] %}
+           hx-get="/admin/evals/runs/{{ run.id }}/_status"
+           hx-trigger="load delay:1s, every 2s"
+           hx-swap="outerHTML"
+         {% endif %}>
+  <div class="section-title-row">
+    <h2>Run #{{ run.id }}</h2>
+    <span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run.status }}</span>
+  </div>
+  <div class="index-stat-grid">
+    <div class="index-stat">
+      <span class="index-stat-label">進度</span>
+      <span class="index-stat-value">{{ run.progress_current }} / {{ run.progress_total }}</span>
+      <span class="muted small">{{ run.current_step or "—" }}</span>
+    </div>
+    <div class="index-stat">
+      <span class="index-stat-label">Recall@{{ run.metrics.final_chunk_count if run.metrics else "k" }}</span>
+      <span class="index-stat-value">{{ run.metrics.recall_at_k if run.metrics else "—" }}</span>
+      <span class="muted small">{{ run.metrics.hits if run.metrics else 0 }} hits</span>
+    </div>
+    <div class="index-stat">
+      <span class="index-stat-label">MRR</span>
+      <span class="index-stat-value">{{ run.metrics.mrr if run.metrics else "—" }}</span>
+      <span class="muted small">scored {{ run.metrics.scored if run.metrics else 0 }}</span>
+    </div>
+    <div class="index-stat">
+      <span class="index-stat-label">平均延遲</span>
+      <span class="index-stat-value">{% if run.metrics %}{{ run.metrics.avg_latency_ms }}ms{% else %}—{% endif %}</span>
+      <span class="muted small">retrieval only</span>
+    </div>
+  </div>
+  {% if run.error %}
+    <div class="alert">{{ run.error }}</div>
+  {% endif %}
+</section>

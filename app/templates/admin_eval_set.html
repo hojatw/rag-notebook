@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings eval-workbench">
+  <header class="settings-head">
+    <p class="eyebrow">評測集</p>
+    <h1>{{ eval_set.name }}</h1>
+    <p class="muted">{{ eval_set.notebook_emoji or "📓" }} {{ eval_set.notebook_title }} · owner: {{ eval_set.target_username }}</p>
+    {% if eval_set.description %}<p>{{ eval_set.description }}</p>{% endif %}
+  </header>
+
+  <div class="eval-set-tabs"
+       x-data="{ tab: window.location.hash === '#runs' ? 'runs' : 'authoring' }"
+       @hashchange.window="tab = window.location.hash === '#runs' ? 'runs' : 'authoring'">
+    <nav class="eval-tabs" aria-label="Eval set sections" role="tablist">
+      <button type="button"
+              class="eval-tab"
+              id="eval-set-tab-authoring"
+              role="tab"
+              aria-controls="eval-set-panel-authoring"
+              :aria-selected="(tab === 'authoring').toString()"
+              :tabindex="tab === 'authoring' ? 0 : -1"
+              :class="{ 'is-current': tab === 'authoring' }"
+              @click="tab = 'authoring'; history.replaceState(null, '', '#authoring')">
+        出題
+      </button>
+      <button type="button"
+              class="eval-tab"
+              id="eval-set-tab-runs"
+              role="tab"
+              aria-controls="eval-set-panel-runs"
+              :aria-selected="(tab === 'runs').toString()"
+              :tabindex="tab === 'runs' ? 0 : -1"
+              :class="{ 'is-current': tab === 'runs' }"
+              @click="tab = 'runs'; history.replaceState(null, '', '#runs')">
+        執行
+      </button>
+    </nav>
+
+    <div id="eval-set-panel-authoring" role="tabpanel" aria-labelledby="eval-set-tab-authoring" x-show="tab === 'authoring'">
+  <section class="settings-section">
+    <h2>新增題目</h2>
+    <p class="hint muted small">三種方式分開操作；只有 approved 題目會進入 run。</p>
+
+    <div class="eval-authoring-grid">
+      <article class="card eval-authoring-card eval-authoring-card-primary">
+        <div class="eval-card-head">
+          <span class="eval-step">1</span>
+          <div>
+            <h3>手動新增 approved 題目</h3>
+            <p class="muted small">最可靠。人工確認過的題目會直接納入下一次 retrieval eval。</p>
+          </div>
+        </div>
+        <form method="post"
+              action="/admin/evals/sets/{{ eval_set.id }}/items"
+              class="stacked-form"
+              hx-post="/admin/evals/sets/{{ eval_set.id }}/items"
+              hx-target="#eval-items"
+              hx-swap="outerHTML"
+              hx-on::after-request="if(event.detail.successful) this.reset()">
+          <label>
+            問題
+            <textarea name="question" rows="2" required placeholder="輸入管理員確認過的 eval 問題"></textarea>
+          </label>
+          <label>
+            預期來源
+            <select name="expected_source_id">
+              <option value="">不指定來源（只用 substrings / unscored）</option>
+              {% for source in sources %}
+                <option value="{{ source.id }}" {% if source.status != 'indexed' %}disabled{% endif %}>
+                  {{ source.filename }}{% if source.status != 'indexed' %}（{{ source.status }}）{% endif %}
+                </option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            預期片段 substrings（一行一個，命中任一個即可）
+            <textarea name="expected_substrings" rows="4" placeholder="例如：關鍵人名、日期、專案代號、2-3 個字的中文關鍵詞"></textarea>
+          </label>
+          <label>
+            備註
+            <textarea name="notes" rows="2" placeholder="題型、語言、判定理由或資料範圍"></textarea>
+          </label>
+          <button type="submit" data-loading-text="新增中...">新增 approved 題目</button>
+        </form>
+      </article>
+
+      <article class="card eval-authoring-card">
+        <div class="eval-card-head">
+          <span class="eval-step">2</span>
+          <div>
+            <h3>自動生成 draft 題目</h3>
+            <p class="muted small">不呼叫 LLM，從 indexed chunks 抽樣產生候選題。適合快速補題後人工修正。</p>
+          </div>
+        </div>
+        <form method="post"
+              action="/admin/evals/sets/{{ eval_set.id }}/generate"
+              class="compact-form"
+              data-loading-form
+              hx-post="/admin/evals/sets/{{ eval_set.id }}/generate"
+              hx-target="#eval-items"
+              hx-swap="outerHTML">
+          <label>
+            自動候選題數
+            <input type="number" name="count" min="1" max="20" value="5">
+          </label>
+          <button type="submit" class="secondary" data-loading-text="生成中...">自動生成 draft 題目</button>
+        </form>
+      </article>
+
+      <article class="card eval-authoring-card">
+        <div class="eval-card-head">
+          <span class="eval-step">3</span>
+          <div>
+            <h3>LLM 生成候選題</h3>
+            <p class="muted small">可產生跨語言 / 不可回答題；仍需人工檢查、approve 後才會進入 run。</p>
+          </div>
+        </div>
+        <details class="eval-advanced-details">
+          <summary>設定 LLM 生成條件</summary>
+          <form method="post"
+                action="/admin/evals/sets/{{ eval_set.id }}/generate/llm"
+                class="stacked-form"
+                data-loading-form
+                hx-post="/admin/evals/sets/{{ eval_set.id }}/generate/llm"
+                hx-target="#eval-items"
+                hx-swap="outerHTML">
+            <div class="inline-form">
+              <label>
+                題數
+                <input type="number" name="count" min="1" max="20" value="5">
+              </label>
+              <label>
+                目標語言
+                <select name="target_language">
+                  <option value="Traditional Chinese">繁體中文</option>
+                  <option value="English">English</option>
+                  <option value="Japanese">日本語</option>
+                  <option value="Simplified Chinese">简体中文</option>
+                </select>
+              </label>
+            </div>
+            <fieldset>
+              <legend>題型</legend>
+              <div class="checkbox-grid">
+                {% for option in item_type_options %}
+                  <label><input type="checkbox" name="item_types" value="{{ option.value }}" {% if option.value == "answerable" %}checked{% endif %}> {{ option.label }}</label>
+                {% endfor %}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>限定來源</legend>
+              <p class="hint muted small">可複選；不選代表從此 Eval Set 的所有 indexed sources 抽樣。</p>
+              <div class="checkbox-list source-checkbox-list">
+                {% for source in sources %}
+                  <label class="{{ 'is-disabled' if source.status != 'indexed' else '' }}">
+                    <input type="checkbox" name="source_ids" value="{{ source.id }}" {% if source.status != 'indexed' %}disabled{% endif %}>
+                    <span>{{ source.filename }}{% if source.status != 'indexed' %}（{{ source.status }}）{% endif %}</span>
+                  </label>
+                {% endfor %}
+              </div>
+            </fieldset>
+            <button type="submit" class="secondary" data-loading-text="LLM 生成中...">LLM 生成 draft 題目</button>
+          </form>
+        </details>
+      </article>
+    </div>
+  </section>
+
+  {% include "_eval_items_section.html" %}
+    </div>
+
+    <div id="eval-set-panel-runs" role="tabpanel" aria-labelledby="eval-set-tab-runs" x-show="tab === 'runs'" x-cloak>
+  <section class="settings-section run-history-section">
+    <h2>執行紀錄</h2>
+    <p class="hint muted small">先執行 eval，再從成功的 run 選 baseline / candidate 比較。</p>
+    {% set succeeded_runs = runs | selectattr("status", "equalto", "succeeded") | list %}
+    {% if succeeded_runs | length >= 2 %}
+      <form method="get" action="/admin/evals/compare" class="run-compare-panel">
+        <div>
+          <h3>比較兩個成功 run</h3>
+          <p class="muted small">建議用舊 profile 當 Baseline，新 profile 當 Candidate。</p>
+        </div>
+        <label>Baseline
+          <select name="base">
+            {% for run in succeeded_runs %}
+              <option value="{{ run.id }}" {% if loop.index == 2 %}selected{% endif %}>#{{ run.id }} · Recall {{ run.metrics.recall_at_k if run.metrics else "—" }} · MRR {{ run.metrics.mrr if run.metrics else "—" }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Candidate
+          <select name="candidate">
+            {% for run in succeeded_runs %}
+              <option value="{{ run.id }}" {% if loop.index == 1 %}selected{% endif %}>#{{ run.id }} · Recall {{ run.metrics.recall_at_k if run.metrics else "—" }} · MRR {{ run.metrics.mrr if run.metrics else "—" }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">比較 run 差異</button>
+      </form>
+    {% else %}
+      <div class="empty">
+        <h2>需要至少 2 個成功的 run 才能比較</h2>
+        <p>先用不同 profile 各跑一次 eval，再回來比較 baseline 與 candidate。</p>
+      </div>
+    {% endif %}
+    {% if runs %}
+      <div class="table-wrap">
+        <table class="run-history-table">
+          <thead>
+            <tr><th>Run</th><th>狀態</th><th>Progress</th><th>Recall</th><th>MRR</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            {% for run in runs %}
+              <tr>
+                <td data-label="Run"><strong>#{{ run.id }}</strong><small>{{ run.created_at }}</small></td>
+                <td data-label="狀態"><span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run.status }}</span></td>
+                <td data-label="進度">{{ run.progress_current }} / {{ run.progress_total }}</td>
+                <td data-label="Recall">{{ run.metrics.recall_at_k if run.metrics else "—" }}</td>
+                <td data-label="MRR">{{ run.metrics.mrr if run.metrics else "—" }}</td>
+                <td data-label="操作"><a class="ghost small" href="/admin/evals/runs/{{ run.id }}">查看</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="muted">尚未執行。</p>
+    {% endif %}
+  </section>
+    </div>
+  </div>
+</section>
+{% endblock %}

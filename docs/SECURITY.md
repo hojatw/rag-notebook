@@ -20,6 +20,12 @@ Include reproduction steps and the affected version/commit. We aim to acknowledg
 - Do not use `NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1` for any network-exposed or production-like run; it is a local-development convenience only.
 - The demo accounts (`admin/admin123`, `user/user123`) are for local development. Change or remove them before exposing the app on a network.
 
+## Audit trail
+
+The app keeps a DB-backed admin audit trail in `audit_events`, viewable at `/admin/audit`. It currently records high-risk operations such as full/sanitized eval exports, retrieval profile create/apply/delete/export, LLM settings updates, vector index Clear/Rebuild, user-management changes, and notebook/source/chat/note lifecycle or Markdown-export actions. Full internal eval report exports are marked `high` sensitivity because they include questions, expected evidence, diagnostics, and retrieved snippets; chat/note Markdown exports are also marked `high` because they can carry user-entered content out of the deployment.
+
+Audit metadata is intentionally compact: store action identifiers, target ids, flags, and parameter summaries only. Do **not** copy API keys, source text, retrieved snippets, prompts, or full exported payloads into `audit_events`; the audit trail should prove that an action happened, not duplicate sensitive content.
+
 ## Known hardening follow-ups
 
 These are deliberately deferred for the POC and tracked in `../README.md` / `../AGENTS.md`. Address them before any untrusted-network exposure:

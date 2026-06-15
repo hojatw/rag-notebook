@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings audit-page"
+         x-data="{ metadataOpen: false, metadataTitle: '', metadataBody: '', lastFocus: null }"
+         @keydown.escape.window="metadataOpen = false; $nextTick(() => lastFocus && lastFocus.focus && lastFocus.focus())">
+  <div class="modal audit-modal"
+       x-show="metadataOpen"
+       x-transition.opacity
+       style="display: none;"
+       role="presentation">
+    <div class="modal-backdrop" @click="metadataOpen = false; $nextTick(() => lastFocus && lastFocus.focus && lastFocus.focus())"></div>
+    <div class="modal-panel audit-modal-panel" role="dialog" aria-modal="true" aria-label="Audit metadata" tabindex="-1" x-ref="metadataPanel">
+      <header class="audit-modal-head">
+        <div>
+          <p class="eyebrow">Audit metadata</p>
+          <h2 x-text="metadataTitle"></h2>
+        </div>
+        <button type="button" class="ghost small" @click="metadataOpen = false; $nextTick(() => lastFocus && lastFocus.focus && lastFocus.focus())" aria-label="關閉 metadata">關閉</button>
+      </header>
+      <div class="audit-modal-body">
+        <pre class="config-preview audit-modal-metadata" x-text="metadataBody"></pre>
+      </div>
+    </div>
+  </div>
+
+  <header class="settings-head">
+    <p class="eyebrow">管理主控台</p>
+    <h1>稽核紀錄</h1>
+    <p class="muted">查核高風險操作、匯出、權限與系統設定變更。Metadata 只保存識別資訊與摘要，不保存 API key 或完整文件內容。</p>
+  </header>
+
+  <section class="settings-section">
+    <h2>篩選</h2>
+    <form method="get" action="/admin/audit" class="inline-form audit-filter-form">
+      <label>
+        Action
+        <input name="action" list="audit-actions" value="{{ filters.action }}" placeholder="例如 export / settings / profile">
+        <datalist id="audit-actions">
+          {% for item in actions %}<option value="{{ item }}">{% endfor %}
+        </datalist>
+      </label>
+      <label>
+        Actor
+        <input name="actor" value="{{ filters.actor }}" placeholder="username 或 user id">
+      </label>
+      <label>
+        Target type
+        <select name="target_type">
+          <option value="">全部</option>
+          {% for item in target_types %}
+            <option value="{{ item }}" {% if filters.target_type == item %}selected{% endif %}>{{ item }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Sensitivity
+        <select name="sensitivity">
+          <option value="">全部</option>
+          {% for item in sensitivities %}
+            <option value="{{ item }}" {% if filters.sensitivity == item %}selected{% endif %}>{{ item }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        筆數
+        <input type="number" name="limit" min="1" max="300" value="{{ filters.limit }}">
+      </label>
+      <button type="submit" class="ghost">套用</button>
+      <a class="ghost" href="/admin/audit">清除</a>
+    </form>
+  </section>
+
+  <section class="settings-section">
+    <h2>最近紀錄</h2>
+    {% if events %}
+      <div class="table-wrap audit-table-wrap">
+        <table class="audit-table">
+          <colgroup>
+            <col class="audit-col-time">
+            <col class="audit-col-actor">
+            <col class="audit-col-action">
+            <col class="audit-col-target">
+            <col class="audit-col-sensitivity">
+            <col class="audit-col-ip">
+            <col class="audit-col-metadata">
+          </colgroup>
+          <thead>
+            <tr>
+              <th>時間</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Target</th>
+              <th>敏感度</th>
+              <th>IP</th>
+              <th>Metadata</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for event in events %}
+              <tr>
+                <td>
+                  {{ event.created_at[:10] }}
+                  <br><span class="muted small">{{ event.created_at[11:19] }}</span>
+                </td>
+                <td>
+                  <strong>{{ event.actor_username or "unknown" }}</strong>
+                  {% if event.actor_user_id %}<span class="muted small">#{{ event.actor_user_id }}</span>{% endif %}
+                </td>
+                <td><code>{{ event.action }}</code></td>
+                <td>
+                  {{ event.target_type or "—" }}
+                  {% if event.target_id is not none %}<br><span class="muted small">#{{ event.target_id }}</span>{% endif %}
+                </td>
+                <td>
+                  <span class="status {{ 'failed' if event.sensitivity == 'high' else 'processing' if event.sensitivity == 'normal' else '' }}">{{ event.sensitivity }}</span>
+                </td>
+                <td>
+                  <span class="audit-ip">{{ event.ip_address or "—" }}</span>
+                </td>
+                <td>
+                  <button type="button"
+                          class="audit-metadata-button"
+                          title="查看 metadata"
+                          aria-label="查看 {{ event.action }} metadata"
+                          @click='lastFocus = $el; metadataTitle = {{ (event.action ~ " #" ~ event.id)|tojson }}; metadataBody = {{ event.metadata|tojson }}; metadataOpen = true; $nextTick(() => $refs.metadataPanel && $refs.metadataPanel.focus())'>
+                    <span aria-hidden="true">{} </span>
+                  </button>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="muted">尚無符合條件的稽核紀錄。</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

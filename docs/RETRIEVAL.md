@@ -147,9 +147,15 @@ Per-message `messages.metadata_json` row carries `{retrieval_ms, generation_ms, 
 
 Reports per-question hit rank, **Recall@k**, **MRR**. Skips silently when LLM is not configured (the fallback hash embedding is too noisy to be worth measuring).
 
+For customer/private data that should not leave the deployment, admins can use the in-app workbench at `/admin/evals`. It stores eval sets in SQLite, runs retrieval-only evals against already-indexed notebook sources in the background, polls progress with HTMX, and persists each run's profile snapshot, aggregate metrics, compact retrieved snippets, latency, and per-question hit/miss/unscored/error status. Admins can add questions manually or generate draft candidates from indexed chunks; generated candidates stay `draft` until an admin approves them. Result rows show the question, expected source/chunk/substrings, top retrieved chunk, and a miss diagnosis so admins can distinguish retrieval misses from weak ground truth. This is the path for building the harder representative eval set called out in `QUALITY.md` Q1-3; the file-based harness remains the lightweight demo/regression harness.
+
+Exports are intentionally split by data sensitivity. Sanitized profile/run exports are JSON downloads meant for the implementation team and omit questions, expected evidence, retrieved snippets, and source text. Full internal run reports include questions, expected evidence, diagnostics, and compact retrieved snippets; the UI requires explicit confirmation and the export is recorded as a high-sensitivity `audit_events` row. The audit row stores identifiers and flags only, not the full report content.
+
 ### Hit semantics — why ANY-of, not ALL-of
 
 A chunk "hits" iff its `filename == expected_filename` **and** at least one substring from `expected_substrings` appears in `chunk.text`. The any-of rule keeps the metric chunk-size-agnostic: when CJK chunks shrunk from 1200 → 400 chars some `expected_substrings` ended up split across two chunks, and an all-of rule would have falsely penalised retrievals that were in fact correct.
+
+The admin workbench uses the same ANY-of substring idea, but stores DB-native expected evidence instead of demo filenames: an item can require an expected source, expected chunk, one or more substrings, or a combination. Items with no scoring criteria are recorded as `unscored`, so admins can draft questions without polluting Recall/MRR.
 
 Trade-off: a chunk that contains *only one* expected substring can match even if the user really wanted all the supporting context. Ground-truth substrings are chosen to be specific enough that the false-positive rate stays low; check with the diagnostic in the *Maintaining the eval* section below before adding new questions.
 
@@ -187,6 +193,8 @@ for q in questions:
 ## Tuning knobs (one place to change each)
 
 Most of these are now **centralized in [`app/config.py`](../app/config.py)** and overridable at runtime without code edits — defaults ← `config.toml` ← `NOTEBOOKLM_<GROUP>_<FIELD>` env (see the README "Tuning / configuration" section). The mapping: hybrid weights → `[retrieval] vector_weight/keyword_weight`; rerank weights → `rerank_weight/rerank_base_weight`; vector/keyword/rerank candidate counts → `candidate_pool_size`; rerank limit → `final_chunk_count`; abstain → `low_confidence_threshold`; chunking → `[chunking] *`; embedding batch → `[embedding] batch_size`. The module constants below still exist (call sites read them) but their values come from config. `is_mostly_cjk` threshold and the rewrite-history count remain plain constants.
+
+> **Runtime override (E1c eval workbench).** The seven runtime-safe retrieval knobs (`vector_weight`, `keyword_weight`, `candidate_pool_size`, `final_chunk_count`, `rerank_weight`, `rerank_base_weight`, `low_confidence_threshold`) are read at request time from `ACTIVE_RETRIEVAL_PARAMS` in `app/main.py`, not the import-time module constants. The config/env values still define the **defaults**; an admin can override them live by **applying a retrieval profile** at `/admin/evals` (persisted via `retrieval_profiles.is_active`, reloaded on startup). `retrieve()` / `merge_candidates()` / `rerank_chunks()` also accept a per-call `params` override, which the eval runner uses to test a candidate profile in isolation without changing live chat retrieval. Index-affecting parameters (chunking, embedding model/prefix/dimension) are **not** part of this override path and still require a Clear/Rebuild.
 
 | Knob | Default | Location | What it controls |
 |---|---:|---|---|

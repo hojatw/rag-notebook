@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings eval-workbench">
+  <header class="settings-head">
+    <p class="eyebrow">Eval 執行</p>
+    <h1>{{ run.eval_set_name }}</h1>
+    <p class="muted">{{ run.notebook_title }} · created {{ run.created_at }}</p>
+  </header>
+
+  {% include "_eval_run_status.html" %}
+
+  <section class="settings-section export-section">
+    <h2>匯出</h2>
+    <p class="hint muted small">
+      Sanitized report 不包含題目、預期依據或 retrieved snippets；Full internal report 會包含完整 eval 診斷資料，應留在部署內或在明確核准後分享。
+    </p>
+    <div class="split-actions">
+      <a class="ghost" href="/admin/evals/runs/{{ run.id }}/export/sanitized">匯出 sanitized report</a>
+      <a class="danger small"
+         href="/admin/evals/runs/{{ run.id }}/export/full?confirm=1"
+         data-confirm="Full internal report 會包含題目、預期依據與 retrieved snippets，可能含客戶資料。確定要匯出？">
+        匯出 full internal report
+      </a>
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <h2>Profile 參數快照</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>參數</th><th>值</th></tr>
+        </thead>
+        <tbody>
+          {% for param in run.profile_params %}
+            <tr>
+              <td data-label="參數">{{ param.label }}<br><span class="muted small">{{ param.key }}</span></td>
+              <td data-label="值">{{ param.value }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="hint muted small">這是本次 run 使用的參數快照。要把某組參數套用到線上檢索，請到 Eval 工作台的 Retrieval Profiles。</p>
+  </section>
+
+  {% include "_eval_run_results.html" %}
+</section>
+{% endblock %}

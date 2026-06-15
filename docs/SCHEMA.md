@@ -27,6 +27,11 @@ users ─┬─< notebooks ─┬─< sources ─┬─< chunks
        │              └─1 briefing_locks               (PK notebook_id)
        ├─< sources / chunks / conversations / messages / notes   (user_id on every row, per-user scoping)
 llm_settings : single row (id = 1), global
+
+eval_sets ─< eval_items
+          └─< eval_runs ─< eval_results
+retrieval_profiles ─< eval_runs
+users ─< audit_events (actor_user_id SET NULL)
 ```
 
 Every user-owned table carries `user_id` so authorization is enforced per-row at the route layer (defence in depth alongside the notebook FK).
@@ -165,6 +170,104 @@ DB-backed ingest queue (P1-1). At most one job per source.
 | `error` | TEXT DEFAULT `''` | last failure message |
 | `created_at` / `updated_at` | TEXT | |
 
+## `retrieval_profiles`
+Admin-created retrieval parameter snapshots for the in-deployment eval workbench (E1). Profiles are audit/history records **and** applyable: the `is_active` row seeds the live `ACTIVE_RETRIEVAL_PARAMS` in `app/main.py` at startup (E1c apply/rollback).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `name` | TEXT NOT NULL | display name |
+| `description` | TEXT DEFAULT `''` | |
+| `params_json` | TEXT DEFAULT `'{}'` | JSON snapshot of retrieval/runtime-safe parameters |
+| `requires_reindex` | INTEGER DEFAULT 0 | 1 = profile contains index-affecting changes; refused at apply |
+| `is_active` | INTEGER DEFAULT 0 | 1 = applied to live retrieval (at most one row); loaded into `ACTIVE_RETRIEVAL_PARAMS` on startup |
+| `is_default` | INTEGER DEFAULT 0 | 1 = the protected system-default baseline; cannot be deleted (fallback to known-good config) |
+| `source_run_id` | INTEGER | optional run that produced this profile |
+| `created_by` | INTEGER → `users(id)` SET NULL | admin who created it |
+| `created_at` / `updated_at` | TEXT | |
+
+## `eval_sets`
+Admin-managed eval set scoped to an existing notebook. `target_user_id` is the notebook owner used when running retrieval, preserving the app's per-user Chroma/SQLite filters.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `name` | TEXT NOT NULL | |
+| `description` | TEXT DEFAULT `''` | |
+| `target_user_id` | INTEGER NOT NULL → `users(id)` CASCADE | notebook owner / retrieval user |
+| `notebook_id` | INTEGER NOT NULL → `notebooks(id)` CASCADE | |
+| `created_by` | INTEGER → `users(id)` SET NULL | admin who created it |
+| `created_at` / `updated_at` | TEXT | |
+
+## `eval_items`
+One approved/manual eval question. Expected evidence can be a source, a chunk, substrings, or a combination; retrieval-only metrics score against the available fields.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `eval_set_id` | INTEGER NOT NULL → `eval_sets(id)` CASCADE | |
+| `question` | TEXT NOT NULL | |
+| `expected_source_id` | INTEGER → `sources(id)` SET NULL | optional expected source |
+| `expected_chunk_id` | INTEGER → `chunks(id)` SET NULL | optional expected chunk |
+| `expected_substrings_json` | TEXT DEFAULT `'[]'` | JSON list; any matching substring counts as evidence hit |
+| `item_type` | TEXT DEFAULT `'answerable'` | E1e authoring type: `answerable`, `cross_lingual`, or `unanswerable` |
+| `expected_answer` | TEXT DEFAULT `''` | optional reference answer for future answer-quality judging |
+| `metadata_json` | TEXT DEFAULT `'{}'` | compact authoring metadata such as origin, prompt version, model, language, source ids; no copied prompts/source text |
+| `notes` | TEXT DEFAULT `''` | admin notes / rationale |
+| `approved` | INTEGER DEFAULT 1 | only approved items run |
+| `created_at` / `updated_at` | TEXT | |
+
+## `eval_runs`
+Background retrieval-only eval run. Progress fields drive the admin UI while the run is executing; profile/metrics JSON fields make the result immutable and reviewable later.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `eval_set_id` | INTEGER NOT NULL → `eval_sets(id)` CASCADE | |
+| `profile_id` | INTEGER → `retrieval_profiles(id)` SET NULL | profile under test |
+| `created_by` | INTEGER → `users(id)` SET NULL | admin who started the run |
+| `status` | TEXT DEFAULT `'queued'` | `queued` → `running` → `succeeded` \| `failed` \| `cancelled` |
+| `progress_current` / `progress_total` | INTEGER DEFAULT 0 | item progress |
+| `current_step` | TEXT DEFAULT `''` | visible progress message |
+| `profile_snapshot_json` | TEXT DEFAULT `'{}'` | immutable parameter snapshot used for this run |
+| `metrics_json` | TEXT DEFAULT `'{}'` | aggregate metrics |
+| `error` | TEXT DEFAULT `''` | failure summary |
+| `started_at` / `finished_at` | TEXT | nullable |
+| `created_at` / `updated_at` | TEXT | |
+
+## `eval_results`
+Per-question retrieval result for one eval run.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `run_id` | INTEGER NOT NULL → `eval_runs(id)` CASCADE | |
+| `eval_item_id` | INTEGER NOT NULL → `eval_items(id)` CASCADE | |
+| `status` | TEXT DEFAULT `'pending'` | `hit`, `miss`, `unscored`, or `error` after completion |
+| `hit_rank` | INTEGER | 1-based rank when expected evidence is retrieved |
+| `top_score` | REAL DEFAULT 0 | |
+| `latency_ms` | REAL DEFAULT 0 | retrieval latency for this item |
+| `retrieved_json` | TEXT DEFAULT `'[]'` | compact retrieved chunk summary |
+| `error` | TEXT DEFAULT `''` | per-item failure |
+| `created_at` | TEXT | |
+
+## `audit_events`
+Durable admin-visible audit trail for security/compliance-relevant operations. It is append-only by convention and backs `/admin/audit`. `metadata_json` must contain identifiers and compact summaries only; do **not** store API keys, full export payloads, prompts, retrieved snippets, or copied source text here.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `actor_user_id` | INTEGER → `users(id)` SET NULL | signed-in user who performed the action |
+| `actor_username` | TEXT DEFAULT `''` | username snapshot, retained if the user is later deleted |
+| `action` | TEXT NOT NULL | stable action key, e.g. `eval_run_export_full` |
+| `target_type` | TEXT DEFAULT `''` | logical target, e.g. `eval_run`, `retrieval_profile`, `user` |
+| `target_id` | INTEGER | target row id when applicable |
+| `sensitivity` | TEXT DEFAULT `'normal'` | `normal` or `high` in the current UI |
+| `ip_address` | TEXT DEFAULT `''` | request client host when available |
+| `user_agent` | TEXT DEFAULT `''` | truncated request user-agent |
+| `metadata_json` | TEXT DEFAULT `'{}'` | compact event metadata, no copied sensitive content |
+| `created_at` | TEXT | |
+
 ---
 
 ## Indexes
@@ -181,3 +284,9 @@ DB-backed ingest queue (P1-1). At most one job per source.
 | `idx_notebooks_user_updated` | notebooks | `(user_id, updated_at DESC)` |
 | `idx_notes_notebook_created` | notes | `(notebook_id, created_at DESC)` |
 | `idx_ingest_jobs_status` | ingest_jobs | `(status, id)` |
+| `idx_eval_sets_notebook` | eval_sets | `(notebook_id, created_at DESC)` |
+| `idx_eval_items_set` | eval_items | `(eval_set_id, approved, id)` |
+| `idx_eval_runs_set` | eval_runs | `(eval_set_id, created_at DESC)` |
+| `idx_eval_results_run` | eval_results | `(run_id, eval_item_id)` |
+| `idx_audit_events_created` | audit_events | `(created_at DESC, id DESC)` |
+| `idx_audit_events_action_created` | audit_events | `(action, created_at DESC)` |
