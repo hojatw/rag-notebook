@@ -16,7 +16,7 @@
     </p>
     <div class="profile-grid">
       {% for prof in profiles %}
-        <article class="profile-card{{ ' is-active' if prof.is_active else '' }}">
+        <article class="card profile-card{{ ' card--active' if prof.is_active else '' }}">
           <header class="profile-card-head">
             <h3 class="profile-name" title="{{ prof.name }}">{{ prof.name }}</h3>
             <div class="profile-badges">

@@ -91,15 +91,18 @@
 > 收斂對象(都改用 `.section-head`):`.settings-section>h2`、`.section-title-row`、
 > `.section-head`+`.pane-count`、`.section-heading`+eyebrow。
 
-### 3.3 卡片 `.card` **[待建立,收斂五種]**
-基礎卡:`padding: var(--sp-4)`、`border:1px solid var(--line)`、`border-radius: var(--r-md)`、
-`box-shadow: var(--shadow-sm)`、`background: var(--surface)`。Modifier:
-- `.card--active` 強調態(`--line-accent` + `--accent-soft`)。
-- `.card--stat` 數字統計格。
-- `.card--tile` 方形可點磚(Studio 工具)。
-卡內若有動作列,放底部並 `margin-top:auto`,**動作位置不隨內容高度浮動**(profile-card 已採此法)。
+### 3.3 卡片 `.card` **[標準]**
+基礎卡(feature card,grid 磚):`background: --surface`、`border:1px solid --line`、
+`border-radius: --r-lg`、`padding: --sp-4`、`box-shadow: --shadow-sm`。Modifier:
+- `.card--flat`:密集**清單項**用(`--r-md`、無 shadow),例:逐題結果、題目列。
+- `.card--active`:選中/作用態(`--line-accent` + `--accent-soft`),例:作用中的 profile。
+用法:markup 同時掛 `.card`(+ 視情況 `--flat`/`--active`)與該卡的專屬 class;專屬 class **只留**
+獨有 layout(grid/flex/min-height/hover),base 外觀全由 `.card` 提供。卡內動作列放底部
+`margin-top:auto`,**位置不隨內容高度浮動**。
 
-> 收斂對象:`.notebook-card`、`.profile-card`、`.eval-authoring-card`、`.eval-result`、`.index-stat`。
+> 已套用:`.notebook-card`、`.profile-card`、`.eval-authoring-card`(feature);`.eval-item-card`、
+> `.eval-result`(`.card--flat` 清單項)。**待收**:`.index-stat`(統計格,未來可加 `.card--stat`);
+> Studio 工具磚 `.tool-tile` 可加 `.card--tile`。各卡專屬 class 的舊 base 屬性已從 CSS 移除。
 
 ### 3.4 表格 `.table-wrap > table` **[標準,以 `admin_users` 為準]**
 - 一律包 `.table-wrap`(處理橫向捲動與圓角)。
@@ -201,7 +204,7 @@
 | 外層容器 | `.settings` / 無 | `.page` | 全部置中頁 |
 | 頁首 | `.settings-head` / `.page-head` | `.page-head` | `settings`、`admin_*`、`eval_*` |
 | 區塊標題 | 4 種 | `.section-head`(+slots) | `_eval_items_section`、`search`、`admin_eval_set` |
-| 卡片 | 5 套 | `.card`(+modifier) | `notebook`/`profile`/`eval_authoring`/`eval_result`/`index_stat` |
+| 卡片 | 5 套 | ✅ `.card`(+`--flat`/`--active`)已上線;`index_stat`/工具磚待收 | `notebook`/`profile`/`eval_authoring`/`eval_item`/`eval_result` |
 | 表格 RWD | 部分有 `data-label` | 一律 `data-label` | 所有 eval 表格 |
 | 狀態色 | `.status` 超載 | ✅ `.status`(狀態)/ `.tag`(分類)已上線 | `admin_users`、`_eval_items_section` |
 | 破壞性鈕 | `!important` on `.danger-link` | 保留兩級(`.danger` 顯著 / `.danger-link` 低調),僅去 `!important` | `style.css`(P2) |

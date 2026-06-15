@@ -27,7 +27,7 @@
 
 <div class="notebook-grid">
   {% for notebook in notebooks %}
-    <a class="notebook-card" href="/notebooks/{{ notebook.id }}">
+    <a class="card notebook-card" href="/notebooks/{{ notebook.id }}">
       <div class="notebook-cover">{{ notebook.emoji or "📓" }}</div>
       <h3>{{ notebook.title }}</h3>
       <p class="notebook-meta">

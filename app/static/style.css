@@ -911,14 +911,23 @@ label {
   align-items: start;
 }
 
-.eval-authoring-card {
-  display: grid;
-  gap: var(--sp-4);
+/* Shared card base (docs/UI.md §3.3). Feature cards (grid tiles) use .card;
+   dense list-item cards add .card--flat (tighter radius, no shadow); the
+   selected/active state uses .card--active. Specific card classes below keep
+   only their unique layout (grid/flex/min-height/hover). */
+.card {
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   padding: var(--sp-4);
-  background: var(--surface);
   box-shadow: var(--shadow-sm);
+}
+.card--flat { border-radius: var(--r-md); box-shadow: none; }
+.card--active { border-color: var(--line-accent); background: var(--accent-soft); }
+
+.eval-authoring-card {
+  display: grid;
+  gap: var(--sp-4);
 }
 
 .eval-workbench .section-heading .small,
@@ -985,14 +994,7 @@ label {
   padding: 0;
 }
 
-.eval-item-card {
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-  padding: var(--sp-4);
-}
-
+/* .eval-item-card base now comes from .card .card--flat (markup). */
 .eval-item-main {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2043,11 +2045,6 @@ legend {
 .notebook-card {
   display: grid;
   gap: 10px;
-  padding: var(--sp-4);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-sm);
   text-decoration: none;
   color: var(--text);
   transition: transform 140ms var(--ease), box-shadow 140ms var(--ease), border-color 140ms var(--ease);
@@ -3848,18 +3845,10 @@ legend {
   margin: var(--sp-4) 0;
 }
 .profile-card {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: var(--sp-4);
-  background: var(--surface);
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
   min-height: 220px;          /* consistent height regardless of content */
-}
-.profile-card.is-active {
-  border-color: var(--line-accent);
-  background: var(--accent-soft);
 }
 .profile-card-head {
   display: flex;
@@ -4047,12 +4036,8 @@ details[open] > .audit-summary::before {
 
 /* Per-question results as a stacked list — declutters the old wide table */
 .eval-results { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-3); }
-.eval-result {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: var(--sp-3) var(--sp-4);
-  background: var(--surface);
-}
+/* .eval-result base from .card .card--flat (markup); keeps tighter list padding. */
+.eval-result { padding: var(--sp-3) var(--sp-4); }
 .eval-result-hit { box-shadow: inset 3px 0 0 var(--ok); }
 .eval-result-miss, .eval-result-error { box-shadow: inset 3px 0 0 var(--danger); }
 .eval-result-head { display: flex; align-items: baseline; gap: var(--sp-3); }

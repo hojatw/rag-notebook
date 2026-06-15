@@ -9,7 +9,7 @@
   {% if results %}
     <ul class="eval-results">
       {% for result in results %}
-        <li class="eval-result eval-result-{{ result.status }}">
+        <li class="card card--flat eval-result eval-result-{{ result.status }}">
           <div class="eval-result-head">
             <span class="status {{ 'indexed' if result.status == 'hit' else 'failed' if result.status in ['miss', 'error'] else 'processing' }}">{{ result.status }}</span>
             <span class="eval-result-q">{{ result.question }}</span>
