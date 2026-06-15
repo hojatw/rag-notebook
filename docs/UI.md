@@ -140,7 +140,7 @@
 
 尺寸 modifier:`.small`(28px)、`.wide`(滿寬)。
 > **破壞性有兩種強度,不是一種**:顯著用有框的 `.danger`;在 list/menu 裡為了不喧賓奪主,用 ghost+紅字的 `.danger-link`(全 app 已一致這樣用)。**不要**把密集清單裡的刪除全換成有框 `.danger`——那會更突兀。
-> 真正待修的只是 `.danger-link` 的 CSS 用了 `!important`(P2 清理,不影響外觀)。
+> ~~真正待修的只是 `.danger-link` 的 CSS 用了 `!important`~~ ✅ 已移除(`.danger-link` 定義在 `.ghost` 之後,同特異度靠原始碼順序即勝出,不需 `!important`)。
 > **`.secondary` 濫用要收斂**:只給「次要動作」;主要送出鈕一律 primary。
 
 ### 3.7 表單
@@ -174,7 +174,7 @@
 | `.notice` | 成功 | [標準] 綠 |
 | `.alert` | 錯誤 | [標準] 紅 |
 | `.support-note` | 資訊/提示 | [標準] 紫 |
-| `.warn` | 警告 | **[待建立]** 黃(`--warn*` token 已存在) |
+| `.warn` | 警告 | **[標準]** 黃(`--warn*`) |
 
 行內微提示(非訊息列)用 `<p class="hint muted small">`。
 
@@ -207,17 +207,18 @@
 
 | 主題 | 現況(多套) | 目標 | 主要影響檔 |
 |---|---|---|---|
-| 外層容器 | `.settings` / 無 | `.page` | 全部置中頁 |
-| 頁首 | `.settings-head` / `.page-head` | `.page-head` | `settings`、`admin_*`、`eval_*` |
-| 區塊標題 | 4 種 | `.section-head`(+slots) | `_eval_items_section`、`search`、`admin_eval_set` |
+| 外層容器 | `.settings` / 無 | `.page`(更名) | 全部置中頁 |〔P2 待辦,純更名〕 |
+| 頁首 | `.settings-head` / `.page-head` | **決定保留差異**:admin 用 `.settings-head`、user 端 `.page-head` 各自維持(刻意區分產品/管理頁) | — |
+| 區塊標題 | 4 種 | P0 已把 eval 的 `.section-heading` 攤平為 admin 標準 `<h2>`;`.section-title-row` 保留為「標題+行內動作」 | `_eval_items_section` 等 |
 | 卡片 | 5 套 | ✅ `.card`(+`--flat`/`--active`)已上線;`index_stat`/工具磚待收 | `notebook`/`profile`/`eval_authoring`/`eval_item`/`eval_result` |
-| 表格 RWD | 部分有 `data-label` | 一律 `data-label` | 所有 eval 表格 |
+| 表格 RWD | 部分有 `data-label` | ✅ eval 全表已補 `data-label` | 所有 eval 表格 |
 | 狀態色 | `.status` 超載 | ✅ `.status`(狀態)/ `.tag`(分類)已上線 | `admin_users`、`_eval_items_section` |
-| 破壞性鈕 | `!important` on `.danger-link` | 保留兩級(`.danger` 顯著 / `.danger-link` 低調),僅去 `!important` | `style.css`(P2) |
-| 空狀態 | 3 種 | `.empty-state` | eval 頁 |
-| Alert | 缺 warning | 補 `.warn` | `style.css` |
-| 分頁 | 2 套 class 對齊但命名綁 eval | `.tab`(更名) | `_eval_nav`、`admin_eval_set` |
-| 語言 | eval 頁英文漂移 | zh-Hant | `eval_*` |
+| 破壞性鈕 | `!important` on `.danger-link` | ✅ 保留兩級;已去 `!important` | `style.css` |
+| 空狀態 | 3 種 | ✅ 統一用 `.empty`(eval 頁與 `/admin/evals` 已換) | eval 頁 |
+| Alert | 缺 warning | ✅ `.warn` 已補(紅/黃/綠/紫齊全) | `style.css` |
+| 分頁 | 2 套 class 對齊但命名綁 eval | `.tab`(更名) | `_eval_nav`、`admin_eval_set`〔P2 待辦,純更名〕 |
+| 語言 | eval 頁英文漂移 | ✅ zh-Hant(P0) | `eval_*` |
+| Admin 寬度 | 720/1120/1180 三種 | ✅ 兩級制:表單 720 / 資料頁 1120(eval+稽核共用) | `style.css` |
 
 > 落地順序建議:**P0** eval 頁對齊既有 admin 標準(頁首/區塊/空狀態/按鈕/中文化)→
 > **P1** 抽 `.page-head`/`.section-head`/`.card`/`.empty-state` 共用元件 + pill 雙軌、表格補 `data-label` →

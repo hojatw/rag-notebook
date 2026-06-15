@@ -584,6 +584,7 @@ label {
 
 .alert,
 .notice,
+.warn,
 .support-note {
   padding: 12px 14px;
   border-radius: var(--r-md);
@@ -598,6 +599,7 @@ label {
 
 .alert::before,
 .notice::before,
+.warn::before,
 .support-note::before {
   content: "";
   width: 6px;
@@ -619,6 +621,13 @@ label {
   border-color: var(--ok-line);
 }
 .notice::before { background: var(--ok); }
+
+.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: var(--warn-line);
+}
+.warn::before { background: var(--warn); }
 
 .support-note {
   background: var(--accent-soft);
@@ -859,23 +868,6 @@ label {
   padding-right: 2px;
 }
 
-.success-message,
-.error-message {
-  border-radius: var(--r-md);
-  padding: var(--sp-3);
-  font-size: 14px;
-}
-
-.success-message {
-  background: #eef8f0;
-  color: #166534;
-}
-
-.error-message {
-  background: #fef2f2;
-  color: var(--danger);
-}
-
 .action-cell {
   display: flex;
   align-items: center;
@@ -895,19 +887,6 @@ label {
 }
 
 .section-title-row h2 {
-  margin: 0;
-}
-
-.section-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-4);
-  margin-bottom: var(--sp-4);
-}
-
-.section-heading h2,
-.section-heading h3 {
   margin: 0;
 }
 
@@ -937,11 +916,8 @@ label {
   gap: var(--sp-4);
 }
 
-.eval-workbench .section-heading .small,
 .eval-authoring-card .small,
-.run-compare-panel .small,
-.empty-panel .small,
-.run-compare-empty .small {
+.run-compare-panel .small {
   max-width: none;
   white-space: normal;
 }
@@ -1021,18 +997,6 @@ label {
   gap: var(--sp-2);
 }
 
-.source-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  padding: 3px 9px;
-  border-radius: var(--r-pill);
-  background: var(--surface-soft);
-  border: 1px solid var(--line);
-  color: var(--muted-strong);
-  font-size: 12px;
-  font-weight: 700;
-}
 
 .eval-item-note {
   display: block;
@@ -1084,16 +1048,6 @@ label {
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-.empty-panel,
-.run-compare-empty {
-  display: grid;
-  gap: 4px;
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--r-lg);
-  padding: var(--sp-4);
-  background: var(--surface-soft);
 }
 
 .run-history-section {
@@ -2387,13 +2341,15 @@ legend {
   font-size: 12px;
 }
 
+/* Low-emphasis destructive button (ghost + red) for dense lists/menus. Defined
+   after .ghost so it wins on equal specificity without !important. */
 .danger-link {
-  color: var(--danger) !important;
+  color: var(--danger);
 }
 
 .danger-link:hover {
-  background: var(--danger-soft) !important;
-  color: var(--danger) !important;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .source-empty {
@@ -4089,7 +4045,6 @@ details[open] > .audit-summary::before {
 }
 
 @media (max-width: 720px) {
-  .section-heading,
   .eval-item-main,
   .section-title-row {
     grid-template-columns: 1fr;
