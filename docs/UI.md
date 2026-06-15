@@ -220,6 +220,14 @@
 | 語言 | eval 頁英文漂移 | ✅ zh-Hant(P0) | `eval_*` |
 | Admin 寬度 | 720/1120/1180 三種 | ✅ 兩級制:表單 720 / 資料頁 1120(eval+稽核共用) | `style.css` |
 
-> 落地順序建議:**P0** eval 頁對齊既有 admin 標準(頁首/區塊/空狀態/按鈕/中文化)→
-> **P1** 抽 `.page-head`/`.section-head`/`.card`/`.empty-state` 共用元件 + pill 雙軌、表格補 `data-label` →
-> **P2** `.settings`→`.page` 更名、補 `.warn`、清死 CSS。每階段獨立 PR。
+### 進度與收尾(2026-06,本階段視為完結)
+
+這一輪 UI 重構的**有感工作已全部落地**:
+- **P0** — eval 頁中文化、區塊標題攤平為 admin 標準、空狀態/inline 訊息標準化。
+- **P1** — pill 雙軌(`.status`/`.tag`)、eval 全表 `data-label`、卡片收斂(`.card`/`--flat`/`--active`)、Eval/稽核寬度統一為單一寬版、`.settings-head` 間距放鬆。
+- **P2** — 補 `.warn` alert、去 `.danger-link` 的 `!important`、清掉 6 個死選擇器。
+
+**刻意不做(本階段結束,記錄決定,非待辦遺漏):**
+- **頁首不統一**:admin 用 `.settings-head`、user 端用 `.page-head`,**刻意讓管理頁與產品頁有區別**(產品擁有者決定)。
+- **兩個純更名 deferred**:`.eval-tab`→`.tab`、`.settings`→`.page`。理由:純改名、使用者無感,但 `.settings` 牽動 ~12 模板 + 大量後代選擇器,churn 大、回歸風險高,違反「除非降低風險否則避免大範圍重構」。**若哪天要做,連同 §2.1 的 `.page` 骨架一起當獨立 PR**,不要單獨改名。
+- **`.index-stat`、Studio 工具磚**尚未併入 `.card`(§3.3 待收),屬未來小項,非本階段範圍。
