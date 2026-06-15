@@ -28,8 +28,8 @@
             <div class="eval-item-question">
               <div class="eval-item-badges">
                 <span class="status {{ 'indexed' if item.approved else 'processing' }}">{{ "approved" if item.approved else "draft" }}</span>
-                <span class="status {{ 'processing' if item.item_type == 'unanswerable' else 'indexed' if item.item_type == 'answerable' else 'uploaded' }}">{{ item.item_type_label }}</span>
-                <span class="source-pill">{{ item.origin_label }}</span>
+                <span class="tag {{ 'tag--warn' if item.item_type == 'unanswerable' else '' }}">{{ item.item_type_label }}</span>
+                <span class="tag">{{ item.origin_label }}</span>
               </div>
               <p>{{ item.question }}</p>
               {% if item.notes %}<p class="muted small eval-item-note">{{ item.notes }}</p>{% endif %}

@@ -1521,6 +1521,25 @@ tbody tr:hover {
   50%      { opacity: 1;   transform: scale(1.1); }
 }
 
+/* Tag — neutral CATEGORY label (role, question type, source origin). The
+   dual-track partner of .status: a status pill carries a lifecycle colour + a
+   live dot (::before); a tag is flat with no dot, so colour stops meaning
+   "state". See docs/UI.md §3.5. */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--surface-tint);
+  color: var(--muted-strong);
+  border: 1px solid var(--line);
+}
+.tag--accent { background: var(--accent-soft); color: var(--accent-deep); border-color: var(--line-accent); }
+.tag--warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-line); }
+
 .actions {
   display: flex;
   flex-wrap: wrap;

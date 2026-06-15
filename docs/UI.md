@@ -111,26 +111,28 @@
 目前 `.status indexed/failed/processing` 被同時拿來表示索引狀態、角色、同步、run 狀態、hit/miss——
 綠色同時代表「已索引/管理員/成功/命中」,語意失效。改成兩軌:
 
-| 軌 | class | 用途 | 顏色 |
+| 軌 | class | 用途 | 視覺 |
 |---|---|---|---|
-| **處理狀態** | `.status` + `.is-ok/.is-busy/.is-fail` **[待建立語意命名]** | 真正的生命週期狀態:indexed/processing/failed、queued/running/succeeded、hit/miss | 綠/黃/紅 |
-| **中性標籤** | `.tag` **[待建立]** | 非狀態的分類標籤:角色(管理員)、來源類型、profile「系統預設」 | 中性(`--surface-tint`/`--line`) |
+| **處理狀態** | `.status`(+ `indexed/processing/failed/uploaded`) **[標準]** | 真正的生命週期狀態:indexed/processing/failed、queued/running/succeeded、hit/miss、approved/draft | 語意色 + **左側圓點**(`::before`) |
+| **中性標籤** | `.tag`(+ `.tag--accent` / `.tag--warn`) **[標準]** | 非狀態的分類標籤:角色(管理員)、題型(answerable…)、來源 origin、profile「系統預設」 | 扁平、**無圓點**、中性 |
 
-> 過渡期:現有 `.status indexed` 仍可用,但**角色/分類**(如 `admin_users` 的「管理員」)應改成中性 `.tag`,
-> 不要再借用綠色狀態色。
+> **判斷規則(很好記)**:這個 pill 會隨時間改變嗎?會 → `.status`(有點);不會、只是分類 → `.tag`(無點)。
+> 「有點 = 生命週期」「無點 = 分類」是兩軌的視覺差異,顏色因此不再被當成狀態誤讀。
+> 已套用:`admin_users` 角色、`_eval_items_section` 題型 + 來源 origin 改 `.tag`(approved/draft 仍是 `.status`)。
 
-### 3.6 按鈕階層(四級 + 唯一破壞性)
+### 3.6 按鈕階層(五級)
 | 角色 | 寫法 | 何時用 |
 |---|---|---|
 | Primary | `<button>`(預設樣式) | 每個區塊**最多一個**主要動作(送出、建立、套用) |
 | Secondary | `.secondary` | 次要但非低調的動作(自動生成、approve) |
 | Ghost | `.ghost`(+`.small`) | 低調/連結式動作、表格內操作、返回 |
-| **Danger** | `.danger` | **唯一**破壞性樣式(刪除、清除) |
+| **Danger(顯著)** | `.danger` | 醒目的破壞性動作:整個區塊的主刪除/清除(清除向量、刪除 profile) |
+| **Danger(低調)** | `.ghost.small.danger-link` | 密集清單/選單裡的低調刪除(刪對話 `×`、刪筆記本、刪來源、刪筆記、刪使用者列) |
 
 尺寸 modifier:`.small`(28px)、`.wide`(滿寬)。
-> **[淘汰] `.danger-link`**:用 `!important` 把 ghost 染紅當第二種破壞性樣式(`admin_users` 刪除鈕)。
-> 統一改用 `.danger`(破壞性操作即使在表格內也用 `.danger.small`,不要 ghost+紅字)。
-> **[淘汰] `.secondary` 濫用**:只給「次要動作」;主要送出鈕一律 primary。
+> **破壞性有兩種強度,不是一種**:顯著用有框的 `.danger`;在 list/menu 裡為了不喧賓奪主,用 ghost+紅字的 `.danger-link`(全 app 已一致這樣用)。**不要**把密集清單裡的刪除全換成有框 `.danger`——那會更突兀。
+> 真正待修的只是 `.danger-link` 的 CSS 用了 `!important`(P2 清理,不影響外觀)。
+> **`.secondary` 濫用要收斂**:只給「次要動作」;主要送出鈕一律 primary。
 
 ### 3.7 表單
 - **每個欄位用 `<label>` 包**(label 文字 + 控制項),`label` 已是 grid 直排(`style.css:575`)。
@@ -201,8 +203,8 @@
 | 區塊標題 | 4 種 | `.section-head`(+slots) | `_eval_items_section`、`search`、`admin_eval_set` |
 | 卡片 | 5 套 | `.card`(+modifier) | `notebook`/`profile`/`eval_authoring`/`eval_result`/`index_stat` |
 | 表格 RWD | 部分有 `data-label` | 一律 `data-label` | 所有 eval 表格 |
-| 狀態色 | `.status` 超載 | `.status`(狀態)/ `.tag`(分類) | `admin_users`、`admin_index`、`admin_eval_set` |
-| 破壞性鈕 | `.danger` / `.danger-link` | `.danger` | `admin_users` |
+| 狀態色 | `.status` 超載 | ✅ `.status`(狀態)/ `.tag`(分類)已上線 | `admin_users`、`_eval_items_section` |
+| 破壞性鈕 | `!important` on `.danger-link` | 保留兩級(`.danger` 顯著 / `.danger-link` 低調),僅去 `!important` | `style.css`(P2) |
 | 空狀態 | 3 種 | `.empty-state` | eval 頁 |
 | Alert | 缺 warning | 補 `.warn` | `style.css` |
 | 分頁 | 2 套 class 對齊但命名綁 eval | `.tab`(更名) | `_eval_nav`、`admin_eval_set` |

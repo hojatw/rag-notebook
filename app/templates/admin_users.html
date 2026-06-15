@@ -50,9 +50,9 @@
               </td>
               <td data-label="Role">
                 {% if u.is_admin %}
-                  <span class="status indexed">管理員</span>
+                  <span class="tag tag--accent">管理員</span>
                 {% else %}
-                  <span class="status">一般使用者</span>
+                  <span class="tag">一般使用者</span>
                 {% endif %}
               </td>
               <td data-label="Created">{{ u.created_at[:10] }}</td>
