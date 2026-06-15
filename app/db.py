@@ -207,6 +207,9 @@ def init_db() -> None:
                 expected_source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
                 expected_chunk_id INTEGER REFERENCES chunks(id) ON DELETE SET NULL,
                 expected_substrings_json TEXT NOT NULL DEFAULT '[]',
+                item_type TEXT NOT NULL DEFAULT 'answerable',
+                expected_answer TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
                 notes TEXT NOT NULL DEFAULT '',
                 approved INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -316,6 +319,11 @@ def init_db() -> None:
         # can always fall back to known-good config values. Backfill marks the
         # lowest-id profile as default when no row is flagged yet.
         _ensure_column(conn, "retrieval_profiles", "is_default", "INTEGER NOT NULL DEFAULT 0")
+        # E1e-1: LLM-assisted eval authoring metadata. These fields are optional
+        # for manual/deterministic items and do not change retrieval-only scoring.
+        _ensure_column(conn, "eval_items", "item_type", "TEXT NOT NULL DEFAULT 'answerable'")
+        _ensure_column(conn, "eval_items", "expected_answer", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "eval_items", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         if conn.execute("SELECT COUNT(*) FROM retrieval_profiles WHERE is_default = 1").fetchone()[0] == 0:
             conn.execute(
                 "UPDATE retrieval_profiles SET is_default = 1 "

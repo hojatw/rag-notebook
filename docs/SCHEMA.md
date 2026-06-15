@@ -210,6 +210,9 @@ One approved/manual eval question. Expected evidence can be a source, a chunk, s
 | `expected_source_id` | INTEGER → `sources(id)` SET NULL | optional expected source |
 | `expected_chunk_id` | INTEGER → `chunks(id)` SET NULL | optional expected chunk |
 | `expected_substrings_json` | TEXT DEFAULT `'[]'` | JSON list; any matching substring counts as evidence hit |
+| `item_type` | TEXT DEFAULT `'answerable'` | E1e authoring type: `answerable`, `cross_lingual`, or `unanswerable` |
+| `expected_answer` | TEXT DEFAULT `''` | optional reference answer for future answer-quality judging |
+| `metadata_json` | TEXT DEFAULT `'{}'` | compact authoring metadata such as origin, prompt version, model, language, source ids; no copied prompts/source text |
 | `notes` | TEXT DEFAULT `''` | admin notes / rationale |
 | `approved` | INTEGER DEFAULT 1 | only approved items run |
 | `created_at` / `updated_at` | TEXT | |

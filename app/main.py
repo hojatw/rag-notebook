@@ -25,7 +25,7 @@ from .jobs import enqueue_source
 from .worker import run_worker_loop
 import httpx
 
-from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
+from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_eval_candidates, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
 from .security import get_app_secret, hash_password, sign_user_id, unsign_user_id, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
@@ -3070,6 +3070,71 @@ def generated_eval_question(filename: str, snippet: str) -> str:
     return f"「{anchor}{suffix}」這段內容的重點是什麼？來源：{filename}"
 
 
+EVAL_ITEM_TYPE_LABELS = {
+    "answerable": "可回答",
+    "cross_lingual": "跨語言",
+    "unanswerable": "不可回答",
+}
+
+
+def normalize_eval_item_type(value: str | None) -> str:
+    item_type = (value or "answerable").strip().lower()
+    return item_type if item_type in EVAL_ITEM_TYPE_LABELS else "answerable"
+
+
+def eval_item_type_options() -> list[dict[str, str]]:
+    return [
+        {"value": "answerable", "label": "一般可回答"},
+        {"value": "cross_lingual", "label": "跨語言"},
+        {"value": "unanswerable", "label": "不可回答"},
+    ]
+
+
+def eval_authoring_chunks(
+    conn,
+    eval_set: dict,
+    source_ids: list[int] | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Fetch bounded chunks for LLM eval authoring, spread across sources."""
+    source_ids = [int(value) for value in (source_ids or []) if int(value) > 0]
+    params: list[Any] = [eval_set["notebook_id"], eval_set["target_user_id"]]
+    source_filter = ""
+    if source_ids:
+        placeholders = ",".join("?" for _ in source_ids)
+        source_filter = f"AND s.id IN ({placeholders})"
+        params.extend(source_ids)
+    params.append(max(1, min(limit, 24)))
+    rows = conn.execute(
+        f"""
+        WITH eligible AS (
+            SELECT
+                c.id AS chunk_id,
+                c.text,
+                c.location,
+                c.chunk_index,
+                s.id AS source_id,
+                s.filename,
+                ROW_NUMBER() OVER (
+                    PARTITION BY s.id
+                    ORDER BY c.chunk_index ASC, c.id ASC
+                ) AS chunk_rank
+            FROM chunks c
+            JOIN sources s ON s.id = c.source_id
+            WHERE s.notebook_id = ? AND s.user_id = ? AND s.status = 'indexed'
+              AND TRIM(c.text) != ''
+              {source_filter}
+        )
+        SELECT chunk_id, source_id, filename, location, text
+        FROM eligible
+        ORDER BY chunk_rank ASC, source_id DESC, chunk_id ASC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def eval_item_hit_rank(item: dict, retrieved: list[dict]) -> int | None:
     expected_source_id = item.get("expected_source_id")
     expected_chunk_id = item.get("expected_chunk_id")
@@ -3533,6 +3598,15 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
         ]
     for item in items:
         item["expected_substrings"] = loads(item.get("expected_substrings_json") or "[]")
+        item["metadata"] = loads(item.get("metadata_json") or "{}")
+        item["item_type"] = normalize_eval_item_type(item.get("item_type"))
+        item["item_type_label"] = EVAL_ITEM_TYPE_LABELS[item["item_type"]]
+        origin = item["metadata"].get("origin") or ("manual" if item["approved"] else "draft")
+        item["origin_label"] = {
+            "llm_generated": "LLM",
+            "deterministic": "自動",
+            "manual": "手動",
+        }.get(origin, origin)
     for run in runs:
         run["metrics"] = loads(run.get("metrics_json") or "{}")
     return {
@@ -3542,11 +3616,20 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
         "approved_count": sum(1 for item in items if item["approved"]),
         "runs": runs,
         "profiles": profiles,
+        "item_type_options": eval_item_type_options(),
     }
 
 
-def eval_set_items_response(request: Request, user: dict, eval_set_id: int):
+def eval_set_items_response(
+    request: Request,
+    user: dict,
+    eval_set_id: int,
+    notice: str = "",
+    error: str = "",
+):
     context = eval_set_detail_context(eval_set_id)
+    context["eval_notice"] = notice
+    context["eval_error"] = error
     if request.headers.get("HX-Request") == "true":
         return render(request, "_eval_items_section.html", {"user": user, **context})
     return eval_set_items_redirect(eval_set_id)
@@ -3776,8 +3859,8 @@ def admin_generate_eval_items(
                 """
                 INSERT INTO eval_items
                 (eval_set_id, question, expected_source_id, expected_chunk_id,
-                 expected_substrings_json, notes, approved)
-                VALUES (?, ?, ?, ?, ?, ?, 0)
+                 expected_substrings_json, item_type, expected_answer, metadata_json, notes, approved)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                 """,
                 (
                     eval_set_id,
@@ -3785,6 +3868,14 @@ def admin_generate_eval_items(
                     row["source_id"],
                     row["chunk_id"],
                     dumps([snippet]),
+                    "answerable",
+                    "",
+                    dumps({
+                        "origin": "deterministic",
+                        "prompt_version": "eval_authoring.deterministic.v1",
+                        "source_id": row["source_id"],
+                        "chunk_id": row["chunk_id"],
+                    }),
                     "自動生成候選題；請人工確認後 approve。",
                 ),
             )
@@ -3798,6 +3889,153 @@ def admin_generate_eval_items(
         created,
     )
     return eval_set_items_response(request, user, eval_set_id)
+
+
+@app.post("/admin/evals/sets/{eval_set_id}/generate/llm")
+async def admin_generate_eval_items_llm(
+    request: Request,
+    eval_set_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+    count: int = Form(5),
+    item_types: list[str] | None = Form(None),
+    source_ids: list[int] | None = Form(None),
+    target_language: str = Form("Traditional Chinese"),
+):
+    count = max(1, min(int(count), 20))
+    requested_types = [normalize_eval_item_type(value) for value in (item_types or [])]
+    requested_types = list(dict.fromkeys(requested_types)) or ["answerable"]
+    target_language = target_language.strip()[:60] or "Traditional Chinese"
+    selected_source_ids = [int(value) for value in (source_ids or []) if int(value) > 0]
+    with connect() as conn:
+        eval_set = load_eval_set(conn, eval_set_id)
+        settings = load_llm_settings(conn) or {}
+        chunks = eval_authoring_chunks(conn, eval_set, selected_source_ids, limit=max(count * 3, 8))
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        return eval_set_items_response(
+            request,
+            user,
+            eval_set_id,
+            error="尚未完成 LLM 設定，無法使用 LLM 生成候選題；可先使用 deterministic 自動生成或手動新增。",
+        )
+    if not chunks:
+        return eval_set_items_response(
+            request,
+            user,
+            eval_set_id,
+            error="找不到可用的 indexed chunks；請確認來源已完成索引，或調整來源選擇。",
+        )
+    candidates = await generate_eval_candidates(
+        chunks,
+        settings,
+        count=count,
+        item_types=requested_types,
+        target_language=target_language,
+    )
+    if not candidates:
+        return eval_set_items_response(
+            request,
+            user,
+            eval_set_id,
+            error="LLM 沒有產生可用候選題；請減少來源範圍、調整題型，或稍後再試。",
+        )
+
+    chunk_by_id = {int(chunk["chunk_id"]): chunk for chunk in chunks}
+    source_ids_available = {int(chunk["source_id"]) for chunk in chunks}
+    created = 0
+    skipped = 0
+    with connect() as conn:
+        load_eval_set(conn, eval_set_id)
+        for candidate in candidates:
+            item_type = normalize_eval_item_type(candidate.get("item_type"))
+            question = " ".join(str(candidate.get("question") or "").split())[:500]
+            if not question:
+                skipped += 1
+                continue
+
+            chunk = chunk_by_id.get(int(candidate.get("chunk_id") or 0))
+            expected_source_id = candidate.get("source_id")
+            expected_chunk_id = None
+            expected_substrings: list[str] = []
+            if item_type != "unanswerable":
+                if chunk is None and expected_source_id not in source_ids_available:
+                    skipped += 1
+                    continue
+                if chunk is not None:
+                    expected_chunk_id = chunk["chunk_id"]
+                    expected_source_id = chunk["source_id"]
+                    chunk_text = chunk.get("text") or ""
+                    expected_substrings = [
+                        value
+                        for value in (candidate.get("expected_substrings") or [])
+                        if value and value in chunk_text
+                    ][:3]
+                    if not expected_substrings:
+                        snippet = generated_eval_snippet(chunk_text)
+                        expected_substrings = [snippet] if snippet else []
+                elif expected_source_id not in source_ids_available:
+                    skipped += 1
+                    continue
+            else:
+                expected_source_id = None
+                expected_chunk_id = None
+
+            duplicate = conn.execute(
+                """
+                SELECT id FROM eval_items
+                WHERE eval_set_id = ? AND question = ?
+                LIMIT 1
+                """,
+                (eval_set_id, question),
+            ).fetchone()
+            if duplicate is not None:
+                skipped += 1
+                continue
+
+            metadata = {
+                "origin": "llm_generated",
+                "prompt_version": "eval_authoring.llm.v1",
+                "model": settings.get("chat_model") or "",
+                "target_language": target_language,
+                "requested_item_types": requested_types,
+                "selected_source_ids": selected_source_ids,
+                "generated_source_id": expected_source_id,
+                "generated_chunk_id": expected_chunk_id,
+            }
+            conn.execute(
+                """
+                INSERT INTO eval_items
+                (eval_set_id, question, expected_source_id, expected_chunk_id,
+                 expected_substrings_json, item_type, expected_answer, metadata_json, notes, approved)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    eval_set_id,
+                    question,
+                    expected_source_id,
+                    expected_chunk_id,
+                    dumps(expected_substrings),
+                    item_type,
+                    str(candidate.get("expected_answer") or "")[:800],
+                    dumps(metadata),
+                    (str(candidate.get("rationale") or "LLM 生成候選題；請人工確認後 approve。"))[:500],
+                ),
+            )
+            created += 1
+        if created:
+            conn.execute("UPDATE eval_sets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (eval_set_id,))
+    logger.info(
+        "eval_items_generated_llm admin_user_id=%s eval_set_id=%s created=%s skipped=%s",
+        user["id"],
+        eval_set_id,
+        created,
+        skipped,
+    )
+    return eval_set_items_response(
+        request,
+        user,
+        eval_set_id,
+        notice=f"LLM 已建立 {created} 題 draft 候選題；略過 {skipped} 題無效或重複輸出。",
+    )
 
 
 @app.post("/admin/evals/sets/{eval_set_id}/items")

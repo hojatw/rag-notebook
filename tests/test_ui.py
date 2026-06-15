@@ -958,6 +958,132 @@ def test_admin_eval_workbench_search_generate_approve_and_delete(monkeypatch, tm
         assert item is None
 
 
+def test_admin_eval_set_llm_authoring_generates_draft_items(monkeypatch, tmp_path):
+    """E1e-1: LLM-assisted authoring stores reviewed-only draft eval candidates."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_generate_eval_candidates(chunks, settings, count=5, item_types=None, target_language=""):
+        assert settings["chat_model"] == "chat"
+        assert item_types == ["answerable", "cross_lingual", "unanswerable"]
+        assert target_language == "Traditional Chinese"
+        assert chunks
+        chunk = chunks[0]
+        return [
+            {
+                "question": "alpha 的關鍵數字是什麼？",
+                "item_type": "answerable",
+                "source_id": chunk["source_id"],
+                "chunk_id": chunk["chunk_id"],
+                "expected_answer": "alpha answer",
+                "expected_substrings": ["alpha evidence"],
+                "rationale": "covers exact evidence",
+            },
+            {
+                "question": "What does alpha evidence describe?",
+                "item_type": "cross_lingual",
+                "source_id": chunk["source_id"],
+                "chunk_id": chunk["chunk_id"],
+                "expected_answer": "alpha answer",
+                "expected_substrings": ["alpha evidence"],
+                "rationale": "cross-language retrieval",
+            },
+            {
+                "question": "這份文件是否提到 beta approval date?",
+                "item_type": "unanswerable",
+                "source_id": None,
+                "chunk_id": None,
+                "expected_answer": "",
+                "expected_substrings": [],
+                "rationale": "tests abstention later",
+            },
+        ]
+
+    monkeypatch.setattr(main, "generate_eval_candidates", fake_generate_eval_candidates)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, notebook_id = _seed_notebook(db, "LLM Eval")
+        source_id = _seed_indexed_source(db, admin_user["id"], notebook_id, "alpha.pdf", summary="alpha evidence")
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+
+        created = client.post(
+            "/admin/evals/sets",
+            data={"notebook_id": notebook_id, "name": "LLM Generated Eval", "description": ""},
+            follow_redirects=False,
+        )
+        eval_set_id = int(created.headers["location"].rstrip("/").split("/")[-1])
+
+        generated = client.post(
+            f"/admin/evals/sets/{eval_set_id}/generate/llm",
+            data={
+                "count": "3",
+                "item_types": ["answerable", "cross_lingual", "unanswerable"],
+                "source_ids": [str(source_id)],
+                "target_language": "Traditional Chinese",
+            },
+            headers={"HX-Request": "true"},
+        )
+
+        assert generated.status_code == 200
+        assert 'id="eval-items"' in generated.text
+        assert '<!doctype html>' not in generated.text
+        assert "LLM 已建立 3 題 draft 候選題" in generated.text
+        assert "跨語言" in generated.text
+        assert "不可回答" in generated.text
+        with db.connect() as conn:
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM eval_items WHERE eval_set_id = ? ORDER BY id ASC",
+                    (eval_set_id,),
+                ).fetchall()
+            ]
+        assert [row["approved"] for row in rows] == [0, 0, 0]
+        assert [row["item_type"] for row in rows] == ["answerable", "cross_lingual", "unanswerable"]
+        assert rows[2]["expected_source_id"] is None
+        assert rows[2]["expected_substrings_json"] == "[]"
+        metadata = json.loads(rows[0]["metadata_json"])
+        assert metadata["origin"] == "llm_generated"
+        assert metadata["selected_source_ids"] == [source_id]
+        assert "alpha evidence" not in rows[0]["metadata_json"]
+
+
+def test_admin_eval_set_llm_authoring_requires_settings(monkeypatch, tmp_path):
+    """E1e-1: missing LLM settings returns a partial error and creates no item."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, notebook_id = _seed_notebook(db, "No Settings Eval")
+        _seed_indexed_source(db, admin_user["id"], notebook_id, "alpha.pdf", summary="alpha evidence")
+        created = client.post(
+            "/admin/evals/sets",
+            data={"notebook_id": notebook_id, "name": "No Settings", "description": ""},
+            follow_redirects=False,
+        )
+        eval_set_id = int(created.headers["location"].rstrip("/").split("/")[-1])
+
+        generated = client.post(
+            f"/admin/evals/sets/{eval_set_id}/generate/llm",
+            data={"count": "1", "item_types": "answerable"},
+            headers={"HX-Request": "true"},
+        )
+
+        assert generated.status_code == 200
+        assert "尚未完成 LLM 設定" in generated.text
+        with db.connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM eval_items WHERE eval_set_id = ?",
+                (eval_set_id,),
+            ).fetchone()["n"]
+        assert count == 0
+
+
 def test_admin_eval_set_runner_records_results(monkeypatch, tmp_path):
     """E1b: admin can create a manual eval item, run it, and inspect stored metrics."""
     main, db = _fresh_app(monkeypatch, tmp_path)
