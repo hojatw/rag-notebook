@@ -34,8 +34,8 @@
         <tbody>
           {% for param in run.profile_params %}
             <tr>
-              <td>{{ param.label }}<br><span class="muted small">{{ param.key }}</span></td>
-              <td>{{ param.value }}</td>
+              <td data-label="參數">{{ param.label }}<br><span class="muted small">{{ param.key }}</span></td>
+              <td data-label="值">{{ param.value }}</td>
             </tr>
           {% endfor %}
         </tbody>

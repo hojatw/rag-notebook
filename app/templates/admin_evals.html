@@ -63,11 +63,11 @@
           <tbody>
             {% for item in eval_sets %}
               <tr>
-                <td>{{ item.name }}</td>
-                <td>{{ item.notebook_emoji or "📓" }} {{ item.notebook_title }} · {{ item.target_username }}</td>
-                <td>{{ item.approved_count }} / {{ item.item_count }} approved</td>
-                <td>{{ item.created_at }}</td>
-                <td class="action-cell">
+                <td data-label="名稱">{{ item.name }}</td>
+                <td data-label="筆記本">{{ item.notebook_emoji or "📓" }} {{ item.notebook_title }} · {{ item.target_username }}</td>
+                <td data-label="題數">{{ item.approved_count }} / {{ item.item_count }} approved</td>
+                <td data-label="建立時間">{{ item.created_at }}</td>
+                <td data-label="操作" class="action-cell">
                   <a class="ghost small" href="/admin/evals/sets/{{ item.id }}">開啟</a>
                   <form method="post" action="/admin/evals/sets/{{ item.id }}/delete" data-confirm="刪除此 Eval Set？相關題目、run history 與結果都會一併刪除。">
                     <button type="submit" class="danger small">刪除</button>
@@ -79,7 +79,7 @@
         </table>
       </div>
     {% else %}
-      <p class="muted">尚未建立 eval set。</p>
+      <div class="empty"><h2>尚未建立 eval set</h2><p>從上方選一個筆記本建立第一個評測集。</p></div>
     {% endif %}
   </section>
 
@@ -94,20 +94,20 @@
           <tbody>
             {% for run in runs %}
               <tr>
-                <td>#{{ run.id }}</td>
-                <td>{{ run.eval_set_name }}<br><span class="muted small">{{ run.notebook_title }}</span></td>
-                <td><span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run.status }}</span></td>
-                <td>{{ run.metrics.recall_at_k if run.metrics else "—" }}</td>
-                <td>{{ run.metrics.mrr if run.metrics else "—" }}</td>
-                <td>{% if run.metrics %}{{ run.metrics.avg_latency_ms }}ms{% else %}—{% endif %}</td>
-                <td><a class="ghost small" href="/admin/evals/runs/{{ run.id }}">查看</a></td>
+                <td data-label="Run">#{{ run.id }}</td>
+                <td data-label="Eval Set">{{ run.eval_set_name }}<br><span class="muted small">{{ run.notebook_title }}</span></td>
+                <td data-label="狀態"><span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run.status }}</span></td>
+                <td data-label="Recall">{{ run.metrics.recall_at_k if run.metrics else "—" }}</td>
+                <td data-label="MRR">{{ run.metrics.mrr if run.metrics else "—" }}</td>
+                <td data-label="Latency">{% if run.metrics %}{{ run.metrics.avg_latency_ms }}ms{% else %}—{% endif %}</td>
+                <td data-label="操作"><a class="ghost small" href="/admin/evals/runs/{{ run.id }}">查看</a></td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
     {% else %}
-      <p class="muted">尚未執行任何 eval。</p>
+      <div class="empty"><h2>尚未執行任何 eval</h2><p>建立評測集並 approve 題目後即可執行 retrieval eval。</p></div>
     {% endif %}
   </section>
 </section>

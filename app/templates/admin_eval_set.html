@@ -201,12 +201,12 @@
           <tbody>
             {% for run in runs %}
               <tr>
-                <td><strong>#{{ run.id }}</strong><small>{{ run.created_at }}</small></td>
-                <td><span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run.status }}</span></td>
-                <td>{{ run.progress_current }} / {{ run.progress_total }}</td>
-                <td>{{ run.metrics.recall_at_k if run.metrics else "—" }}</td>
-                <td>{{ run.metrics.mrr if run.metrics else "—" }}</td>
-                <td><a class="ghost small" href="/admin/evals/runs/{{ run.id }}">查看</a></td>
+                <td data-label="Run"><strong>#{{ run.id }}</strong><small>{{ run.created_at }}</small></td>
+                <td data-label="狀態"><span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run.status }}</span></td>
+                <td data-label="進度">{{ run.progress_current }} / {{ run.progress_total }}</td>
+                <td data-label="Recall">{{ run.metrics.recall_at_k if run.metrics else "—" }}</td>
+                <td data-label="MRR">{{ run.metrics.mrr if run.metrics else "—" }}</td>
+                <td data-label="操作"><a class="ghost small" href="/admin/evals/runs/{{ run.id }}">查看</a></td>
               </tr>
             {% endfor %}
           </tbody>

@@ -20,9 +20,9 @@
         <tbody>
           {% for row in param_diff %}
             <tr class="{{ 'diff-changed' if row.changed else '' }}">
-              <td>{{ row.label }}</td>
-              <td>{{ row.base if row.base is not none else "—" }}</td>
-              <td>{{ row.candidate if row.candidate is not none else "—" }}</td>
+              <td data-label="參數">{{ row.label }}</td>
+              <td data-label="Baseline">{{ row.base if row.base is not none else "—" }}</td>
+              <td data-label="Candidate">{{ row.candidate if row.candidate is not none else "—" }}</td>
             </tr>
           {% endfor %}
         </tbody>
@@ -40,10 +40,10 @@
         <tbody>
           {% for row in metric_diff %}
             <tr>
-              <td>{{ row.label }}</td>
-              <td>{{ row.base }}</td>
-              <td>{{ row.candidate }}</td>
-              <td class="diff-{{ row.direction }}">
+              <td data-label="指標">{{ row.label }}</td>
+              <td data-label="Baseline">{{ row.base }}</td>
+              <td data-label="Candidate">{{ row.candidate }}</td>
+              <td data-label="Δ" class="diff-{{ row.direction }}">
                 {% if row.direction == 'better' %}▲{% elif row.direction == 'worse' %}▼{% else %}＝{% endif %}
                 {{ '%+g' | format(row.delta) }}
               </td>
@@ -65,16 +65,16 @@
         <tbody>
           {% for row in question_diff %}
             <tr class="diff-row-{{ row.trend }}">
-              <td>{{ row.question }}</td>
-              <td>
+              <td data-label="問題">{{ row.question }}</td>
+              <td data-label="Baseline">
                 <span class="status {{ 'indexed' if row.base_status == 'hit' else 'processing' if row.base_status in ['unscored','—'] else 'failed' }}">{{ row.base_status }}</span>
                 {% if row.base_rank %}<span class="muted small"> @{{ row.base_rank }}</span>{% endif %}
               </td>
-              <td>
+              <td data-label="Candidate">
                 <span class="status {{ 'indexed' if row.candidate_status == 'hit' else 'processing' if row.candidate_status in ['unscored','—'] else 'failed' }}">{{ row.candidate_status }}</span>
                 {% if row.candidate_rank %}<span class="muted small"> @{{ row.candidate_rank }}</span>{% endif %}
               </td>
-              <td>
+              <td data-label="變化">
                 {% if row.trend == 'improved' %}<span class="diff-better">▲ 進步</span>
                 {% elif row.trend == 'regressed' %}<span class="diff-worse">▼ 退步</span>
                 {% else %}<span class="muted">＝ 持平</span>{% endif %}
