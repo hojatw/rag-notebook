@@ -1957,26 +1957,32 @@ def record_audit_event(
     actor_username = str(user.get("username") or "") if user else ""
     ip_address = request.client.host if request and request.client else ""
     user_agent = request.headers.get("user-agent", "")[:300] if request else ""
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO audit_events
-            (actor_user_id, actor_username, action, target_type, target_id,
-             sensitivity, ip_address, user_agent, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                actor_id,
-                actor_username[:120],
-                action[:120],
-                target_type[:80],
-                target_id,
-                sensitivity[:40],
-                ip_address[:120],
-                user_agent,
-                dumps(metadata or {}),
-            ),
-        )
+    # Auditing is best-effort: it runs AFTER the main action has already
+    # committed (e.g. index clear/rebuild, profile apply), so an audit-write
+    # failure must never turn a succeeded action into a 500.
+    try:
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO audit_events
+                (actor_user_id, actor_username, action, target_type, target_id,
+                 sensitivity, ip_address, user_agent, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    actor_id,
+                    actor_username[:120],
+                    action[:120],
+                    target_type[:80],
+                    target_id,
+                    sensitivity[:40],
+                    ip_address[:120],
+                    user_agent,
+                    dumps(metadata or {}),
+                ),
+            )
+    except Exception:
+        logger.exception("audit_event_failed action=%s target=%s/%s", action, target_type, target_id)
 
 
 @app.get("/notebooks/{notebook_id}/chat/{conversation_id}/export")
@@ -2562,6 +2568,7 @@ async def retrieve(
         if score <= 0:
             continue
         candidates[row["id"]] = {
+            "id": row["id"],
             "source_id": row["source_id"],
             "filename": row["filename"],
             "location": row["location"],
