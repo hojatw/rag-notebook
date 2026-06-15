@@ -705,15 +705,19 @@ label {
 
 .settings-head {
   display: grid;
-  gap: 4px;
-  margin-bottom: var(--sp-4);
+  gap: var(--sp-3);            /* was 4px — eyebrow/title/description were cramped */
+  margin-bottom: var(--sp-5);  /* was --sp-4 — more room before the first section */
   padding-bottom: var(--sp-4);
   border-bottom: 1px solid var(--line);
 }
 
+/* Spacing inside the header is driven purely by the grid gap above, so the
+   eyebrow pill and h1 don't double up their own margins and re-cramp it. */
+.settings-head .eyebrow { margin-bottom: 0; }
+
 .settings-head h1 {
   font-size: 24px;
-  margin-bottom: 2px;
+  margin-bottom: 0;
 }
 
 .settings-head p { margin: 0; }
