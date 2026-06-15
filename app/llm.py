@@ -41,6 +41,29 @@ Do NOT translate. If excerpts are mixed-language, follow whichever language carr
 
 Return only a JSON array of strings, each under 80 characters."""
 
+EVAL_AUTHORING_PROMPT = """You create draft eval questions for an in-deployment RAG eval workbench.
+Use ONLY the provided source excerpts. The output is reviewed by an admin before becoming ground truth.
+
+Return only a JSON array of objects. Each object must use this shape:
+{
+  "question": "standalone eval question",
+  "type": "answerable | cross_lingual | unanswerable",
+  "source_id": 123,
+  "chunk_id": 456,
+  "expected_answer": "short reference answer, blank for unanswerable",
+  "expected_substrings": ["short exact evidence substring"],
+  "rationale": "why this is useful as an eval item"
+}
+
+Rules:
+- "answerable" questions must be answerable from one provided excerpt.
+- "cross_lingual" questions must ask in a different language than the supporting excerpt while still being answerable from it.
+- "unanswerable" questions must be plausible for this notebook but NOT answerable from the provided excerpts; use null source_id/chunk_id and an empty expected_substrings list.
+- For answerable/cross_lingual items, copy 1 to 3 short exact substrings from the supporting excerpt. Prefer distinctive names, numbers, dates, or terminology.
+- Do not invent source ids or chunk ids; use the ids shown in the excerpt headers.
+- Keep each question under 140 characters.
+- Use Traditional Chinese questions unless the requested item type is cross_lingual or the excerpts are clearly non-Chinese and the instruction asks otherwise."""
+
 FOLLOWUP_QUESTIONS_PROMPT = """You suggest follow-up questions after an assistant answered a user inside a source-grounded RAG app.
 Read the source excerpts, the user's question, and the assistant's answer. Propose 3 short, distinct follow-up questions the user would plausibly ask next.
 Each question must stand alone (no pronouns) and be answerable from the same source documents.
@@ -526,6 +549,59 @@ async def generate_starter_questions(excerpts: list[dict[str, Any]], settings: d
     return cleaned[:4]
 
 
+async def generate_eval_candidates(
+    excerpts: list[dict[str, Any]],
+    settings: dict[str, Any],
+    count: int = 5,
+    item_types: list[str] | None = None,
+    target_language: str = "Traditional Chinese",
+) -> list[dict[str, Any]]:
+    """Ask the chat model for draft eval items from selected source excerpts."""
+    if not excerpts:
+        return []
+    if not settings.get("api_key") or not settings.get("chat_model"):
+        logger.info("eval_candidates_skipped reason=no_chat_settings")
+        return []
+    allowed_types = {"answerable", "cross_lingual", "unanswerable"}
+    requested_types = [item for item in (item_types or ["answerable"]) if item in allowed_types]
+    if not requested_types:
+        requested_types = ["answerable"]
+    count = max(1, min(int(count), 20))
+    samples = excerpts[:12]
+    context = "\n\n".join(
+        (
+            f"Excerpt {index}\n"
+            f"source_id: {chunk['source_id']}\n"
+            f"chunk_id: {chunk['chunk_id']}\n"
+            f"file: {chunk['filename']}\n"
+            f"location: {chunk['location']}\n"
+            f"text: {chunk['text'][:900]}"
+        )
+        for index, chunk in enumerate(samples, start=1)
+    )
+    user_prompt = (
+        f"Target question language: {target_language}\n"
+        f"Requested item types: {', '.join(requested_types)}\n"
+        f"Requested count: {count}\n\n"
+        f"Source excerpts:\n{context}\n\n"
+        "Return the JSON array now."
+    )
+    try:
+        content = await chat_completion(settings, user_prompt, EVAL_AUTHORING_PROMPT, temperature=0.4)
+        candidates = parse_eval_candidates(content)
+    except Exception:
+        logger.exception("eval_candidates_failed excerpts=%s count=%s", len(samples), count)
+        return []
+    cleaned = candidates[:count]
+    logger.info(
+        "eval_candidates_generated excerpts=%s requested=%s returned=%s",
+        len(samples),
+        count,
+        len(cleaned),
+    )
+    return cleaned
+
+
 async def suggest_followup_questions(
     question: str,
     answer: str,
@@ -897,6 +973,50 @@ def parse_rerank_scores(content: str) -> dict[int, float]:
             continue
         scores[candidate_id] = max(0.0, min(1.0, score))
     return scores
+
+
+def parse_eval_candidates(content: str) -> list[dict[str, Any]]:
+    """Parse bounded eval candidate objects from model JSON output."""
+    parsed = json.loads(extract_json(content))
+    if not isinstance(parsed, list):
+        return []
+    allowed_types = {"answerable", "cross_lingual", "unanswerable"}
+    candidates: list[dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        question = " ".join(str(item.get("question") or "").split())[:500]
+        if not question:
+            continue
+        item_type = str(item.get("type") or "answerable").strip().lower()
+        if item_type not in allowed_types:
+            item_type = "answerable"
+        expected_substrings = []
+        raw_substrings = item.get("expected_substrings")
+        if isinstance(raw_substrings, list):
+            for value in raw_substrings:
+                text = " ".join(str(value).split())
+                if text and text not in expected_substrings:
+                    expected_substrings.append(text[:160])
+        candidates.append({
+            "question": question,
+            "item_type": item_type,
+            "source_id": optional_int(item.get("source_id")),
+            "chunk_id": optional_int(item.get("chunk_id")),
+            "expected_answer": " ".join(str(item.get("expected_answer") or "").split())[:800],
+            "expected_substrings": expected_substrings[:3],
+            "rationale": " ".join(str(item.get("rationale") or "").split())[:300],
+        })
+    return candidates
+
+
+def optional_int(value: Any) -> int | None:
+    """Best-effort positive integer parser for model-emitted ids."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def extract_json(content: str) -> str:
