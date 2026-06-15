@@ -45,6 +45,12 @@
 > 過渡期:現有頁面外層多為 `.settings`(`settings.html`、`admin_*`、`eval` 皆是),
 > `home`/`search` 則無外層。目標統一為 `.page`;在 `.page` 上線前,新頁沿用 `.settings` 並比照其內距。
 
+**內容寬度(兩級制,不要再加第三種)**:
+- **表單/一般頁** = `.settings`,**720px**(設定、使用者、索引)。
+- **資料密集頁** = `.settings` + `.eval-workbench` 或 `.audit-page`,**1120px**(寬表格、多欄網格、compare;Eval 全頁與稽核共用此寬)。
+
+> 兩者共用同一條 `max-width` 規則(`.eval-workbench, .audit-page`)。新增寬版 admin 頁就掛這個寬度標記,**不要再發明新的數值**(先前 eval=1120 / 稽核=1180 的意外 60px 差已收斂)。
+
 ### 2.2 Workspace(滿版三欄)
 只有 `notebook.html`(來源 / 對話 / 工作台三欄)。維持其專屬 layout,**不套** `.page`。
 

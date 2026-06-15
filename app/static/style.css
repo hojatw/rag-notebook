@@ -729,7 +729,10 @@ label {
 .settings-foot button { flex: none; }
 .settings-foot .ghost { margin-left: auto; }
 
-.eval-workbench {
+/* Two admin width tiers: form pages use .settings (720px); data-heavy pages
+   (eval + audit — wide tables/grids) share this one wide tier. docs/UI.md §2.1. */
+.eval-workbench,
+.audit-page {
   max-width: 1120px;
 }
 
@@ -3918,10 +3921,6 @@ legend {
 .diff-row-regressed td:first-child { box-shadow: inset 3px 0 0 var(--danger); }
 
 .export-section .split-actions { align-items: center; justify-content: flex-start; }
-
-.audit-page {
-  max-width: 1180px;
-}
 .audit-filter-form { align-items: flex-end; }
 .audit-filter-form label { min-width: 150px; }
 .audit-table-wrap {
