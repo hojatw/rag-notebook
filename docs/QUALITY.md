@@ -62,6 +62,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Impact:** Mixed-language notebooks under-serve questions asked in the "other" language — a likely real usage pattern for this deployment.
 - **Fix (investigate, needs the Q1-3 eval set):** options to measure — (a) confirm/upgrade the embedding model's CN↔EN strength (prod e5-large > ada-002); (b) translate/expand the query into the corpus languages before retrieval; (c) language-aware abstain threshold or a small cross-lingual score boost; (d) a CJK-capable keyword arm (ties into Q1-2). Measure each against a bilingual eval set before adopting.
 
+### [ ] Q1-5 · Notebook-level domain hints and answer policy
+- **Issue:** Domain-specific terminology, abbreviations, internal product names, aliases, and required answer rules currently live only in the indexed source text and generic prompts. Query rewrite may not expand a user's wording into the document's exact terminology, and final answers may not consistently follow deployment-specific rules such as "prefer label text", "numbers must come from cited evidence", or "abstain when evidence is missing".
+- **Impact:** Accuracy can look inconsistent even when the retrieval stack is healthy: synonym/alias questions miss relevant chunks, cross-lingual/domain-keyword questions underperform, and grounded answers may drift in style or evidentiary strictness. Conversely, putting a large unstructured "domain prompt" into every answer risks turning prompt text into an unofficial knowledge source and can increase hallucination/cost.
+- **Fix (future product work, tracked in `ROADMAP.md` E2):** add structured notebook-level **domain hints** (terms, synonyms, definitions, query expansions, answer notes) plus a bounded **answer policy**. Use query-oriented fields only in rewrite/retrieval expansion, and answer-policy fields only in final answer prompting. Validate with the in-deployment Eval Workbench by comparing the same Eval Set with and without hints; success means synonym/domain questions improve without reducing Recall/MRR, increasing false positives, or leaking sensitive prompt/hint text into sanitized exports or audit metadata.
+
 ---
 
 ## P2 — minor / known nuances

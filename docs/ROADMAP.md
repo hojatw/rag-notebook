@@ -108,7 +108,55 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] E1c — **Done.** Profile comparison + apply/rollback landed. A runtime active-params layer (`ACTIVE_RETRIEVAL_PARAMS` in `app/main.py`) now backs the retrieval path: admins author candidate profiles (7 runtime-safe params), run an eval set against any profile via an isolated per-run override (the runner applies the run's frozen snapshot, not live config), compare two succeeded runs of the same set (param diff + metric diff + per-question improved/regressed), then **apply** a profile to live chat retrieval (persisted via `retrieval_profiles.is_active`, reloaded on startup) or **roll back** by applying a previous profile. Index-affecting profiles (`requires_reindex = 1`) are refused at apply. Routes: `/admin/evals/profiles` (create/delete/apply), `/admin/evals/compare`.
   - [x] E1d — **Done.** Export + audit foundation landed. Retrieval profiles can be exported as sanitized JSON, eval runs can be exported as sanitized JSON (no questions/evidence/retrieved snippets) or full internal JSON (questions, expected evidence, diagnostics, retrieved snippets) gated by explicit confirmation. A durable `audit_events` table and `/admin/audit` viewer now record export events plus high-risk admin actions: retrieval profile create/apply/delete/export, LLM settings updates, index Clear/Rebuild, user-management changes, and notebook/source/chat/note lifecycle or Markdown-export actions.
   - [ ] E1e — LLM-assisted eval authoring and answer-quality judging: generate candidate questions from selected sources, support unanswerable and cross-lingual cases, then optionally score answer quality/citation correctness after retrieval-only metrics are reliable.
-- **Recommended next implementation round:** do **E1e** when ready. Further audit expansion should wait for customer requirements, e.g. explicit read-access audit for source preview/result viewing. Defer index-affecting parameter application until there is a clear Clear/Rebuild UX.
+  - [ ] E1f — Eval tuning guide in the workbench: convert the internal "how to tune eval parameters" guide into an admin help page/drawer (`/admin/evals/help` or an in-page help action). Cover when to tune parameters vs fix eval items, symptom -> likely cause -> parameter guidance, profile experiment workflow, starter profiles, non-runtime-safe changes that require reindex, and the role of future domain hints / answer policy. Keep the PDF as an optional generated/downloadable artifact later; the product source of truth should be HTML so it stays aligned with parameter names and UI copy.
+- **Recommended next implementation round:** do **E1e** when ready, with E1f as a low-risk companion if time permits. Further audit expansion should wait for customer requirements, e.g. explicit read-access audit for source preview/result viewing. Defer index-affecting parameter application until there is a clear Clear/Rebuild UX.
+
+#### [ ] E2 · Notebook domain hints and answer policy
+- **Issue:** Some "inaccurate" answers are not fixed by retrieval-weight tuning alone. Domain-specific aliases, abbreviations, internal product names, and deployment-specific answer rules may need to be available at the notebook level so query rewrite can find the right evidence and final answers follow the customer's rules.
+- **Target model:** each notebook can carry bounded, structured **domain hints** (term/synonyms/definition/query expansion/answer note) plus a concise **answer policy**. Hints improve retrieval/query rewrite; policy controls final answer behavior. Neither should become an unbounded extra knowledge base.
+- **Guardrails:**
+  - Keep hints structured and size-limited; avoid one giant free-form prompt pasted into every LLM call.
+  - Query expansion fields can influence rewrite/retrieval; answer policy fields can influence final answer wording. Do not mix the two blindly.
+  - Treat hints/policy as potentially sensitive. Sanitized exports and audit metadata should store identifiers/counts/summaries, not full prompt or proprietary keyword text.
+  - Validate with the Eval Workbench: compare the same Eval Set with and without hints, and verify improvements do not come from false-positive evidence matches.
+- **Phased:**
+  - [ ] E2a — Schema + notebook admin/editor UI for domain hints and answer policy.
+  - [ ] E2b — Feed domain hints into query rewrite / retrieval expansion with explicit limits.
+  - [ ] E2c — Feed answer policy into final answer prompting without treating it as source evidence.
+  - [ ] E2d — Eval Workbench comparison path for "with hints" vs "without hints" runs.
+  - [ ] E2e — Export/audit boundaries for hint/policy changes and exports.
+- **Quality reference:** see `QUALITY.md` Q1-5.
+
+---
+
+## AI governance
+
+### Medium priority — auditability, safety visibility, and cost control
+
+#### [ ] G1 · AI governance telemetry and guardrail events
+- **Issue:** The current audit trail records high-risk admin/data actions, but AI governance also needs usage visibility and safety-event traceability: token/cost usage, blocked or warned prompts, unsafe output attempts, prompt-injection signals, PII/secrets detection, and who exported or viewed sensitive AI reports. These signals are related to audit, but they have different volume, retention, and sensitivity than `audit_events`.
+- **Target model:** keep the formal audit trail focused on low-volume authority/data-state actions, and add separate governance telemetry tables for high-volume AI events. Admins should see a unified governance dashboard, but the underlying data should stay separated:
+  - `audit_events` for official actions such as settings changes, profile apply/rollback, exports, data lifecycle actions.
+  - `llm_usage_events` for LLM/embedding calls, token/cost estimates, latency, status, and feature-level attribution.
+  - `ai_safety_events` for guardrail decisions, categories, severity, detector version, and redacted summaries.
+  - `messages` remains the canonical place for original conversation content; governance tables should store ids, hashes, redacted summaries, and compact metadata rather than copying full prompts/answers.
+- **Guardrails:**
+  - Do not store full prompts, source text, retrieved snippets, API keys, or full exported payloads in governance metadata by default.
+  - Prefer provider-reported `usage` when available; fall back to explicit estimates and mark them as estimated.
+  - Treat safety detections as review signals, not perfect truth. Keep detector version, rule version, category, severity, and decision so future audits can explain why something was allowed, warned, blocked, or redacted.
+  - Keep customer data-residency constraints explicit: external moderation or gateway services are optional integration points, not baseline assumptions.
+- **Phase 1 — low-cost in-app foundation (no new gateway required):**
+  - [ ] G1a — Add `llm_usage_events` and record per-call telemetry for rewrite, embedding, rerank, answer, summaries/artifacts, follow-ups, and eval runs. Store user/notebook/conversation/message ids where available, provider/model, call type, prompt/output token counts or estimates, latency, status, and error class.
+  - [ ] G1b — Normalize provider `usage` responses when present; retain `is_estimated` for char/token estimates so reports do not imply billing precision that the endpoint did not provide.
+  - [ ] G1c — Add `ai_safety_events` plus a first local rules engine: input length limits, invisible/control text checks, obvious secret patterns, simple prompt-injection phrases, and deployment-specific deny/allow lists. Record redacted summary/hash, not raw sensitive content.
+  - [ ] G1d — Add an admin governance dashboard and report surface with tabs for LLM usage, safety events, high-sensitivity exports, and settings/profile changes. Start with aggregate tables and filters before charts: daily usage, user/notebook/function breakdown, estimated/provider token totals, latency/error rates, eval-run cost summary, safety-event counts by category/severity/decision, and high-sensitivity action summaries.
+  - [ ] G1e — Add governance report export and retention policy: CSV/JSON exports for usage and safety summaries first, optionally PDF later. Summarized usage can be retained longer; raw safety context should be short-lived or redacted, with full-content lookup going through existing message permissions.
+- **Phase 2 — productized governance integrations:**
+  - [ ] G1f — Evaluate LiteLLM Proxy for centralized spend tracking, virtual keys, budgets, rate limits, and cross-model gateway controls once the deployment needs more than in-app reporting. Note that LiteLLM key/spend management introduces a gateway and database dependency, so it should be a deliberate product/deploy decision.
+  - [ ] G1g — Evaluate Presidio for PII/secrets detection and anonymization where local data processing is required.
+  - [ ] G1h — Evaluate LLM Guard for input/output scanners such as prompt injection, secrets, toxicity, invisible text, token limits, and malicious URLs.
+  - [ ] G1i — Evaluate NeMo Guardrails when policy flows need input, retrieval, dialog, execution, and output rails rather than only scanner-style detection.
+  - [ ] G1j — Add connector abstraction so external guardrail/gateway decisions still write the same `ai_safety_events` / `llm_usage_events` records and remain auditable in the in-app governance dashboard.
 
 ---
 
