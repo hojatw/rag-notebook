@@ -23,6 +23,7 @@ from markupsafe import Markup, escape
 
 from .config import config
 from .db import UPLOAD_DIR, connect, dumps, encrypt_for_storage, init_db, load_llm_settings, load_llm_settings_for_display, loads
+from .governance import record_ai_safety_events
 from .ingest import supported
 from .jobs import enqueue_source
 from .worker import run_worker_loop
@@ -1320,6 +1321,14 @@ async def notebook_compare(
 ):
     """Compare 2+ indexed sources using their summaries; returns a result fragment."""
     selected_ids = [sid for sid in source_ids if isinstance(sid, int)]
+    if focus.strip():
+        record_ai_safety_events(
+            text=focus,
+            event_type="input_scan",
+            surface="tool.compare_focus",
+            context={"user_id": user["id"], "notebook_id": notebook_id},
+            metadata={"source_count": len(selected_ids)},
+        )
     if len(selected_ids) < 2:
         return render(
             request,
@@ -1922,6 +1931,13 @@ async def ask(
     usage_watermark = _llm_usage_event_watermark()
     try:
         conversation_id, history, settings = _prepare_question(notebook_id, user, question, conversation_id, source_ids)
+        record_ai_safety_events(
+            text=question,
+            event_type="input_scan",
+            surface="chat.ask",
+            context={"user_id": user["id"], "notebook_id": notebook_id, "conversation_id": conversation_id},
+            metadata={"source_count": len(source_ids)},
+        )
         answer, citations, metadata = await _answer_question(
             question, settings, history, user["id"], notebook_id, conversation_id, source_ids
         )
@@ -1978,6 +1994,13 @@ async def ask_stream(
             conversation, history, settings = _prepare_question(notebook_id, user, question, conversation, source_ids)
             usage_watermark = _llm_usage_event_watermark()
             usage_context = {"user_id": user["id"], "notebook_id": notebook_id, "conversation_id": conversation}
+            record_ai_safety_events(
+                text=question,
+                event_type="input_scan",
+                surface="chat.ask_stream",
+                context=usage_context,
+                metadata={"source_count": len(source_ids)},
+            )
             yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
             yield sse_event("status", {"text": "正在檢索來源…"})
 
@@ -4200,6 +4223,13 @@ async def admin_generate_eval_items_llm(
         eval_set = load_eval_set(conn, eval_set_id)
         settings = load_llm_settings(conn) or {}
         chunks = eval_authoring_chunks(conn, eval_set, selected_source_ids, limit=max(count * 3, 8))
+    record_ai_safety_events(
+        text=target_language,
+        event_type="input_scan",
+        surface="eval_authoring.target_language",
+        context={"user_id": user["id"], "notebook_id": eval_set["notebook_id"], "eval_set_id": eval_set_id},
+        metadata={"requested_type_count": len(requested_types), "selected_source_count": len(selected_source_ids)},
+    )
     if not settings.get("api_key") or not settings.get("chat_model"):
         return eval_set_items_response(
             request,
@@ -4351,6 +4381,15 @@ def admin_add_eval_item(
     except ValueError:
         raise HTTPException(status_code=400, detail="預期來源格式不正確。") from None
     snippets = split_expected_substrings(expected_substrings)
+    with connect() as conn:
+        eval_set_context = load_eval_set(conn, eval_set_id)
+    record_ai_safety_events(
+        text=question,
+        event_type="input_scan",
+        surface="eval_authoring.manual_question",
+        context={"user_id": user["id"], "notebook_id": eval_set_context["notebook_id"], "eval_set_id": eval_set_id},
+        metadata={"has_expected_source": bool(source_id), "substring_count": len(snippets)},
+    )
     with connect() as conn:
         eval_set = load_eval_set(conn, eval_set_id)
         if source_id is not None:

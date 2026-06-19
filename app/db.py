@@ -327,6 +327,44 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_llm_usage_events_eval_run_created
             ON llm_usage_events(eval_run_id, created_at DESC);
+
+            -- AI safety / guardrail signals (G1c). Kept separate from the
+            -- formal audit trail and usage telemetry: this is high-volume,
+            -- scanner-oriented data and must not copy prompts, source text,
+            -- retrieved snippets, API keys, or model outputs.
+            CREATE TABLE IF NOT EXISTS ai_safety_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                notebook_id INTEGER REFERENCES notebooks(id) ON DELETE SET NULL,
+                conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+                message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+                source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+                eval_run_id INTEGER REFERENCES eval_runs(id) ON DELETE SET NULL,
+                eval_set_id INTEGER REFERENCES eval_sets(id) ON DELETE SET NULL,
+                event_type TEXT NOT NULL,
+                surface TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                detector_version TEXT NOT NULL DEFAULT '',
+                rule_id TEXT NOT NULL DEFAULT '',
+                content_hash TEXT NOT NULL DEFAULT '',
+                redacted_summary TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ai_safety_events_created
+            ON ai_safety_events(created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_ai_safety_events_category_created
+            ON ai_safety_events(category, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_ai_safety_events_user_created
+            ON ai_safety_events(user_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_ai_safety_events_notebook_created
+            ON ai_safety_events(notebook_id, created_at DESC);
             """
         )
         _ensure_column(conn, "llm_settings", "provider", "TEXT NOT NULL DEFAULT 'openai_compatible'")
