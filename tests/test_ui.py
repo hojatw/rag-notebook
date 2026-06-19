@@ -823,7 +823,7 @@ def test_admin_eval_workbench_creates_default_profile(monkeypatch, tmp_path):
 
         resp = client.get("/admin/evals")
         assert resp.status_code == 200
-        assert "Eval 工作台" in resp.text
+        assert "評測工作台" in resp.text
         assert "目前系統預設" in resp.text           # active-profile line
         assert 'href="/admin/evals/profiles"' in resp.text
         assert "歷史執行紀錄" in resp.text
@@ -923,7 +923,7 @@ def test_admin_eval_workbench_search_generate_approve_and_delete(monkeypatch, tm
         resp = client.get("/admin/evals", params={"notebook_q": "Customer"})
         assert resp.status_code == 200
         assert "Customer indexed" in resp.text
-        assert "user · 1 indexed sources" in resp.text
+        assert "user · 1 個已索引來源" in resp.text
         assert "Admin indexed" not in resp.text
 
         created = client.post(
@@ -951,7 +951,7 @@ def test_admin_eval_workbench_search_generate_approve_and_delete(monkeypatch, tm
         detail = client.get(f"/admin/evals/sets/{eval_set_id}")
         assert detail.status_code == 200
         assert '<nav aria-label="Breadcrumb" class="breadcrumb">' in detail.text
-        assert 'href="/admin/evals">Eval 工作台</a>' in detail.text
+        assert 'href="/admin/evals">評測工作台</a>' in detail.text
         assert 'id="eval-items"' in detail.text
         assert "返回 Eval 工作台" not in detail.text
         assert "自動生成 draft 題目" in detail.text
@@ -1194,7 +1194,7 @@ def test_admin_eval_set_runner_records_results(monkeypatch, tmp_path):
         assert detail.status_code == 200
         assert "Alpha Eval" in detail.text
         assert '<nav aria-label="Breadcrumb" class="breadcrumb">' in detail.text
-        assert 'href="/admin/evals">Eval 工作台</a>' in detail.text
+        assert 'href="/admin/evals">評測工作台</a>' in detail.text
         assert f'href="/admin/evals/sets/{eval_set_id}">Alpha Eval</a>' in detail.text
         assert "返回 Eval Set" not in detail.text
         assert "hit" in detail.text
@@ -1231,7 +1231,7 @@ def test_create_apply_and_rollback_retrieval_profile(monkeypatch, tmp_path):
         landing = client.get("/admin/evals")
         assert landing.status_code == 200
         assert 'href="/admin/evals/profiles"' in landing.text
-        assert "目前作用中的 Retrieval Profile" in landing.text
+        assert "目前作用中的檢索 Profile" in landing.text
 
         profiles_page = client.get("/admin/evals/profiles")  # creates the baseline profile
         assert profiles_page.status_code == 200

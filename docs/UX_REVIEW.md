@@ -73,7 +73,9 @@ CSS-only，皆在 [`app/static/style.css`](../app/static/style.css)：
 > Phase 1 三段（1a/1b/1c）皆完成；唯導覽「Eval→評測」內容決定留待 Phase 2b 與 Eval 頁標題一起改。
 | **Phase 2 — 英文漂移大本營（= M2 主體 + L3/L4）** | Eval 工作台/Retrieval Profiles/建立 Eval Set/indexed sources、稽核頁（篩選＋欄位標題＋severity 值）、設定頁雙語統一（L4）、aria-label 中文化（L3） | [~] 進行中 |
 | &nbsp;&nbsp;↳ Phase 2a — 稽核頁 | admin_audit.html 全頁走 `t()`：篩選標籤/表頭/severity(`SENSITIVITY_LABELS`)/說明/空狀態/modal aria 全中文化（含 L1 severity 文字、該頁 aria）。剩英文僅資料識別碼與 API key（刻意保留） | [x] 2026-06-19（143 passed；實測整頁中文） |
-| &nbsp;&nbsp;↳ Phase 2b — Eval 工作台叢集（多模板，最大宗）、設定頁 L4、全站 aria L3 | 下一輪 | [ ] |
+| &nbsp;&nbsp;↳ Phase 2b — Eval 工作台叢集（多模板）、設定頁 L4、全站 aria L3 | 混合命名：`評測`=活動/區塊；`Eval Set`/`Eval run`/`Run` 等資料詞保留；`Retrieval`→`檢索`、`Profile`/Recall/MRR 保留 | [~] 進行中 |
+| &nbsp;&nbsp;&nbsp;&nbsp;· 2b-i 導覽 + 主頁 | nav「Eval→評測」、`_eval_nav` 分頁（評測集/檢索 Profile/調參指南）、`admin_evals` 整頁、eval 子頁麵包屑、run 狀態 map（`RUN_STATUS_LABELS`）。清掉 indexed sources/Retrieval Profiles/Eval 工作台 等英文 | [x] 2026-06-19（143 passed；主頁+導覽實測） |
+| &nbsp;&nbsp;&nbsp;&nbsp;· 2b-ii 其餘 | Profiles 頁（+`PROFILE_PARAM_LABELS`）、eval set 明細/runs/compare/help、`_eval_*` partials、設定頁 L4、全站 aria L3 | [ ] 下一輪 |
 | **Phase 3 — 選配** | 補 en locale 字串 + 每使用者語言切換（ROADMAP U15b） | [ ] |
 
 > 每個 Phase 為獨立可上線的小段；新字串一律走 `t()`/`window.I18N`，不再回到模板/JS 硬編碼。

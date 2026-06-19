@@ -138,6 +138,8 @@ templates.env.globals["t"] = i18n.t
 templates.env.globals["i18n_js"] = i18n.js_messages
 # Localised display for the audit sensitivity classification (raw value kept).
 templates.env.globals["audit_sensitivity_labels"] = i18n.SENSITIVITY_LABELS
+# Localised display for the eval run lifecycle status (raw value kept).
+templates.env.globals["run_status_labels"] = i18n.RUN_STATUS_LABELS
 
 
 @app.middleware("http")
@@ -3845,7 +3847,7 @@ def admin_eval_set_detail(
         {
             "user": user,
             "breadcrumb_items": [
-                {"label": "Eval 工作台", "href": "/admin/evals"},
+                {"label": i18n.t("eval.title"), "href": "/admin/evals"},
                 {"label": eval_set["name"], "href": None},
             ],
             **context,
@@ -4222,7 +4224,7 @@ def admin_eval_run_detail(
         {
             "user": user,
             "breadcrumb_items": [
-                {"label": "Eval 工作台", "href": "/admin/evals"},
+                {"label": i18n.t("eval.title"), "href": "/admin/evals"},
                 {"label": run["eval_set_name"], "href": f"/admin/evals/sets/{run['eval_set_id']}"},
                 {"label": f"Run #{run['id']}", "href": None},
             ],
@@ -4570,7 +4572,7 @@ def admin_eval_compare(
         {
             "user": user,
             "breadcrumb_items": [
-                {"label": "Eval 工作台", "href": "/admin/evals"},
+                {"label": i18n.t("eval.title"), "href": "/admin/evals"},
                 {"label": base_run["eval_set_name"], "href": f"/admin/evals/sets/{base_run['eval_set_id']}"},
                 {"label": f"比較 #{context['base_run']['id']} ↔ #{context['candidate_run']['id']}", "href": None},
             ],
