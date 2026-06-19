@@ -5,8 +5,8 @@
 <div class="tool-panel" data-tool="{{ kind }}">
 
   {% if kind == "compare" %}
-    <h3 class="tool-panel-title">🔀 來源比較</h3>
-    <p class="muted small">勾選 2 個以上來源，依摘要比較共同點、差異與矛盾。</p>
+    <h3 class="tool-panel-title">🔀 {{ t('tool.compare') }}</h3>
+    <p class="muted small">{{ t('tool.compare_blurb') }}</p>
     <form class="compare-form tool-panel-form"
           hx-post="/notebooks/{{ notebook.id }}/compare"
           hx-target="#tool-result"
@@ -27,12 +27,12 @@
       {# 聚焦重點 (focus) input removed from the UI — recorded as a future
          feature (ROADMAP U17). /compare still accepts an (empty) focus param,
          so nothing else changes. #}
-      <button type="submit" class="wide small">開始比較</button>
+      <button type="submit" class="wide small">{{ t('tool.compare_btn') }}</button>
     </form>
 
   {% elif kind == "minutes" %}
-    <h3 class="tool-panel-title">📝 會議記錄整理</h3>
-    <p class="muted small">選一份會議逐字稿，整理成結構化會議記錄並存入筆記。</p>
+    <h3 class="tool-panel-title">📝 {{ t('tool.minutes_title') }}</h3>
+    <p class="muted small">{{ t('tool.minutes_blurb') }}</p>
     <form class="minutes-form tool-panel-form"
           hx-post="/notebooks/{{ notebook.id }}/minutes"
           hx-target="#tool-result"
@@ -40,19 +40,19 @@
           hx-indicator="#tool-loading"
           hx-disabled-elt="find button[type=submit]">
       <label class="minutes-source-label">
-        <span class="muted small">選擇來源（會議逐字稿）</span>
+        <span class="muted small">{{ t('tool.minutes_source_label') }}</span>
         <select name="source_id" required>
           {% for s in sources_indexed %}
             <option value="{{ s.id }}">{{ s.filename }}</option>
           {% endfor %}
         </select>
       </label>
-      <button type="submit" class="wide small">整理成會議記錄</button>
+      <button type="submit" class="wide small">{{ t('tool.minutes_btn') }}</button>
     </form>
 
   {% elif kind == "translate" %}
-    <h3 class="tool-panel-title">🌐 翻譯摘要</h3>
-    <p class="muted small">選一份來源,把它的摘要翻譯成指定語言。</p>
+    <h3 class="tool-panel-title">🌐 {{ t('tool.translate') }}</h3>
+    <p class="muted small">{{ t('tool.translate_blurb') }}</p>
     <form class="translate-form tool-panel-form"
           hx-post="/notebooks/{{ notebook.id }}/translate"
           hx-target="#tool-result"
@@ -60,7 +60,7 @@
           hx-indicator="#tool-loading"
           hx-disabled-elt="find button[type=submit]">
       <label class="minutes-source-label">
-        <span class="muted small">選擇來源</span>
+        <span class="muted small">{{ t('tool.source_label') }}</span>
         <select name="source_id" required>
           {% for s in sources_indexed %}
             <option value="{{ s.id }}">{{ s.filename }}</option>
@@ -68,36 +68,32 @@
         </select>
       </label>
       <label class="minutes-source-label">
-        <span class="muted small">目標語言</span>
+        <span class="muted small">{{ t('tool.target_lang') }}</span>
         <select name="target_language" required>
           {% for lang in translate_languages %}
             <option value="{{ lang }}">{{ lang }}</option>
           {% endfor %}
         </select>
       </label>
-      <button type="submit" class="wide small">翻譯</button>
+      <button type="submit" class="wide small">{{ t('tool.translate_btn') }}</button>
     </form>
 
   {% else %}
     {# A4 artifacts: study_guide / faq / timeline — generated across the whole
-       notebook's summaries, saved to Notes. #}
-    {% set blurbs = {
-      "study_guide": "從所有已索引來源的摘要生成學習指南（核心概念、重點、自我測驗、名詞解釋）。",
-      "faq": "從所有已索引來源生成常見問答（FAQ）。",
-      "timeline": "從來源中抽取事件與里程碑，整理成時間軸。",
-    } %}
-    <h3 class="tool-panel-title">{{ artifact_label }}</h3>
-    <p class="muted small">{{ blurbs.get(kind, "") }}</p>
+       notebook's summaries, saved to Notes. Label/blurb come from the i18n
+       catalog keyed by `tool.<kind>` / `tool.<kind>_blurb`. #}
+    <h3 class="tool-panel-title">{{ t('tool.' ~ kind) }}</h3>
+    <p class="muted small">{{ t('tool.' ~ kind ~ '_blurb') }}</p>
     <form class="artifact-form tool-panel-form"
           hx-post="/notebooks/{{ notebook.id }}/artifacts/{{ kind }}"
           hx-target="#tool-result"
           hx-swap="innerHTML"
           hx-indicator="#tool-loading"
           hx-disabled-elt="find button[type=submit]">
-      <button type="submit" class="wide small">生成{{ artifact_label }}</button>
+      <button type="submit" class="wide small">{{ t('tool.generate', label=t('tool.' ~ kind)) }}</button>
     </form>
   {% endif %}
 
-  <p id="tool-loading" class="studio-loading htmx-indicator">生成中…</p>
+  <p id="tool-loading" class="studio-loading htmx-indicator">{{ t('tool.generating') }}</p>
   <div id="tool-result" class="tool-result"></div>
 </div>

@@ -1,3 +1,10 @@
+// i18n (Phase 1): client-side strings come from window.I18N (emitted by
+// base.html from the app/i18n.py catalog). `tr()` falls back to the literal so
+// a missing key degrades safely.
+function tr(key, fallback) {
+  return (window.I18N && window.I18N[key]) || fallback;
+}
+
 // Register the drag-and-drop component with Alpine. v3 sandboxes x-data
 // expressions, so a bare `dropzone()` lookup against window does NOT resolve.
 // Using Alpine.data() guarantees the factory is in scope.
@@ -98,14 +105,14 @@ function bindStreamingAskForms(root) {
             if (hidden && data.conversation_id) hidden.value = data.conversation_id;
             if (data.url) window.history.pushState({}, "", data.url);
           } else if (eventName === "status") {
-            stream.status.textContent = data.text || "處理中…";
+            stream.status.textContent = data.text || tr("processing", "處理中…");
           } else if (eventName === "chunk") {
-            stream.status.textContent = "正在生成回答…";
+            stream.status.textContent = tr("generating", "正在生成回答…");
             stream.answer += data.text || "";
             stream.body.textContent = stream.answer;
             stream.body.scrollIntoView({ behavior: "smooth", block: "end" });
           } else if (eventName === "error") {
-            stream.status.textContent = data.text || "回答生成失敗。";
+            stream.status.textContent = data.text || tr("answer_failed", "回答生成失敗。");
           } else if (eventName === "done") {
             replaceMessagesHtml(data.html);
             if (data.url) window.history.pushState({}, "", data.url);
@@ -113,7 +120,7 @@ function bindStreamingAskForms(root) {
         });
       } catch (error) {
         console.error("[notebook] stream failed", error);
-        stream.status.textContent = "回答生成失敗，請稍後再試。";
+        stream.status.textContent = tr("answer_failed_retry", "回答生成失敗，請稍後再試。");
       } finally {
         resetForm();
       }
@@ -127,7 +134,7 @@ function createStreamingMessage(messages, question) {
 
   const user = document.createElement("article");
   user.className = "message user";
-  user.innerHTML = "<div class=\"message-head\"><div class=\"role\">你</div></div>";
+  user.innerHTML = "<div class=\"message-head\"><div class=\"role\">" + tr("role_you", "你") + "</div></div>";
   const userBody = document.createElement("p");
   userBody.className = "message-body";
   userBody.textContent = question;
@@ -136,8 +143,8 @@ function createStreamingMessage(messages, question) {
   const assistant = document.createElement("article");
   assistant.className = "message assistant streaming-message";
   assistant.innerHTML =
-    "<div class=\"message-head\"><div class=\"role\">助理</div></div>" +
-    "<p class=\"stream-status muted small\">正在檢索來源…</p>";
+    "<div class=\"message-head\"><div class=\"role\">" + tr("role_assistant", "助理") + "</div></div>" +
+    "<p class=\"stream-status muted small\">" + tr("retrieving", "正在檢索來源…") + "</p>";
   const body = document.createElement("div");
   body.className = "message-body markdown-body streaming-body";
   assistant.appendChild(body);
@@ -209,7 +216,7 @@ function bindCopyButtons(root) {
       try {
         await navigator.clipboard.writeText(text);
         const original = button.textContent;
-        button.textContent = "✓ 已複製";
+        button.textContent = tr("copied", "✓ 已複製");
         setTimeout(() => { button.textContent = original; }, 1500);
       } catch (e) {
         console.error("[notebook] copy failed", e);
@@ -293,7 +300,7 @@ function bindAskFormThinkingBubble(root) {
       q.textContent = question;
       const bubble = document.createElement("div");
       bubble.className = "thinking-bubble";
-      const thinkingLabel = (window.I18N && window.I18N.thinking) || "思考中";
+      const thinkingLabel = tr("thinking", "思考中");
       bubble.innerHTML =
         "<span>" + thinkingLabel + "</span>" +
         "<span class=\"thinking-dots\"><span></span><span></span><span></span></span>";

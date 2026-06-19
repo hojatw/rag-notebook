@@ -3,21 +3,22 @@
    into the shared #preview-content modal and the result is written to the
    outputs/notes shelf below — so adding a feature is +1 tile, not +1 card.
    Re-fetched on indexed-sources-changed so tile enabled-state stays in sync. #}
+{# label comes from the i18n catalog keyed by `tool.<kind>` (single source). #}
 {% set tools = [
-  ("compare", "來源比較", "🔀", 2),
-  ("minutes", "會議記錄", "📝", 1),
-  ("study_guide", "學習指南", "📚", 1),
-  ("faq", "常見問答", "❓", 1),
-  ("timeline", "時間軸", "🕒", 1),
-  ("translate", "翻譯摘要", "🌐", 1),
+  ("compare", "🔀", 2),
+  ("minutes", "📝", 1),
+  ("study_guide", "📚", 1),
+  ("faq", "❓", 1),
+  ("timeline", "🕒", 1),
+  ("translate", "🌐", 1),
 ] %}
 <section class="studio-section studio-tools" id="studio-tools"
          hx-get="/notebooks/{{ notebook.id }}/_tools"
          hx-trigger="indexed-sources-changed from:body"
          hx-swap="outerHTML">
-  <h3>工具</h3>
+  <h3>{{ t('studio.tools_heading') }}</h3>
   <div class="tool-grid">
-    {% for kind, label, icon, min_indexed in tools %}
+    {% for kind, icon, min_indexed in tools %}
       {% set enabled = indexed_count >= min_indexed %}
       <button type="button"
               class="tool-tile{% if not enabled %} is-disabled{% endif %}"
@@ -28,14 +29,14 @@
               hx-on::after-request="window.dispatchEvent(new CustomEvent('open-preview'))"
               {% else %}
               disabled
-              title="{% if min_indexed > 1 %}需要 {{ min_indexed }} 個以上已索引的來源{% else %}先完成來源索引{% endif %}"
+              title="{% if min_indexed > 1 %}{{ t('studio.tool_need_n', count=min_indexed) }}{% else %}{{ t('studio.tool_need_index') }}{% endif %}"
               {% endif %}>
         <span class="tool-tile-icon" aria-hidden="true">{{ icon }}</span>
-        <span class="tool-tile-label">{{ label }}</span>
+        <span class="tool-tile-label">{{ t('tool.' ~ kind) }}</span>
       </button>
     {% endfor %}
   </div>
   {% if indexed_count == 0 %}
-    <p class="muted small">先上傳並完成索引，工具才能使用。</p>
+    <p class="muted small">{{ t('studio.tools_empty') }}</p>
   {% endif %}
 </section>

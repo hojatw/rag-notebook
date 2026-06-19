@@ -1677,7 +1677,7 @@ async def _answer_question(
             "chat_no_retrieval_results user_id=%s top_score=%.3f threshold=%.2f",
             user_id, top_score, threshold,
         )
-        return "依據所選的來源，我無法判斷這個問題的答案。", [], metadata
+        return i18n.t("chat.abstain"), [], metadata
 
     generate_started = time.perf_counter()
     answer = await generate_answer(question, retrieved, settings)
@@ -1839,7 +1839,7 @@ async def ask_stream(
                 metadata["top_score"] = round(top_score, 3)
 
             if not retrieved or top_score < active_low_confidence_threshold():
-                answer = "依據所選的來源，我無法判斷這個問題的答案。"
+                answer = i18n.t("chat.abstain")
                 metadata["outcome"] = "low_confidence" if retrieved else "no_retrieval"
                 metadata["threshold"] = active_low_confidence_threshold()
                 yield sse_event("chunk", {"text": answer})
@@ -2030,7 +2030,7 @@ def export_conversation(
         else:
             lines += [message["content"], ""]
             if message["citations"]:
-                lines.append("> 引用來源：")
+                lines.append("> " + i18n.t("export.citations"))
                 for c in message["citations"]:
                     lines.append(f"> [{c.get('index')}] {c.get('filename')} · {c.get('location')}")
                 lines.append("")
@@ -2060,7 +2060,7 @@ def export_notes(
             "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
             (notebook_id, user["id"]),
         ).fetchall()
-    lines = [f"# {notebook['title']} — 筆記", ""]
+    lines = [f"# {notebook['title']} — {i18n.t('export.notes_suffix')}", ""]
     for note in notes:
         title = note["title"] or note["content"][:40]
         lines += [f"## {title}", "", note["content"], "", f"_{note['created_at']}_", "", "---", ""]
@@ -2093,7 +2093,7 @@ def export_note(
         ).fetchone()
         if note is None:
             raise HTTPException(status_code=404, detail="找不到筆記")
-    title = note["title"] or note["content"][:40] or "筆記"
+    title = note["title"] or note["content"][:40] or i18n.t("export.notes_suffix")
     lines = [f"# {title}", "", note["content"], "", f"_{note['created_at']}_", ""]
     record_audit_event(
         request,

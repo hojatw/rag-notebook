@@ -7,22 +7,22 @@
      hx-trigger="indexed-sources-changed from:body"
      hx-swap="outerHTML">
   {% if indexed_sources %}
-    <h2>問任何關於你來源文件的問題</h2>
-    <p class="muted">在下方輸入問題，回答會附上引用的來源段落。</p>
+    <h2>{{ t('chat.empty_ask_title') }}</h2>
+    <p class="muted">{{ t('chat.empty_ask_body') }}</p>
     {# U16: starter questions relocated here from Studio. #}
     {% with questions=cached_suggestions, error="", has_indexed=indexed_sources %}
       {% include "_suggestions.html" %}
     {% endwith %}
   {% elif sources %}
-    <h2>索引建立中</h2>
-    <p class="muted">請等待左側來源完成索引，就可以開始提問。</p>
+    <h2>{{ t('chat.empty_indexing_title') }}</h2>
+    <p class="muted">{{ t('chat.empty_indexing_body') }}</p>
   {% else %}
-    <h2>先新增一個來源開始使用</h2>
-    <p class="muted">依照這三步驟建立第一個可提問的筆記本。</p>
+    <h2>{{ t('chat.empty_new_title') }}</h2>
+    <p class="muted">{{ t('chat.empty_new_body') }}</p>
     <ol class="onboarding-steps">
-      <li><strong>上傳來源</strong><span>把 PDF、DOCX、Markdown、TXT、HTML 或字幕(SRT/VTT)拖到左側。</span></li>
-      <li><strong>等待索引</strong><span>來源完成索引後，左側狀態會變成已完成。</span></li>
-      <li><strong>開始提問</strong><span>在下方輸入問題，回答會附上引用來源。</span></li>
+      <li><strong>{{ t('chat.step1_title') }}</strong><span>{{ t('chat.step1_body') }}</span></li>
+      <li><strong>{{ t('chat.step2_title') }}</strong><span>{{ t('chat.step2_body') }}</span></li>
+      <li><strong>{{ t('chat.step3_title') }}</strong><span>{{ t('chat.step3_body') }}</span></li>
     </ol>
   {% endif %}
 </div>
