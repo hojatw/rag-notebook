@@ -2533,7 +2533,10 @@ async def retrieve(
                 asyncio.to_thread(keyword_candidates_from_sqlite, user_id, source_ids or [], queries, limit=pool_size),
             )
             candidates = merge_candidates(vector_candidates, keyword_candidates, queries, params=p)
-            ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:pool_size]
+            ranked = diversify_candidates(
+                sorted(candidates.values(), key=lambda item: item["score"], reverse=True),
+                limit=pool_size,
+            )
             retrieved = await rerank_chunks(
                 question, ranked, settings, limit=final_count,
                 rerank_weight=rerank_weight, rerank_base_weight=rerank_base_weight,
@@ -2577,7 +2580,10 @@ async def retrieve(
             "vector_score": vector_score,
             "keyword_score": keyword,
         }
-    ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:pool_size]
+    ranked = diversify_candidates(
+        sorted(candidates.values(), key=lambda item: item["score"], reverse=True),
+        limit=pool_size,
+    )
     retrieved = await rerank_chunks(
         question, ranked, settings, limit=final_count,
         rerank_weight=rerank_weight, rerank_base_weight=rerank_base_weight,
@@ -2700,6 +2706,48 @@ def merge_candidates(
             "keyword_score": keyword,
         }
     return {chunk_id: item for chunk_id, item in candidates.items() if item["score"] > 0}
+
+
+def diversify_candidates(
+    candidates: list[dict],
+    *,
+    limit: int,
+    overlap_threshold: float = 0.88,
+    min_tokens: int = 8,
+) -> list[dict]:
+    """Keep high-scoring candidates while dropping near-duplicate text.
+
+    Sentence overlap is useful at ingest time, but adjacent chunks can
+    otherwise occupy several pre-rerank slots with nearly the same evidence.
+    This runs after hybrid scoring, so the best-scoring representative wins.
+    """
+    selected: list[dict] = []
+    selected_tokens: list[set[str]] = []
+    for item in candidates:
+        tokens = _candidate_overlap_tokens(item.get("text") or "")
+        if len(tokens) >= min_tokens and any(
+            _jaccard(tokens, existing) >= overlap_threshold
+            for existing in selected_tokens
+            if existing
+        ):
+            continue
+        selected.append(item)
+        selected_tokens.append(tokens)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _candidate_overlap_tokens(text: str) -> set[str]:
+    """Token set for candidate diversity, normalized more than keyword search."""
+    stripped = ".,;:!?()[]{}\"'`“”‘’"
+    return {token.strip(stripped) for token in search_tokens(text) if token.strip(stripped)}
 
 
 def keyword_score(queries: list[str], text: str) -> float:

@@ -30,10 +30,12 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Impact:** A well-grounded answer can render with missing or wrong citations.
 - **Fix:** Verify on Gemma; adjust the prompt; consider a fallback that shows the top chunks when no `[N]` is parsed.
 
-### [ ] Q0-5 · Check chunk size vs e5-large 512-token limit
+### [~] Q0-5 · Check chunk size vs e5-large 512-token limit
 - **Issue:** A 400-char CJK chunk + a `"passage: "` prefix may approach/exceed e5's 512-token input and get **silently truncated**.
 - **Impact:** Chunk tails dropped from the embedding → lost recall on long CJK / table chunks.
-- **Fix:** Measure token counts for CJK / Latin / table chunks against the e5 tokenizer; lower `CJK_TARGET_CHARS` if needed.
+- **Fix:** **Tooling landed; measurement pending in the target data/runtime.** Run `python -m tests.inspect_e5_chunk_tokens` against indexed deployment data with the `intfloat/multilingual-e5-large` tokenizer cached/available. The script prepends the passage prefix, counts tokens including special tokens, reports all/CJK/Latin/mixed/table p50/p95/p99/max, and prints over-512 examples. If real customer chunks exceed 512, lower `CJK_TARGET_CHARS` / tune table chunking and re-index; otherwise tick this off.
+- **Current local measurement (2026-06-19):** 6,406 indexed chunks scanned; p95 = 285 tokens, p99 = 359, max = 874; 10 chunks (0.2%) exceed 512, all classified CJK. The over-limit cases are concentrated in long extracted pages / dense medical-label style text, not ordinary Latin chunks. Keep this open until the target customer corpus is measured and a chunking/table strategy is chosen for over-limit CJK chunks.
+- **Local guard added:** `chunk_sections` now drops sentence overlap when carrying it would make the next chunk exceed the configured char target. This fixes the observed dense-CJK boundary case where two ~400-char sentences could combine into one ~800-char chunk. Re-chunking the 10 local over-limit examples with the new guard produced max 320 e5 tokens. Existing indexed sources need reindexing to benefit.
 
 ### [x] Q0-6 · Starter questions ignored the source language
 - **Issue:** `STARTER_QUESTIONS_PROMPT` had only a weak one-line language rule with a single CJK example, so the chat model emitted **Chinese** starter questions for **English-only** sources (observed on a real notebook).
@@ -71,12 +73,12 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## P2 — minor / known nuances
 
-### [ ] Q2-1 · Cross-section chunking blends DOCX meta-sections / tables
+### [x] Q2-1 · Cross-section chunking blends DOCX meta-sections / tables
 - **Issue:** `chunk_sections` packs across all extractor sections, so DOCX header/footer/footnotes and PDF table blocks can merge into adjacent body chunks (noted in the chunking PR review).
 - **Impact:** Minor citation-precision noise (`document – footnotes`-style span labels).
-- **Fix:** Flush the packing buffer when the section "kind" changes.
+- **Fix:** **Done.** `chunk_sections` infers a section kind from extractor location labels (`table`, `header`, `footer`, `footnote`, `text boxes`, `transcript`, body) and flushes the packing buffer when the kind changes, with no overlap carried across that boundary.
 
-### [ ] Q2-2 · Near-duplicate chunks from sentence overlap
+### [x] Q2-2 · Near-duplicate chunks from sentence overlap
 - **Issue:** `DEFAULT_OVERLAP_SENTENCES = 1` means adjacent chunks share a boundary sentence.
 - **Impact:** Near-duplicate chunks can occupy multiple top-k slots, slightly reducing context diversity.
-- **Fix:** De-duplicate highly-overlapping chunks during merge, or drop overlap once recall is otherwise solid.
+- **Fix:** **Done.** Retrieval now diversifies the hybrid candidate list before rerank, dropping lower-ranked chunks whose token-set Jaccard overlap with an already kept candidate is very high. Chunking also drops overlap when carrying it would exceed the target, avoiding pathological duplicated boundary chunks without turning overlap off globally.

@@ -249,6 +249,32 @@ def test_merge_candidates_honors_param_override():
     assert set(keyword_only) == {2}
 
 
+def test_diversify_candidates_drops_near_duplicate_lower_ranked_chunks():
+    import app.main as main
+
+    candidates = [
+        {
+            "id": 1,
+            "text": "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda.",
+            "score": 0.9,
+        },
+        {
+            "id": 2,
+            "text": "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda extra.",
+            "score": 0.8,
+        },
+        {
+            "id": 3,
+            "text": "Revenue margin forecast inventory shipment backlog guidance.",
+            "score": 0.7,
+        },
+    ]
+
+    diversified = main.diversify_candidates(candidates, limit=3, overlap_threshold=0.80)
+
+    assert [item["id"] for item in diversified] == [1, 3]
+
+
 def test_retrieve_threads_override_params_to_rerank(local_embed, monkeypatch):
     """E1c: final_chunk_count + rerank weights from params reach rerank_chunks."""
     import app.main as main
