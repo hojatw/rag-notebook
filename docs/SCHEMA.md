@@ -83,16 +83,18 @@ High-volume AI governance telemetry for LLM and embedding calls (G1a/G1b). This 
 | `eval_set_id` | INTEGER → `eval_sets(id)` SET NULL | eval set associated with authoring/run calls, when known |
 | `call_type` | TEXT NOT NULL | e.g. `answer`, `answer_stream`, `query_rewrite`, `embedding_query`, `embedding_passage`, `rerank`, `source_summary`, `briefing`, `compare`, `meeting_minutes`, `starter_questions`, `followups`, `eval_authoring`, `artifact_*`, `translate_summary` |
 | `provider` / `model` | TEXT NOT NULL DEFAULT `''` | provider and chat/embedding model or deployment |
-| `status` | TEXT NOT NULL DEFAULT `'succeeded'` | `succeeded` or `failed` in the current MVP |
+| `status` | TEXT NOT NULL DEFAULT `'succeeded'` | `succeeded` or `failed` |
 | `latency_ms` | REAL NOT NULL DEFAULT 0 | end-to-end provider call latency |
-| `prompt_tokens` / `completion_tokens` / `total_tokens` | INTEGER | provider-reported usage when available, otherwise estimates |
+| `prompt_tokens` / `completion_tokens` / `total_tokens` | INTEGER | normalized provider-reported usage when available, otherwise estimates |
 | `input_chars` / `output_chars` | INTEGER NOT NULL DEFAULT 0 | character counts used for fallback estimates and sanity checks |
 | `is_estimated` | INTEGER NOT NULL DEFAULT 1 | 0 = provider usage was present; 1 = char/4 estimate |
 | `error_class` | TEXT NOT NULL DEFAULT `''` | compact exception class for failed calls |
-| `metadata_json` | TEXT NOT NULL DEFAULT `'{}'` | compact scalar metadata only (e.g. text count, role, temperature); no copied prompt/source/output text |
+| `metadata_json` | TEXT NOT NULL DEFAULT `'{}'` | compact scalar metadata only (e.g. text count, role, temperature, retry count, stream usage flags); prompt/source/output/API-key style keys are dropped |
 | `created_at` | TEXT | |
 
 Indexes: `idx_llm_usage_events_created`, `idx_llm_usage_events_call_created`, `idx_llm_usage_events_user_created`, `idx_llm_usage_events_notebook_created`, `idx_llm_usage_events_eval_run_created`.
+
+Usage normalization accepts OpenAI-compatible / Azure-style `prompt_tokens`, `completion_tokens`, and `total_tokens`, common `input_tokens` / `output_tokens`, camelCase token-count fields, and nested `usage`, `token_usage`, or `tokens` objects. Streaming chat requests ask providers for usage; if an endpoint rejects `stream_options` before any output is emitted, the call is retried without stream usage and the row remains estimated.
 
 ## `notebooks`
 A workspace owned by a user. Holds cached Studio outputs.

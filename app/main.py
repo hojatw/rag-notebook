@@ -1806,9 +1806,9 @@ def _save_assistant_message(
     answer: str,
     citations: list[dict],
     metadata: dict[str, Any],
-) -> None:
+) -> int:
     with connect() as conn:
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO messages (conversation_id, user_id, role, content, citations_json, metadata_json)
             VALUES (?, ?, 'assistant', ?, ?, ?)
@@ -1825,6 +1825,39 @@ def _save_assistant_message(
             (question[:80], conversation_id, user_id),
         )
         touch_notebook(conn, notebook_id)
+        return int(cursor.lastrowid)
+
+
+def _llm_usage_event_watermark() -> int:
+    with connect() as conn:
+        row = conn.execute("SELECT COALESCE(MAX(id), 0) AS last_id FROM llm_usage_events").fetchone()
+    return int(row["last_id"] if row else 0)
+
+
+def _attach_usage_events_to_message(
+    *,
+    user_id: int,
+    notebook_id: int,
+    conversation_id: int,
+    message_id: int,
+    after_event_id: int,
+    call_types: tuple[str, ...],
+) -> None:
+    placeholders = ",".join("?" for _ in call_types)
+    with connect() as conn:
+        conn.execute(
+            f"""
+            UPDATE llm_usage_events
+            SET message_id = ?
+            WHERE id > ?
+              AND user_id = ?
+              AND notebook_id = ?
+              AND conversation_id = ?
+              AND message_id IS NULL
+              AND call_type IN ({placeholders})
+            """,
+            (message_id, after_event_id, user_id, notebook_id, conversation_id, *call_types),
+        )
 
 
 def _messages_context(notebook_id: int, user_id: int, conversation_id: int) -> dict[str, Any]:
@@ -1886,6 +1919,7 @@ async def ask(
         return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
     metadata: dict[str, Any] = {}
+    usage_watermark = _llm_usage_event_watermark()
     try:
         conversation_id, history, settings = _prepare_question(notebook_id, user, question, conversation_id, source_ids)
         answer, citations, metadata = await _answer_question(
@@ -1902,7 +1936,15 @@ async def ask(
         metadata["error"] = str(exc)[:200]
         logger.exception("chat_failed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
 
-    _save_assistant_message(notebook_id, user["id"], conversation_id, question, answer, citations, metadata)
+    assistant_message_id = _save_assistant_message(notebook_id, user["id"], conversation_id, question, answer, citations, metadata)
+    _attach_usage_events_to_message(
+        user_id=user["id"],
+        notebook_id=notebook_id,
+        conversation_id=conversation_id,
+        message_id=assistant_message_id,
+        after_event_id=usage_watermark,
+        call_types=("answer",),
+    )
 
     if request.headers.get("HX-Request") == "true":
         response = _render_messages_partial(request, notebook_id, user["id"], conversation_id, oob=True)
@@ -1931,8 +1973,10 @@ async def ask_stream(
         metadata: dict[str, Any] = {}
         citations: list[dict] = []
         answer = ""
+        usage_watermark = 0
         try:
             conversation, history, settings = _prepare_question(notebook_id, user, question, conversation, source_ids)
+            usage_watermark = _llm_usage_event_watermark()
             usage_context = {"user_id": user["id"], "notebook_id": notebook_id, "conversation_id": conversation}
             yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
             yield sse_event("status", {"text": "正在檢索來源…"})
@@ -1961,7 +2005,15 @@ async def ask_stream(
                 citations = _referenced_citations(answer, retrieved)
                 metadata["outcome"] = "answered"
 
-            _save_assistant_message(notebook_id, user["id"], conversation, question, answer, citations, metadata)
+            assistant_message_id = _save_assistant_message(notebook_id, user["id"], conversation, question, answer, citations, metadata)
+            _attach_usage_events_to_message(
+                user_id=user["id"],
+                notebook_id=notebook_id,
+                conversation_id=conversation,
+                message_id=assistant_message_id,
+                after_event_id=usage_watermark,
+                call_types=("answer_stream",),
+            )
         except Exception as exc:
             logger.exception("chat_stream_failed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation)
             if conversation is None:
@@ -1980,7 +2032,15 @@ async def ask_stream(
             # Update (not replace) so retrieval metrics gathered before the
             # failure survive into the saved metadata.
             metadata.update({"outcome": "error", "error": str(exc)[:200]})
-            _save_assistant_message(notebook_id, user["id"], conversation, question, answer, [], metadata)
+            assistant_message_id = _save_assistant_message(notebook_id, user["id"], conversation, question, answer, [], metadata)
+            _attach_usage_events_to_message(
+                user_id=user["id"],
+                notebook_id=notebook_id,
+                conversation_id=conversation,
+                message_id=assistant_message_id,
+                after_event_id=usage_watermark,
+                call_types=("answer_stream",),
+            )
             yield sse_event("error", {"text": answer})
 
         final = _render_messages_partial(request, notebook_id, user["id"], conversation, oob=False)

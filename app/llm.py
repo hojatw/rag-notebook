@@ -262,6 +262,7 @@ async def _post_json_with_retry(
     timeout: float,
     *,
     max_attempts: int = LLM_RETRY_MAX_ATTEMPTS,
+    retry_stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """POST JSON and return the decoded body, retrying transient failures.
 
@@ -273,18 +274,27 @@ async def _post_json_with_retry(
     attempt = 0
     while True:
         attempt += 1
+        if retry_stats is not None:
+            retry_stats["attempts"] = attempt
         try:
             response = await client.post(url, headers=headers, json=payload, timeout=timeout)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as exc:
+            if retry_stats is not None:
+                retry_stats["last_error_class"] = exc.__class__.__name__
+                retry_stats["last_status_code"] = exc.response.status_code
             if exc.response.status_code not in LLM_RETRYABLE_STATUS or attempt >= max_attempts:
                 raise
-        except httpx.RequestError:
+        except httpx.RequestError as exc:
             # Covers connect/read/write/pool timeouts and transport/network errors.
+            if retry_stats is not None:
+                retry_stats["last_error_class"] = exc.__class__.__name__
             if attempt >= max_attempts:
                 raise
         delay = LLM_RETRY_BACKOFF_BASE_S * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25)
+        if retry_stats is not None:
+            retry_stats["retry_count"] = int(retry_stats.get("retry_count") or 0) + 1
         logger.warning(
             "llm_http_retry attempt=%s/%s delay_ms=%.0f url=%s",
             attempt, max_attempts, delay * 1000, url,
@@ -409,8 +419,15 @@ async def embed_text_batch(
     started = time.perf_counter()
     input_chars = sum(len(text) for text in texts)
     call_type = f"embedding_{role}" if role in {"query", "passage"} else "embedding"
+    retry_stats: dict[str, Any] = {}
     try:
-        data = await _post_json_with_retry(request["url"], request["headers"], request["json"], timeout)
+        data = await _post_json_with_retry(
+            request["url"],
+            request["headers"],
+            request["json"],
+            timeout,
+            retry_stats=retry_stats,
+        )
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - started) * 1000
         _record_usage_event(
@@ -423,7 +440,7 @@ async def embed_text_batch(
             usage=None,
             usage_context=usage_context,
             error_class=exc.__class__.__name__,
-            metadata={"text_count": len(texts), "role": role or ""},
+            metadata=_usage_metadata({"text_count": len(texts), "role": role or ""}, retry_stats),
             model_key="embedding_model",
         )
         logger.exception(
@@ -443,7 +460,7 @@ async def embed_text_batch(
         output_chars=0,
         usage=data.get("usage"),
         usage_context=usage_context,
-        metadata={"text_count": len(texts), "role": role or ""},
+        metadata=_usage_metadata({"text_count": len(texts), "role": role or ""}, retry_stats),
         model_key="embedding_model",
     )
     logger.info(
@@ -1042,8 +1059,15 @@ async def chat_completion(
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
     input_chars = len(system_prompt) + len(user_prompt)
+    retry_stats: dict[str, Any] = {}
     try:
-        data = await _post_json_with_retry(request["url"], request["headers"], request["json"], timeout)
+        data = await _post_json_with_retry(
+            request["url"],
+            request["headers"],
+            request["json"],
+            timeout,
+            retry_stats=retry_stats,
+        )
         content = data["choices"][0]["message"]["content"].strip()
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - started) * 1000
@@ -1057,7 +1081,7 @@ async def chat_completion(
             usage=None,
             usage_context=usage_context,
             error_class=exc.__class__.__name__,
-            metadata={"temperature": request["json"].get("temperature")},
+            metadata=_usage_metadata({"temperature": request["json"].get("temperature")}, retry_stats),
             model_key="chat_model",
         )
         logger.exception(
@@ -1077,7 +1101,7 @@ async def chat_completion(
         output_chars=len(content),
         usage=data.get("usage"),
         usage_context=usage_context,
-        metadata={"temperature": request["json"].get("temperature")},
+        metadata=_usage_metadata({"temperature": request["json"].get("temperature")}, retry_stats),
         model_key="chat_model",
     )
     # Token estimates are chars/4 — accurate enough for cost monitoring
@@ -1108,60 +1132,122 @@ async def chat_completion_stream(
     """Stream message text from an OpenAI-compatible chat completion endpoint."""
     request = build_chat_request(settings, user_prompt, system_prompt, temperature)
     request["json"]["stream"] = True
+    request["json"]["stream_options"] = {"include_usage": True}
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
     input_chars = len(system_prompt) + len(user_prompt)
     chars = 0
+    usage: dict[str, Any] | None = None
+    retry_stats: dict[str, Any] = {}
+    stream_usage_requested = True
+    stream_usage_fallback = False
     client = get_http_client()
-    try:
-        async with client.stream(
-            "POST",
-            request["url"],
-            headers=request["headers"],
-            json=request["json"],
-            timeout=timeout,
-        ) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                payload = line.removeprefix("data:").strip()
-                if not payload or payload == "[DONE]":
-                    continue
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    logger.warning("chat_stream_bad_json payload_chars=%s", len(payload))
-                    continue
-                choices = data.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta", {}).get("content") or ""
-                if delta:
-                    chars += len(delta)
-                    yield delta
-    except Exception as exc:
-        elapsed_ms = (time.perf_counter() - started) * 1000
-        _record_usage_event(
-            settings=settings,
-            call_type=call_type,
-            status="failed",
-            latency_ms=elapsed_ms,
-            input_chars=input_chars,
-            output_chars=chars,
-            usage=None,
-            usage_context=usage_context,
-            error_class=exc.__class__.__name__,
-            metadata={"stream": True, "temperature": request["json"].get("temperature")},
-            model_key="chat_model",
+    attempt = 0
+    while True:
+        attempt += 1
+        retry_stats["attempts"] = attempt
+        chars_at_attempt_start = chars
+        try:
+            async with client.stream(
+                "POST",
+                request["url"],
+                headers=request["headers"],
+                json=request["json"],
+                timeout=timeout,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line.removeprefix("data:").strip()
+                    if not payload or payload == "[DONE]":
+                        continue
+                    try:
+                        data = json.loads(payload)
+                    except json.JSONDecodeError:
+                        logger.warning("chat_stream_bad_json payload_chars=%s", len(payload))
+                        continue
+                    if isinstance(data.get("usage"), dict):
+                        usage = data["usage"]
+                    choices = data.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {}).get("content") or ""
+                    if delta:
+                        chars += len(delta)
+                        yield delta
+            break
+        except httpx.HTTPStatusError as exc:
+            retry_stats["last_error_class"] = exc.__class__.__name__
+            retry_stats["last_status_code"] = exc.response.status_code
+            can_retry_without_duplicate_output = chars == chars_at_attempt_start
+            if (
+                stream_usage_requested
+                and can_retry_without_duplicate_output
+                and exc.response.status_code in {400, 422}
+            ):
+                request["json"].pop("stream_options", None)
+                stream_usage_requested = False
+                stream_usage_fallback = True
+                retry_stats["retry_count"] = int(retry_stats.get("retry_count") or 0) + 1
+                logger.warning("chat_stream_usage_option_rejected status=%s retrying_without_usage", exc.response.status_code)
+                continue
+            if not can_retry_without_duplicate_output or exc.response.status_code not in LLM_RETRYABLE_STATUS or attempt >= LLM_RETRY_MAX_ATTEMPTS:
+                _record_stream_usage_failure(
+                    settings=settings,
+                    call_type=call_type,
+                    started=started,
+                    input_chars=input_chars,
+                    chars=chars,
+                    usage_context=usage_context,
+                    error_class=exc.__class__.__name__,
+                    request=request,
+                    retry_stats=retry_stats,
+                    stream_usage_requested=stream_usage_requested,
+                    stream_usage_fallback=stream_usage_fallback,
+                )
+                raise
+        except httpx.RequestError as exc:
+            retry_stats["last_error_class"] = exc.__class__.__name__
+            can_retry_without_duplicate_output = chars == chars_at_attempt_start
+            if not can_retry_without_duplicate_output or attempt >= LLM_RETRY_MAX_ATTEMPTS:
+                _record_stream_usage_failure(
+                    settings=settings,
+                    call_type=call_type,
+                    started=started,
+                    input_chars=input_chars,
+                    chars=chars,
+                    usage_context=usage_context,
+                    error_class=exc.__class__.__name__,
+                    request=request,
+                    retry_stats=retry_stats,
+                    stream_usage_requested=stream_usage_requested,
+                    stream_usage_fallback=stream_usage_fallback,
+                )
+                raise
+        except Exception as exc:
+            retry_stats["last_error_class"] = exc.__class__.__name__
+            _record_stream_usage_failure(
+                settings=settings,
+                call_type=call_type,
+                started=started,
+                input_chars=input_chars,
+                chars=chars,
+                usage_context=usage_context,
+                error_class=exc.__class__.__name__,
+                request=request,
+                retry_stats=retry_stats,
+                stream_usage_requested=stream_usage_requested,
+                stream_usage_fallback=stream_usage_fallback,
+            )
+            raise
+        retry_stats["retry_count"] = int(retry_stats.get("retry_count") or 0) + 1
+        delay = LLM_RETRY_BACKOFF_BASE_S * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25)
+        logger.warning(
+            "chat_stream_retry attempt=%s/%s delay_ms=%.0f url=%s",
+            attempt, LLM_RETRY_MAX_ATTEMPTS, delay * 1000, request["url"],
         )
-        logger.exception(
-            "chat_stream_failed provider=%s model=%s prompt_chars=%s",
-            settings.get("provider") or "openai_compatible",
-            settings.get("chat_model"),
-            len(user_prompt),
-        )
-        raise
+        await asyncio.sleep(delay)
     elapsed_ms = (time.perf_counter() - started) * 1000
     _record_usage_event(
         settings=settings,
@@ -1170,9 +1256,15 @@ async def chat_completion_stream(
         latency_ms=elapsed_ms,
         input_chars=input_chars,
         output_chars=chars,
-        usage=None,
+        usage=usage,
         usage_context=usage_context,
-        metadata={"stream": True, "temperature": request["json"].get("temperature")},
+        metadata=_stream_usage_metadata(
+            request=request,
+            retry_stats=retry_stats,
+            stream_usage_requested=stream_usage_requested,
+            stream_usage_fallback=stream_usage_fallback,
+            usage=usage,
+        ),
         model_key="chat_model",
     )
     logger.info(
@@ -1182,6 +1274,83 @@ async def chat_completion_stream(
         len(user_prompt),
         chars,
         elapsed_ms,
+    )
+
+
+def _record_stream_usage_failure(
+    *,
+    settings: dict[str, Any],
+    call_type: str,
+    started: float,
+    input_chars: int,
+    chars: int,
+    usage_context: dict[str, Any] | None,
+    error_class: str,
+    request: dict[str, Any],
+    retry_stats: dict[str, Any],
+    stream_usage_requested: bool,
+    stream_usage_fallback: bool,
+) -> None:
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    _record_usage_event(
+        settings=settings,
+        call_type=call_type,
+        status="failed",
+        latency_ms=elapsed_ms,
+        input_chars=input_chars,
+        output_chars=chars,
+        usage=None,
+        usage_context=usage_context,
+        error_class=error_class,
+        metadata=_stream_usage_metadata(
+            request=request,
+            retry_stats=retry_stats,
+            stream_usage_requested=stream_usage_requested,
+            stream_usage_fallback=stream_usage_fallback,
+            usage=None,
+        ),
+        model_key="chat_model",
+    )
+    logger.exception(
+        "chat_stream_failed provider=%s model=%s prompt_chars=%s",
+        settings.get("provider") or "openai_compatible",
+        settings.get("chat_model"),
+        input_chars,
+    )
+
+
+def _usage_metadata(base: dict[str, Any], retry_stats: dict[str, Any] | None = None) -> dict[str, Any]:
+    metadata = dict(base)
+    attempts = int((retry_stats or {}).get("attempts") or 1)
+    retry_count = int((retry_stats or {}).get("retry_count") or max(0, attempts - 1))
+    metadata["attempts"] = attempts
+    metadata["retry_count"] = retry_count
+    status_code = (retry_stats or {}).get("last_status_code")
+    if status_code is not None:
+        metadata["last_status_code"] = status_code
+    last_error_class = (retry_stats or {}).get("last_error_class")
+    if last_error_class:
+        metadata["last_error_class"] = str(last_error_class)
+    return metadata
+
+
+def _stream_usage_metadata(
+    *,
+    request: dict[str, Any],
+    retry_stats: dict[str, Any],
+    stream_usage_requested: bool,
+    stream_usage_fallback: bool,
+    usage: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return _usage_metadata(
+        {
+            "stream": True,
+            "temperature": request["json"].get("temperature"),
+            "stream_usage_requested": stream_usage_requested,
+            "stream_usage_fallback": stream_usage_fallback,
+            "stream_usage_available": isinstance(usage, dict),
+        },
+        retry_stats,
     )
 
 

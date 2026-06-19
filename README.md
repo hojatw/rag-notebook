@@ -26,6 +26,7 @@ This is a proof of concept, not a production-ready service. It is suitable for l
 - **Retrieval eval harness** (`tests/eval_retrieval.py`) with starter questions for the demo notebook so changes to query rewrite / hybrid scoring / rerank can be measured (recall@k, MRR).
 - **Admin eval workbench** at `/admin/evals`: create eval sets against already-indexed notebook data, search all-site indexed notebooks, add manual questions, deterministic draft candidates, or LLM-assisted draft candidates from selected sources. LLM candidates support answerable, cross-lingual, and unanswerable item types, but still require admin approval before entering a run. Retrieval-only evals run in the background with visible progress and keep historical run metrics/results inside the deployment. Run results show the question, expected evidence, top retrieved chunk, and a miss diagnosis. Admins can author **candidate retrieval profiles** (runtime-safe params), run an eval set against any profile, **compare** two runs side by side (param/metric/per-question diff), then **apply** a profile to live retrieval or **roll back** — index-affecting parameters are refused at apply. The workbench includes an in-product tuning guide at `/admin/evals/help` covering symptom diagnosis, profile experiment flow, starter profiles, reindex boundaries, and future domain hints / answer policy. Profiles and runs can be exported as sanitized JSON; full internal run reports require explicit confirmation and are written to the audit trail.
 - **Admin audit trail** at `/admin/audit`: durable DB-backed audit events for full/sanitized eval exports, retrieval profile create/apply/delete/export, LLM settings updates, index clear/rebuild, user-admin changes, and notebook/source/chat/note lifecycle or Markdown-export actions. Audit metadata stores identifiers and summaries only, not API keys or copied source text.
+- **AI usage telemetry backend**: `llm_usage_events` records compact per-call LLM/embedding usage for retrieval, answer generation, Studio tools, summaries, follow-ups, and eval authoring/runs. Provider token usage is preferred when available, streaming usage is requested with safe fallback, and retry/failure metadata is kept without storing raw prompts, source text, model output, or API keys.
 - **Multi-user** with hashed passwords and strict per-user/per-notebook isolation. Admin can manage user accounts at `/admin/users`; any signed-in user can change their own password at `/account`.
 - **CSRF protection** on unsafe routes via a signed double-submit token: server-rendered forms include a hidden token, and HTMX / streaming chat requests send the same token as a header.
 - **OpenAI-compatible** (including local Ollama / vLLM / TEI) and **Azure OpenAI** chat + embedding providers, configured by an admin in `/settings`. Chat and embedding endpoints can live on different services via the optional **Embedding base URL** field. **API keys are encrypted at rest** with Fernet (PBKDF2-SHA256 over `NOTEBOOKLM_SECRET`). On save the embedding endpoint is probed once; dim mismatches with the existing Chroma index are rejected with a clear "Clear at /admin/index first" message.
@@ -325,7 +326,7 @@ app/ingest.py          Text extraction, chunking, vector upsert.
 app/jobs.py            DB-backed ingest queue (ingest_jobs): enqueue + atomic claim + retry.
 app/worker.py          Ingest worker loop (standalone `python -m app.worker` or inline).
 app/llm.py             LLM/embedding HTTP, query rewrite, rerank, starter questions.
-app/governance.py      AI usage telemetry normalization + llm_usage_events recorder.
+app/governance.py      AI usage telemetry normalization + sanitized llm_usage_events recorder.
 app/vector_store.py    Chroma persistent client + diff sync + index_status + clear_all_vectors.
 app/security.py        Password hashing, signed session cookies, Fernet encryption for API keys.
 app/templates/
@@ -366,7 +367,7 @@ tests/
   test_core.py         Hash, ingest, isolation, retrieval, notebook migration, pin idempotency, settings decryption.
   test_chunking.py     Sentence-aware chunker: CJK detection, splitting, overlap, long-sentence fallback.
   test_llm.py          Provider request shapes, parsing, Studio helper short-circuits (summary / briefing / compare).
-  test_governance.py   LLM usage telemetry normalization, persistence, and provider-usage recording.
+  test_governance.py   LLM usage telemetry normalization, sanitized persistence, retry metadata, and provider/stream usage recording.
   test_security.py     Fernet round-trip + legacy plaintext + wrong-secret behaviour.
   test_vector_store.py Index status + diff/full sync + clear, all against a real Chroma temp dir.
   test_extract.py      Source extraction (PDF, DOCX, HTML edge cases).

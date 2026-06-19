@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any
 
 from .db import connect, dumps
@@ -14,6 +15,20 @@ USAGE_CONTEXT_KEYS = {
     "source_id",
     "eval_run_id",
     "eval_set_id",
+}
+SENSITIVE_METADATA_KEYS = {
+    "prompt",
+    "user_prompt",
+    "system_prompt",
+    "source_text",
+    "source_content",
+    "retrieved_text",
+    "snippet",
+    "answer",
+    "output",
+    "content",
+    "api_key",
+    "secret",
 }
 
 
@@ -40,9 +55,46 @@ def normalize_usage(
     output_chars = max(0, int(output_chars or 0))
     usage = usage if isinstance(usage, dict) else {}
 
-    prompt_tokens = _optional_int(usage.get("prompt_tokens", usage.get("input_tokens")))
-    completion_tokens = _optional_int(usage.get("completion_tokens", usage.get("output_tokens")))
-    total_tokens = _optional_int(usage.get("total_tokens"))
+    prompt_tokens = _usage_int(
+        usage,
+        (
+            "prompt_tokens",
+            "input_tokens",
+            "promptTokens",
+            "inputTokens",
+            "promptTokenCount",
+            "inputTokenCount",
+            "prompt_token_count",
+            "input_token_count",
+            "input",
+            "prompt",
+        ),
+    )
+    completion_tokens = _usage_int(
+        usage,
+        (
+            "completion_tokens",
+            "output_tokens",
+            "completionTokens",
+            "outputTokens",
+            "candidatesTokenCount",
+            "outputTokenCount",
+            "completion_token_count",
+            "output_token_count",
+            "output",
+            "completion",
+        ),
+    )
+    total_tokens = _usage_int(
+        usage,
+        (
+            "total_tokens",
+            "totalTokens",
+            "totalTokenCount",
+            "total_token_count",
+            "total",
+        ),
+    )
 
     if prompt_tokens is None and completion_tokens is None and total_tokens is None:
         prompt_tokens = estimate_tokens(input_chars)
@@ -128,6 +180,22 @@ def _optional_int(value: Any) -> int | None:
     return parsed if parsed >= 0 else None
 
 
+def _usage_int(usage: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = _optional_int(usage.get(key))
+        if value is not None:
+            return value
+    for nested_key in ("usage", "token_usage", "tokens"):
+        nested = usage.get(nested_key)
+        if not isinstance(nested, dict):
+            continue
+        for key in keys:
+            value = _optional_int(nested.get(key))
+            if value is not None:
+                return value
+    return None
+
+
 def _clean_context(context: dict[str, Any]) -> dict[str, int]:
     cleaned: dict[str, int] = {}
     for key in USAGE_CONTEXT_KEYS:
@@ -140,8 +208,18 @@ def _clean_context(context: dict[str, Any]) -> dict[str, int]:
 def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     cleaned: dict[str, Any] = {}
     for key, value in metadata.items():
+        safe_key = str(key)[:80]
+        if _metadata_key_is_sensitive(str(key)):
+            continue
         if value is None:
             continue
         if isinstance(value, (str, int, float, bool)):
-            cleaned[str(key)[:80]] = value if not isinstance(value, str) else value[:300]
+            cleaned[safe_key] = value if not isinstance(value, str) else value[:300]
     return cleaned
+
+
+def _metadata_key_is_sensitive(key: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
+    compact = normalized.replace("_", "")
+    compact_sensitive_keys = {sensitive.replace("_", "") for sensitive in SENSITIVE_METADATA_KEYS}
+    return normalized in SENSITIVE_METADATA_KEYS or any(sensitive in compact for sensitive in compact_sensitive_keys)
