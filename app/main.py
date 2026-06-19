@@ -1121,7 +1121,11 @@ async def notebook_suggestions(
         error = "請先完成 LLM 設定，才能生成建議問題。"
     else:
         try:
-            questions = await generate_starter_questions(excerpts, settings or {})
+            questions = await generate_starter_questions(
+                excerpts,
+                settings or {},
+                usage_context={"user_id": user["id"], "notebook_id": notebook_id},
+            )
             if not questions:
                 error = "模型未回傳建議問題，請再試一次。"
         except Exception as exc:
@@ -1280,7 +1284,11 @@ async def notebook_briefing(
             error = "請先完成 LLM 設定，才能生成簡報。"
         else:
             try:
-                briefing = await generate_briefing(summaries, settings)
+                briefing = await generate_briefing(
+                    summaries,
+                    settings,
+                    usage_context={"user_id": user["id"], "notebook_id": notebook_id},
+                )
                 if not briefing:
                     error = "模型未回傳簡報內容，請再試一次。"
             except Exception as exc:
@@ -1360,7 +1368,12 @@ async def notebook_compare(
     error = ""
     comparison = ""
     try:
-        comparison = await compare_sources(summaries, focus, settings)
+        comparison = await compare_sources(
+            summaries,
+            focus,
+            settings,
+            usage_context={"user_id": user["id"], "notebook_id": notebook_id},
+        )
         if not comparison:
             error = "模型回傳的比較結果為空，請再試一次。"
     except Exception as exc:
@@ -1745,12 +1758,15 @@ async def _answer_question(
     settings: dict[str, Any],
     history: list[dict[str, str]],
     user_id: int,
+    notebook_id: int,
+    conversation_id: int,
     source_ids: list[int],
 ) -> tuple[str, list[dict], dict[str, Any]]:
     """Run retrieval and non-streaming answer generation."""
     metadata: dict[str, Any] = {}
+    usage_context = {"user_id": user_id, "notebook_id": notebook_id, "conversation_id": conversation_id}
     retrieve_started = time.perf_counter()
-    retrieved = await retrieve(question, None, settings, history, user_id, source_ids)
+    retrieved = await retrieve(question, None, settings, history, user_id, source_ids, usage_context=usage_context)
     metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
     metadata["retrieved_chunks"] = len(retrieved)
     top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -1768,7 +1784,7 @@ async def _answer_question(
         return "依據所選的來源，我無法判斷這個問題的答案。", [], metadata
 
     generate_started = time.perf_counter()
-    answer = await generate_answer(question, retrieved, settings)
+    answer = await generate_answer(question, retrieved, settings, usage_context=usage_context)
     metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
     metadata["answer_chars"] = len(answer)
     citations = _referenced_citations(answer, retrieved)
@@ -1872,7 +1888,9 @@ async def ask(
     metadata: dict[str, Any] = {}
     try:
         conversation_id, history, settings = _prepare_question(notebook_id, user, question, conversation_id, source_ids)
-        answer, citations, metadata = await _answer_question(question, settings, history, user["id"], source_ids)
+        answer, citations, metadata = await _answer_question(
+            question, settings, history, user["id"], notebook_id, conversation_id, source_ids
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -1915,11 +1933,12 @@ async def ask_stream(
         answer = ""
         try:
             conversation, history, settings = _prepare_question(notebook_id, user, question, conversation, source_ids)
+            usage_context = {"user_id": user["id"], "notebook_id": notebook_id, "conversation_id": conversation}
             yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
             yield sse_event("status", {"text": "正在檢索來源…"})
 
             retrieve_started = time.perf_counter()
-            retrieved = await retrieve(question, None, settings, history, user["id"], source_ids)
+            retrieved = await retrieve(question, None, settings, history, user["id"], source_ids, usage_context=usage_context)
             metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
             metadata["retrieved_chunks"] = len(retrieved)
             top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -1934,7 +1953,7 @@ async def ask_stream(
             else:
                 yield sse_event("status", {"text": "正在生成回答…"})
                 generate_started = time.perf_counter()
-                async for piece in generate_answer_stream(question, retrieved, settings):
+                async for piece in generate_answer_stream(question, retrieved, settings, usage_context=usage_context):
                     answer += piece
                     yield sse_event("chunk", {"text": piece})
                 metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
@@ -2009,7 +2028,18 @@ async def followups_partial(
         settings = load_llm_settings(conn)
     if prior_question is None:
         return HTMLResponse("")
-    questions = await suggest_followup_questions(prior_question["content"], message["content"], settings or {}, source_context)
+    questions = await suggest_followup_questions(
+        prior_question["content"],
+        message["content"],
+        settings or {},
+        source_context,
+        usage_context={
+            "user_id": user["id"],
+            "notebook_id": notebook_id,
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+        },
+    )
     if questions:
         # json_set patches only the followups key inside SQLite, so a slow LLM
         # call here can't clobber metadata written concurrently elsewhere.
@@ -2375,7 +2405,11 @@ async def source_minutes(
             status_code=400,
         )
 
-    minutes = await generate_meeting_minutes(chunks, settings)
+    minutes = await generate_meeting_minutes(
+        chunks,
+        settings,
+        usage_context={"user_id": user["id"], "notebook_id": notebook_id, "source_id": source_id},
+    )
     if not minutes:
         return render(
             request, "_minutes_result.html",
@@ -2512,7 +2546,12 @@ async def notebook_artifact(
     error = ""
     artifact = ""
     try:
-        artifact = await generate_artifact(kind, summaries, settings)
+        artifact = await generate_artifact(
+            kind,
+            summaries,
+            settings,
+            usage_context={"user_id": user["id"], "notebook_id": notebook_id},
+        )
         if not artifact:
             error = "模型未回傳內容，請再試一次。"
     except Exception as exc:
@@ -2567,7 +2606,12 @@ async def translate_source_summary(
     error = ""
     translated = ""
     try:
-        translated = await translate_summary(source["summary"], target_language, settings)
+        translated = await translate_summary(
+            source["summary"],
+            target_language,
+            settings,
+            usage_context={"user_id": user["id"], "notebook_id": notebook_id, "source_id": source_id},
+        )
         if not translated:
             error = "模型未回傳翻譯，請再試一次。"
     except Exception as exc:
@@ -2611,6 +2655,7 @@ async def retrieve(
     user_id: int | None = None,
     source_ids: list[int] | None = None,
     params: dict | None = None,
+    usage_context: dict[str, Any] | None = None,
 ) -> list[dict]:
     """Retrieve chunks with query rewriting, hybrid search, and optional LLM reranking.
 
@@ -2626,8 +2671,8 @@ async def retrieve(
     keyword_weight = float(p["keyword_weight"])
     rerank_weight = float(p["rerank_weight"])
     rerank_base_weight = float(p["rerank_base_weight"])
-    queries = await rewrite_search_queries(question, history or [], settings)
-    query_embeddings = await embed_texts(queries, settings, role="query")
+    queries = await rewrite_search_queries(question, history or [], settings, usage_context=usage_context)
+    query_embeddings = await embed_texts(queries, settings, role="query", usage_context=usage_context)
     if user_id is not None:
         try:
             # Vector (Chroma) and keyword (SQLite) search are independent — run
@@ -2645,6 +2690,7 @@ async def retrieve(
             retrieved = await rerank_chunks(
                 question, ranked, settings, limit=final_count,
                 rerank_weight=rerank_weight, rerank_base_weight=rerank_base_weight,
+                usage_context=usage_context,
             )
             elapsed_ms = (time.perf_counter() - started) * 1000
             logger.info(
@@ -2692,6 +2738,7 @@ async def retrieve(
     retrieved = await rerank_chunks(
         question, ranked, settings, limit=final_count,
         rerank_weight=rerank_weight, rerank_base_weight=rerank_base_weight,
+        usage_context=usage_context,
     )
     elapsed_ms = (time.perf_counter() - started) * 1000
     logger.info(
@@ -3486,6 +3533,12 @@ async def run_eval_job(run_id: int) -> None:
                     eval_set["target_user_id"],
                     source_ids,
                     params=run_params,
+                    usage_context={
+                        "user_id": eval_set["target_user_id"],
+                        "notebook_id": eval_set["notebook_id"],
+                        "eval_run_id": run_id,
+                        "eval_set_id": eval_set["id"],
+                    },
                 )
                 latency_ms = round((time.perf_counter() - started) * 1000, 1)
                 top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -4107,6 +4160,11 @@ async def admin_generate_eval_items_llm(
         count=count,
         item_types=requested_types,
         target_language=target_language,
+        usage_context={
+            "user_id": user["id"],
+            "notebook_id": eval_set["notebook_id"],
+            "eval_set_id": eval_set_id,
+        },
     )
     if not candidates:
         return eval_set_items_response(

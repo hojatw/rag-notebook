@@ -325,6 +325,7 @@ app/ingest.py          Text extraction, chunking, vector upsert.
 app/jobs.py            DB-backed ingest queue (ingest_jobs): enqueue + atomic claim + retry.
 app/worker.py          Ingest worker loop (standalone `python -m app.worker` or inline).
 app/llm.py             LLM/embedding HTTP, query rewrite, rerank, starter questions.
+app/governance.py      AI usage telemetry normalization + llm_usage_events recorder.
 app/vector_store.py    Chroma persistent client + diff sync + index_status + clear_all_vectors.
 app/security.py        Password hashing, signed session cookies, Fernet encryption for API keys.
 app/templates/
@@ -365,6 +366,7 @@ tests/
   test_core.py         Hash, ingest, isolation, retrieval, notebook migration, pin idempotency, settings decryption.
   test_chunking.py     Sentence-aware chunker: CJK detection, splitting, overlap, long-sentence fallback.
   test_llm.py          Provider request shapes, parsing, Studio helper short-circuits (summary / briefing / compare).
+  test_governance.py   LLM usage telemetry normalization, persistence, and provider-usage recording.
   test_security.py     Fernet round-trip + legacy plaintext + wrong-secret behaviour.
   test_vector_store.py Index status + diff/full sync + clear, all against a real Chroma temp dir.
   test_extract.py      Source extraction (PDF, DOCX, HTML edge cases).

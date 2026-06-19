@@ -282,6 +282,51 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_audit_events_action_created
             ON audit_events(action, created_at DESC);
+
+            -- High-volume AI governance telemetry (G1a/G1b). This is kept
+            -- separate from audit_events because usage/cost events are much
+            -- more frequent and should store only compact attribution and
+            -- usage metrics, never prompts, source text, retrieved snippets,
+            -- API keys, or full model outputs.
+            CREATE TABLE IF NOT EXISTS llm_usage_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                notebook_id INTEGER REFERENCES notebooks(id) ON DELETE SET NULL,
+                conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+                message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+                source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+                eval_run_id INTEGER REFERENCES eval_runs(id) ON DELETE SET NULL,
+                eval_set_id INTEGER REFERENCES eval_sets(id) ON DELETE SET NULL,
+                call_type TEXT NOT NULL,
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'succeeded',
+                latency_ms REAL NOT NULL DEFAULT 0,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                total_tokens INTEGER,
+                input_chars INTEGER NOT NULL DEFAULT 0,
+                output_chars INTEGER NOT NULL DEFAULT 0,
+                is_estimated INTEGER NOT NULL DEFAULT 1,
+                error_class TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_events_created
+            ON llm_usage_events(created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_events_call_created
+            ON llm_usage_events(call_type, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_events_user_created
+            ON llm_usage_events(user_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_events_notebook_created
+            ON llm_usage_events(notebook_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_events_eval_run_created
+            ON llm_usage_events(eval_run_id, created_at DESC);
             """
         )
         _ensure_column(conn, "llm_settings", "provider", "TEXT NOT NULL DEFAULT 'openai_compatible'")

@@ -276,7 +276,7 @@ def test_streaming_ask_saves_answer_and_returns_final_messages(monkeypatch, tmp_
     """U2: streaming ask emits chunks, saves the final assistant message, and returns refreshed HTML."""
     main, db = _fresh_app(monkeypatch, tmp_path)
 
-    async def fake_retrieve(question, conversation_id, settings, history, user_id, source_ids=None):
+    async def fake_retrieve(question, conversation_id, settings, history, user_id, source_ids=None, **kwargs):
         return [{
             "id": 1,
             "source_id": 10,
@@ -286,7 +286,7 @@ def test_streaming_ask_saves_answer_and_returns_final_messages(monkeypatch, tmp_
             "score": 0.9,
         }]
 
-    async def fake_stream(question, chunks, settings):
+    async def fake_stream(question, chunks, settings, **kwargs):
         yield "串流"
         yield "回答 [1]"
 
@@ -432,7 +432,7 @@ def test_followups_generate_once_and_cache(monkeypatch, tmp_path):
     main, db = _fresh_app(monkeypatch, tmp_path)
     calls = {"n": 0}
 
-    async def fake_followups(question, answer, settings, source_context=None):
+    async def fake_followups(question, answer, settings, source_context=None, **kwargs):
         calls["n"] += 1
         assert source_context == ["English source excerpt"]
         return ["追問一？", "追問二？"]
@@ -489,7 +489,7 @@ def test_notebook_can_disable_followups(monkeypatch, tmp_path):
     main, db = _fresh_app(monkeypatch, tmp_path)
     calls = {"n": 0}
 
-    async def fake_followups(question, answer, settings, source_context=None):
+    async def fake_followups(question, answer, settings, source_context=None, **kwargs):
         calls["n"] += 1
         return ["不應產生"]
 
@@ -550,7 +550,7 @@ def test_minutes_renders_with_save_button_no_autosave(monkeypatch, tmp_path):
     auto-save; the model only offers a savable result when it produces minutes."""
     main, db = _fresh_app(monkeypatch, tmp_path)
 
-    async def fake_minutes(chunks, settings):
+    async def fake_minutes(chunks, settings, **kwargs):
         return "## 會議主題\n測試會議\n\n## 重要決議\n- 通過提案"
 
     monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
@@ -595,7 +595,7 @@ def test_minutes_warns_before_non_meeting_source(monkeypatch, tmp_path):
     assert "只看到「主持人或講者欄位」" in ambiguous["reason"]
     assert "發言者標記" not in ambiguous["reason"]
 
-    async def fake_minutes(chunks, settings):
+    async def fake_minutes(chunks, settings, **kwargs):
         calls["n"] += 1
         return "## 會議主題\n不應先產生"
 
@@ -642,7 +642,7 @@ def test_minutes_decline_is_not_saved(monkeypatch, tmp_path):
     """If the model says the source is not meeting-like, show it but don't save."""
     main, db = _fresh_app(monkeypatch, tmp_path)
 
-    async def fake_minutes(chunks, settings):
+    async def fake_minutes(chunks, settings, **kwargs):
         return "This does not look like a meeting record."
 
     monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
@@ -1052,7 +1052,7 @@ def test_admin_eval_set_llm_authoring_generates_draft_items(monkeypatch, tmp_pat
     """E1e-1: LLM-assisted authoring stores reviewed-only draft eval candidates."""
     main, db = _fresh_app(monkeypatch, tmp_path)
 
-    async def fake_generate_eval_candidates(chunks, settings, count=5, item_types=None, target_language=""):
+    async def fake_generate_eval_candidates(chunks, settings, count=5, item_types=None, target_language="", **kwargs):
         assert settings["chat_model"] == "chat"
         assert item_types == ["answerable", "cross_lingual", "unanswerable"]
         assert target_language == "Traditional Chinese"
@@ -1178,7 +1178,7 @@ def test_admin_eval_set_runner_records_results(monkeypatch, tmp_path):
     """E1b: admin can create a manual eval item, run it, and inspect stored metrics."""
     main, db = _fresh_app(monkeypatch, tmp_path)
 
-    async def fake_retrieve(question, conversation_id, settings, history, user_id, source_ids=None, params=None):
+    async def fake_retrieve(question, conversation_id, settings, history, user_id, source_ids=None, params=None, **kwargs):
         assert question == "alpha?"
         assert conversation_id is None
         assert user_id == admin_user["id"]
@@ -1761,7 +1761,7 @@ def test_artifact_renders_with_save_button_no_autosave(monkeypatch, tmp_path):
     auto-save; the user saves manually via /notes/add."""
     main, db = _fresh_app(monkeypatch, tmp_path)
 
-    async def fake_artifact(kind, summaries, settings):
+    async def fake_artifact(kind, summaries, settings, **kwargs):
         assert kind == "study_guide"
         return "## 核心概念\n- 測試"
 
@@ -1870,7 +1870,7 @@ def test_translate_renders_with_save_button(monkeypatch, tmp_path):
     """A5: translate-summary shows the translation + a save button; bad language 400s."""
     main, db = _fresh_app(monkeypatch, tmp_path)
 
-    async def fake_translate(text, target_language, settings):
+    async def fake_translate(text, target_language, settings, **kwargs):
         assert target_language == "English"
         return "Translated summary."
 
