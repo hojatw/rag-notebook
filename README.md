@@ -298,6 +298,11 @@ POST /settings                                            save LLM settings (API
 .venv/bin/python -m py_compile app/*.py tests/*.py
 ```
 
+Current expected test-tooling warning: `fastapi.testclient` may emit
+`StarletteDeprecationWarning` about its underlying `httpx` integration. This is
+not an application runtime warning; revisit it when upgrading FastAPI,
+Starlette, or httpx.
+
 ### Retrieval eval
 
 `tests/eval_questions.json` holds ~25 ground-truth questions targeting the demo notebook. Run the harness to score the live retrieval pipeline:

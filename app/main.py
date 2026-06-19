@@ -541,6 +541,14 @@ def _release_briefing_lock(notebook_id: int) -> None:
         conn.execute("DELETE FROM briefing_locks WHERE notebook_id = ?", (notebook_id,))
 
 
+def _sqlite_utc_timestamp(value: str) -> datetime:
+    """Parse SQLite CURRENT_TIMESTAMP strings as timezone-aware UTC datetimes."""
+    dt = datetime.fromisoformat(value.replace(" ", "T"))
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _cached_suggestions(notebook: dict) -> list[str]:
     """Return cached suggestions if within TTL, else empty list."""
     raw = (notebook.get("suggestions_json") or "").strip()
@@ -548,8 +556,8 @@ def _cached_suggestions(notebook: dict) -> list[str]:
     if not raw or not saved_at:
         return []
     try:
-        cutoff = datetime.utcnow() - timedelta(hours=SUGGESTIONS_TTL_HOURS)
-        if datetime.fromisoformat(saved_at.replace(" ", "T")) > cutoff:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=SUGGESTIONS_TTL_HOURS)
+        if _sqlite_utc_timestamp(saved_at) > cutoff:
             return loads(raw)
     except Exception:
         pass
@@ -563,8 +571,8 @@ def _cached_briefing(notebook: dict) -> str:
     if not raw or not saved_at:
         return ""
     try:
-        cutoff = datetime.utcnow() - timedelta(hours=BRIEFING_TTL_HOURS)
-        if datetime.fromisoformat(saved_at.replace(" ", "T")) > cutoff:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=BRIEFING_TTL_HOURS)
+        if _sqlite_utc_timestamp(saved_at) > cutoff:
             return raw
     except Exception:
         pass
