@@ -42,8 +42,8 @@ Eval 工作台、Retrieval Profiles、稽核、工具 modal、空狀態。
 |---|---|---|---|---|---|
 | L1 | 稽核「嚴重度」用 `.status`（含圓點），但它是固定分類、不隨時間變，依 UI.md §3.5 規則該用 `.tag`（無點） | 一致 | 改 `.tag`／`.tag--warn` | **未追蹤**（牴觸 UI.md §3.5） | [x] 2026-06-19：high→`tag--warn`、normal→中性 `tag`。值文字（high/normal）中文化留給 M2 |
 | L2 | 工具／預覽 modal **無可見的 ✕ 關閉鈕**（只有 ESC＋點背景） | 可預期、可發現性 | 面板右上補明顯關閉鈕 | ROADMAP **U13**（ESC 已做，X 鈕未做） | [x] 2026-06-19：modal 右上補 `.modal-close` ✕（ESC／點背景仍可用） |
-| L3 | 多處 `aria-label` 英文（Sources/Chat/Studio/Breadcrumb/Primary/Audit metadata） | 一致（無障礙） | 改 zh-Hant | ROADMAP **U13**（標記完成但殘留）/ U15 | [ ] |
-| L4 | 設定頁標籤雙語不一致（「Embedding base URL」全英 vs 其他「中文 / Azure 英文」） | 一致 | 統一雙語格式 | ROADMAP **U15b** | [ ] |
+| L3 | 多處 `aria-label` 英文（Sources/Chat/Studio/Breadcrumb/Primary/Audit metadata） | 一致（無障礙） | 改 zh-Hant | ROADMAP **U13**（標記完成但殘留）/ U15 | [x] 2026-06-19（i18n 2b-ii，`a11y.*` + 稽核 2a） |
+| L4 | 設定頁標籤雙語不一致（「Embedding base URL」全英 vs 其他「中文 / Azure 英文」） | 一致 | 統一雙語格式 | ROADMAP **U15b** | [x] 2026-06-19（i18n 2b-ii） |
 | L5 | 登入頁直接印示範密碼 `admin / admin123`（POC 可接受） | 專業、安全觀感 | 上線前移除/改 | 已列管 [`docs/SECURITY.md:21`](SECURITY.md) | [ ] |
 
 ---
@@ -75,7 +75,8 @@ CSS-only，皆在 [`app/static/style.css`](../app/static/style.css)：
 | &nbsp;&nbsp;↳ Phase 2a — 稽核頁 | admin_audit.html 全頁走 `t()`：篩選標籤/表頭/severity(`SENSITIVITY_LABELS`)/說明/空狀態/modal aria 全中文化（含 L1 severity 文字、該頁 aria）。剩英文僅資料識別碼與 API key（刻意保留） | [x] 2026-06-19（143 passed；實測整頁中文） |
 | &nbsp;&nbsp;↳ Phase 2b — Eval 工作台叢集（多模板）、設定頁 L4、全站 aria L3 | 混合命名：`評測`=活動/區塊；`Eval Set`/`Eval run`/`Run` 等資料詞保留；`Retrieval`→`檢索`、`Profile`/Recall/MRR 保留 | [~] 進行中 |
 | &nbsp;&nbsp;&nbsp;&nbsp;· 2b-i 導覽 + 主頁 | nav「Eval→評測」、`_eval_nav` 分頁（評測集/檢索 Profile/調參指南）、`admin_evals` 整頁、eval 子頁麵包屑、run 狀態 map（`RUN_STATUS_LABELS`）。清掉 indexed sources/Retrieval Profiles/Eval 工作台 等英文 | [x] 2026-06-19（143 passed；主頁+導覽實測） |
-| &nbsp;&nbsp;&nbsp;&nbsp;· 2b-ii 其餘 | Profiles 頁（+`PROFILE_PARAM_LABELS`）、eval set 明細/runs/compare/help、`_eval_*` partials、設定頁 L4、全站 aria L3 | [ ] 下一輪 |
+| &nbsp;&nbsp;&nbsp;&nbsp;· 2b-ii Profiles + aria + 設定 L4 | `admin_profiles` 整頁（`prof.*`）；全站 aria-label 中文化（`a11y.*`：麵包屑/主要導覽/來源·對話·工作台面板/評測集分頁）＝**L3 完成**；設定頁「Embedding Base URL」對齊雙語格式＝**L4 完成** | [x] 2026-06-19（143 passed；Profiles/aria/設定實測） |
+| &nbsp;&nbsp;&nbsp;&nbsp;· 2b-iii eval 子頁（最後一段） | `admin_eval_set`/`admin_eval_run`/`admin_eval_compare`/`admin_eval_help` + `_eval_items_section`/`_eval_run_results`/`_eval_run_status` + main.py eval 字串（`PROFILE_PARAM_LABELS`/`ITEM_TYPE_LABELS`/狀態原因等） | [ ] 下一輪 |
 | **Phase 3 — 選配** | 補 en locale 字串 + 每使用者語言切換（ROADMAP U15b） | [ ] |
 
 > 每個 Phase 為獨立可上線的小段；新字串一律走 `t()`/`window.I18N`，不再回到模板/JS 硬編碼。

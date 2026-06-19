@@ -950,7 +950,7 @@ def test_admin_eval_workbench_search_generate_approve_and_delete(monkeypatch, tm
 
         detail = client.get(f"/admin/evals/sets/{eval_set_id}")
         assert detail.status_code == 200
-        assert '<nav aria-label="Breadcrumb" class="breadcrumb">' in detail.text
+        assert '<nav aria-label="麵包屑導覽" class="breadcrumb">' in detail.text
         assert 'href="/admin/evals">評測工作台</a>' in detail.text
         assert 'id="eval-items"' in detail.text
         assert "返回 Eval 工作台" not in detail.text
@@ -1193,7 +1193,7 @@ def test_admin_eval_set_runner_records_results(monkeypatch, tmp_path):
         detail = client.get(f"/admin/evals/runs/{run_id}")
         assert detail.status_code == 200
         assert "Alpha Eval" in detail.text
-        assert '<nav aria-label="Breadcrumb" class="breadcrumb">' in detail.text
+        assert '<nav aria-label="麵包屑導覽" class="breadcrumb">' in detail.text
         assert 'href="/admin/evals">評測工作台</a>' in detail.text
         assert f'href="/admin/evals/sets/{eval_set_id}">Alpha Eval</a>' in detail.text
         assert "返回 Eval Set" not in detail.text
@@ -1235,7 +1235,7 @@ def test_create_apply_and_rollback_retrieval_profile(monkeypatch, tmp_path):
 
         profiles_page = client.get("/admin/evals/profiles")  # creates the baseline profile
         assert profiles_page.status_code == 200
-        assert "Retrieval Profiles" in profiles_page.text
+        assert "檢索 Profile" in profiles_page.text
         assert "建立候選 Profile" in profiles_page.text
         assert "系統預設" in profiles_page.text
 

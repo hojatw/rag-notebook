@@ -23,7 +23,7 @@
 <section class="workspace">
 
   {# ---------------- LEFT: Sources ---------------- #}
-  <aside class="workspace-pane workspace-sources" aria-label="Sources">
+  <aside class="workspace-pane workspace-sources" aria-label="{{ t('a11y.sources') }}">
     <header class="pane-head">
       <h2>來源</h2>
       <div class="inline-actions">
@@ -93,7 +93,7 @@
   </aside>
 
   {# ---------------- CENTER: Chat ---------------- #}
-  <section class="workspace-pane workspace-chat" aria-label="Chat" id="chat-pane">
+  <section class="workspace-pane workspace-chat" aria-label="{{ t('a11y.chat') }}" id="chat-pane">
     <header class="chat-head">
       <div class="chat-title-row">
         <span class="notebook-emoji">{{ notebook.emoji or "📓" }}</span>
@@ -227,7 +227,7 @@
      generator is a tile that opens in the preview-modal and writes its result
      to the notes shelf — adding a feature is +1 tile, not +1 stacked card.
      Starter questions moved to the chat empty-state. #}
-  <aside class="workspace-pane workspace-studio" aria-label="Studio">
+  <aside class="workspace-pane workspace-studio" aria-label="{{ t('a11y.studio') }}">
     <header class="pane-head">
       <h2>工作台</h2>
     </header>

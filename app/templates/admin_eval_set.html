@@ -11,7 +11,7 @@
   <div class="eval-set-tabs"
        x-data="{ tab: window.location.hash === '#runs' ? 'runs' : 'authoring' }"
        @hashchange.window="tab = window.location.hash === '#runs' ? 'runs' : 'authoring'">
-    <nav class="eval-tabs" aria-label="Eval set sections" role="tablist">
+    <nav class="eval-tabs" aria-label="{{ t('a11y.eval_set_sections') }}" role="tablist">
       <button type="button"
               class="eval-tab"
               id="eval-set-tab-authoring"

@@ -27,7 +27,7 @@
       </a>
       {% if user %}
         {% if breadcrumb_items %}
-          <nav aria-label="Breadcrumb" class="breadcrumb">
+          <nav aria-label="{{ t('a11y.breadcrumb') }}" class="breadcrumb">
             {% for crumb in breadcrumb_items %}
               {% if crumb.href %}
                 <a href="{{ crumb.href }}">{{ crumb.label }}</a>
@@ -38,13 +38,13 @@
             {% endfor %}
           </nav>
         {% elif breadcrumb %}
-          <nav aria-label="Breadcrumb" class="breadcrumb">
+          <nav aria-label="{{ t('a11y.breadcrumb') }}" class="breadcrumb">
             <a href="/notebooks">筆記本</a>
             <span class="sep">›</span>
             <span class="crumb-current">{{ breadcrumb }}</span>
           </nav>
         {% else %}
-          <nav aria-label="Primary" class="primary-nav">
+          <nav aria-label="{{ t('a11y.primary_nav') }}" class="primary-nav">
             <a class="{% if request.url.path == '/notebooks' or request.url.path.startswith('/notebooks/') %}active{% endif %}" href="/notebooks" {% if request.url.path == '/notebooks' or request.url.path.startswith('/notebooks/') %}aria-current="page"{% endif %}>{{ t("nav.notebooks") }}</a>
             <a class="{% if request.url.path.startswith('/search') %}active{% endif %}" href="/search" {% if request.url.path.startswith('/search') %}aria-current="page"{% endif %}>{{ t("nav.search") }}</a>
             {% if user.is_admin %}
