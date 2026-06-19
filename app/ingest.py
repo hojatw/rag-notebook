@@ -722,6 +722,7 @@ async def _generate_source_summary(source_id: int) -> None:
     """Generate and persist a per-source TL;DR. Failures are logged only."""
     try:
         with connect() as conn:
+            source = conn.execute("SELECT user_id, notebook_id FROM sources WHERE id = ?", (source_id,)).fetchone()
             chunk_rows = conn.execute(
                 "SELECT location, text FROM chunks WHERE source_id = ? ORDER BY chunk_index ASC LIMIT 12",
                 (source_id,),
@@ -730,7 +731,12 @@ async def _generate_source_summary(source_id: int) -> None:
         chunks = [dict(r) for r in chunk_rows]
         if not chunks:
             return
-        summary = await summarize_source(chunks, settings)
+        usage_context = {
+            "source_id": source_id,
+            "user_id": source["user_id"] if source else None,
+            "notebook_id": source["notebook_id"] if source else None,
+        }
+        summary = await summarize_source(chunks, settings, usage_context=usage_context)
         if not summary:
             return
         with connect() as conn:
@@ -779,7 +785,12 @@ async def process_source(source_id: int) -> None:
             len(sections),
             len(records),
         )
-        embeddings = await embed_texts([text for _, text in records], get_settings(), role="passage")
+        embeddings = await embed_texts(
+            [text for _, text in records],
+            get_settings(),
+            role="passage",
+            usage_context={"user_id": source["user_id"], "notebook_id": source["notebook_id"], "source_id": source_id},
+        )
         with connect() as conn:
             chunk_rows = [
                 (source["user_id"], source_id, index, location, text, dumps(embedding))

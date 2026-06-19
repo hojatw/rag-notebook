@@ -204,7 +204,7 @@ def test_retrieve_runs_vector_and_keyword_search_concurrently(local_embed, monke
         return [{"id": 2, "source_id": 2, "filename": "b.md", "location": "doc",
                  "text": "setting reference appendix"}]
 
-    async def fake_rewrite(question, history, settings):
+    async def fake_rewrite(question, history, settings, **kwargs):
         return [question]
 
     async def fake_rerank(question, candidates, settings, limit=6, **kwargs):
@@ -290,11 +290,11 @@ def test_retrieve_threads_override_params_to_rerank(local_embed, monkeypatch):
     def fake_keyword(user_id, source_ids, queries, limit=20):
         return []
 
-    async def fake_rewrite(question, history, settings):
+    async def fake_rewrite(question, history, settings, **kwargs):
         return [question]
 
     async def fake_rerank(question, candidates, settings, limit=6,
-                          rerank_weight=None, rerank_base_weight=None):
+                          rerank_weight=None, rerank_base_weight=None, **kwargs):
         captured.update(limit=limit, rw=rerank_weight, rbw=rerank_base_weight)
         return candidates[:limit]
 
