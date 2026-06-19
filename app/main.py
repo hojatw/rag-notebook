@@ -140,6 +140,8 @@ templates.env.globals["i18n_js"] = i18n.js_messages
 templates.env.globals["audit_sensitivity_labels"] = i18n.SENSITIVITY_LABELS
 # Localised display for the eval run lifecycle status (raw value kept).
 templates.env.globals["run_status_labels"] = i18n.RUN_STATUS_LABELS
+# Localised display for per-question eval result status (raw value kept).
+templates.env.globals["eval_result_status_labels"] = i18n.EVAL_RESULT_STATUS_LABELS
 
 
 @app.middleware("http")

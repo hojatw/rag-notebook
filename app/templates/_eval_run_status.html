@@ -7,11 +7,11 @@
          {% endif %}>
   <div class="section-title-row">
     <h2>Run #{{ run.id }}</h2>
-    <span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run.status }}</span>
+    <span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run_status_labels.get(run.status, run.status) }}</span>
   </div>
   <div class="index-stat-grid">
     <div class="index-stat">
-      <span class="index-stat-label">進度</span>
+      <span class="index-stat-label">{{ t('evalr.progress') }}</span>
       <span class="index-stat-value">{{ run.progress_current }} / {{ run.progress_total }}</span>
       <span class="muted small">{{ run.current_step or "—" }}</span>
     </div>
@@ -26,7 +26,7 @@
       <span class="muted small">scored {{ run.metrics.scored if run.metrics else 0 }}</span>
     </div>
     <div class="index-stat">
-      <span class="index-stat-label">平均延遲</span>
+      <span class="index-stat-label">{{ t('evalr.avg_latency') }}</span>
       <span class="index-stat-value">{% if run.metrics %}{{ run.metrics.avg_latency_ms }}ms{% else %}—{% endif %}</span>
       <span class="muted small">retrieval only</span>
     </div>

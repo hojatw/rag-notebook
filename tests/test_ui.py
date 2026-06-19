@@ -1389,7 +1389,7 @@ def test_admin_eval_run_results_partial_polls_while_running(monkeypatch, tmp_pat
         assert page.status_code == 200
         assert f'hx-get="/admin/evals/runs/{run_id}/_status"' in page.text
         assert f'hx-get="/admin/evals/runs/{run_id}/_results"' in page.text
-        assert "尚未產生 per-question results" in page.text
+        assert "尚未產生逐題結果" in page.text
         assert "低信心閾值" in page.text
 
         with db.connect() as conn:

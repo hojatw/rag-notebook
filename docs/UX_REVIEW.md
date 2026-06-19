@@ -76,7 +76,8 @@ CSS-only，皆在 [`app/static/style.css`](../app/static/style.css)：
 | &nbsp;&nbsp;↳ Phase 2b — Eval 工作台叢集（多模板）、設定頁 L4、全站 aria L3 | 混合命名：`評測`=活動/區塊；`Eval Set`/`Eval run`/`Run` 等資料詞保留；`Retrieval`→`檢索`、`Profile`/Recall/MRR 保留 | [~] 進行中 |
 | &nbsp;&nbsp;&nbsp;&nbsp;· 2b-i 導覽 + 主頁 | nav「Eval→評測」、`_eval_nav` 分頁（評測集/檢索 Profile/調參指南）、`admin_evals` 整頁、eval 子頁麵包屑、run 狀態 map（`RUN_STATUS_LABELS`）。清掉 indexed sources/Retrieval Profiles/Eval 工作台 等英文 | [x] 2026-06-19（143 passed；主頁+導覽實測） |
 | &nbsp;&nbsp;&nbsp;&nbsp;· 2b-ii Profiles + aria + 設定 L4 | `admin_profiles` 整頁（`prof.*`）；全站 aria-label 中文化（`a11y.*`：麵包屑/主要導覽/來源·對話·工作台面板/評測集分頁）＝**L3 完成**；設定頁「Embedding Base URL」對齊雙語格式＝**L4 完成** | [x] 2026-06-19（143 passed；Profiles/aria/設定實測） |
-| &nbsp;&nbsp;&nbsp;&nbsp;· 2b-iii eval 子頁（最後一段） | `admin_eval_set`/`admin_eval_run`/`admin_eval_compare`/`admin_eval_help` + `_eval_items_section`/`_eval_run_results`/`_eval_run_status` + main.py eval 字串（`PROFILE_PARAM_LABELS`/`ITEM_TYPE_LABELS`/狀態原因等） | [ ] 下一輪 |
+| &nbsp;&nbsp;&nbsp;&nbsp;· 2b-iii eval 動態 partials | `_eval_run_status`/`_eval_run_results`/`_eval_items_section` 整理（`evalr.*`）＋狀態 map（`RUN_STATUS_LABELS`/`EVAL_RESULT_STATUS_LABELS`：成功·命中·未命中·已核准·草稿）。技術詞 Recall/MRR/chunk/snippet/Profile 保留 | [x] 2026-06-19（143 passed；run 頁實測狀態全中文） |
+| &nbsp;&nbsp;&nbsp;&nbsp;· 2b-iv eval 子頁外框（最後一段） | `admin_eval_set`/`admin_eval_run`/`admin_eval_compare`/`admin_eval_help` 頁面 chrome（eyebrow/標題/匯出/diff 表頭等）+ main.py eval label dict（`PROFILE_PARAM_LABELS` 等） | [ ] 下一輪 |
 | **Phase 3 — 選配** | 補 en locale 字串 + 每使用者語言切換（ROADMAP U15b） | [ ] |
 
 > 每個 Phase 為獨立可上線的小段；新字串一律走 `t()`/`window.I18N`，不再回到模板/JS 硬編碼。

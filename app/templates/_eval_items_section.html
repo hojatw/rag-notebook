@@ -1,8 +1,8 @@
 <section class="settings-section" id="eval-items">
   <div class="section-title-row eval-items-head">
     <div>
-      <h2>題目管理</h2>
-      <p class="hint muted small">Draft 題目需 approve 後才會進入 runner；不可回答題目前會在 retrieval-only run 中標成 unscored。</p>
+      <h2>{{ t('evalr.items_heading') }}</h2>
+      <p class="hint muted small">{{ t('evalr.items_hint') }}</p>
     </div>
     <form method="post" action="/admin/evals/sets/{{ eval_set.id }}/run" class="run-form" data-loading-form>
       {% if profiles %}
@@ -10,12 +10,12 @@
           Profile
           <select name="profile_id">
             {% for prof in profiles %}
-              <option value="{{ prof.id }}">{{ prof.name }}{% if prof.is_active %}（作用中）{% endif %}</option>
+              <option value="{{ prof.id }}">{{ prof.name }}{% if prof.is_active %}{{ t('evalr.active_suffix') }}{% endif %}</option>
             {% endfor %}
           </select>
         </label>
       {% endif %}
-      <button type="submit" {% if approved_count == 0 %}disabled{% endif %} data-loading-text="啟動中...">執行 retrieval eval</button>
+      <button type="submit" {% if approved_count == 0 %}disabled{% endif %} data-loading-text="{{ t('evalr.run_starting') }}">{{ t('evalr.run_btn') }}</button>
     </form>
   </div>
   {% if eval_notice %}<div class="notice">{{ eval_notice }}</div>{% endif %}
@@ -27,7 +27,7 @@
           <div class="eval-item-main">
             <div class="eval-item-question">
               <div class="eval-item-badges">
-                <span class="status {{ 'indexed' if item.approved else 'processing' }}">{{ "approved" if item.approved else "draft" }}</span>
+                <span class="status {{ 'indexed' if item.approved else 'processing' }}">{{ t('evalr.item_approved') if item.approved else t('evalr.item_draft') }}</span>
                 <span class="tag {{ 'tag--warn' if item.item_type == 'unanswerable' else '' }}">{{ item.item_type_label }}</span>
                 <span class="tag">{{ item.origin_label }}</span>
               </div>
@@ -41,24 +41,24 @@
                       hx-post="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/approve"
                       hx-target="#eval-items"
                       hx-swap="outerHTML">
-                  <button type="submit" class="secondary small">approve</button>
+                  <button type="submit" class="secondary small">{{ t('evalr.approve_btn') }}</button>
                 </form>
               {% endif %}
               <form method="post"
                     action="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/delete"
-                    data-confirm="刪除此題目？"
+                    data-confirm="{{ t('evalr.delete_item_confirm') }}"
                     hx-post="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/delete"
                     hx-target="#eval-items"
                     hx-swap="outerHTML">
-                <button type="submit" class="danger small">刪除</button>
+                <button type="submit" class="danger small">{{ t('common.delete') }}</button>
               </form>
             </div>
           </div>
           <details class="eval-item-details">
-            <summary>查看 expected evidence</summary>
+            <summary>{{ t('evalr.view_expected') }}</summary>
             <div class="eval-item-detail-grid">
               <div>
-                <span class="eval-detail-label">預期來源</span>
+                <span class="eval-detail-label">{{ t('evalr.detail_source') }}</span>
                 <p>{{ item.expected_filename or "—" }}</p>
               </div>
               <div>
@@ -70,7 +70,7 @@
                 {% endif %}
               </div>
               <div>
-                <span class="eval-detail-label">參考答案</span>
+                <span class="eval-detail-label">{{ t('evalr.detail_answer') }}</span>
                 <p>{{ item.expected_answer or "—" }}</p>
               </div>
             </div>
@@ -80,8 +80,8 @@
     </ul>
   {% else %}
     <div class="empty">
-      <h2>尚未新增題目</h2>
-      <p>請從上方三種方式建立題目；只有 approved 題目會進入 runner。</p>
+      <h2>{{ t('evalr.empty_items_title') }}</h2>
+      <p>{{ t('evalr.empty_items_body') }}</p>
     </div>
   {% endif %}
 </section>

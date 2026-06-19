@@ -105,6 +105,30 @@ MESSAGES: dict[str, dict[str, str]] = {
         "a11y.chat": "對話面板",
         "a11y.studio": "工作台面板",
         "a11y.eval_set_sections": "評測集分頁",
+        # --- Eval run/result/item partials (Phase 2b-iii) --------------------
+        "evalr.progress": "進度",
+        "evalr.avg_latency": "平均延遲",
+        "evalr.per_question": "逐題結果",
+        "evalr.no_results": "尚未產生逐題結果；執行進行中時本區塊會自動刷新。",
+        "evalr.diagnosis": "診斷：",
+        "evalr.evidence_toggle": "依據與實際檢索",
+        "evalr.expected_evidence": "預期依據",
+        "evalr.no_expected": "— 無預期依據（未評分）",
+        "evalr.actual_top": "實際檢索 top",
+        "evalr.items_heading": "題目管理",
+        "evalr.items_hint": "草稿題目需核准後才會進入執行；不可回答題目會在 retrieval-only 執行中標為未評分。",
+        "evalr.active_suffix": "（作用中）",
+        "evalr.run_btn": "執行 retrieval eval",
+        "evalr.run_starting": "啟動中...",
+        "evalr.item_approved": "已核准",
+        "evalr.item_draft": "草稿",
+        "evalr.approve_btn": "核准",
+        "evalr.delete_item_confirm": "刪除此題目？",
+        "evalr.view_expected": "查看預期依據",
+        "evalr.detail_source": "預期來源",
+        "evalr.detail_answer": "參考答案",
+        "evalr.empty_items_title": "尚未新增題目",
+        "evalr.empty_items_body": "請從上方三種方式建立題目；只有核准的題目會進入執行。",
         # --- Chat empty-state + answer flow (Phase 1a) -----------------------
         "chat.empty_ask_title": "問任何關於你來源文件的問題",
         "chat.empty_ask_body": "在下方輸入問題，回答會附上引用的來源段落。",
@@ -252,6 +276,15 @@ RUN_STATUS_LABELS: dict[str, str] = {
     "running": "執行中",
     "succeeded": "成功",
     "failed": "失敗",
+}
+
+# Per-question eval result status (raw value stored; display localised).
+EVAL_RESULT_STATUS_LABELS: dict[str, str] = {
+    "hit": "命中",
+    "miss": "未命中",
+    "error": "錯誤",
+    "unscored": "未評分",
+    "pending": "處理中",
 }
 
 

@@ -5,13 +5,13 @@
            hx-trigger="load delay:1s, every 2s"
            hx-swap="outerHTML"
          {% endif %}>
-  <h2>逐題結果</h2>
+  <h2>{{ t('evalr.per_question') }}</h2>
   {% if results %}
     <ul class="eval-results">
       {% for result in results %}
         <li class="card card--flat eval-result eval-result-{{ result.status }}">
           <div class="eval-result-head">
-            <span class="status {{ 'indexed' if result.status == 'hit' else 'failed' if result.status in ['miss', 'error'] else 'processing' }}">{{ result.status }}</span>
+            <span class="status {{ 'indexed' if result.status == 'hit' else 'failed' if result.status in ['miss', 'error'] else 'processing' }}">{{ eval_result_status_labels.get(result.status, result.status) }}</span>
             <span class="eval-result-q">{{ result.question }}</span>
           </div>
           <div class="eval-result-metrics muted small">
@@ -20,22 +20,22 @@
             <span>Latency {{ result.latency_ms }}ms</span>
           </div>
           {% if result.error %}<p class="danger-link small">{{ result.error }}</p>{% endif %}
-          {% if result.diagnosis %}<p class="muted small">診斷：{{ result.diagnosis }}</p>{% endif %}
+          {% if result.diagnosis %}<p class="muted small">{{ t('evalr.diagnosis') }}{{ result.diagnosis }}</p>{% endif %}
           <details class="eval-result-evidence">
-            <summary class="muted small">依據與實際檢索</summary>
+            <summary class="muted small">{{ t('evalr.evidence_toggle') }}</summary>
             <div class="eval-result-evidence-body">
               <div>
-                <p class="eval-evidence-label">預期依據</p>
+                <p class="eval-evidence-label">{{ t('evalr.expected_evidence') }}</p>
                 {% if result.expected_filename %}<p><strong>{{ result.expected_filename }}</strong></p>{% endif %}
                 {% if result.expected_chunk_id %}
                   <p class="muted small">chunk #{{ result.expected_chunk_id }}{% if result.expected_chunk_location %} · {{ result.expected_chunk_location }}{% endif %}</p>
                 {% endif %}
                 {% if result.expected_substrings %}<p class="muted small">substrings: {{ result.expected_substrings | join(" / ") }}</p>{% endif %}
                 {% if result.expected_chunk_snippet %}<p class="muted small eval-snippet">{{ result.expected_chunk_snippet }}</p>{% endif %}
-                {% if not result.expected_filename and not result.expected_substrings %}<p class="muted">— 無預期依據（unscored）</p>{% endif %}
+                {% if not result.expected_filename and not result.expected_substrings %}<p class="muted">{{ t('evalr.no_expected') }}</p>{% endif %}
               </div>
               <div>
-                <p class="eval-evidence-label">實際檢索 top</p>
+                <p class="eval-evidence-label">{{ t('evalr.actual_top') }}</p>
                 {% if result.retrieved %}
                   {% set top = result.retrieved[0] %}
                   <p><strong>{{ top.filename }}</strong></p>
@@ -51,6 +51,6 @@
       {% endfor %}
     </ul>
   {% else %}
-    <p class="muted">尚未產生 per-question results；run 進行中時本區塊會自動刷新。</p>
+    <p class="muted">{{ t('evalr.no_results') }}</p>
   {% endif %}
 </section>
