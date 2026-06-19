@@ -203,23 +203,24 @@ def render(request: Request, name: str, context: dict, status_code: int = 200) -
     )
 
 
-def friendly_error_message(exc: Exception | str, action: str = "處理") -> str:
+def friendly_error_message(exc: Exception | str, action: str | None = None) -> str:
     """Return a user-facing error without leaking provider/raw exception text."""
+    action = action if action is not None else i18n.t("error.action_default")
     text = str(exc)
     if isinstance(exc, httpx.TimeoutException) or "timeout" in text.lower():
-        return f"{action}逾時，請稍後再試。"
+        return i18n.t("error.timeout", action=action)
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         if status == 401:
-            return "模型服務驗證失敗，請檢查系統設定中的 API key。"
+            return i18n.t("error.auth")
         if status == 429:
-            return f"{action}暫時被模型服務限流，請稍後再試。"
+            return i18n.t("error.ratelimit", action=action)
         if status >= 500:
-            return f"模型服務暫時無法回應，請稍後再試。"
-        return f"{action}失敗，請檢查系統設定後再試。"
+            return i18n.t("error.unavailable")
+        return i18n.t("error.generic_check", action=action)
     if isinstance(exc, RuntimeError) and "settings" in text.lower():
-        return "尚未完成 LLM 設定，請先到系統設定填入模型連線資訊。"
-    return f"{action}失敗，請稍後再試；如果持續發生，請查看系統記錄。"
+        return i18n.t("error.no_llm")
+    return i18n.t("error.generic_retry", action=action)
 
 
 def relative_time(value: str | None) -> str:
@@ -1030,15 +1031,15 @@ async def notebook_suggestions(
     if not has_indexed:
         error = ""
     elif not (settings or {}).get("api_key") or not (settings or {}).get("chat_model"):
-        error = "請先完成 LLM 設定，才能生成建議問題。"
+        error = i18n.t("flow.suggestions_no_llm")
     else:
         try:
             questions = await generate_starter_questions(excerpts, settings or {})
             if not questions:
-                error = "模型未回傳建議問題，請再試一次。"
+                error = i18n.t("flow.suggestions_empty")
         except Exception as exc:
             logger.exception("suggestions_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
-            error = friendly_error_message(exc, "建議問題生成")
+            error = friendly_error_message(exc, i18n.t("error.action_suggestions"))
 
     if questions:
         with connect() as conn:
@@ -1189,15 +1190,15 @@ async def notebook_briefing(
         if not summaries:
             error = ""  # nothing to brief; template falls back on has_indexed
         elif not settings.get("api_key") or not settings.get("chat_model"):
-            error = "請先完成 LLM 設定，才能生成簡報。"
+            error = i18n.t("flow.briefing_no_llm")
         else:
             try:
                 briefing = await generate_briefing(summaries, settings)
                 if not briefing:
-                    error = "模型未回傳簡報內容，請再試一次。"
+                    error = i18n.t("flow.briefing_empty")
             except Exception as exc:
                 logger.exception("briefing_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
-                error = friendly_error_message(exc, "簡報生成")
+                error = friendly_error_message(exc, i18n.t("error.action_briefing"))
 
         if briefing:
             with connect() as conn:
@@ -1231,7 +1232,7 @@ async def notebook_compare(
             {
                 "notebook_id": notebook_id,
                 "comparison": "",
-                "error": "請至少勾選 2 個來源進行比較。",
+                "error": i18n.t("flow.compare_need_2"),
                 "filenames": [],
                 "focus": focus,
             },
@@ -1249,7 +1250,7 @@ async def notebook_compare(
             {
                 "notebook_id": notebook_id,
                 "comparison": "",
-                "error": "至少需要 2 個有內容的來源才能比較。",
+                "error": i18n.t("flow.compare_need_2_content"),
                 "filenames": [s["filename"] for s in summaries],
                 "focus": focus,
             },
@@ -1262,7 +1263,7 @@ async def notebook_compare(
             {
                 "notebook_id": notebook_id,
                 "comparison": "",
-                "error": "請先完成 LLM 設定，才能比較來源。",
+                "error": i18n.t("flow.compare_no_llm"),
                 "filenames": [s["filename"] for s in summaries],
                 "focus": focus,
             },
@@ -1274,10 +1275,10 @@ async def notebook_compare(
     try:
         comparison = await compare_sources(summaries, focus, settings)
         if not comparison:
-            error = "模型回傳的比較結果為空，請再試一次。"
+            error = i18n.t("flow.compare_empty")
     except Exception as exc:
         logger.exception("compare_failed user_id=%s notebook_id=%s sources=%s", user["id"], notebook_id, len(summaries))
-        error = friendly_error_message(exc, "來源比較")
+        error = friendly_error_message(exc, i18n.t("error.action_compare"))
 
     logger.info(
         "compare_completed user_id=%s notebook_id=%s sources=%s focus_chars=%s chars=%s",
@@ -1790,7 +1791,7 @@ async def ask(
     except Exception as exc:
         if conversation_id is None:
             conversation_id, _history, _settings = _prepare_question(notebook_id, user, question, None, source_ids)
-        answer = friendly_error_message(exc, "回答生成")
+        answer = friendly_error_message(exc, i18n.t("error.action_answer"))
         citations = []
         metadata["outcome"] = "error"
         metadata["error"] = str(exc)[:200]
@@ -1828,7 +1829,7 @@ async def ask_stream(
         try:
             conversation, history, settings = _prepare_question(notebook_id, user, question, conversation, source_ids)
             yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
-            yield sse_event("status", {"text": "正在檢索來源…"})
+            yield sse_event("status", {"text": i18n.t("js.retrieving")})
 
             retrieve_started = time.perf_counter()
             retrieved = await retrieve(question, None, settings, history, user["id"], source_ids)
@@ -1844,7 +1845,7 @@ async def ask_stream(
                 metadata["threshold"] = active_low_confidence_threshold()
                 yield sse_event("chunk", {"text": answer})
             else:
-                yield sse_event("status", {"text": "正在生成回答…"})
+                yield sse_event("status", {"text": i18n.t("js.generating")})
                 generate_started = time.perf_counter()
                 async for piece in generate_answer_stream(question, retrieved, settings):
                     answer += piece
@@ -1867,9 +1868,9 @@ async def ask_stream(
                     # Still can't establish a conversation. Report the error and
                     # end the stream cleanly rather than aborting the generator
                     # (which would leave the client with no error/done event).
-                    yield sse_event("error", {"text": friendly_error_message(exc, "回答生成")})
+                    yield sse_event("error", {"text": friendly_error_message(exc, i18n.t("error.action_answer"))})
                     return
-            answer = friendly_error_message(exc, "回答生成")
+            answer = friendly_error_message(exc, i18n.t("error.action_answer"))
             # Update (not replace) so retrieval metrics gathered before the
             # failure survive into the saved metadata.
             metadata.update({"outcome": "error", "error": str(exc)[:200]})
@@ -2248,7 +2249,7 @@ async def source_minutes(
         if source is None:
             return render(
                 request, "_minutes_result.html",
-                {"minutes": "", "error": "找不到已索引的來源，請重新整理後再試。", "filename": ""},
+                {"minutes": "", "error": i18n.t("flow.minutes_no_source"), "filename": ""},
                 status_code=404,
             )
         # Cap the fetch: generate_meeting_minutes uses ~16k chars and chunks are
@@ -2273,7 +2274,7 @@ async def source_minutes(
                 "minutes": "",
                 "error": "",
                 "filename": source["filename"],
-                "warning": "這份來源看起來不像會議逐字稿或會議紀錄。",
+                "warning": i18n.t("flow.minutes_not_meeting"),
                 "warning_detail": likelihood["reason"],
                 "notebook_id": notebook_id,
                 "source_id": source_id,
@@ -2283,7 +2284,7 @@ async def source_minutes(
     if not settings.get("api_key") or not settings.get("chat_model"):
         return render(
             request, "_minutes_result.html",
-            {"minutes": "", "error": "請先在系統設定完成 LLM 設定。", "filename": source["filename"], "warning": ""},
+            {"minutes": "", "error": i18n.t("flow.minutes_no_llm"), "filename": source["filename"], "warning": ""},
             status_code=400,
         )
 
@@ -2291,7 +2292,7 @@ async def source_minutes(
     if not minutes:
         return render(
             request, "_minutes_result.html",
-            {"minutes": "", "error": "模型未能產生會議記錄，請再試一次。", "filename": source["filename"]},
+            {"minutes": "", "error": i18n.t("flow.minutes_empty"), "filename": source["filename"]},
             status_code=502,
         )
 
@@ -2411,13 +2412,13 @@ async def notebook_artifact(
     if not summaries:
         return render(
             request, "_artifact_result.html",
-            {**base_ctx, "error": "先完成來源索引，才能生成。"},
+            {**base_ctx, "error": i18n.t("flow.artifact_need_index")},
             status_code=400,
         )
     if not settings.get("api_key") or not settings.get("chat_model"):
         return render(
             request, "_artifact_result.html",
-            {**base_ctx, "error": "請先完成 LLM 設定，才能生成。"},
+            {**base_ctx, "error": i18n.t("flow.artifact_no_llm")},
             status_code=400,
         )
 
@@ -2426,10 +2427,10 @@ async def notebook_artifact(
     try:
         artifact = await generate_artifact(kind, summaries, settings)
         if not artifact:
-            error = "模型未回傳內容，請再試一次。"
+            error = i18n.t("flow.artifact_empty")
     except Exception as exc:
         logger.exception("artifact_failed user_id=%s notebook_id=%s kind=%s", user["id"], notebook_id, kind)
-        error = friendly_error_message(exc, f"{label}生成")
+        error = friendly_error_message(exc, i18n.t("error.action_generate", label=label))
 
     logger.info(
         "artifact_completed user_id=%s notebook_id=%s kind=%s sources=%s chars=%s",
@@ -2464,7 +2465,7 @@ async def translate_source_summary(
     if not summaries:
         return render(
             request, "_translate_result.html",
-            {**base_ctx, "error": "找不到已索引、且有摘要可翻譯的來源。"},
+            {**base_ctx, "error": i18n.t("flow.translate_no_source")},
             status_code=404,
         )
     source = summaries[0]
@@ -2472,7 +2473,7 @@ async def translate_source_summary(
     if not settings.get("api_key") or not settings.get("chat_model"):
         return render(
             request, "_translate_result.html",
-            {**base_ctx, "error": "請先完成 LLM 設定，才能翻譯。"},
+            {**base_ctx, "error": i18n.t("flow.translate_no_llm")},
             status_code=400,
         )
 
@@ -2481,10 +2482,10 @@ async def translate_source_summary(
     try:
         translated = await translate_summary(source["summary"], target_language, settings)
         if not translated:
-            error = "模型未回傳翻譯，請再試一次。"
+            error = i18n.t("flow.translate_empty")
     except Exception as exc:
         logger.exception("translate_failed user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
-        error = friendly_error_message(exc, "摘要翻譯")
+        error = friendly_error_message(exc, i18n.t("error.action_translate"))
 
     logger.info(
         "translate_summary_completed user_id=%s notebook_id=%s source_id=%s lang=%s chars=%s",

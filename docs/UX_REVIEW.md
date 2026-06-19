@@ -67,7 +67,8 @@ CSS-only，皆在 [`app/static/style.css`](../app/static/style.css)：
 | **Phase 0 — 地基**（外觀零變化） | `app/i18n.py` 訊息目錄（dict，無新依賴）+ `t()` Jinja global + `window.I18N`（base.html，給 app.js）+ `[ui].language` config（env `NOTEBOOKLM_UI_LANGUAGE`，預設 zh-TW）+ 測試。導覽列 7 標籤＋登出（模板 rail）與「思考中」（JS rail）當搬遷範例 | [x] 2026-06-19（`pytest` 143 passed；nav/`window.I18N` 實測外觀不變） |
 | **Phase 1 — 高頻使用者面** | 導覽、chat 空/串流狀態、Studio 工具標籤、回對話的伺服器錯誤訊息、匯出 Markdown 標題 | [~] 進行中 |
 | &nbsp;&nbsp;↳ Phase 1a — Studio/chat 介面 | `_chat_empty`/`_studio_tools`/`_suggestions`/`_tool_panel` + app.js 答題流程字串（`tr()`/window.I18N）+ chat 放棄回答 + 匯出標題（`引用來源`/`筆記`）。工具標籤改 `tool.<kind>` 單一來源 | [x] 2026-06-19（143 passed；實測 chat 空狀態/工具列/工具面板正確） |
-| &nbsp;&nbsp;↳ Phase 1b — 伺服器錯誤 + 其餘 JS | `friendly_error_message` 對照、各 partial inline 錯誤、上傳檔案 JS 字串、設定頁 provider 提示；導覽「Eval→評測」併 Phase 2b 一起決定 | [ ] 下一輪 |
+| &nbsp;&nbsp;↳ Phase 1b — 使用者面伺服器錯誤 | `friendly_error_message` 對照表＋action 標籤、各 flow（建議/簡報/比較/會議記錄/artifact/翻譯）inline 錯誤、SSE 狀態文字全走 `error.*`/`flow.*` 目錄 | [x] 2026-06-19（143 passed；compare need-2 路徑＋error mapper 實測） |
+| &nbsp;&nbsp;↳ Phase 1c — 其餘 JS（帶 placeholder） | 上傳檔案 JS 字串（需 JS 端格式化）、設定頁 provider 提示；導覽「Eval→評測」併 Phase 2b 決定 | [ ] 下一輪 |
 | **Phase 2 — 英文漂移大本營（= M2 主體 + L3/L4）** | Eval 工作台/Retrieval Profiles/建立 Eval Set/indexed sources、稽核頁（篩選＋欄位標題＋severity 值）、設定頁雙語統一（L4）、aria-label 中文化（L3） | [~] 進行中 |
 | &nbsp;&nbsp;↳ Phase 2a — 稽核頁 | admin_audit.html 全頁走 `t()`：篩選標籤/表頭/severity(`SENSITIVITY_LABELS`)/說明/空狀態/modal aria 全中文化（含 L1 severity 文字、該頁 aria）。剩英文僅資料識別碼與 API key（刻意保留） | [x] 2026-06-19（143 passed；實測整頁中文） |
 | &nbsp;&nbsp;↳ Phase 2b — Eval 工作台叢集（多模板，最大宗）、設定頁 L4、全站 aria L3 | 下一輪 | [ ] |
