@@ -38,8 +38,8 @@
             disabled
             title="索引完成後即可預覽"
             {% endif %}>
-      <span class="source-name">{{ source.filename }}</span>
-      <span class="status {{ source.status }}">{{ source.status }}</span>
+      <span class="source-name" title="{{ source.filename }}">{{ source.filename }}</span>
+      <span class="status {{ source.status }}">{{ source_status_labels.get(source.status, source.status) }}</span>
     </button>
   </div>
   {% if source.error %}

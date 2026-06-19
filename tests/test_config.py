@@ -37,6 +37,8 @@ def test_defaults_match_the_previously_hardcoded_values(tmp_path, monkeypatch):
     assert c.runtime.suggestions_ttl_hours == 24
     assert c.runtime.briefing_ttl_hours == 24
 
+    assert c.ui.language == "zh-TW"
+
 
 def test_toml_file_overrides_defaults(tmp_path, monkeypatch):
     config_file = tmp_path / "config.toml"

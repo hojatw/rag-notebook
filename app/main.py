@@ -23,6 +23,7 @@ from .db import UPLOAD_DIR, connect, dumps, encrypt_for_storage, init_db, load_l
 from .ingest import supported
 from .jobs import enqueue_source
 from .worker import run_worker_loop
+from . import i18n
 import httpx
 
 from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_eval_candidates, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
@@ -121,6 +122,22 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="NotebookLM-like RAG POC", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
+
+# Human-readable (zh-Hant) labels for the source lifecycle status pill, shared
+# by the left source list and the preview header so the two never drift.
+templates.env.globals["source_status_labels"] = {
+    "uploaded": "已上傳",
+    "processing": "處理中",
+    "indexed": "已索引",
+    "failed": "失敗",
+}
+
+# i18n (Phase 0): `t()` resolves UI copy from the message catalog; `i18n_js()`
+# feeds window.I18N in base.html so app.js shares the same source of truth.
+templates.env.globals["t"] = i18n.t
+templates.env.globals["i18n_js"] = i18n.js_messages
+# Localised display for the audit sensitivity classification (raw value kept).
+templates.env.globals["audit_sensitivity_labels"] = i18n.SENSITIVITY_LABELS
 
 
 @app.middleware("http")

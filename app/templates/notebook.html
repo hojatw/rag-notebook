@@ -15,6 +15,7 @@
      @keydown.escape.window="$dispatch('close-preview')">
   <div class="modal-backdrop" @click="$dispatch('close-preview')"></div>
   <div class="modal-panel" role="dialog" aria-modal="true" aria-label="預覽與工具視窗" tabindex="-1" x-ref="panel">
+    <button type="button" class="modal-close" aria-label="關閉視窗" @click="$dispatch('close-preview')">✕</button>
     <div id="preview-content"></div>
   </div>
 </div>
@@ -54,17 +55,20 @@
           @drop.prevent="drop($event)"
           :class="{ 'is-dragover': over }">
       <label class="file-picker">
-        <span>新增來源</span>
+        <span class="file-picker-heading">新增來源</span>
         <input type="file"
                name="files"
                accept=".pdf,.txt,.md,.markdown,.docx,.html,.htm,.srt,.vtt"
                multiple
                required
+               class="file-picker-input"
+               aria-label="選擇要上傳的來源檔案"
                x-ref="input"
                data-file-label="#nb-selected-file"
                data-file-summary="#nb-file-summary"
                data-max-files="{{ upload_batch_limit }}"
                {% if not llm_status.ready %}disabled{% endif %}>
+        <span class="file-picker-trigger" aria-hidden="true">＋ 選擇檔案</span>
       </label>
       <span id="nb-selected-file" class="file-name">拖曳最多 {{ upload_batch_limit }} 個檔案到此，或點擊選擇</span>
       <div id="nb-file-summary" class="upload-file-summary" aria-live="polite"></div>

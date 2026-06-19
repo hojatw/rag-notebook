@@ -293,8 +293,9 @@ function bindAskFormThinkingBubble(root) {
       q.textContent = question;
       const bubble = document.createElement("div");
       bubble.className = "thinking-bubble";
+      const thinkingLabel = (window.I18N && window.I18N.thinking) || "思考中";
       bubble.innerHTML =
-        "<span>思考中</span>" +
+        "<span>" + thinkingLabel + "</span>" +
         "<span class=\"thinking-dots\"><span></span><span></span><span></span></span>";
       wrap.appendChild(q);
       wrap.appendChild(bubble);
