@@ -70,11 +70,11 @@
                {% if not llm_status.ready %}disabled{% endif %}>
         <span class="file-picker-trigger" aria-hidden="true">＋ 選擇檔案</span>
       </label>
-      <span id="nb-selected-file" class="file-name">拖曳最多 {{ upload_batch_limit }} 個檔案到此，或點擊選擇</span>
+      <span id="nb-selected-file" class="file-name">{{ t('js.upload_hint', max=upload_batch_limit) }}</span>
       <div id="nb-file-summary" class="upload-file-summary" aria-live="polite"></div>
       <button type="submit" class="wide" data-loading-text="上傳中..."
               {% if not llm_status.ready %}disabled{% endif %}>上傳</button>
-      <p class="hint">PDF · TXT · Markdown · DOCX · HTML · 字幕(SRT/VTT) · 一次最多 {{ upload_batch_limit }} 個</p>
+      <p class="hint">{{ t('upload.formats', count=upload_batch_limit) }}</p>
     </form>
 
     <ul class="source-list">

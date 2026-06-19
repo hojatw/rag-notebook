@@ -163,6 +163,15 @@ MESSAGES: dict[str, dict[str, str]] = {
         "js.role_you": "你",
         "js.role_assistant": "助理",
         "js.copied": "✓ 已複製",
+        # upload widget (Phase 1c) — {max}/{count}/{size} filled by tr()/t()
+        "js.upload_too_many": "一次最多上傳 {max} 個檔案，已保留前 {max} 個。",
+        "js.upload_hint": "拖曳最多 {max} 個檔案到此，或點擊選擇",
+        "js.upload_selected": "已選擇 {count} 個檔案",
+        "js.upload_summary": "{count} / {max} 個檔案 · {size} · 送出後會排入索引",
+        "js.provider_hint_openai": "請填入相容 /v1 的 base URL；模型欄位填模型名稱。",
+        "js.provider_hint_azure": "請填入 Azure 資源端點；模型欄位填部署（deployment）名稱。",
+        # upload formats hint (template-side, Phase 1c)
+        "upload.formats": "PDF · TXT · Markdown · DOCX · HTML · 字幕(SRT/VTT) · 一次最多 {count} 個",
     },
 }
 
