@@ -57,6 +57,7 @@
               hx-target="#eval-items"
               hx-swap="outerHTML"
               hx-on::after-request="if(event.detail.successful) this.reset()">
+          {{ csrf_input() }}
           <label>
             問題
             <textarea name="question" rows="2" required placeholder="輸入管理員確認過的 eval 問題"></textarea>
@@ -99,6 +100,7 @@
               hx-post="/admin/evals/sets/{{ eval_set.id }}/generate"
               hx-target="#eval-items"
               hx-swap="outerHTML">
+          {{ csrf_input() }}
           <label>
             自動候選題數
             <input type="number" name="count" min="1" max="20" value="5">
@@ -124,6 +126,7 @@
                 hx-post="/admin/evals/sets/{{ eval_set.id }}/generate/llm"
                 hx-target="#eval-items"
                 hx-swap="outerHTML">
+            {{ csrf_input() }}
             <div class="inline-form">
               <label>
                 題數

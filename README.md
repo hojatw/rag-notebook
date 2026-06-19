@@ -4,7 +4,7 @@ A single-machine FastAPI proof of concept for a NotebookLM-style workspace: orga
 
 ## Status
 
-This is a proof of concept, not a production-ready service. It is suitable for local experiments and small single-machine deployments after you configure a real `NOTEBOOKLM_SECRET`, but several production hardening items are still open (CSRF protection). See [Known follow-ups](#known-follow-ups).
+This is a proof of concept, not a production-ready service. It is suitable for local experiments and small single-machine deployments after you configure a real `NOTEBOOKLM_SECRET`, but it has not been hardened for direct public-internet exposure.
 
 ## What you get
 
@@ -27,6 +27,7 @@ This is a proof of concept, not a production-ready service. It is suitable for l
 - **Admin eval workbench** at `/admin/evals`: create eval sets against already-indexed notebook data, search all-site indexed notebooks, add manual questions, deterministic draft candidates, or LLM-assisted draft candidates from selected sources. LLM candidates support answerable, cross-lingual, and unanswerable item types, but still require admin approval before entering a run. Retrieval-only evals run in the background with visible progress and keep historical run metrics/results inside the deployment. Run results show the question, expected evidence, top retrieved chunk, and a miss diagnosis. Admins can author **candidate retrieval profiles** (runtime-safe params), run an eval set against any profile, **compare** two runs side by side (param/metric/per-question diff), then **apply** a profile to live retrieval or **roll back** — index-affecting parameters are refused at apply. The workbench includes an in-product tuning guide at `/admin/evals/help` covering symptom diagnosis, profile experiment flow, starter profiles, reindex boundaries, and future domain hints / answer policy. Profiles and runs can be exported as sanitized JSON; full internal run reports require explicit confirmation and are written to the audit trail.
 - **Admin audit trail** at `/admin/audit`: durable DB-backed audit events for full/sanitized eval exports, retrieval profile create/apply/delete/export, LLM settings updates, index clear/rebuild, user-admin changes, and notebook/source/chat/note lifecycle or Markdown-export actions. Audit metadata stores identifiers and summaries only, not API keys or copied source text.
 - **Multi-user** with hashed passwords and strict per-user/per-notebook isolation. Admin can manage user accounts at `/admin/users`; any signed-in user can change their own password at `/account`.
+- **CSRF protection** on unsafe routes via a signed double-submit token: server-rendered forms include a hidden token, and HTMX / streaming chat requests send the same token as a header.
 - **OpenAI-compatible** (including local Ollama / vLLM / TEI) and **Azure OpenAI** chat + embedding providers, configured by an admin in `/settings`. Chat and embedding endpoints can live on different services via the optional **Embedding base URL** field. **API keys are encrypted at rest** with Fernet (PBKDF2-SHA256 over `NOTEBOOKLM_SECRET`). On save the embedding endpoint is probed once; dim mismatches with the existing Chroma index are rejected with a clear "Clear at /admin/index first" message.
 - **Admin vector-index console** at `/admin/index`: SQLite ↔ Chroma drift report, manual *Rebuild* and *Clear*.
 - **Global search** at `/search`: searches the signed-in user's notebooks, source filenames/summaries, conversation titles, and notes.
@@ -384,7 +385,6 @@ requirements-dev.txt   Local development/test dependencies layered on runtime.
 
 Performance/scalability and retrieval-quality work are tracked as prioritised, tick-off backlogs in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) and [`docs/QUALITY.md`](docs/QUALITY.md) (issue → impact → fix → priority); UX improvements and new AI features live in [`docs/ROADMAP.md`](docs/ROADMAP.md). Engineering deep-dives live in [`docs/`](docs/). Headline items still outstanding:
 
-- No CSRF protection on POST routes.
 - No offline embedding fallback — embedding model must be configured before uploads are accepted.
 - UI strings are still hardcoded zh-TW; the i18n foundation and full extraction are split as `ROADMAP.md` U15a/U15b.
 - Keyword search uses `LIKE '%token%'` over SQLite; FTS5 + BM25 is on deck (see [`RETRIEVAL.md`](docs/RETRIEVAL.md)).

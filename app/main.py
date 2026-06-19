@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import os
 import re
@@ -11,12 +12,14 @@ import time
 import uuid
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
+from markupsafe import Markup, escape
 
 from .config import config
 from .db import UPLOAD_DIR, connect, dumps, encrypt_for_storage, init_db, load_llm_settings, load_llm_settings_for_display, loads
@@ -26,7 +29,7 @@ from .worker import run_worker_loop
 import httpx
 
 from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_eval_candidates, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
-from .security import get_app_secret, hash_password, sign_user_id, unsign_user_id, verify_password
+from .security import get_app_secret, hash_password, new_csrf_token, sign_user_id, unsign_user_id, valid_csrf_token, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
 from .vector_store import delete_source as delete_source_vectors
@@ -46,6 +49,11 @@ LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 # `uvicorn app.main:app` ingests as before; set to 0 in deployments that run a
 # dedicated `python -m app.worker` to keep ingest off the web process.
 INLINE_WORKER = os.environ.get("NOTEBOOKLM_INLINE_WORKER", "1").strip().lower() in {"1", "true", "yes", "on"}
+CSRF_COOKIE_NAME = "csrf_token"
+CSRF_FORM_FIELD = "csrf_token"
+CSRF_HEADER_NAME = "x-csrf-token"
+CSRF_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
+CSRF_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def configure_logging() -> None:
@@ -123,6 +131,90 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
+def csrf_token_for_request(request: Request) -> str:
+    """Return the signed CSRF token for this request, creating one if needed."""
+    token = getattr(request.state, "csrf_token", None)
+    if token:
+        return token
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+    token = cookie_token if valid_csrf_token(cookie_token, SECRET) else new_csrf_token(SECRET)
+    request.state.csrf_token = token
+    return token
+
+
+@pass_context
+def csrf_input(context) -> Markup:
+    """Render the hidden CSRF field used by non-JavaScript form submits."""
+    request = context.get("request")
+    token = csrf_token_for_request(request) if request is not None else ""
+    return Markup(
+        f'<input type="hidden" name="{CSRF_FORM_FIELD}" value="{escape(token)}">'
+    )
+
+
+templates.env.globals["csrf_input"] = csrf_input
+
+
+def _csrf_response_token(request: Request) -> str:
+    """Return the token that should be persisted to the CSRF cookie."""
+    return csrf_token_for_request(request)
+
+
+def _set_csrf_cookie(request: Request, response: Response) -> None:
+    response.set_cookie(
+        CSRF_COOKIE_NAME,
+        _csrf_response_token(request),
+        max_age=CSRF_COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
+
+
+async def _submitted_csrf_token(request: Request) -> str | None:
+    token = request.headers.get(CSRF_HEADER_NAME)
+    if token:
+        return token
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type == "application/x-www-form-urlencoded":
+        body = await request.body()
+        values = parse_qs(body.decode("utf-8", errors="ignore"), keep_blank_values=True)
+        token_values = values.get(CSRF_FORM_FIELD)
+        return token_values[0] if token_values else None
+    if content_type == "multipart/form-data":
+        body = await request.body()
+        match = re.search(
+            rb'name="' + re.escape(CSRF_FORM_FIELD.encode("ascii")) + rb'"\r?\n\r?\n([^\r\n]+)',
+            body,
+        )
+        if match:
+            return match.group(1).decode("ascii", errors="ignore")
+    return None
+
+
+@app.middleware("http")
+async def csrf_protection(request: Request, call_next):
+    """Reject unsafe requests unless they carry the page's signed CSRF token."""
+    if request.method.upper() in CSRF_UNSAFE_METHODS:
+        cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+        submitted_token = await _submitted_csrf_token(request)
+        valid = (
+            valid_csrf_token(cookie_token, SECRET)
+            and submitted_token is not None
+            and hmac.compare_digest(cookie_token, submitted_token)
+        )
+        if not valid:
+            logger.warning("csrf_rejected method=%s path=%s", request.method, request.url.path)
+            return HTMLResponse("CSRF token invalid", status_code=403)
+        request.state.csrf_token = cookie_token
+    else:
+        csrf_token_for_request(request)
+
+    response = await call_next(request)
+    _set_csrf_cookie(request, response)
+    return response
+
+
 @app.middleware("http")
 async def request_logger(request: Request, call_next):
     """Log each HTTP request with status and elapsed time."""
@@ -181,7 +273,12 @@ def render(request: Request, name: str, context: dict, status_code: int = 200) -
     return templates.TemplateResponse(
         request,
         name,
-        {"request": request, "followups_cache_version": FOLLOWUPS_CACHE_VERSION, **context},
+        {
+            "request": request,
+            "csrf_token": csrf_token_for_request(request),
+            "followups_cache_version": FOLLOWUPS_CACHE_VERSION,
+            **context,
+        },
         status_code=status_code,
     )
 

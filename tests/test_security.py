@@ -7,6 +7,8 @@ from app.security import (
     decrypt_secret,
     encrypt_secret,
     get_app_secret,
+    new_csrf_token,
+    valid_csrf_token,
 )
 
 
@@ -74,3 +76,20 @@ def test_app_secret_prefers_real_secret_over_dev_flag(monkeypatch):
     monkeypatch.setenv(ALLOW_INSECURE_DEV_SECRET_ENV, "1")
 
     assert get_app_secret() == "real-secret"
+
+
+def test_csrf_token_is_signed_and_secret_scoped():
+    """CSRF tokens must validate only with the secret that created them."""
+    token = new_csrf_token(SECRET)
+
+    assert valid_csrf_token(token, SECRET)
+    assert not valid_csrf_token(token, SECRET + "-other")
+
+
+def test_csrf_token_rejects_missing_or_tampered_values():
+    """Invalid CSRF values fail closed."""
+    token = new_csrf_token(SECRET)
+
+    assert not valid_csrf_token(None, SECRET)
+    assert not valid_csrf_token("", SECRET)
+    assert not valid_csrf_token(token + "x", SECRET)

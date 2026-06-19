@@ -34,6 +34,7 @@
             <a class="ghost small" href="/admin/evals/profiles/{{ prof.id }}/export">匯出設定</a>
             {% if not prof.is_active %}
               <form method="post" action="/admin/evals/profiles/{{ prof.id }}/apply" data-confirm="套用此 profile 到線上檢索？這會立即改變所有使用者的 chat 檢索行為。">
+                {{ csrf_input() }}
                 <button type="submit" class="small">套用</button>
               </form>
             {% endif %}
@@ -43,6 +44,7 @@
               <span class="muted small">回復預設的保底，不可刪除</span>
             {% else %}
               <form method="post" action="/admin/evals/profiles/{{ prof.id }}/delete" data-confirm="刪除此 profile？歷史 run 的 snapshot 會保留。">
+                {{ csrf_input() }}
                 <button type="submit" class="danger small">刪除</button>
               </form>
             {% endif %}
@@ -54,6 +56,7 @@
     <details class="profile-create">
       <summary>建立候選 Profile</summary>
       <form method="post" action="/admin/evals/profiles" class="stacked-form">
+        {{ csrf_input() }}
         <label>
           名稱
           <input name="name" maxlength="120" placeholder="例如：keyword 權重提高 candidate" required>

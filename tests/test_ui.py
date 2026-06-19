@@ -1,7 +1,27 @@
 import importlib
 import json
 
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient as FastAPITestClient
+
+
+class TestClient(FastAPITestClient):
+    """Test client that behaves like the browser by echoing the CSRF token."""
+
+    def post(self, url, *args, **kwargs):
+        headers = dict(kwargs.pop("headers", {}) or {})
+        has_csrf_header = any(key.lower() == "x-csrf-token" for key in headers)
+        data = kwargs.get("data")
+        has_csrf_form_field = isinstance(data, dict) and "csrf_token" in data
+        if not has_csrf_header and not has_csrf_form_field:
+            token = self.cookies.get("csrf_token")
+            if not token:
+                self.get("/login")
+                token = self.cookies.get("csrf_token")
+            if token:
+                headers["X-CSRF-Token"] = token
+        if headers:
+            kwargs["headers"] = headers
+        return super().post(url, *args, **kwargs)
 
 
 def _fresh_app(monkeypatch, tmp_path):
@@ -27,6 +47,30 @@ def _login(client: TestClient):
         follow_redirects=False,
     )
     assert response.status_code == 303
+
+
+def test_csrf_token_required_for_login_post(monkeypatch, tmp_path):
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with FastAPITestClient(main.app) as client:
+        page = client.get("/login")
+        assert page.status_code == 200
+        assert 'name="csrf_token"' in page.text
+
+        rejected = client.post(
+            "/login",
+            data={"username": "admin", "password": "admin123"},
+            follow_redirects=False,
+        )
+        assert rejected.status_code == 403
+
+        token = client.cookies.get("csrf_token")
+        accepted = client.post(
+            "/login",
+            data={"username": "admin", "password": "admin123", "csrf_token": token},
+            follow_redirects=False,
+        )
+        assert accepted.status_code == 303
 
 
 def test_notebook_forms_render_preset_emoji_picker(monkeypatch, tmp_path):

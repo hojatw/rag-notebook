@@ -27,6 +27,7 @@
     <p class="hint muted small">目前 Eval Set 綁定單一目標筆記本。清單列出全站最近 100 個「已有 indexed source」的筆記本；資料量大時請先搜尋。</p>
     {% if notebooks %}
       <form method="post" action="/admin/evals/sets" class="stacked-form">
+        {{ csrf_input() }}
         <label>
           名稱
           <input name="name" placeholder="例如：客戶中文研究報告 baseline" required>
@@ -70,6 +71,7 @@
                 <td data-label="操作" class="action-cell">
                   <a class="ghost small" href="/admin/evals/sets/{{ item.id }}">開啟</a>
                   <form method="post" action="/admin/evals/sets/{{ item.id }}/delete" data-confirm="刪除此 Eval Set？相關題目、run history 與結果都會一併刪除。">
+                    {{ csrf_input() }}
                     <button type="submit" class="danger small">刪除</button>
                   </form>
                 </td>

@@ -9,6 +9,7 @@
   {% if saved %}<div class="notice">密碼已更新。</div>{% endif %}
   {% if error %}<div class="alert">{{ error }}</div>{% endif %}
   <form method="post" action="/account/password" class="settings-grid" data-loading-form>
+    {{ csrf_input() }}
     <section class="settings-section">
       <label>
         目前密碼

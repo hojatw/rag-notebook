@@ -47,6 +47,7 @@
                     hx-post="/notebooks/{{ notebook.id }}/notes/{{ note.id }}/edit"
                     hx-target="#studio-notes"
                     hx-swap="outerHTML">
+                {{ csrf_input() }}
                 <label>
                   <span class="muted small">標題</span>
                   <input type="text" name="title" value="{{ note.title }}" maxlength="80" placeholder="（選填）">

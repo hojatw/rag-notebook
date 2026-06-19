@@ -13,6 +13,7 @@
   <section class="settings-section">
     <h2>新增使用者</h2>
     <form method="post" action="/admin/users/new" class="user-create-form" data-loading-form>
+      {{ csrf_input() }}
       <label>
         帳號
         <input name="username" maxlength="64" required>
@@ -60,6 +61,7 @@
                 <details class="reset-details">
                   <summary class="ghost small">重設密碼</summary>
                   <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="reset-form" data-loading-form>
+                    {{ csrf_input() }}
                     <input name="new_password" type="password" placeholder="新密碼" minlength="6" required>
                     <button type="submit" class="secondary small" data-loading-text="...">設定</button>
                   </form>
@@ -67,10 +69,12 @@
                 {% if u.id != user.id %}
                   <form method="post" action="/admin/users/{{ u.id }}/toggle-admin"
                         data-confirm="{% if u.is_admin %}降級{% else %}升級{% endif %} {{ u.username }}？">
+                    {{ csrf_input() }}
                     <button type="submit" class="ghost small">{% if u.is_admin %}降為一般{% else %}設為管理員{% endif %}</button>
                   </form>
                   <form method="post" action="/admin/users/{{ u.id }}/delete"
                         data-confirm="刪除使用者 {{ u.username }} 與其所有筆記本、來源、對話與筆記？此操作無法復原。">
+                    {{ csrf_input() }}
                     <button type="submit" class="ghost small danger-link">刪除</button>
                   </form>
                 {% endif %}

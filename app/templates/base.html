@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>{{ title or "NotebookLM RAG POC" }}</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
     <script defer src="{{ url_for('static', path='/vendor/marked.min.js') }}"></script>
@@ -55,6 +56,7 @@
           </nav>
         {% endif %}
         <form action="/logout" method="post" class="session">
+          {{ csrf_input() }}
           {% if user.is_admin and breadcrumb %}<a href="/settings" class="ghost small">系統設定</a>{% endif %}
           <a href="/account"
              class="user-chip {% if request.url.path.startswith('/account') %}active{% endif %}"

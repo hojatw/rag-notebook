@@ -13,6 +13,7 @@
           hx-swap="innerHTML"
           hx-indicator="#tool-loading"
           hx-disabled-elt="find button[type=submit]">
+      {{ csrf_input() }}
       <ul class="compare-source-list">
         {% for s in sources_indexed %}
           <li>
@@ -39,6 +40,7 @@
           hx-swap="innerHTML"
           hx-indicator="#tool-loading"
           hx-disabled-elt="find button[type=submit]">
+      {{ csrf_input() }}
       <label class="minutes-source-label">
         <span class="muted small">選擇來源（會議逐字稿）</span>
         <select name="source_id" required>
@@ -59,6 +61,7 @@
           hx-swap="innerHTML"
           hx-indicator="#tool-loading"
           hx-disabled-elt="find button[type=submit]">
+      {{ csrf_input() }}
       <label class="minutes-source-label">
         <span class="muted small">選擇來源</span>
         <select name="source_id" required>
@@ -94,6 +97,7 @@
           hx-swap="innerHTML"
           hx-indicator="#tool-loading"
           hx-disabled-elt="find button[type=submit]">
+      {{ csrf_input() }}
       <button type="submit" class="wide small">生成{{ artifact_label }}</button>
     </form>
   {% endif %}

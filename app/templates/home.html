@@ -9,6 +9,7 @@
   <details class="new-notebook-menu" x-data="{ open: false }" :open="open" @toggle="open = $event.target.open">
     <summary class="new-notebook-trigger">+ 新增筆記本</summary>
     <form action="/notebooks/new" method="post" class="new-notebook-form" data-loading-form>
+      {{ csrf_input() }}
       {% with emoji_value="📓" %}
         {% include "_emoji_picker.html" %}
       {% endwith %}

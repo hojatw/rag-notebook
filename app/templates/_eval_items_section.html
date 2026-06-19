@@ -5,6 +5,7 @@
       <p class="hint muted small">Draft 題目需 approve 後才會進入 runner；不可回答題目前會在 retrieval-only run 中標成 unscored。</p>
     </div>
     <form method="post" action="/admin/evals/sets/{{ eval_set.id }}/run" class="run-form" data-loading-form>
+      {{ csrf_input() }}
       {% if profiles %}
         <label class="run-profile-label">
           Profile
@@ -41,6 +42,7 @@
                       hx-post="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/approve"
                       hx-target="#eval-items"
                       hx-swap="outerHTML">
+                  {{ csrf_input() }}
                   <button type="submit" class="secondary small">approve</button>
                 </form>
               {% endif %}
@@ -50,6 +52,7 @@
                     hx-post="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/delete"
                     hx-target="#eval-items"
                     hx-swap="outerHTML">
+                {{ csrf_input() }}
                 <button type="submit" class="danger small">刪除</button>
               </form>
             </div>
