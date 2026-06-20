@@ -2,9 +2,9 @@
 {% block content %}
 <section class="settings eval-workbench">
   <header class="settings-head">
-    <p class="eyebrow">評測集</p>
+    <p class="eyebrow">{{ t('eval.tab_sets') }}</p>
     <h1>{{ eval_set.name }}</h1>
-    <p class="muted">{{ eval_set.notebook_emoji or "📓" }} {{ eval_set.notebook_title }} · owner: {{ eval_set.target_username }}</p>
+    <p class="muted">{{ eval_set.notebook_emoji or "📓" }} {{ eval_set.notebook_title }} · 擁有者：{{ eval_set.target_username }}</p>
     {% if eval_set.description %}<p>{{ eval_set.description }}</p>{% endif %}
   </header>
 
@@ -67,7 +67,7 @@
               <option value="">不指定來源（只用 substrings / unscored）</option>
               {% for source in sources %}
                 <option value="{{ source.id }}" {% if source.status != 'indexed' %}disabled{% endif %}>
-                  {{ source.filename }}{% if source.status != 'indexed' %}（{{ source.status }}）{% endif %}
+                  {{ source.filename }}{% if source.status != 'indexed' %}（{{ source_status_labels.get(source.status, source.status) }}）{% endif %}
                 </option>
               {% endfor %}
             </select>
@@ -154,7 +154,7 @@
                 {% for source in sources %}
                   <label class="{{ 'is-disabled' if source.status != 'indexed' else '' }}">
                     <input type="checkbox" name="source_ids" value="{{ source.id }}" {% if source.status != 'indexed' %}disabled{% endif %}>
-                    <span>{{ source.filename }}{% if source.status != 'indexed' %}（{{ source.status }}）{% endif %}</span>
+                    <span>{{ source.filename }}{% if source.status != 'indexed' %}（{{ source_status_labels.get(source.status, source.status) }}）{% endif %}</span>
                   </label>
                 {% endfor %}
               </div>
@@ -206,17 +206,17 @@
       <div class="table-wrap">
         <table class="run-history-table">
           <thead>
-            <tr><th>Run</th><th>狀態</th><th>Progress</th><th>Recall</th><th>MRR</th><th>操作</th></tr>
+            <tr><th>Run</th><th>{{ t('common.status') }}</th><th>{{ t('evalr.progress') }}</th><th>Recall</th><th>MRR</th><th>{{ t('common.actions') }}</th></tr>
           </thead>
           <tbody>
             {% for run in runs %}
               <tr>
                 <td data-label="Run"><strong>#{{ run.id }}</strong><small>{{ run.created_at }}</small></td>
-                <td data-label="狀態"><span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run.status }}</span></td>
-                <td data-label="進度">{{ run.progress_current }} / {{ run.progress_total }}</td>
+                <td data-label="{{ t('common.status') }}"><span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run_status_labels.get(run.status, run.status) }}</span></td>
+                <td data-label="{{ t('evalr.progress') }}">{{ run.progress_current }} / {{ run.progress_total }}</td>
                 <td data-label="Recall">{{ run.metrics.recall_at_k if run.metrics else "—" }}</td>
                 <td data-label="MRR">{{ run.metrics.mrr if run.metrics else "—" }}</td>
-                <td data-label="操作"><a class="ghost small" href="/admin/evals/runs/{{ run.id }}">查看</a></td>
+                <td data-label="{{ t('common.actions') }}"><a class="ghost small" href="/admin/evals/runs/{{ run.id }}">{{ t('common.view') }}</a></td>
               </tr>
             {% endfor %}
           </tbody>

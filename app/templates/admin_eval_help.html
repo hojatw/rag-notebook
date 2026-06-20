@@ -2,8 +2,8 @@
 {% block content %}
 <section class="settings eval-workbench eval-help-page">
   <header class="settings-head">
-    <p class="eyebrow">Eval 工作台</p>
-    <h1>Eval 調參指南</h1>
+    <p class="eyebrow">{{ t('eval.title') }}</p>
+    <h1>{{ t('eval.tab_help') }}</h1>
     <p class="muted">先判斷錯在哪一層，再用同一組 Eval Set 驗證單一方向的 profile 變更。</p>
   </header>
 
@@ -161,7 +161,7 @@
   </section>
 
   <section class="settings-section">
-    <h2>Domain hints / answer policy</h2>
+    <h2>領域提示與回答規則</h2>
     <p class="muted">Notebook 內的 domain hints 有機會提高準確度，尤其是領域詞彙對齊和回答規則一致性；但它不是替代索引或 ground truth 的萬靈丹。</p>
     <div class="eval-help-grid">
       <article class="card eval-help-card">
@@ -184,8 +184,8 @@
   </section>
 
   <footer class="settings-foot eval-help-actions">
-    <a class="ghost" href="/admin/evals">回 Eval 工作台</a>
-    <a class="ghost" href="/admin/evals/profiles">管理 Retrieval Profiles</a>
+    <a class="ghost" href="/admin/evals">回{{ t('eval.title') }}</a>
+    <a class="ghost" href="/admin/evals/profiles">管理{{ t('eval.tab_profiles') }}</a>
   </footer>
 </section>
 {% endblock %}

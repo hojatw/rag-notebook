@@ -870,10 +870,10 @@ def test_admin_eval_help_page_documents_tuning_workflow(monkeypatch, tmp_path):
 
         help_page = client.get("/admin/evals/help")
         assert help_page.status_code == 200
-        assert "Eval 調參指南" in help_page.text
+        assert "調參指南" in help_page.text
         assert "先分類錯誤" in help_page.text
         assert "調參方向速查" in help_page.text
-        assert "Domain hints / answer policy" in help_page.text
+        assert "領域提示與回答規則" in help_page.text
         assert "current_profile_fields" not in help_page.text
         assert "<code>vector_weight</code>" in help_page.text
         assert 'aria-current="page">調參指南</a>' in help_page.text
