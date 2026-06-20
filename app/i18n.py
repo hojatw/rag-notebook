@@ -53,6 +53,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "common.view": "查看",
         "common.delete": "刪除",
         "common.list_truncated": "僅顯示最近 {count} 筆，較舊的未顯示。",
+        # --- Notebook workspace ---------------------------------------------
+        "workspace.mobile_sources": "來源",
+        "workspace.mobile_chat": "對話",
+        "workspace.mobile_studio": "工作台",
         # --- Eval workbench — landing + nav (Phase 2b, hybrid naming) ---------
         # 評測 = the activity/section; "Eval Set" / "Eval run" kept as data terms.
         "eval.title": "評測工作台",
@@ -105,6 +109,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "a11y.sources": "來源面板",
         "a11y.chat": "對話面板",
         "a11y.studio": "工作台面板",
+        "a11y.workspace_pane_switcher": "工作區面板切換",
         "a11y.eval_set_sections": "評測集分頁",
         # --- Eval run/result/item partials (Phase 2b-iii) --------------------
         "evalr.progress": "進度",

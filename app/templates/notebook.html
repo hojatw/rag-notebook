@@ -20,10 +20,37 @@
   </div>
 </div>
 
-<section class="workspace">
+<div class="workspace-mobile-switcher"
+     role="tablist"
+     aria-label="{{ t('a11y.workspace_pane_switcher') }}"
+     data-workspace-switcher>
+  <button type="button"
+          class="workspace-mobile-tab"
+          role="tab"
+          aria-selected="false"
+          aria-controls="workspace-sources-pane"
+          data-workspace-tab="sources">{{ t('workspace.mobile_sources') }}</button>
+  <button type="button"
+          class="workspace-mobile-tab is-active"
+          role="tab"
+          aria-selected="true"
+          aria-controls="chat-pane"
+          data-workspace-tab="chat">{{ t('workspace.mobile_chat') }}</button>
+  <button type="button"
+          class="workspace-mobile-tab"
+          role="tab"
+          aria-selected="false"
+          aria-controls="workspace-studio-pane"
+          data-workspace-tab="studio">{{ t('workspace.mobile_studio') }}</button>
+</div>
+
+<section class="workspace" data-workspace-mobile-tabs data-active-pane="chat">
 
   {# ---------------- LEFT: Sources ---------------- #}
-  <aside class="workspace-pane workspace-sources" aria-label="{{ t('a11y.sources') }}">
+  <aside class="workspace-pane workspace-sources"
+         aria-label="{{ t('a11y.sources') }}"
+         id="workspace-sources-pane"
+         data-mobile-pane="sources">
     <header class="pane-head">
       <h2>來源</h2>
       <div class="inline-actions">
@@ -94,7 +121,10 @@
   </aside>
 
   {# ---------------- CENTER: Chat ---------------- #}
-  <section class="workspace-pane workspace-chat" aria-label="{{ t('a11y.chat') }}" id="chat-pane">
+  <section class="workspace-pane workspace-chat"
+           aria-label="{{ t('a11y.chat') }}"
+           id="chat-pane"
+           data-mobile-pane="chat">
     <header class="chat-head">
       <div class="chat-title-row">
         <span class="notebook-emoji">{{ notebook.emoji or "📓" }}</span>
@@ -234,7 +264,10 @@
      generator is a tile that opens in the preview-modal and writes its result
      to the notes shelf — adding a feature is +1 tile, not +1 stacked card.
      Starter questions moved to the chat empty-state. #}
-  <aside class="workspace-pane workspace-studio" aria-label="{{ t('a11y.studio') }}">
+  <aside class="workspace-pane workspace-studio"
+         aria-label="{{ t('a11y.studio') }}"
+         id="workspace-studio-pane"
+         data-mobile-pane="studio">
     <header class="pane-head">
       <h2>工作台</h2>
     </header>

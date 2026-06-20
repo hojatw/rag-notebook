@@ -2232,6 +2232,10 @@ legend {
 
 /* ---------------------------------------------------------------- workspace (3-pane) */
 
+.workspace-mobile-switcher {
+  display: none;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr) 320px;
@@ -3908,6 +3912,58 @@ legend {
 
   main {
     padding: var(--sp-4) var(--sp-3) var(--sp-6);
+  }
+
+  .workspace-mobile-switcher {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    position: sticky;
+    top: var(--sp-2);
+    z-index: 8;
+    margin-bottom: var(--sp-3);
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .workspace-mobile-tab {
+    min-width: 0;
+    min-height: 38px;
+    padding: 8px 6px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--muted-strong);
+    font-size: 13px;
+    font-weight: 700;
+    text-align: center;
+    box-shadow: none;
+  }
+
+  .workspace-mobile-tab:hover {
+    background: var(--surface-soft);
+    transform: none;
+  }
+
+  .workspace-mobile-tab.is-active {
+    background: var(--accent-soft);
+    color: var(--accent-deep);
+  }
+
+  .workspace.is-mobile-tabs-ready .workspace-pane[data-mobile-pane] {
+    display: none;
+  }
+
+  .workspace.is-mobile-tabs-ready[data-active-pane="sources"] .workspace-pane[data-mobile-pane="sources"],
+  .workspace.is-mobile-tabs-ready[data-active-pane="studio"] .workspace-pane[data-mobile-pane="studio"] {
+    display: grid;
+  }
+
+  .workspace.is-mobile-tabs-ready[data-active-pane="chat"] .workspace-pane[data-mobile-pane="chat"] {
+    display: flex;
   }
 
   .topbar {
