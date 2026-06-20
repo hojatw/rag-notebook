@@ -347,7 +347,7 @@ function bindChatInput(root) {
 // completes and the page re-renders with the real assistant reply.
 function bindAskFormThinkingBubble(root) {
   bindOnce(root, "form.ask-form", "askThinking", (form) => {
-    form.addEventListener("submit", () => {
+    form.addEventListener("submit", (event) => {
       if (form.dataset.streamUrl) return;
       const messages = document.querySelector(".messages");
       const textarea = form.querySelector("textarea[name='question']");
@@ -403,7 +403,7 @@ function bindConfirms(root) {
 
 function bindLoadingForms(root) {
   bindOnce(root, "form[data-loading-form]", "loading", (form) => {
-    form.addEventListener("submit", () => {
+    form.addEventListener("submit", (event) => {
       // CRITICAL: do NOT call .disabled = true on input/textarea/select inside
       // the submit handler — disabled controls are excluded from form
       // serialization, which means the browser would POST an empty body and
@@ -411,7 +411,9 @@ function bindLoadingForms(root) {
       // hard way with /settings wiping itself on save.
       // Visual lock comes from the .is-submitting class; the submit button is
       // disabled here to prevent double-submission.
-      const button = form.querySelector("button[type='submit']");
+      const button = event.submitter && event.submitter.matches("button[type='submit']")
+        ? event.submitter
+        : form.querySelector("button[type='submit']");
       if (button) {
         button.dataset.originalText = button.textContent;
         if (button.getAttribute("data-loading-icon-only") === "true") {
@@ -421,15 +423,17 @@ function bindLoadingForms(root) {
         } else {
           button.textContent = button.getAttribute("data-loading-text") || "Working...";
         }
+        button.classList.add("is-loading-submit");
         button.disabled = true;
       }
       form.classList.add("is-submitting");
     });
     form.addEventListener("htmx:afterRequest", () => {
-      const button = form.querySelector("button[type='submit']");
+      const button = form.querySelector("button[type='submit'].is-loading-submit");
       if (button && button.dataset.originalText !== undefined) {
         button.textContent = button.dataset.originalText;
         button.classList.remove("icon-only-loading");
+        button.classList.remove("is-loading-submit");
         button.removeAttribute("aria-label");
         button.disabled = false;
         delete button.dataset.originalText;

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import hmac
 import json
 import os
@@ -30,7 +31,7 @@ from .worker import run_worker_loop
 from . import i18n
 import httpx
 
-from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_eval_candidates, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
+from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_eval_candidates, generate_meeting_minutes, generate_starter_questions, probe_chat_diagnostics, probe_embedding_diagnostics, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
 from .security import INSECURE_DEV_SECRET, get_app_secret, hash_password, new_csrf_token, sign_user_id, unsign_user_id, valid_csrf_token, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
@@ -5175,7 +5176,290 @@ def settings_page(request: Request, user: Annotated[dict, Depends(require_admin)
     """Render the admin LLM settings page without exposing the API key."""
     with connect() as conn:
         settings = load_llm_settings_for_display(conn)
-    return render(request, "settings.html", {"user": user, "settings": settings, "saved": False})
+    return render_settings(request, user, settings)
+
+
+def render_settings(
+    request: Request,
+    user: dict,
+    settings: dict[str, Any],
+    *,
+    saved: bool = False,
+    diagnostic_notice: str = "",
+) -> HTMLResponse:
+    return render(
+        request,
+        "settings.html",
+        {
+            "user": user,
+            "settings": settings,
+            "saved": saved,
+            "diagnostic_notice": diagnostic_notice,
+            "diagnostic_status_labels": {
+                "succeeded": i18n.t("settings.status_succeeded"),
+                "failed": i18n.t("settings.status_failed"),
+                "skipped": i18n.t("settings.status_skipped"),
+                "not_tested": i18n.t("settings.status_not_tested"),
+            },
+        },
+    )
+
+
+def candidate_settings_from_form(
+    existing_decrypted: dict[str, Any],
+    *,
+    provider: str,
+    base_url: str,
+    embedding_base_url: str,
+    api_key: str,
+    chat_model: str,
+    embedding_model: str,
+    embedding_query_prefix: str,
+    embedding_passage_prefix: str,
+    api_version: str,
+    temperature: float,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    if provider not in {"openai_compatible", "azure_openai"}:
+        raise HTTPException(status_code=400, detail="Unsupported LLM provider")
+    return {
+        "provider": provider,
+        "base_url": base_url.strip(),
+        "embedding_base_url": embedding_base_url.strip(),
+        "api_key": api_key.strip() or existing_decrypted.get("api_key", ""),
+        "chat_model": chat_model.strip(),
+        "embedding_model": embedding_model.strip(),
+        "embedding_query_prefix": embedding_query_prefix,
+        "embedding_passage_prefix": embedding_passage_prefix,
+        "api_version": api_version.strip(),
+        "temperature": temperature,
+        "timeout_seconds": timeout_seconds,
+    }
+
+
+def llm_settings_fingerprint(settings: dict[str, Any]) -> str:
+    """Hash non-secret settings so diagnostics can be matched without secrets."""
+    summary = {
+        "provider": settings.get("provider") or "openai_compatible",
+        "base_url": settings.get("base_url") or "",
+        "embedding_base_url": settings.get("embedding_base_url") or "",
+        "api_key_set": bool(settings.get("api_key")),
+        "chat_model": settings.get("chat_model") or "",
+        "embedding_model": settings.get("embedding_model") or "",
+        "embedding_query_prefix": settings.get("embedding_query_prefix") or "",
+        "embedding_passage_prefix": settings.get("embedding_passage_prefix") or "",
+        "api_version": settings.get("api_version") or "",
+        "temperature": float(settings.get("temperature") or 0),
+        "timeout_seconds": float(settings.get("timeout_seconds") or 0),
+    }
+    return hashlib.sha256(dumps(summary).encode("utf-8")).hexdigest()
+
+
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def compact_diagnostic_result(
+    kind: str,
+    result: dict[str, Any],
+    *,
+    settings_fingerprint: str,
+    include_image: bool = False,
+) -> dict[str, Any]:
+    compact: dict[str, Any] = {
+        "kind": kind,
+        "status": str(result.get("status") or "failed")[:40],
+        "tested_at": utc_timestamp(),
+        "settings_fingerprint": settings_fingerprint,
+        "provider": str(result.get("provider") or "")[:80],
+        "model": str(result.get("model") or "")[:160],
+        "latency_ms": round(float(result.get("latency_ms") or 0), 1),
+        "error_class": str(result.get("error_class") or "")[:120],
+    }
+    if kind == "embedding":
+        dimension = result.get("embedding_dimension")
+        compact["embedding_dimension"] = int(dimension) if dimension is not None else None
+        current_dimension = vector_current_dimension()
+        compact["current_index_dimension"] = int(current_dimension) if current_dimension is not None else None
+    if kind == "chat":
+        compact["include_image_understanding"] = bool(include_image)
+        compact["capabilities"] = compact_diagnostic_capabilities(result.get("capabilities") or {})
+    return compact
+
+
+def compact_diagnostic_capabilities(capabilities: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for name, value in capabilities.items():
+        if not isinstance(value, dict):
+            continue
+        item = {
+            "status": str(value.get("status") or "not_tested")[:40],
+            "latency_ms": round(float(value.get("latency_ms") or 0), 1),
+            "error_class": str(value.get("error_class") or "")[:120],
+        }
+        for key in ("usage_available", "stream_usage_fallback", "json_valid"):
+            if key in value:
+                item[key] = bool(value.get(key))
+        compact[str(name)[:80]] = item
+    return compact
+
+
+def audit_diagnostic_metadata(result: dict[str, Any]) -> dict[str, Any]:
+    metadata = {
+        "kind": result.get("kind"),
+        "status": result.get("status"),
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "latency_ms": result.get("latency_ms"),
+        "error_class": result.get("error_class"),
+        "embedding_dimension": result.get("embedding_dimension"),
+        "include_image_understanding": result.get("include_image_understanding", False),
+    }
+    capabilities = result.get("capabilities")
+    if isinstance(capabilities, dict):
+        metadata["capabilities"] = {
+            name: {"status": value.get("status"), "error_class": value.get("error_class", "")}
+            for name, value in capabilities.items()
+            if isinstance(value, dict)
+        }
+    return {key: value for key, value in metadata.items() if value not in (None, "")}
+
+
+def store_llm_diagnostic(kind: str, result: dict[str, Any]) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute("SELECT diagnostics_json FROM llm_settings WHERE id = 1").fetchone()
+        try:
+            diagnostics = loads(row["diagnostics_json"] or "{}") if row else {}
+        except (TypeError, json.JSONDecodeError):
+            diagnostics = {}
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
+        diagnostics[kind] = result
+        conn.execute("UPDATE llm_settings SET diagnostics_json = ? WHERE id = 1", (dumps(diagnostics),))
+        return load_llm_settings_for_display(conn)
+
+
+@app.post("/settings/test-chat", response_class=HTMLResponse)
+async def test_chat_settings(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+    provider: str = Form("openai_compatible"),
+    base_url: str = Form(""),
+    embedding_base_url: str = Form(""),
+    api_key: str = Form(""),
+    chat_model: str = Form(""),
+    embedding_model: str = Form(""),
+    embedding_query_prefix: str = Form(""),
+    embedding_passage_prefix: str = Form(""),
+    api_version: str = Form("2024-02-15-preview"),
+    temperature: float = Form(0.2),
+    timeout_seconds: float = Form(60),
+    include_image_understanding: str | None = Form(None),
+):
+    with connect() as conn:
+        existing_decrypted = load_llm_settings(conn) or {}
+    candidate = candidate_settings_from_form(
+        existing_decrypted,
+        provider=provider,
+        base_url=base_url,
+        embedding_base_url=embedding_base_url,
+        api_key=api_key,
+        chat_model=chat_model,
+        embedding_model=embedding_model,
+        embedding_query_prefix=embedding_query_prefix,
+        embedding_passage_prefix=embedding_passage_prefix,
+        api_version=api_version,
+        temperature=temperature,
+        timeout_seconds=timeout_seconds,
+    )
+    include_image = bool(include_image_understanding)
+    raw_result = await probe_chat_diagnostics(
+        candidate,
+        include_image=include_image,
+        usage_context={"user_id": user["id"]},
+    )
+    compact = compact_diagnostic_result(
+        "chat",
+        raw_result,
+        settings_fingerprint=llm_settings_fingerprint(candidate),
+        include_image=include_image,
+    )
+    settings = store_llm_diagnostic("chat", compact)
+    record_audit_event(
+        request,
+        user,
+        "llm_settings_test_chat",
+        "llm_settings",
+        1,
+        audit_diagnostic_metadata(compact),
+        "normal",
+    )
+    logger.info(
+        "settings_chat_tested admin_user_id=%s status=%s model=%s include_image=%s",
+        user["id"],
+        compact["status"],
+        compact["model"],
+        include_image,
+    )
+    return render_settings(request, user, settings, diagnostic_notice=i18n.t("settings.diag_notice_chat"))
+
+
+@app.post("/settings/test-embedding", response_class=HTMLResponse)
+async def test_embedding_settings(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+    provider: str = Form("openai_compatible"),
+    base_url: str = Form(""),
+    embedding_base_url: str = Form(""),
+    api_key: str = Form(""),
+    chat_model: str = Form(""),
+    embedding_model: str = Form(""),
+    embedding_query_prefix: str = Form(""),
+    embedding_passage_prefix: str = Form(""),
+    api_version: str = Form("2024-02-15-preview"),
+    temperature: float = Form(0.2),
+    timeout_seconds: float = Form(60),
+):
+    with connect() as conn:
+        existing_decrypted = load_llm_settings(conn) or {}
+    candidate = candidate_settings_from_form(
+        existing_decrypted,
+        provider=provider,
+        base_url=base_url,
+        embedding_base_url=embedding_base_url,
+        api_key=api_key,
+        chat_model=chat_model,
+        embedding_model=embedding_model,
+        embedding_query_prefix=embedding_query_prefix,
+        embedding_passage_prefix=embedding_passage_prefix,
+        api_version=api_version,
+        temperature=temperature,
+        timeout_seconds=timeout_seconds,
+    )
+    raw_result = await probe_embedding_diagnostics(candidate, usage_context={"user_id": user["id"]})
+    compact = compact_diagnostic_result(
+        "embedding",
+        raw_result,
+        settings_fingerprint=llm_settings_fingerprint(candidate),
+    )
+    settings = store_llm_diagnostic("embedding", compact)
+    record_audit_event(
+        request,
+        user,
+        "llm_settings_test_embedding",
+        "llm_settings",
+        1,
+        audit_diagnostic_metadata(compact),
+        "normal",
+    )
+    logger.info(
+        "settings_embedding_tested admin_user_id=%s status=%s model=%s dimension=%s",
+        user["id"],
+        compact["status"],
+        compact["model"],
+        compact.get("embedding_dimension"),
+    )
+    return render_settings(request, user, settings, diagnostic_notice=i18n.t("settings.diag_notice_embedding"))
 
 
 @app.post("/settings")
@@ -5328,4 +5612,4 @@ async def update_settings(
         timeout_seconds,
         bool(api_key.strip()),
     )
-    return render(request, "settings.html", {"user": user, "settings": settings, "saved": True})
+    return render_settings(request, user, settings, saved=True)

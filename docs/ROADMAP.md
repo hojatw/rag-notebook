@@ -13,7 +13,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 ## Recommended next round
 
 1. **Answer-quality loop:** implement `E1e-2` answer/citation judging together with `E2` notebook domain hints and answer policy, then validate changes through Eval Workbench comparisons.
-2. **Admin LLM operations:** implement `O1` Phase 1 first — separate chat/embedding tests and capability probes, including the optional image-understanding checkbox.
+2. **Admin LLM operations:** `O1` Phase 1 is done; next LLM-ops work is Phase 2 profile management and safe activation once needed.
 3. **Format foundation:** implement `A6a` ingestion diagnostics before adding more source formats.
 4. **Source-format MVP path:** after `A6a`, prioritize `A6c` Q&A-style spreadsheets, then `A6` Web URL with SSRF guards, then `A6b` PPTX text-first ingestion.
 5. **Customer-driven later work:** keep `A9`/`A10`/`A11` low priority unless a customer requirement or verified serving capability changes the economics.
@@ -188,8 +188,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Issue:** The current `/settings` page stores one global LLM configuration (`llm_settings`, `id = 1`). It probes embedding dimension on save, but admins cannot test chat connectivity separately, keep multiple candidate configurations, or switch between known-good endpoints safely.
 - **Target model:** only admins manage LLM settings. Do not expose LLM profile selection or editing to normal users in this phase. Admins can test, save, compare, and activate configurations while the app protects existing indexes from incompatible embedding changes.
 - **Phase 1 — diagnostics before profile management:**
-  - [ ] O1a — Add "Test chat model" and "Test embedding model" actions on `/settings`, with separate status, latency, provider/model/deployment summary, embedding dimension, and last-tested timestamp. Test results should avoid storing raw prompts/outputs; audit/governance metadata should keep compact status/error-class details only.
-  - [ ] O1b — Add a capability probe section for optional model features: streaming support, provider usage reporting, JSON-following sanity check, and multimodal/vision support. The settings test UI should include an admin-controlled checkbox such as "also test image understanding"; it is off by default, and when checked sends a tiny built-in test image to the chat endpoint. Record capability/status only, without enabling A9 automatically.
+  - [x] O1a — **Done.** `/settings` now has separate admin-only "Test chat model" and "Test embedding model" actions. Results persist as compact `llm_settings.diagnostics_json` metadata with status, latency, provider/model/deployment summary, embedding dimension, and last-tested timestamp. Raw prompts, outputs, API keys, and raw provider payloads are not stored; audit/governance rows keep compact status/error-class metadata only.
+  - [x] O1b — **Done.** The settings diagnostics section probes streaming support, provider usage reporting, JSON-following sanity, and optional image understanding. The image-understanding checkbox is off by default and sends only a tiny built-in test image when explicitly enabled. The result records capability/status only and does not enable A9 automatically.
 - **Phase 2 — multiple profiles + safe activation:**
   - [ ] O1c — Replace the single global settings row with admin-managed LLM profiles: name, provider, base URLs, encrypted API key, chat model, embedding model/prefixes, temperature, timeout, last test status, and active flag. Migrate the existing `llm_settings` row into the default active profile.
   - [ ] O1d — Add safe profile activation rules. Chat-only changes can activate directly after a successful chat test. Embedding-affecting changes (model/base URL/prefix/dimension) must be blocked or strongly gated when the existing Chroma index dimension/config is incompatible, with clear Clear/Rebuild or reindex guidance.

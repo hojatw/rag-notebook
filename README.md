@@ -71,6 +71,13 @@ On save, the app probes the embedding endpoint once and rejects settings that
 would mismatch the existing Chroma index dimension. API keys are encrypted at
 rest with Fernet using `NOTEBOOKLM_SECRET`.
 
+The same page also provides admin-only diagnostics: test the chat model and
+embedding model separately, inspect latency/status/model summaries and
+embedding dimension, and probe optional capabilities such as streaming,
+provider usage reporting, JSON-following, and opt-in image understanding.
+Diagnostics store compact status metadata only, not raw prompts, model output,
+API keys, or raw provider payloads.
+
 OpenAI-compatible example:
 
 ```text
@@ -163,8 +170,8 @@ available:
 - UI copy is routed through a `zh-TW` message catalog (i18n foundation done,
   `ROADMAP.md` U15a); adding an `en` locale + admin/per-user language controls
   is U15b. See [`docs/I18N.md`](docs/I18N.md).
-- Admin LLM settings still use one global configuration; diagnostics and
-  multi-profile activation are tracked as `ROADMAP.md` O1.
+- Admin LLM settings still use one global configuration. O1 Phase 1 diagnostics
+  are done; multi-profile management and safe activation remain O1 Phase 2.
 - New source-format support should start with ingestion diagnostics, then
   Q&A-style spreadsheets, SSRF-safe Web URL ingestion, and PPTX text-first
   ingestion (`ROADMAP.md` A6a/A6c/A6/A6b).

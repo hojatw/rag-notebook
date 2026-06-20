@@ -1788,6 +1788,101 @@ def test_high_risk_admin_actions_are_audited(monkeypatch, tmp_path):
         assert "audited-profile" in audit.text
 
 
+def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_path):
+    """O1 Phase 1: admins can test chat/embedding without storing prompts or secrets."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_chat_probe(settings, include_image=False, usage_context=None):
+        assert settings["api_key"] == "sk-stored"
+        assert settings["chat_model"] == "chat-candidate"
+        assert include_image is True
+        assert usage_context["user_id"] == 1
+        return {
+            "status": "succeeded",
+            "provider": settings["provider"],
+            "model": settings["chat_model"],
+            "latency_ms": 12.3,
+            "capabilities": {
+                "streaming": {"status": "succeeded", "latency_ms": 4.0, "usage_available": True},
+                "usage_reporting": {"status": "succeeded", "usage_available": True},
+                "json_following": {"status": "succeeded", "latency_ms": 8.0, "json_valid": True},
+                "image_understanding": {"status": "succeeded", "latency_ms": 9.0, "json_valid": True},
+            },
+        }
+
+    async def fake_embedding_probe(settings, usage_context=None):
+        assert settings["api_key"] == "sk-stored"
+        assert settings["embedding_model"] == "embed-candidate"
+        assert usage_context["user_id"] == 1
+        return {
+            "status": "succeeded",
+            "provider": settings["provider"],
+            "model": settings["embedding_model"],
+            "latency_ms": 6.5,
+            "embedding_dimension": 384,
+        }
+
+    monkeypatch.setattr(main, "probe_chat_diagnostics", fake_chat_probe)
+    monkeypatch.setattr(main, "probe_embedding_diagnostics", fake_embedding_probe)
+
+    form = {
+        "provider": "openai_compatible",
+        "base_url": "http://model/v1",
+        "embedding_base_url": "",
+        "api_key": "",
+        "chat_model": "chat-candidate",
+        "embedding_model": "embed-candidate",
+        "embedding_query_prefix": "query:",
+        "embedding_passage_prefix": "passage:",
+        "api_version": "2024-02-15-preview",
+        "temperature": "0.2",
+        "timeout_seconds": "60",
+    }
+
+    with TestClient(main.app) as client:
+        _login(client)
+        with db.connect() as conn:
+            encrypted = db.encrypt_for_storage("sk-stored")
+            conn.execute("UPDATE llm_settings SET api_key = ? WHERE id = 1", (encrypted,))
+
+        page = client.get("/settings")
+        assert page.status_code == 200
+        assert 'formaction="/settings/test-chat"' in page.text
+        assert 'formaction="/settings/test-embedding"' in page.text
+
+        chat = client.post(
+            "/settings/test-chat",
+            data={**form, "include_image_understanding": "1"},
+        )
+        assert chat.status_code == 200
+        assert "聊天模型測試已完成" in chat.text
+        assert "chat-candidate" in chat.text
+        assert "Image understanding" in chat.text
+
+        embedding = client.post("/settings/test-embedding", data=form)
+        assert embedding.status_code == 200
+        assert "Embedding 模型測試已完成" in embedding.text
+        assert "embed-candidate" in embedding.text
+        assert "384" in embedding.text
+
+    with db.connect() as conn:
+        row = conn.execute("SELECT diagnostics_json FROM llm_settings WHERE id = 1").fetchone()
+        audit_rows = conn.execute("SELECT action, metadata_json FROM audit_events ORDER BY id").fetchall()
+    diagnostics = json.loads(row["diagnostics_json"])
+    assert diagnostics["chat"]["status"] == "succeeded"
+    assert diagnostics["chat"]["include_image_understanding"] is True
+    assert diagnostics["embedding"]["embedding_dimension"] == 384
+    stored = row["diagnostics_json"] + "".join(item["metadata_json"] for item in audit_rows)
+    assert "sk-stored" not in stored
+    assert "prompt" not in stored
+    assert "output" not in stored
+    assert "content" not in stored
+    assert [item["action"] for item in audit_rows] == [
+        "llm_settings_test_chat",
+        "llm_settings_test_embedding",
+    ]
+
+
 def test_studio_tools_tile_gating(monkeypatch, tmp_path):
     """U16: the tools launcher enables the compare tile only with >=2 indexed sources."""
     main, db = _fresh_app(monkeypatch, tmp_path)
