@@ -5,11 +5,14 @@ NotebookLM-style RAG proof of concept: FastAPI + Jinja2 + HTMX + Alpine.js, SQLi
 ## Authoritative docs — read before working
 
 - **@AGENTS.md** — the engineering rulebook (runtime, verification, persistence safety, conventions, security, git hygiene). Follow it; this file only adds Claude-specific orientation on top.
-- `README.md` — user-facing feature set, the full route list, LLM settings, run/test.
+- `README.md` — onboarding overview: what the app does, quick start, core feature set, LLM setup, and doc map.
+- `docs/ROUTES.md` — full HTTP route reference.
+- `docs/DEVELOPMENT.md` — detailed setup, deployment, tuning, logging, verification, and repository layout.
 - `docs/RETRIEVAL.md` — read before changing retrieval, chunking, ranking, reranking, evals, or vector-store behavior.
 - `docs/PERFORMANCE.md` / `docs/QUALITY.md` — prioritised, tick-off backlogs for performance and retrieval-quality work.
 - `docs/SCHEMA.md` — DB schema reference (tables, columns, FKs, indexes). Keep in sync with `app/db.py` on every schema change.
-- `docs/ROADMAP.md` — product-surface backlog (UX improvements + new AI features, with effort/prerequisites). Performance/quality items stay in their own backlogs.
+- `docs/ROADMAP.md` — product/admin roadmap: UX, Eval Workbench, AI governance, LLM operations, source-format support, and new AI features. Performance/quality items stay in their own backlogs.
+- `docs/SPREADSHEET_INGESTION.md` — design notes for XLSX/CSV ingestion, spreadsheet types, Q&A-first chunking, and diagnostics expectations.
 - `docs/UI.md` — front-end design conventions (page archetypes, components, data presentation, interaction, voice). Read before adding or restyling any page/component; align new UI to it.
 - `handover.md` (gitignored, when present) — cross-session work state; useful context, not a durable rule source.
 

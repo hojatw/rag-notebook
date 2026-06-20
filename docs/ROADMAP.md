@@ -1,10 +1,22 @@
-# Product roadmap — UX & AI features
+# Product roadmap
 
-UX improvements and new AI capabilities for the NotebookLM-style personal AI assistant, prioritised with effort and prerequisites. Same tick-off format as `PERFORMANCE.md` / `QUALITY.md`. Performance and retrieval-quality work stay in their own backlogs — this file is about **product surface**.
+Product-facing roadmap for the NotebookLM-style personal AI assistant: UX, admin workflows, Eval Workbench, AI governance, source-format support, and new AI-assisted surfaces. Same tick-off format as `PERFORMANCE.md` / `QUALITY.md`.
 
-**Capability constraint:** the inference side is borrowed and fixed (Gemma 4 31B chat + multilingual-e5-large embeddings — **chat + embedding only**). Features needing only chat completions are cheap; new extraction paths (web, OCR) are app-side work; new model capabilities (vision, speech) must be verified against the customer endpoint first.
+Performance and retrieval-quality engineering stay in their own backlogs (`PERFORMANCE.md`, `QUALITY.md`). Security policy and dependency triage stay in `SECURITY.md`. This file tracks the product/admin capability surface and points to those deeper references when needed.
+
+**Current target-deployment constraint:** the known customer inference side is borrowed and fixed (Gemma 4 31B chat + multilingual-e5-large embeddings — **chat + embedding only**). Features needing only chat completions are cheap; new extraction paths (web, PPTX, spreadsheets, OCR) are app-side work; new model capabilities (vision, speech) must be verified against the active customer endpoint first. `O1` adds admin capability probes so this assumption can be tested per deployment before enabling vision-dependent work.
 
 Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
+
+---
+
+## Recommended next round
+
+1. **Answer-quality loop:** implement `E1e-2` answer/citation judging together with `E2` notebook domain hints and answer policy, then validate changes through Eval Workbench comparisons.
+2. **Admin LLM operations:** implement `O1` Phase 1 first — separate chat/embedding tests and capability probes, including the optional image-understanding checkbox.
+3. **Format foundation:** implement `A6a` ingestion diagnostics before adding more source formats.
+4. **Source-format MVP path:** after `A6a`, prioritize `A6c` Q&A-style spreadsheets, then `A6` Web URL with SSRF guards, then `A6b` PPTX text-first ingestion.
+5. **Customer-driven later work:** keep `A9`/`A10`/`A11` low priority unless a customer requirement or verified serving capability changes the economics.
 
 ---
 
@@ -43,15 +55,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [ ] Phase 2 — unify Notes into an **outputs shelf** (type badges; all generators save here; inline edit = U8).
   - [ ] Phase 3 *(optional)* — tabbed or fully-collapsible Studio if the tile grid itself grows large.
 - **Note for new AI features:** A4/A5 and later generators should be implemented as **tools (tiles) writing to the outputs shelf**, not as new stacked cards.
-
-> **Design exploration — alternative Studio paradigms (beyond the NotebookLM tools+notes frame).** Recorded for future direction; not committed:
-> 1. **Chat-centric commands** — dissolve the Studio panel; expose generators as `/`-commands (or a `+` menu) in the chat input, results appear inline as rich, saveable message cards. The right pane shrinks to a pure outputs/clipboard shelf. Best declutter; fits HTMX/server-render.
-> 2. **Selection-driven inspector** — the right pane shows actions relevant to whatever is focused (a source → summarize/translate/minutes; an answer → follow-ups/pin; selected text → explain/find-related). Context-sensitive, not a static list.
-> 3. **Report/compose builder** — the pane becomes a document the user assembles from briefing + comparisons + pinned answers + minutes, then edits and exports. Output-centric; fits the research-report use case.
-> 4. **Proactive insights feed** — the app surfaces insights unprompted ("these 3 sources disagree on X", "new source contradicts a pinned note"); pull → push. Most "assistant"-like; higher LLM cost, needs eval.
-> 5. **Spatial canvas** — draggable cards (sources/artifacts/notes) on a freeform board for synthesis. Most divergent, but heavy and fights the no-build/no-CDN constraint — likely too heavy for the POC.
->
-> **Direction (future design reference only — NOT committed, NOT a decision).** For the "personal AI research assistant + produces research reports" positioning, a plausible long-term shape is: **near-term** — U16's tools-tiles + outputs-shelf as the base, *plus* folding in chat-centric `/`-commands (paradigm 1), since both declutter and fit the existing HTMX/server-render stack; **mid-term** — grow the outputs shelf toward a report/compose builder (paradigm 3), which best fits the long-report use case; **accent** — selectively adopt the selection-driven inspector (paradigm 2), e.g. highlight source text → explain; **far-term / data-gated** — proactive insights feed (paradigm 4) once compute headroom + an eval harness exist; spatial canvas (paradigm 5) stays out (violates no-build). These are directional notes to revisit, not scheduled work — only U16's checkboxes above are tracked items.
+- **Design reference:** broader Studio/reporting paradigms are kept in [`PRODUCT_DESIGN_NOTES.md`](PRODUCT_DESIGN_NOTES.md). Only the checkboxes above are scheduled `U16` work.
 
 ### Medium priority
 
@@ -163,6 +167,29 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ---
 
+## Admin operations
+
+### Medium priority — safer LLM configuration and deployment flexibility
+
+#### [ ] O1 · Admin-only LLM settings diagnostics and profiles
+- **Issue:** The current `/settings` page stores one global LLM configuration (`llm_settings`, `id = 1`). It probes embedding dimension on save, but admins cannot test chat connectivity separately, keep multiple candidate configurations, or switch between known-good endpoints safely.
+- **Target model:** only admins manage LLM settings. Do not expose LLM profile selection or editing to normal users in this phase. Admins can test, save, compare, and activate configurations while the app protects existing indexes from incompatible embedding changes.
+- **Phase 1 — diagnostics before profile management:**
+  - [ ] O1a — Add "Test chat model" and "Test embedding model" actions on `/settings`, with separate status, latency, provider/model/deployment summary, embedding dimension, and last-tested timestamp. Test results should avoid storing raw prompts/outputs; audit/governance metadata should keep compact status/error-class details only.
+  - [ ] O1b — Add a capability probe section for optional model features: streaming support, provider usage reporting, JSON-following sanity check, and multimodal/vision support. The settings test UI should include an admin-controlled checkbox such as "also test image understanding"; it is off by default, and when checked sends a tiny built-in test image to the chat endpoint. Record capability/status only, without enabling A9 automatically.
+- **Phase 2 — multiple profiles + safe activation:**
+  - [ ] O1c — Replace the single global settings row with admin-managed LLM profiles: name, provider, base URLs, encrypted API key, chat model, embedding model/prefixes, temperature, timeout, last test status, and active flag. Migrate the existing `llm_settings` row into the default active profile.
+  - [ ] O1d — Add safe profile activation rules. Chat-only changes can activate directly after a successful chat test. Embedding-affecting changes (model/base URL/prefix/dimension) must be blocked or strongly gated when the existing Chroma index dimension/config is incompatible, with clear Clear/Rebuild or reindex guidance.
+- **Future phase — task-specific routing:**
+  - [ ] O1e — Allow admins to assign different profiles to answer generation, embeddings, eval judging, eval authoring, source summaries, Studio artifacts, and low-cost follow-up/starter questions. Keep this out of the MVP until global profile switching is stable.
+- **Guardrails:**
+  - Keep all profile management admin-only.
+  - Never expose stored API keys back to the browser.
+  - Record profile create/update/test/activate/delete actions in audit metadata without storing secrets, prompts, outputs, or full endpoint payloads.
+  - Treat multimodal probing as capability detection only; PPTX/image understanding still depends on A8/A9 roadmap items and customer need.
+
+---
+
 ## New AI features
 
 ### Tier 1 — chat-only, cheap, high value
@@ -186,6 +213,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Done.** A Studio **tool tile** (U16) — pick a source + a target language (繁中 / English / 日本語 / 简体中文, allowlisted) → `TRANSLATE_SUMMARY_PROMPT` / `translate_summary` translates that source's summary; result shown with a manual save-to-notes button. Route: `POST /notebooks/{id}/translate`.
 
 ### Tier 2 — new extraction paths (app-side, no inference change)
+
+**Recommended implementation order:** start with `A6a` diagnostics so every later format can explain extraction quality; then ship `A6c` Q&A-style spreadsheets; then add `A6` Web URL with SSRF protection; then `A6b` PPTX Phase 1 text-first ingestion. `A8` OCR and `A6b` Phase 2 visual extraction should follow only when the extraction diagnostics and model/OCR capability are ready. `A9` vision remains customer-driven.
 
 #### [ ] A6a · Ingestion diagnostics for source quality
 - **What:** show what the app actually extracted before/after indexing: extracted character count, section/page/table counts when available, chunk count, OCR/fallback flags, warnings, failure reason, and a small extracted-text preview. This should be visible from the source row / preview drawer and included in admin troubleshooting surfaces.
