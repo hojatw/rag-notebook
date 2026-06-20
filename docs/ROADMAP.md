@@ -87,7 +87,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 #### [ ] U17 · Meaningful "focus" for source comparison (deferred feature)
 - The compare tool used to expose a **聚焦重點 (focus)** free-text input. The value *was* passed to the prompt (`Focus: …` + "prioritise points relevant to it"), but because the comparison runs on each source's thin 2–4-sentence **summary**, the focus had little material to differentiate and the output barely changed — so the input was **removed from the UI** to avoid implying an effect it can't deliver. `POST /compare` still accepts an (empty) `focus` param, so re-enabling is a template-only change.
-- **To make it meaningful when revisited:** on a non-empty focus, retrieve the **focus-relevant chunks** from each selected source (a small per-source retrieval) and compare on those instead of the summaries. Heavier (an extra retrieval step) but gives the focus real material to work with. Measure against a representative set first.
+- **Future direction: topic-focused source comparison.** Re-introduce focus as a **topic** field, not a cosmetic prompt hint. On a non-empty topic, run a small source-scoped retrieval for each selected source, collect the topic-relevant chunks from each source, then compare on those chunks instead of the thin source summaries. The report should show Shared / Distinct / Contradictions plus which sources had weak or no topic evidence. This fits the current vector RAG design; the key change is using per-source retrieval before comparison. Measure against a representative set first.
+- **Later extension:** section-focused comparison can follow once ingestion preserves stronger section metadata (DOCX/HTML headings, PPTX slide titles, PDF page ranges, spreadsheet sheet/table names). Until then, topic retrieval is the safer v1.
 
 ---
 
@@ -109,11 +110,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] E1c — **Done.** Profile comparison + apply/rollback landed. A runtime active-params layer (`ACTIVE_RETRIEVAL_PARAMS` in `app/main.py`) now backs the retrieval path: admins author candidate profiles (7 runtime-safe params), run an eval set against any profile via an isolated per-run override (the runner applies the run's frozen snapshot, not live config), compare two succeeded runs of the same set (param diff + metric diff + per-question improved/regressed), then **apply** a profile to live chat retrieval (persisted via `retrieval_profiles.is_active`, reloaded on startup) or **roll back** by applying a previous profile. Index-affecting profiles (`requires_reindex = 1`) are refused at apply. Routes: `/admin/evals/profiles` (create/delete/apply), `/admin/evals/compare`.
   - [x] E1d — **Done.** Export + audit foundation landed. Retrieval profiles can be exported as sanitized JSON, eval runs can be exported as sanitized JSON (no questions/evidence/retrieved snippets) or full internal JSON (questions, expected evidence, diagnostics, retrieved snippets) gated by explicit confirmation. A durable `audit_events` table and `/admin/audit` viewer now record export events plus high-risk admin actions: retrieval profile create/apply/delete/export, LLM settings updates, index Clear/Rebuild, user-management changes, and notebook/source/chat/note lifecycle or Markdown-export actions.
   - [x] E1e-1 — **Done.** LLM-assisted eval authoring landed as a draft-only flow: admins can generate candidate questions from selected indexed sources, request answerable / cross-lingual / unanswerable item types, review item type, reference answer, expected substrings, and source/chunk grounding, then approve manually. Generated metadata records compact origin/model/prompt-version/source ids without copying prompts or source text. The deterministic chunk-based generator remains available as a no-LLM fallback.
-  - [ ] E1e-2 — Answer-quality and citation judging: optionally generate an answer during eval runs and score answer quality, groundedness, citation correctness, and abstain correctness as secondary metrics. Keep these metrics separate from retrieval-only Recall/MRR, and include full judging detail only in full internal exports.
+  - [ ] E1e-2 — **High priority for answer quality.** Answer-quality and citation judging: optionally generate an answer during eval runs and score answer quality, groundedness, citation correctness, and abstain correctness as secondary metrics. Keep these metrics separate from retrieval-only Recall/MRR, and include full judging detail only in full internal exports.
   - [x] E1f — **Done.** Eval tuning guide landed as `/admin/evals/help` and as a first-class tab in the Eval workbench. It converts the internal tuning PDF/discussion into HTML covering: when to tune parameters vs fix Eval items, symptom -> likely cause -> parameter guidance, profile experiment workflow, starter profiles, non-runtime-safe changes that require reindex, and the role of future domain hints / answer policy. The PDF remains optional/shareable, but the product source of truth is now HTML so labels stay aligned with the live profile UI.
-- **Recommended next implementation round:** do **E1e-2** if the team wants answer-level judging costs and judge reliability tradeoffs. Further audit expansion should wait for customer requirements, e.g. explicit read-access audit for source preview/result viewing. Defer index-affecting parameter application until there is a clear Clear/Rebuild UX.
+- **Recommended next implementation round:** prioritize **E1e-2** together with **E2** because they directly improve and measure answer quality. Further audit expansion should wait for customer requirements, e.g. explicit read-access audit for source preview/result viewing. Defer index-affecting parameter application until there is a clear Clear/Rebuild UX.
 
-#### [ ] E2 · Notebook domain hints and answer policy
+#### [ ] E2 · Notebook domain hints and answer policy — high priority for answer quality
 - **Issue:** Some "inaccurate" answers are not fixed by retrieval-weight tuning alone. Domain-specific aliases, abbreviations, internal product names, and deployment-specific answer rules may need to be available at the notebook level so query rewrite can find the right evidence and final answers follow the customer's rules.
 - **Target model:** each notebook can carry bounded, structured **domain hints** (term/synonyms/definition/query expansion/answer note) plus a concise **answer policy**. Hints improve retrieval/query rewrite; policy controls final answer behavior. Neither should become an unbounded extra knowledge base.
 - **Guardrails:**
@@ -186,8 +187,24 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ### Tier 2 — new extraction paths (app-side, no inference change)
 
+#### [ ] A6a · Ingestion diagnostics for source quality
+- **What:** show what the app actually extracted before/after indexing: extracted character count, section/page/table counts when available, chunk count, OCR/fallback flags, warnings, failure reason, and a small extracted-text preview. This should be visible from the source row / preview drawer and included in admin troubleshooting surfaces.
+- **Why first:** adding Web URL, PPTX, XLSX/CSV, and OCR support increases the chance of "indexed but useless" sources. Diagnostics make format support trustworthy and give users/admins a way to distinguish extraction failure from retrieval/answer failure.
+- **Guardrails:** do not duplicate full source text into audit/governance logs; keep diagnostics scoped to the owning user's source and avoid exposing extracted snippets outside normal source permissions.
+
 #### [ ] A6 · Web page as a source
 - Paste URL → server-side fetch → readability extraction (`beautifulsoup4` already a dep) → existing chunk/embed pipeline. **Must add SSRF guards (block private IPs) and respect the customer's egress policy.**
+- **SSRF guardrail for implementation:** only allow `http`/`https`; resolve DNS and block loopback/private/link-local/multicast/reserved IP ranges; re-check every redirect target; cap redirects, response size, and request timeout; restrict accepted content types; optionally support deployment allow/block lists; record URL/status/diagnostics without copying full fetched content into audit/governance logs.
+
+#### [ ] A6b · PowerPoint decks as sources (.pptx)
+- **Phase 1 — text-first ingestion:** extract slide titles, body text, tables, and speaker notes into slide-scoped sections (`slide N`, `slide N notes`, `slide N table K`) that flow through the existing chunk/embed pipeline. Keep slide order and location labels stable so citations can point back to a specific slide. Visual-only slide content should be surfaced in ingestion diagnostics as unsupported visual content.
+- **Phase 2 — image understanding after OCR / vision support:** only revisit embedded images, screenshots, diagrams, and visual-only slides after A8 OCR and/or A9 vision support is available. OCR can extract text from screenshots; a vision-capable model is needed for chart/diagram/photo semantics. The resulting text should be stored as explicit sections such as `slide N image K OCR text` or `slide N image K visual description`, with diagnostics showing which method was used.
+- **MVP guardrail:** do not block Phase 1 on image understanding; ship text-first PPTX support first, then add Phase 2 only when the required OCR/vision capability exists or a customer explicitly needs it.
+
+#### [ ] A6c · Spreadsheet sources (.xlsx / .csv)
+- Extract workbook/sheet metadata, detected header rows, bounded row groups, and compact table summaries into sheet/table-scoped sections. Chunk rows as structured records rather than flattening entire sheets into one blob; preserve sheet name, row range, and column names in chunk metadata/location.
+- **MVP priority:** implement Q&A-style sheets first (`question` + `answer`, optional category/tags/keywords) because they are naturally aligned with RAG and require no numeric recomputation. Treat each Q&A pair as the minimum semantic unit.
+- **MVP guardrail:** enforce row/column/file-size limits, skip or warn on formula-heavy/hidden/very wide sheets, and show a preview in ingestion diagnostics so users can see how tabular data was interpreted. Keep implementation details in [`SPREADSHEET_INGESTION.md`](SPREADSHEET_INGESTION.md).
 
 #### [x] A7 · Subtitle files as sources (.srt / .vtt)
 - **Done.** `_extract_subtitles` (`app/ingest.py`) strips cue indices, timestamp lines, the WebVTT header + NOTE/STYLE/REGION blocks, and inline VTT tags, and collapses rolling-caption repeats — leaving the spoken text as one `transcript` section that flows through the existing chunk/embed pipeline. `.srt`/`.vtt` added to `ALLOWED_EXTENSIONS` + the upload accept list. No new deps. Pairs naturally with A1 meeting minutes. Verified end-to-end (upload → indexed → clean transcript chunk).
@@ -195,13 +212,13 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [ ] A8 · OCR for scanned PDFs / images
 - `pytesseract` + tesseract in the Docker image (`chi_tra` model for Traditional Chinese). Decades-old scanned research reports are likely in the customer corpus — high practical value, no LLM dependency.
 
-### Tier 3 — verify infrastructure first
+### Tier 3 — low priority / customer-driven only
 
 #### [ ] A9 · Image understanding (vision QA)
-- **Blocked on:** whether the customer's Gemma 4 31B deployment accepts image input on `/v1/chat/completions`. If yes: image upload → vision description → description text joins RAG. If no: A8 OCR is the fallback.
+- **Low priority unless a customer explicitly needs it.** Blocked on whether the customer's Gemma 4 31B deployment accepts image input on `/v1/chat/completions`. If yes: image upload → vision description → description text joins RAG. If no: A8 OCR is the fallback.
 
 #### [ ] A10 · Audio transcription (meeting recordings)
-- Needs a Whisper-class endpoint (customer serving has none). Local CPU whisper is slow. Mitigate with A7 (accept transcripts) until infrastructure exists.
+- **Low priority unless a customer explicitly needs it.** Needs a Whisper-class endpoint (customer serving has none). Local CPU whisper is slow. Mitigate with A7 (accept transcripts) until infrastructure exists.
 
 #### [ ] A11 · Audio overview / TTS, mind map
-- TTS not available on the serving side; mind map needs a self-hosted render lib (markmap/mermaid — no-CDN rule). Nice-to-haves, not this phase.
+- **Low priority unless a customer explicitly needs it.** TTS not available on the serving side; mind map needs a self-hosted render lib (markmap/mermaid — no-CDN rule). Nice-to-haves, not this phase.
