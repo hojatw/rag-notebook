@@ -105,6 +105,36 @@ def test_notebook_forms_render_preset_emoji_picker(monkeypatch, tmp_path):
         assert "⚙️" in notebook.text
 
 
+def test_notebook_renders_mobile_workspace_switcher(monkeypatch, tmp_path):
+    """U10: narrow viewports get a pane switcher with chat selected by default."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        _user, notebook_id = _seed_notebook(db, title="Mobile")
+
+        page = client.get(f"/notebooks/{notebook_id}")
+        assert page.status_code == 200
+        assert 'data-workspace-switcher' in page.text
+        assert 'aria-label="工作區面板切換"' in page.text
+        assert 'data-workspace-mobile-tabs' in page.text
+        assert 'data-active-pane="chat"' in page.text
+        assert 'data-workspace-tab="sources">來源</button>' in page.text
+        assert 'data-workspace-tab="chat">對話</button>' in page.text
+        assert 'data-workspace-tab="studio">工作台</button>' in page.text
+        assert 'aria-controls="workspace-sources-pane"' in page.text
+        assert 'aria-controls="chat-pane"' in page.text
+        assert 'aria-controls="workspace-studio-pane"' in page.text
+        assert 'id="workspace-sources-pane"' in page.text
+        assert 'id="chat-pane"' in page.text
+        assert 'id="workspace-studio-pane"' in page.text
+        assert 'data-mobile-pane="sources"' in page.text
+        assert 'data-mobile-pane="chat"' in page.text
+        assert 'data-mobile-pane="studio"' in page.text
+        assert 'class="workspace-mobile-tab is-active"' in page.text
+        assert 'aria-selected="true"' in page.text
+
+
 def test_source_partial_splits_row_and_studio_refresh_events(monkeypatch, tmp_path):
     main, db = _fresh_app(monkeypatch, tmp_path)
 

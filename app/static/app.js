@@ -60,6 +60,7 @@ document.addEventListener("htmx:afterSwap", (event) => {
 
 function bindAll(root) {
   bindConfirms(root);
+  bindWorkspacePaneSwitcher(root);
   bindStreamingAskForms(root);
   bindLoadingForms(root);
   bindFileLabels(root);
@@ -69,6 +70,47 @@ function bindAll(root) {
   bindAskFormThinkingBubble(root);
   bindChatInput(root);
   bindCopyButtons(root);
+}
+
+// ---- Mobile workspace pane switcher (U10) --------------------------------
+
+function bindWorkspacePaneSwitcher(root) {
+  bindOnce(root, "[data-workspace-switcher]", "workspacepane", (switcher) => {
+    const workspace = document.querySelector("[data-workspace-mobile-tabs]");
+    if (!workspace) return;
+
+    const buttons = Array.from(switcher.querySelectorAll("[data-workspace-tab]"));
+    if (!buttons.length) return;
+
+    const paneNames = buttons.map((button) => button.dataset.workspaceTab).filter(Boolean);
+    const setActive = (pane) => {
+      const nextPane = paneNames.includes(pane) ? pane : "chat";
+      workspace.dataset.activePane = nextPane;
+      workspace.classList.add("is-mobile-tabs-ready");
+      buttons.forEach((button) => {
+        const active = button.dataset.workspaceTab === nextPane;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-selected", active ? "true" : "false");
+        button.tabIndex = active ? 0 : -1;
+      });
+    };
+
+    buttons.forEach((button) => {
+      button.addEventListener("click", () => setActive(button.dataset.workspaceTab));
+    });
+
+    switcher.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const current = buttons.findIndex((button) => button.classList.contains("is-active"));
+      const offset = event.key === "ArrowRight" ? 1 : -1;
+      const next = buttons[(Math.max(current, 0) + offset + buttons.length) % buttons.length];
+      next.focus();
+      setActive(next.dataset.workspaceTab);
+    });
+
+    setActive(workspace.dataset.activePane || "chat");
+  });
 }
 
 // ---- Streaming chat submit (U2) ------------------------------------------
