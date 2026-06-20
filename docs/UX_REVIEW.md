@@ -2,6 +2,7 @@
 
 全站 UX/UI 走查報告。評斷方向：**專業 · 簡單 · 直覺 · 明確 · 一致 · 可預期**，
 並對照設計公約 [`docs/UI.md`](UI.md) 與產品 backlog [`docs/ROADMAP.md`](ROADMAP.md)。
+每次 review 的準則與報告格式見 [`docs/UX_REVIEW_GUIDE.md`](UX_REVIEW_GUIDE.md)（本檔是依該準則產出的發現紀錄）。
 
 > 這是**某個時間點的走查快照**，不是公約本身。修掉一項就把 checkbox 打勾；
 > 確定要做的項目，最終應收斂進 `ROADMAP.md`（UX improvements）或 `UI.md`（若屬規範）。
@@ -24,7 +25,7 @@ Eval 工作台、Retrieval Profiles、稽核、工具 modal、空狀態。
 
 | ID | 問題 | 方向 | 建議 | 既有 backlog 對應 | 狀態 |
 |---|---|---|---|---|---|
-| H1 | **行動版工作區無欄位切換**：375px 下三欄垂直堆疊，要捲過整個來源清單才到對話、再捲過對話才到工作台 | 直覺、簡單 | 手機寬度加分段切換（來源／對話／工作台），預設停「對話」 | ROADMAP **U10**（標記完成，但僅驗收「堆疊可用」基線，未含切換器）→ 超出基線的增強 | [ ] |
+| H1 | **行動版工作區無欄位切換**：375px 下三欄垂直堆疊，要捲過整個來源清單才到對話、再捲過對話才到工作台 | 直覺、簡單 | 手機寬度加分段切換（來源／對話／工作台），預設停「對話」 | ROADMAP **U10**（標記完成，但僅驗收「堆疊可用」基線，未含切換器）→ 超出基線的增強 | [ ] **併入 U10 一起做**（產品決定：重訪 U10 行動版時處理） |
 | H2 | **來源狀態 pill 對終端使用者顯示英文** `indexed/processing/failed`（[`app/templates/_source_item.html:42`](../app/templates/_source_item.html) 直接輸出原始狀態）；admin 索引頁卻用中文「已同步」 | 一致、專業、明確 | 加狀態→中文對照（已索引／處理中／失敗／已上傳），class 名不動 | ROADMAP **U15b**（i18n 殘留）→ 但最顯眼，建議獨立快修先做 | [x] 2026-06-19：以 Jinja global `source_status_labels` 集中對照表，套用左側列表 + 預覽 modal 標題兩處 |
 | H3 | **上傳控件是未美化的原生英文控件** `Choose Files / No file chosen`，夾在中文＋自訂面板裡，手機版更突兀 | 專業、一致 | 自訂 `<label>` 包 file input、隱藏原生外觀、中文化 | **未追蹤**（U6 做了上傳回饋但沒重塑控件） | [x] 2026-06-19：原生 input 無障礙隱藏（仍可鍵盤聚焦／label 觸發），改用 `.file-picker-trigger`「＋ 選擇檔案」 |
 
@@ -45,7 +46,7 @@ Eval 工作台、Retrieval Profiles、稽核、工具 modal、空狀態。
 | L2 | 工具／預覽 modal **無可見的 ✕ 關閉鈕**（只有 ESC＋點背景） | 可預期、可發現性 | 面板右上補明顯關閉鈕 | ROADMAP **U13**（ESC 已做，X 鈕未做） | [x] 2026-06-19：modal 右上補 `.modal-close` ✕（ESC／點背景仍可用） |
 | L3 | 多處 `aria-label` 英文（Sources/Chat/Studio/Breadcrumb/Primary/Audit metadata） | 一致（無障礙） | 改 zh-Hant | ROADMAP **U13**（標記完成但殘留）/ U15 | [x] 2026-06-19（i18n 2b-ii，`a11y.*` + 稽核 2a） |
 | L4 | 設定頁標籤雙語不一致（「Embedding base URL」全英 vs 其他「中文 / Azure 英文」） | 一致 | 統一雙語格式 | ROADMAP **U15b** | [x] 2026-06-19（i18n 2b-ii） |
-| L5 | 登入頁直接印示範密碼 `admin / admin123`（POC 可接受） | 專業、安全觀感 | 上線前移除/改 | 已列管 [`docs/SECURITY.md:21`](SECURITY.md) | [ ] |
+| L5 | 登入頁直接印示範密碼 `admin / admin123`（POC 可接受） | 專業、安全觀感 | 上線前移除/改 | 已列管 [`docs/SECURITY.md:21`](SECURITY.md) | [x] 2026-06-19：示範帳號提示改為**只在 insecure dev secret 模式顯示**（`login_form` 傳 `demo_hint = SECRET == INSECURE_DEV_SECRET`）；真實部署（設 `NOTEBOOKLM_SECRET`）不再印帳密 |
 
 ---
 
@@ -55,9 +56,9 @@ CSS-only，皆在 [`app/static/style.css`](../app/static/style.css)：
 
 | # | 問題 | 方向 | 修法 | 狀態 |
 |---|---|---|---|---|
-| V1 | **任何內容過長的頁面**（含多數 admin 置中頁）捲動時出現背景色接縫、上下不連續 | 一致、專業 | 待查根因（疑為 `html`/`body` 背景傳播或漸層未涵蓋整個捲動高度，非工作區單一問題）。先前只改 `.workspace` sticky 側欄高度＝局部貼布、未解根因，**已還原** | [ ] **延後**（系統性，非工作區單點） |
+| V1 | **任何內容過長的頁面**（含多數 admin 置中頁）捲動時出現背景色接縫、上下不連續 | 一致、專業 | 待查根因（疑為 `html`/`body` 背景傳播或漸層未涵蓋整個捲動高度，非工作區單一問題）。先前只改 `.workspace` sticky 側欄高度＝局部貼布、未解根因，**已還原** | [ ] **延後（低優先）**：純視覺、不影響功能；需系統性查根因，產品決定以後再做 |
 | V2 | Eval 三個 tab 旁出現多餘的細捲軸 | 一致 | `.eval-tabs` `scrollbar-width: thin`→`none` + `::-webkit-scrollbar{display:none}`；保留 `overflow-x:auto` 供窄螢幕滑動 | [x] 2026-06-19 |
-| V3 | `.settings-section` 的 `border-top` 分隔線緊貼上一段內容、無留白——**admin 多頁common**，非僅稽核 | 明確、一致 | 應系統性處理（如統一給 `.settings-section` 內容底部留白 / 調整 divider 間距），先前只在 `.audit-filter-form` 加 margin＝局部貼布，**已還原** | [ ] **延後**（系統性，跨 admin 頁） |
+| V3 | `.settings-section` 的 `border-top` 分隔線緊貼上一段內容、無留白——**admin 多頁common**，非僅稽核 | 明確、一致 | 應系統性處理（如統一給 `.settings-section` 內容底部留白 / 調整 divider 間距），先前只在 `.audit-filter-form` 加 margin＝局部貼布，**已還原** | [ ] **延後（低優先）**：純視覺、不影響功能；跨 admin 頁系統性處理，產品決定以後再做 |
 
 ## i18n 治本（M2 + L3/L4 的根，對應 ROADMAP U15a/U15b）
 

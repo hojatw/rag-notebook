@@ -18,8 +18,10 @@
     </label>
     <button type="submit" data-loading-text="登入中...">登入</button>
   </form>
+  {% if demo_hint %}
   <p class="auth-hint muted small">
     示範帳號： <code>admin / admin123</code> &middot; <code>user / user123</code>
   </p>
+  {% endif %}
 </section>
 {% endblock %}

@@ -27,7 +27,7 @@ from . import i18n
 import httpx
 
 from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_eval_candidates, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
-from .security import get_app_secret, hash_password, sign_user_id, unsign_user_id, verify_password
+from .security import INSECURE_DEV_SECRET, get_app_secret, hash_password, sign_user_id, unsign_user_id, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
 from .vector_store import delete_source as delete_source_vectors
@@ -371,8 +371,12 @@ def global_search(
 
 @app.get("/login", response_class=HTMLResponse)
 def login_form(request: Request):
-    """Render the login form."""
-    return render(request, "login.html", {"error": ""})
+    """Render the login form.
+
+    The demo-account hint is shown only when running with the insecure dev
+    secret, so a real (network-exposed) deployment never prints credentials.
+    """
+    return render(request, "login.html", {"error": "", "demo_hint": SECRET == INSECURE_DEV_SECRET})
 
 
 @app.post("/login")

@@ -67,8 +67,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [x] U9 · Global search
 - **Fix:** **Done.** `/search` searches the signed-in user's notebooks, source filenames/summaries, conversation titles, and notes using scoped SQLite `LIKE` queries.
 
-#### [x] U10 · Mobile / responsive pass
-- **Done.** The app now supports a usable narrow viewport baseline without changing the desktop workspace model: the topbar/nav wraps cleanly, the three-pane workspace stacks at tablet widths, modals fit within mobile viewports, Eval tabs scroll instead of wrapping awkwardly, forms/actions collapse to full-width controls where needed, and table/card-heavy admin pages keep their existing `data-label` mobile presentation.
+#### [~] U10 · Mobile / responsive pass
+- **Baseline done.** The app supports a usable narrow viewport without changing the desktop workspace model: the topbar/nav wraps cleanly, the three-pane workspace stacks at tablet widths, modals fit within mobile viewports, Eval tabs scroll instead of wrapping awkwardly, forms/actions collapse to full-width controls where needed, and table/card-heavy admin pages keep their existing `data-label` mobile presentation.
+- **Follow-up (UX review H1):** on mobile the stacked workspace has no pane switcher — you scroll past the whole sources list to reach chat, then past chat to reach Studio. Add a segmented control (來源 / 對話 / 工作台, default 對話) at narrow widths. Do this when revisiting U10. Tracked in [`docs/UX_REVIEW.md`](UX_REVIEW.md) (H1).
 
 ### Polish
 
