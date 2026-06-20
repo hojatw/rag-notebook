@@ -62,6 +62,7 @@ CSS-only，皆在 [`app/static/style.css`](../app/static/style.css)：
 ## i18n 治本（M2 + L3/L4 的根，對應 ROADMAP U15a/U15b）
 
 決策：**治本**（建訊息目錄地基），分段進行；locale 範圍先 zh-TW、結構預留 en。
+這裡是**分段落地紀錄**；i18n 的架構與 how-to（加字串/加語系/切語系/已知例外）以 [`docs/I18N.md`](I18N.md) 為準。
 
 | 階段 | 內容 | 狀態 |
 |---|---|---|

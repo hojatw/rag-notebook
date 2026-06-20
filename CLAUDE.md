@@ -11,6 +11,7 @@ NotebookLM-style RAG proof of concept: FastAPI + Jinja2 + HTMX + Alpine.js, SQLi
 - `docs/SCHEMA.md` — DB schema reference (tables, columns, FKs, indexes). Keep in sync with `app/db.py` on every schema change.
 - `docs/ROADMAP.md` — product-surface backlog (UX improvements + new AI features, with effort/prerequisites). Performance/quality items stay in their own backlogs.
 - `docs/UI.md` — front-end design conventions (page archetypes, components, data presentation, interaction, voice). Read before adding or restyling any page/component; align new UI to it.
+- `docs/I18N.md` — UI localisation reference: the message catalog + `t()`/`window.I18N`, how to add strings/locales, how to switch the locale, and known exceptions. Read before adding user-facing copy or touching language behavior; never hardcode UI strings.
 - `handover.md` (gitignored, when present) — cross-session work state; useful context, not a durable rule source.
 
 ## Commands

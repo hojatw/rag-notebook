@@ -386,7 +386,7 @@ Performance/scalability and retrieval-quality work are tracked as prioritised, t
 
 - No CSRF protection on POST routes.
 - No offline embedding fallback — embedding model must be configured before uploads are accepted.
-- UI strings are still hardcoded zh-TW; the i18n foundation and full extraction are split as `ROADMAP.md` U15a/U15b.
+- UI copy is routed through a `zh-TW` message catalog (i18n foundation done, `ROADMAP.md` U15a); adding an `en` locale + admin/per-user language controls is U15b. See [`docs/I18N.md`](docs/I18N.md).
 - Keyword search uses `LIKE '%token%'` over SQLite; FTS5 + BM25 is on deck (see [`RETRIEVAL.md`](docs/RETRIEVAL.md)).
 - Hybrid merge uses a fixed `0.7·vector + 0.3·keyword` blend; Reciprocal Rank Fusion is on deck.
 - Qdrant is a future vector-store evaluation candidate; do a bounded spike before replacing Chroma.
