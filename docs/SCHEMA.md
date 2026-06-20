@@ -68,6 +68,7 @@ Global LLM/embedding configuration. **Exactly one row** (`CHECK (id = 1)`).
 | `timeout_seconds` | REAL DEFAULT 60 | |
 | `embedding_query_prefix` | TEXT DEFAULT `''` | e.g. `query: ` for e5; blank for OpenAI |
 | `embedding_passage_prefix` | TEXT DEFAULT `''` | e.g. `passage: ` for e5 |
+| `diagnostics_json` | TEXT DEFAULT `'{}'` | O1 Phase 1 compact admin test results for chat/embedding diagnostics: status, latency, provider/model summary, embedding dimension, capability statuses, timestamp, and error class only; no prompts, outputs, API keys, or raw provider payloads |
 
 ## `llm_usage_events`
 High-volume AI governance telemetry for LLM and embedding calls (G1a/G1b). This table is intentionally separate from `audit_events`: usage events are frequent, report-oriented, and must not copy prompts, source text, retrieved snippets, API keys, or model outputs. Context ids are nullable and use `ON DELETE SET NULL` so telemetry can remain useful after user data is deleted without preserving the deleted content.

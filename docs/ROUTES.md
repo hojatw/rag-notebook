@@ -88,4 +88,6 @@ GET  /admin/audit                                         admin audit trail with
 
 GET  /settings                                            admin LLM settings (admin only)
 POST /settings                                            save LLM settings (API key is encrypted on write)
+POST /settings/test-chat                                  test chat model + capability probes without saving raw prompts/outputs
+POST /settings/test-embedding                             test embedding model + dimension without saving raw prompts/outputs
 ```

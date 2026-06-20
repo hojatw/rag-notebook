@@ -1,5 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
+{% macro status_class(status) -%}
+  {{- 'indexed' if status == 'succeeded' else 'failed' if status == 'failed' else 'uploaded' -}}
+{%- endmacro %}
+{% set diagnostics = settings.diagnostics or {} %}
+{% set chat_diag = diagnostics.get('chat', {}) %}
+{% set embedding_diag = diagnostics.get('embedding', {}) %}
 <section class="settings">
   <header class="settings-head">
     <p class="eyebrow">管理主控台</p>
@@ -68,6 +74,100 @@
           逾時秒數
           <input name="timeout_seconds" type="number" min="1" step="1" value="{{ settings.timeout_seconds }}">
         </label>
+      </div>
+    </section>
+
+    <section class="settings-section llm-diagnostics">
+      <h2>{{ t('settings.diag_title') }}</h2>
+      <p class="muted">{{ t('settings.diag_intro') }}</p>
+      {% if diagnostic_notice %}<div class="notice">{{ diagnostic_notice }}</div>{% endif %}
+
+      <div class="diagnostic-actions">
+        <div class="diagnostic-action-card">
+          <div class="diagnostic-action-head">
+            <div>
+              <strong>{{ t('settings.chat_diag') }}</strong>
+              <p class="muted">{{ t('settings.test_chat_hint') }}</p>
+            </div>
+            <button type="submit" class="secondary" formaction="/settings/test-chat" data-loading-text="{{ t('settings.test_chat_loading') }}">{{ t('settings.test_chat') }}</button>
+          </div>
+          <label class="diagnostic-checkbox">
+            <input type="checkbox" name="include_image_understanding" value="1">
+            <span>
+              {{ t('settings.test_image') }}
+              <small>{{ t('settings.test_image_hint') }}</small>
+            </span>
+          </label>
+        </div>
+        <div class="diagnostic-action-card">
+          <div class="diagnostic-action-head">
+            <div>
+              <strong>{{ t('settings.embedding_diag') }}</strong>
+              <p class="muted">{{ t('settings.test_embedding_hint') }}</p>
+            </div>
+            <button type="submit" class="secondary" formaction="/settings/test-embedding" data-loading-text="{{ t('settings.test_embedding_loading') }}">{{ t('settings.test_embedding') }}</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagnostic-grid">
+        <article class="card card--flat diagnostic-card">
+          <div class="diagnostic-card-head">
+            <h3>{{ t('settings.chat_diag') }}</h3>
+            {% if chat_diag %}
+              <span class="status {{ status_class(chat_diag.status) }}">{{ diagnostic_status_labels.get(chat_diag.status, chat_diag.status) }}</span>
+            {% endif %}
+          </div>
+          {% if chat_diag %}
+            <dl class="diagnostic-list">
+              <div><dt>{{ t('settings.provider') }}</dt><dd>{{ chat_diag.provider or '—' }}</dd></div>
+              <div><dt>{{ t('settings.model') }}</dt><dd>{{ chat_diag.model or '—' }}</dd></div>
+              <div><dt>{{ t('settings.latency') }}</dt><dd>{{ chat_diag.latency_ms }} ms</dd></div>
+              <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ chat_diag.tested_at or '—' }}</dd></div>
+              {% if chat_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ chat_diag.error_class }}</dd></div>{% endif %}
+            </dl>
+            {% set caps = chat_diag.capabilities or {} %}
+            <h4>{{ t('settings.capabilities') }}</h4>
+            <ul class="diagnostic-capabilities">
+              {% for key, label in [
+                ('streaming', t('settings.cap_streaming')),
+                ('usage_reporting', t('settings.cap_usage')),
+                ('json_following', t('settings.cap_json')),
+                ('image_understanding', t('settings.cap_image'))
+              ] %}
+                {% set cap = caps.get(key, {}) %}
+                <li>
+                  <span>{{ label }}</span>
+                  <span class="status {{ status_class(cap.status or 'not_tested') }}">{{ diagnostic_status_labels.get(cap.status or 'not_tested', cap.status or 'not_tested') }}</span>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="muted">{{ t('settings.no_diag') }}</p>
+          {% endif %}
+        </article>
+
+        <article class="card card--flat diagnostic-card">
+          <div class="diagnostic-card-head">
+            <h3>{{ t('settings.embedding_diag') }}</h3>
+            {% if embedding_diag %}
+              <span class="status {{ status_class(embedding_diag.status) }}">{{ diagnostic_status_labels.get(embedding_diag.status, embedding_diag.status) }}</span>
+            {% endif %}
+          </div>
+          {% if embedding_diag %}
+            <dl class="diagnostic-list">
+              <div><dt>{{ t('settings.provider') }}</dt><dd>{{ embedding_diag.provider or '—' }}</dd></div>
+              <div><dt>{{ t('settings.model') }}</dt><dd>{{ embedding_diag.model or '—' }}</dd></div>
+              <div><dt>{{ t('settings.latency') }}</dt><dd>{{ embedding_diag.latency_ms }} ms</dd></div>
+              <div><dt>{{ t('settings.embedding_dimension') }}</dt><dd>{{ embedding_diag.embedding_dimension if embedding_diag.embedding_dimension is not none else '—' }}</dd></div>
+              <div><dt>{{ t('settings.current_index_dimension') }}</dt><dd>{{ embedding_diag.current_index_dimension if embedding_diag.current_index_dimension is not none else '—' }}</dd></div>
+              <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ embedding_diag.tested_at or '—' }}</dd></div>
+              {% if embedding_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ embedding_diag.error_class }}</dd></div>{% endif %}
+            </dl>
+          {% else %}
+            <p class="muted">{{ t('settings.no_diag') }}</p>
+          {% endif %}
+        </article>
       </div>
     </section>
 

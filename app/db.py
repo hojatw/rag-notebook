@@ -60,7 +60,8 @@ def init_db() -> None:
                 embedding_model TEXT NOT NULL DEFAULT '',
                 api_version TEXT NOT NULL DEFAULT '2024-02-15-preview',
                 temperature REAL NOT NULL DEFAULT 0.2,
-                timeout_seconds REAL NOT NULL DEFAULT 60
+                timeout_seconds REAL NOT NULL DEFAULT 60,
+                diagnostics_json TEXT NOT NULL DEFAULT '{}'
             );
 
             CREATE TABLE IF NOT EXISTS notebooks (
@@ -379,6 +380,10 @@ def init_db() -> None:
         # is unchanged and the app stays embedding-model-agnostic.
         _ensure_column(conn, "llm_settings", "embedding_query_prefix", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "llm_settings", "embedding_passage_prefix", "TEXT NOT NULL DEFAULT ''")
+        # O1 Phase 1: compact admin diagnostics for the current single global
+        # settings row. Stores only status/capability metadata, never prompts,
+        # model outputs, API keys, or raw provider payloads.
+        _ensure_column(conn, "llm_settings", "diagnostics_json", "TEXT NOT NULL DEFAULT '{}'")
         # Notebook foreign keys are nullable so existing rows can be migrated in place.
         # Phase 2 routes will populate these on insert; the migration below backfills legacy rows.
         _ensure_column(conn, "sources", "notebook_id", "INTEGER REFERENCES notebooks(id) ON DELETE CASCADE")
@@ -544,4 +549,9 @@ def load_llm_settings_for_display(conn: sqlite3.Connection) -> dict[str, Any]:
     row = dict(conn.execute("SELECT * FROM llm_settings WHERE id = 1").fetchone())
     row["api_key_masked"] = bool(row["api_key"])
     row["api_key"] = ""
+    try:
+        diagnostics = loads(row.get("diagnostics_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        diagnostics = {}
+    row["diagnostics"] = diagnostics if isinstance(diagnostics, dict) else {}
     return row

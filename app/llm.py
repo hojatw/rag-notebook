@@ -406,6 +406,454 @@ async def probe_embedding_dimension(settings: dict[str, Any]) -> int:
     return len(vectors[0]) if vectors else 0
 
 
+DIAGNOSTIC_SYSTEM_PROMPT = (
+    "You are a deployment diagnostics endpoint check. Follow the user's output "
+    "format exactly. Do not include explanations."
+)
+DIAGNOSTIC_IMAGE_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg=="
+)
+
+
+async def probe_embedding_diagnostics(
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return compact embedding diagnostics without storing probe text/output."""
+    provider = settings.get("provider") or "openai_compatible"
+    model = settings.get("embedding_model") or ""
+    result: dict[str, Any] = {
+        "status": "failed",
+        "provider": provider,
+        "model": model,
+        "latency_ms": 0.0,
+        "embedding_dimension": None,
+        "error_class": "",
+    }
+    if not settings.get("api_key") or not model:
+        result["error_class"] = "MissingSettings"
+        return result
+
+    texts = ["diagnostics embedding probe"]
+    request = build_embedding_request(settings, texts)
+    timeout = float(settings.get("timeout_seconds") or 60)
+    started = time.perf_counter()
+    input_chars = sum(len(text) for text in texts)
+    retry_stats: dict[str, Any] = {}
+    try:
+        data = await _post_json_with_retry(
+            request["url"],
+            request["headers"],
+            request["json"],
+            timeout,
+            retry_stats=retry_stats,
+        )
+        vectors = [item["embedding"] for item in data["data"]]
+        dimension = len(vectors[0]) if vectors else 0
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        _record_usage_event(
+            settings=settings,
+            call_type="settings_embedding_probe",
+            status="failed",
+            latency_ms=elapsed_ms,
+            input_chars=input_chars,
+            output_chars=0,
+            usage=None,
+            usage_context=usage_context,
+            error_class=exc.__class__.__name__,
+            metadata=_usage_metadata({"probe": "embedding", "text_count": len(texts)}, retry_stats),
+            model_key="embedding_model",
+        )
+        result["latency_ms"] = round(elapsed_ms, 1)
+        result["error_class"] = exc.__class__.__name__
+        logger.warning("settings_embedding_probe_failed provider=%s model=%s", provider, model, exc_info=True)
+        return result
+
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    _record_usage_event(
+        settings=settings,
+        call_type="settings_embedding_probe",
+        status="succeeded",
+        latency_ms=elapsed_ms,
+        input_chars=input_chars,
+        output_chars=0,
+        usage=data.get("usage"),
+        usage_context=usage_context,
+        metadata=_usage_metadata(
+            {
+                "probe": "embedding",
+                "text_count": len(texts),
+                "embedding_dimension": dimension,
+                "usage_available": isinstance(data.get("usage"), dict),
+            },
+            retry_stats,
+        ),
+        model_key="embedding_model",
+    )
+    result.update({
+        "status": "succeeded",
+        "latency_ms": round(elapsed_ms, 1),
+        "embedding_dimension": dimension,
+    })
+    return result
+
+
+async def probe_chat_diagnostics(
+    settings: dict[str, Any],
+    *,
+    include_image: bool = False,
+    usage_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return compact chat/capability diagnostics for the active provider."""
+    provider = settings.get("provider") or "openai_compatible"
+    model = settings.get("chat_model") or ""
+    result: dict[str, Any] = {
+        "status": "failed",
+        "provider": provider,
+        "model": model,
+        "latency_ms": 0.0,
+        "error_class": "",
+        "capabilities": {
+            "streaming": {"status": "not_tested"},
+            "usage_reporting": {"status": "not_tested"},
+            "json_following": {"status": "not_tested"},
+            "image_understanding": {"status": "not_tested" if include_image else "skipped"},
+        },
+    }
+    if not settings.get("api_key") or not model:
+        result["error_class"] = "MissingSettings"
+        return result
+
+    json_probe = await _probe_chat_once(
+        settings,
+        user_prompt='Return exactly this JSON object: {"ok": true, "label": "pong"}',
+        system_prompt=DIAGNOSTIC_SYSTEM_PROMPT,
+        call_type="settings_chat_probe",
+        probe_name="json",
+        usage_context=usage_context,
+        expect_json=True,
+    )
+    result["status"] = json_probe["status"]
+    result["latency_ms"] = json_probe["latency_ms"]
+    result["error_class"] = json_probe.get("error_class", "")
+    result["capabilities"]["json_following"] = {
+        "status": "succeeded" if json_probe.get("json_valid") else "failed",
+        "latency_ms": json_probe["latency_ms"],
+        "error_class": json_probe.get("error_class", ""),
+    }
+
+    stream_probe = await _probe_chat_stream(settings, usage_context=usage_context)
+    result["capabilities"]["streaming"] = {
+        "status": stream_probe["status"],
+        "latency_ms": stream_probe["latency_ms"],
+        "error_class": stream_probe.get("error_class", ""),
+        "usage_available": stream_probe.get("usage_available", False),
+        "stream_usage_fallback": stream_probe.get("stream_usage_fallback", False),
+    }
+
+    usage_available = bool(json_probe.get("usage_available") or stream_probe.get("usage_available"))
+    result["capabilities"]["usage_reporting"] = {
+        "status": "succeeded" if usage_available else "failed",
+        "usage_available": usage_available,
+    }
+
+    if include_image:
+        image_probe = await _probe_image_understanding(settings, usage_context=usage_context)
+        result["capabilities"]["image_understanding"] = image_probe
+
+    return result
+
+
+async def _probe_chat_once(
+    settings: dict[str, Any],
+    *,
+    user_prompt: str,
+    system_prompt: str,
+    call_type: str,
+    probe_name: str,
+    usage_context: dict[str, Any] | None,
+    expect_json: bool = False,
+    messages_override: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    request = build_chat_request(settings, user_prompt, system_prompt, temperature=0.0)
+    if messages_override is not None:
+        request["json"]["messages"] = messages_override
+    timeout = float(settings.get("timeout_seconds") or 60)
+    started = time.perf_counter()
+    input_chars = _message_chars(request["json"].get("messages") or [])
+    retry_stats: dict[str, Any] = {}
+    json_valid = False
+    json_object: dict[str, Any] = {}
+    try:
+        data = await _post_json_with_retry(
+            request["url"],
+            request["headers"],
+            request["json"],
+            timeout,
+            retry_stats=retry_stats,
+        )
+        content = str(data["choices"][0]["message"]["content"]).strip()
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        _record_usage_event(
+            settings=settings,
+            call_type=call_type,
+            status="failed",
+            latency_ms=elapsed_ms,
+            input_chars=input_chars,
+            output_chars=0,
+            usage=None,
+            usage_context=usage_context,
+            error_class=exc.__class__.__name__,
+            metadata=_usage_metadata({"probe": probe_name, "json_valid": False}, retry_stats),
+            model_key="chat_model",
+        )
+        logger.warning("%s_failed provider=%s model=%s", call_type, settings.get("provider"), settings.get("chat_model"), exc_info=True)
+        return {
+            "status": "failed",
+            "latency_ms": round(elapsed_ms, 1),
+            "error_class": exc.__class__.__name__,
+            "usage_available": False,
+            "json_valid": False,
+        }
+
+    if expect_json:
+        try:
+            parsed = json.loads(extract_json(content))
+            json_valid = isinstance(parsed, dict)
+            json_object = parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, ValueError, TypeError):
+            json_valid = False
+
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    usage_available = isinstance(data.get("usage"), dict)
+    _record_usage_event(
+        settings=settings,
+        call_type=call_type,
+        status="succeeded",
+        latency_ms=elapsed_ms,
+        input_chars=input_chars,
+        output_chars=len(content),
+        usage=data.get("usage"),
+        usage_context=usage_context,
+        metadata=_usage_metadata(
+            {"probe": probe_name, "json_valid": json_valid, "usage_available": usage_available},
+            retry_stats,
+        ),
+        model_key="chat_model",
+    )
+    return {
+        "status": "succeeded",
+        "latency_ms": round(elapsed_ms, 1),
+        "error_class": "",
+        "usage_available": usage_available,
+        "json_valid": json_valid,
+        "json_object": json_object,
+    }
+
+
+async def _probe_chat_stream(
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    request = build_chat_request(settings, "Reply with exactly: ok", DIAGNOSTIC_SYSTEM_PROMPT, temperature=0.0)
+    request["json"]["stream"] = True
+    request["json"]["stream_options"] = {"include_usage": True}
+    timeout = float(settings.get("timeout_seconds") or 60)
+    started = time.perf_counter()
+    input_chars = _message_chars(request["json"].get("messages") or [])
+    chars = 0
+    usage: dict[str, Any] | None = None
+    retry_stats: dict[str, Any] = {}
+    stream_usage_requested = True
+    stream_usage_fallback = False
+    client = get_http_client()
+
+    while True:
+        retry_stats["attempts"] = int(retry_stats.get("attempts") or 0) + 1
+        chars_at_attempt_start = chars
+        try:
+            async with client.stream(
+                "POST",
+                request["url"],
+                headers=request["headers"],
+                json=request["json"],
+                timeout=timeout,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line.removeprefix("data:").strip()
+                    if not payload or payload == "[DONE]":
+                        continue
+                    data = json.loads(payload)
+                    if isinstance(data.get("usage"), dict):
+                        usage = data["usage"]
+                    choices = data.get("choices") or []
+                    if choices:
+                        delta = choices[0].get("delta", {}).get("content") or ""
+                        chars += len(delta)
+            break
+        except httpx.HTTPStatusError as exc:
+            retry_stats["last_error_class"] = exc.__class__.__name__
+            retry_stats["last_status_code"] = exc.response.status_code
+            if stream_usage_requested and chars == chars_at_attempt_start and exc.response.status_code in {400, 422}:
+                request["json"].pop("stream_options", None)
+                stream_usage_requested = False
+                stream_usage_fallback = True
+                retry_stats["retry_count"] = int(retry_stats.get("retry_count") or 0) + 1
+                continue
+            return _finish_stream_probe_failure(
+                settings,
+                started,
+                input_chars,
+                chars,
+                usage_context,
+                exc.__class__.__name__,
+                request,
+                retry_stats,
+                stream_usage_requested,
+                stream_usage_fallback,
+            )
+        except Exception as exc:
+            retry_stats["last_error_class"] = exc.__class__.__name__
+            return _finish_stream_probe_failure(
+                settings,
+                started,
+                input_chars,
+                chars,
+                usage_context,
+                exc.__class__.__name__,
+                request,
+                retry_stats,
+                stream_usage_requested,
+                stream_usage_fallback,
+            )
+
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    usage_available = isinstance(usage, dict)
+    _record_usage_event(
+        settings=settings,
+        call_type="settings_stream_probe",
+        status="succeeded",
+        latency_ms=elapsed_ms,
+        input_chars=input_chars,
+        output_chars=chars,
+        usage=usage,
+        usage_context=usage_context,
+        metadata=_stream_usage_metadata(
+            request=request,
+            retry_stats=retry_stats,
+            stream_usage_requested=stream_usage_requested,
+            stream_usage_fallback=stream_usage_fallback,
+            usage=usage,
+        ),
+        model_key="chat_model",
+    )
+    return {
+        "status": "succeeded",
+        "latency_ms": round(elapsed_ms, 1),
+        "error_class": "",
+        "usage_available": usage_available,
+        "stream_usage_fallback": stream_usage_fallback,
+    }
+
+
+def _finish_stream_probe_failure(
+    settings: dict[str, Any],
+    started: float,
+    input_chars: int,
+    chars: int,
+    usage_context: dict[str, Any] | None,
+    error_class: str,
+    request: dict[str, Any],
+    retry_stats: dict[str, Any],
+    stream_usage_requested: bool,
+    stream_usage_fallback: bool,
+) -> dict[str, Any]:
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    _record_usage_event(
+        settings=settings,
+        call_type="settings_stream_probe",
+        status="failed",
+        latency_ms=elapsed_ms,
+        input_chars=input_chars,
+        output_chars=chars,
+        usage=None,
+        usage_context=usage_context,
+        error_class=error_class,
+        metadata=_stream_usage_metadata(
+            request=request,
+            retry_stats=retry_stats,
+            stream_usage_requested=stream_usage_requested,
+            stream_usage_fallback=stream_usage_fallback,
+            usage=None,
+        ),
+        model_key="chat_model",
+    )
+    return {
+        "status": "failed",
+        "latency_ms": round(elapsed_ms, 1),
+        "error_class": error_class,
+        "usage_available": False,
+        "stream_usage_fallback": stream_usage_fallback,
+    }
+
+
+async def _probe_image_understanding(
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    messages = [
+        {"role": "system", "content": DIAGNOSTIC_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": 'What is the dominant color in this image? Return JSON only: {"dominant_color":"color"}'},
+                {"type": "image_url", "image_url": {"url": DIAGNOSTIC_IMAGE_DATA_URL}},
+            ],
+        },
+    ]
+    probe = await _probe_chat_once(
+        settings,
+        user_prompt="image diagnostics",
+        system_prompt=DIAGNOSTIC_SYSTEM_PROMPT,
+        call_type="settings_image_probe",
+        probe_name="image",
+        usage_context=usage_context,
+        expect_json=True,
+        messages_override=messages,
+    )
+    color = str((probe.get("json_object") or {}).get("dominant_color") or "").lower()
+    understood = probe["status"] == "succeeded" and probe.get("json_valid") and "red" in color
+    return {
+        "status": "succeeded" if understood else "failed",
+        "latency_ms": probe["latency_ms"],
+        "error_class": probe.get("error_class", ""),
+        "json_valid": probe.get("json_valid", False),
+        "usage_available": probe.get("usage_available", False),
+    }
+
+
+def _message_chars(messages: list[dict[str, Any]]) -> int:
+    total = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    total += len(item["text"])
+    return total
+
+
 async def embed_text_batch(
     texts: list[str],
     settings: dict[str, Any],

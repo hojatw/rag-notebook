@@ -368,3 +368,111 @@ def test_chat_stream_falls_back_when_stream_usage_option_is_rejected(monkeypatch
     assert metadata["stream_usage_requested"] is False
     assert metadata["stream_usage_fallback"] is True
     assert metadata["retry_count"] == 1
+
+
+def test_settings_embedding_probe_records_dimension_without_prompt_metadata(monkeypatch, tmp_path):
+    db, _governance, llm = _fresh_governance_stack(monkeypatch, tmp_path)
+
+    def handler(request):
+        body = json.loads(request.read().decode())
+        assert body["model"] == "embed"
+        assert body["input"] == ["diagnostics embedding probe"]
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"embedding": [0.1, 0.2, 0.3]}],
+                "usage": {"prompt_tokens": 3, "total_tokens": 3},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    llm.set_http_client(client)
+    try:
+        result = asyncio.run(
+            llm.probe_embedding_diagnostics(
+                {"api_key": "sk-test", "embedding_model": "embed", "base_url": "http://model/v1"},
+                usage_context={"user_id": 1},
+            )
+        )
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+
+    assert result["status"] == "succeeded"
+    assert result["embedding_dimension"] == 3
+    with db.connect() as conn:
+        row = conn.execute("SELECT * FROM llm_usage_events").fetchone()
+    assert row["call_type"] == "settings_embedding_probe"
+    assert row["model"] == "embed"
+    assert row["is_estimated"] == 0
+    metadata = json.loads(row["metadata_json"])
+    assert metadata["embedding_dimension"] == 3
+    assert "prompt" not in row["metadata_json"]
+    assert "output" not in row["metadata_json"]
+    assert "api_key" not in row["metadata_json"]
+
+
+def test_settings_chat_probe_detects_json_stream_and_usage(monkeypatch, tmp_path):
+    db, _governance, llm = _fresh_governance_stack(monkeypatch, tmp_path)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        body = json.loads(request.read().decode())
+        assert body["model"] == "chat"
+        if isinstance(body["messages"][1]["content"], list):
+            text = body["messages"][1]["content"][0]["text"]
+            image_url = body["messages"][1]["content"][1]["image_url"]["url"]
+            assert "red" not in text.lower()
+            assert image_url.startswith("data:image/png;base64,")
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": '{"dominant_color": "red"}'}}],
+                    "usage": {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11},
+                },
+            )
+        if body.get("stream"):
+            assert body["stream_options"] == {"include_usage": True}
+            return httpx.Response(
+                200,
+                text=(
+                    'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                    'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}\n\n'
+                    "data: [DONE]\n\n"
+                ),
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"ok": true, "label": "pong"}'}}],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    llm.set_http_client(client)
+    try:
+        result = asyncio.run(
+            llm.probe_chat_diagnostics(
+                {"api_key": "sk-test", "chat_model": "chat", "base_url": "http://model/v1"},
+                include_image=True,
+                usage_context={"user_id": 1},
+            )
+        )
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+
+    assert calls["n"] == 3
+    assert result["status"] == "succeeded"
+    assert result["capabilities"]["json_following"]["status"] == "succeeded"
+    assert result["capabilities"]["streaming"]["status"] == "succeeded"
+    assert result["capabilities"]["usage_reporting"]["status"] == "succeeded"
+    assert result["capabilities"]["image_understanding"]["status"] == "succeeded"
+    with db.connect() as conn:
+        rows = conn.execute("SELECT * FROM llm_usage_events ORDER BY id").fetchall()
+    assert [row["call_type"] for row in rows] == ["settings_chat_probe", "settings_stream_probe", "settings_image_probe"]
+    assert all("prompt" not in row["metadata_json"] for row in rows)
+    assert all("output" not in row["metadata_json"] for row in rows)
+    assert all("api_key" not in row["metadata_json"] for row in rows)
