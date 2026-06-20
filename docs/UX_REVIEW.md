@@ -36,7 +36,7 @@ Eval 工作台、Retrieval Profiles、稽核、工具 modal、空狀態。
 | M1 | **桌機來源名稱全部截斷成「PS115014_202...」**，彼此無法分辨 | 明確、直覺 | `title` tooltip；或中段省略保留日期／副檔名 | **未追蹤** | [x] 2026-06-19：來源名 `title` tooltip（完整檔名）。中段省略未做，視需要再加 |
 | M2 | **Eval 區與稽核頁殘留大量英文**：導覽「Eval」、頁標「Retrieval Profiles」、「建立 Eval Set」、稽核篩選 Action/Actor/Target type/Sensitivity、欄位標題 ACTOR/ACTION/TARGET/IP/METADATA、下拉「2 indexed sources」 | 一致、專業 | 比照 UI.md §5 中文化（Recall/MRR/Profile 等技術詞保留原文） | ROADMAP **U15a/U15b** | [x] 2026-06-19：由 i18n 2a（稽核）+ 2b（Eval 全頁）完成 |
 | M3 | **送出鎖機制不一致**：UI.md §4 規定送出表單用 `data-loading-form`，實際僅 10/20；工具面板等改用 `hx-disabled-elt`+`hx-indicator` | 一致、可預期 | 統一到 `data-loading-form`，或在 UI.md 明訂兩者並存判準 | **未追蹤**（牴觸 UI.md §4） | [x] 2026-06-19：採方案 B——[UI.md §4](UI.md) 改為兩機制並存（整頁送出用 `data-loading-form`、HTMX partial 送出用 `hx-disabled-elt`）+ 判準，現況正規化 |
-| M4 | **列表無分頁、舊資料靜默截斷**：全站無 pagination/「載入更多」。各列表為「最新優先 + 砍尾」硬上限（來源 200／對話 50／訊息 200／筆記 50／**Eval run 20**／eval sets 50／搜尋每類 12）；超過者從 UI 消失。其中 **Eval run 無 truncated 提示**（舊 run 僅能用直接網址 `/admin/evals/runs/{id}` 開）；**筆記本首頁網格無任何 LIMIT**，全部一次撈出渲染 | 可預期、擴展性 | 至少給截斷列表加 truncated 提示（尤其 Eval run）；筆記本網格與 Eval run 視規模加分頁或「載入更多」；POC 階段可先只補提示 | **未追蹤**（POC 刻意「砍尾不分頁」，見 main.py 註解） | [~] 2026-06-19：用 LIMIT+1 偵測截斷 + `common.list_truncated` 提示，套上 **Eval 主頁（評測集／執行紀錄）+ 評測集明細的執行紀錄**（使用者點名的 Eval run 已涵蓋）。**剩餘小項**：搜尋每類 12 筆、筆記本首頁無上限——下次再補 |
+| M4 | **列表無分頁、舊資料靜默截斷**：全站無 pagination/「載入更多」。各列表為「最新優先 + 砍尾」硬上限（來源 200／對話 50／訊息 200／筆記 50／**Eval run 20**／eval sets 50／搜尋每類 12）；超過者從 UI 消失。其中 **Eval run 無 truncated 提示**（舊 run 僅能用直接網址 `/admin/evals/runs/{id}` 開）；**筆記本首頁網格無任何 LIMIT**，全部一次撈出渲染 | 可預期、擴展性 | 至少給截斷列表加 truncated 提示（尤其 Eval run）；筆記本網格與 Eval run 視規模加分頁或「載入更多」；POC 階段可先只補提示 | **未追蹤**（POC 刻意「砍尾不分頁」，見 main.py 註解） | [x] 2026-06-20：用 LIMIT+1 偵測截斷 + `common.list_truncated` 提示，已涵蓋 Eval 主頁、評測集明細、搜尋結果每類 12 筆、筆記本首頁最近 100 本。完整 pagination / 載入更多仍視實際資料規模另開新需求 |
 
 ## 🟢 低
 
@@ -56,9 +56,9 @@ CSS-only，皆在 [`app/static/style.css`](../app/static/style.css)：
 
 | # | 問題 | 方向 | 修法 | 狀態 |
 |---|---|---|---|---|
-| V1 | **任何內容過長的頁面**（含多數 admin 置中頁）捲動時出現背景色接縫、上下不連續 | 一致、專業 | 待查根因（疑為 `html`/`body` 背景傳播或漸層未涵蓋整個捲動高度，非工作區單一問題）。先前只改 `.workspace` sticky 側欄高度＝局部貼布、未解根因，**已還原** | [ ] **延後（低優先）**：純視覺、不影響功能；需系統性查根因，產品決定以後再做 |
+| V1 | **任何內容過長的頁面**（含多數 admin 置中頁）捲動時出現背景色接縫、上下不連續 | 一致、專業 | 待查根因（疑為 `html`/`body` 背景傳播或漸層未涵蓋整個捲動高度，非工作區單一問題）。先前只改 `.workspace` sticky 側欄高度＝局部貼布、未解根因，**已還原** | [x] 2026-06-20：改用全站根層修法，`html` 明確鋪 `--bg`，body 背景不重複，避免長頁面露出背景傳播接縫 |
 | V2 | Eval 三個 tab 旁出現多餘的細捲軸 | 一致 | `.eval-tabs` `scrollbar-width: thin`→`none` + `::-webkit-scrollbar{display:none}`；保留 `overflow-x:auto` 供窄螢幕滑動 | [x] 2026-06-19 |
-| V3 | `.settings-section` 的 `border-top` 分隔線緊貼上一段內容、無留白——**admin 多頁common**，非僅稽核 | 明確、一致 | 應系統性處理（如統一給 `.settings-section` 內容底部留白 / 調整 divider 間距），先前只在 `.audit-filter-form` 加 margin＝局部貼布，**已還原** | [ ] **延後（低優先）**：純視覺、不影響功能；跨 admin 頁系統性處理，產品決定以後再做 |
+| V3 | `.settings-section` 的 `border-top` 分隔線緊貼上一段內容、無留白——**admin 多頁common**，非僅稽核 | 明確、一致 | 應系統性處理（如統一給 `.settings-section` 內容底部留白 / 調整 divider 間距），先前只在 `.audit-filter-form` 加 margin＝局部貼布，**已還原** | [x] 2026-06-20：以共用 `.settings-section + .settings-section` 間距處理跨 admin 頁分隔線，不做單頁 margin 貼補 |
 
 ## i18n 治本（M2 + L3/L4 的根，對應 ROADMAP U15a/U15b）
 
