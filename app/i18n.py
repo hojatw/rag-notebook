@@ -52,6 +52,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "common.open": "開啟",
         "common.view": "查看",
         "common.delete": "刪除",
+        "common.list_truncated": "僅顯示最近 {count} 筆，較舊的未顯示。",
         # --- Eval workbench — landing + nav (Phase 2b, hybrid naming) ---------
         # 評測 = the activity/section; "Eval Set" / "Eval run" kept as data terms.
         "eval.title": "評測工作台",

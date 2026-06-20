@@ -81,6 +81,7 @@
     {% else %}
       <div class="empty"><h2>{{ t('eval.empty_sets_title') }}</h2><p>{{ t('eval.empty_sets_body') }}</p></div>
     {% endif %}
+    {% if eval_sets_truncated %}<p class="truncated-hint muted small">{{ t('common.list_truncated', count=50) }}</p>{% endif %}
   </section>
 
   <section class="settings-section">
@@ -109,6 +110,7 @@
     {% else %}
       <div class="empty"><h2>{{ t('eval.empty_runs_title') }}</h2><p>{{ t('eval.empty_runs_body') }}</p></div>
     {% endif %}
+    {% if runs_truncated %}<p class="truncated-hint muted small">{{ t('common.list_truncated', count=20) }}</p>{% endif %}
   </section>
 </section>
 {% endblock %}

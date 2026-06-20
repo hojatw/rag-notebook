@@ -3619,7 +3619,7 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
         runs = [
             dict(row)
             for row in conn.execute(
-                "SELECT * FROM eval_runs WHERE eval_set_id = ? ORDER BY created_at DESC, id DESC LIMIT 20",
+                "SELECT * FROM eval_runs WHERE eval_set_id = ? ORDER BY created_at DESC, id DESC LIMIT 21",
                 (eval_set_id,),
             ).fetchall()
         ]
@@ -3640,6 +3640,8 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
             "deterministic": "自動",
             "manual": "手動",
         }.get(origin, origin)
+    runs_truncated = len(runs) > 20  # LIMIT+1 → surface the cap (UX review M4)
+    runs = runs[:20]
     for run in runs:
         run["metrics"] = loads(run.get("metrics_json") or "{}")
     return {
@@ -3648,6 +3650,7 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
         "items": items,
         "approved_count": sum(1 for item in items if item["approved"]),
         "runs": runs,
+        "runs_truncated": runs_truncated,
         "profiles": profiles,
         "item_type_options": eval_item_type_options(),
     }
@@ -3708,7 +3711,7 @@ def admin_evals(
                 JOIN notebooks n ON n.id = es.notebook_id
                 JOIN users u ON u.id = es.target_user_id
                 ORDER BY es.updated_at DESC, es.id DESC
-                LIMIT 50
+                LIMIT 51
                 """
             ).fetchall()
         ]
@@ -3721,10 +3724,15 @@ def admin_evals(
                 JOIN eval_sets es ON es.id = er.eval_set_id
                 JOIN notebooks n ON n.id = es.notebook_id
                 ORDER BY er.created_at DESC, er.id DESC
-                LIMIT 20
+                LIMIT 21
                 """
             ).fetchall()
         ]
+    # LIMIT+1 → tell the user the list was capped (no pagination; UX review M4).
+    eval_sets_truncated = len(eval_sets) > 50
+    eval_sets = eval_sets[:50]
+    runs_truncated = len(runs) > 20
+    runs = runs[:20]
     for run in runs:
         run["metrics"] = loads(run.get("metrics_json") or "{}")
     return render(
@@ -3737,7 +3745,9 @@ def admin_evals(
             "notebooks": notebooks,
             "notebook_q": notebook_q,
             "eval_sets": eval_sets,
+            "eval_sets_truncated": eval_sets_truncated,
             "runs": runs,
+            "runs_truncated": runs_truncated,
         },
     )
 

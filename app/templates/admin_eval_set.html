@@ -225,6 +225,7 @@
     {% else %}
       <p class="muted">尚未執行。</p>
     {% endif %}
+    {% if runs_truncated %}<p class="truncated-hint muted small">{{ t('common.list_truncated', count=20) }}</p>{% endif %}
   </section>
     </div>
   </div>

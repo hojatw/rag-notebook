@@ -35,8 +35,8 @@ Eval 工作台、Retrieval Profiles、稽核、工具 modal、空狀態。
 |---|---|---|---|---|---|
 | M1 | **桌機來源名稱全部截斷成「PS115014_202...」**，彼此無法分辨 | 明確、直覺 | `title` tooltip；或中段省略保留日期／副檔名 | **未追蹤** | [x] 2026-06-19：來源名 `title` tooltip（完整檔名）。中段省略未做，視需要再加 |
 | M2 | **Eval 區與稽核頁殘留大量英文**：導覽「Eval」、頁標「Retrieval Profiles」、「建立 Eval Set」、稽核篩選 Action/Actor/Target type/Sensitivity、欄位標題 ACTOR/ACTION/TARGET/IP/METADATA、下拉「2 indexed sources」 | 一致、專業 | 比照 UI.md §5 中文化（Recall/MRR/Profile 等技術詞保留原文） | ROADMAP **U15a/U15b** | [x] 2026-06-19：由 i18n 2a（稽核）+ 2b（Eval 全頁）完成 |
-| M3 | **送出鎖機制不一致**：UI.md §4 規定送出表單用 `data-loading-form`，實際僅 10/20；工具面板等改用 `hx-disabled-elt`+`hx-indicator` | 一致、可預期 | 統一到 `data-loading-form`，或在 UI.md 明訂兩者並存判準 | **未追蹤**（牴觸 UI.md §4） | [ ] |
-| M4 | **列表無分頁、舊資料靜默截斷**：全站無 pagination/「載入更多」。各列表為「最新優先 + 砍尾」硬上限（來源 200／對話 50／訊息 200／筆記 50／**Eval run 20**／eval sets 50／搜尋每類 12）；超過者從 UI 消失。其中 **Eval run 無 truncated 提示**（舊 run 僅能用直接網址 `/admin/evals/runs/{id}` 開）；**筆記本首頁網格無任何 LIMIT**，全部一次撈出渲染 | 可預期、擴展性 | 至少給截斷列表加 truncated 提示（尤其 Eval run）；筆記本網格與 Eval run 視規模加分頁或「載入更多」；POC 階段可先只補提示 | **未追蹤**（POC 刻意「砍尾不分頁」，見 main.py:609 註解） | [ ] |
+| M3 | **送出鎖機制不一致**：UI.md §4 規定送出表單用 `data-loading-form`，實際僅 10/20；工具面板等改用 `hx-disabled-elt`+`hx-indicator` | 一致、可預期 | 統一到 `data-loading-form`，或在 UI.md 明訂兩者並存判準 | **未追蹤**（牴觸 UI.md §4） | [x] 2026-06-19：採方案 B——[UI.md §4](UI.md) 改為兩機制並存（整頁送出用 `data-loading-form`、HTMX partial 送出用 `hx-disabled-elt`）+ 判準，現況正規化 |
+| M4 | **列表無分頁、舊資料靜默截斷**：全站無 pagination/「載入更多」。各列表為「最新優先 + 砍尾」硬上限（來源 200／對話 50／訊息 200／筆記 50／**Eval run 20**／eval sets 50／搜尋每類 12）；超過者從 UI 消失。其中 **Eval run 無 truncated 提示**（舊 run 僅能用直接網址 `/admin/evals/runs/{id}` 開）；**筆記本首頁網格無任何 LIMIT**，全部一次撈出渲染 | 可預期、擴展性 | 至少給截斷列表加 truncated 提示（尤其 Eval run）；筆記本網格與 Eval run 視規模加分頁或「載入更多」；POC 階段可先只補提示 | **未追蹤**（POC 刻意「砍尾不分頁」，見 main.py 註解） | [~] 2026-06-19：用 LIMIT+1 偵測截斷 + `common.list_truncated` 提示，套上 **Eval 主頁（評測集／執行紀錄）+ 評測集明細的執行紀錄**（使用者點名的 Eval run 已涵蓋）。**剩餘小項**：搜尋每類 12 筆、筆記本首頁無上限——下次再補 |
 
 ## 🟢 低
 
