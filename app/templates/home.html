@@ -48,4 +48,7 @@
     </div>
   {% endfor %}
 </div>
+{% if notebooks_truncated %}
+  <p class="truncated-hint muted small">{{ t('common.list_truncated', count=notebooks_limit) }}</p>
+{% endif %}
 {% endblock %}

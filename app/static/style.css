@@ -83,7 +83,10 @@
    containing block spans the whole document — otherwise `height: 100%` caps
    body at one viewport and the sticky header (and side panes) un-stick once
    the page is scrolled past 100vh. */
-html { height: 100%; }
+html {
+  min-height: 100%;
+  background: var(--bg);
+}
 body { min-height: 100%; }
 
 body {
@@ -94,6 +97,7 @@ body {
     radial-gradient(1200px 600px at 12% -10%, rgba(91, 92, 224, 0.06), transparent 60%),
     radial-gradient(900px 500px at 100% 0%, rgba(124, 95, 229, 0.05), transparent 55%),
     var(--bg);
+  background-repeat: no-repeat;
   color: var(--text);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
@@ -2078,6 +2082,10 @@ legend {
 .settings-section {
   border-top: 1px solid var(--line);
   padding-top: var(--sp-4);
+}
+
+.settings-section + .settings-section {
+  margin-top: var(--sp-5);
 }
 
 .settings-section:first-of-type {

@@ -35,6 +35,9 @@
           </li>
         {% endfor %}
       </ul>
+      {% if results_truncated %}
+        <p class="truncated-hint muted small">{{ t('common.list_truncated', count=search_section_limit) }}</p>
+      {% endif %}
     {% else %}
       <div class="empty">
         <h2>找不到符合的內容</h2>

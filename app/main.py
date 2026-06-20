@@ -384,21 +384,25 @@ def global_search(
     q: str = "",
 ):
     """Search the current user's notebooks, sources, notes, and conversation titles."""
+    SEARCH_SECTION_LIMIT = 12
     query = " ".join((q or "").split())[:120]
     results: list[dict[str, str]] = []
+    results_truncated = False
     if query:
         like = f"%{sql_like_escape(query)}%"
         with connect() as conn:
-            for row in conn.execute(
+            rows = conn.execute(
                 """
                 SELECT id, title, description, emoji, updated_at
                 FROM notebooks
                 WHERE user_id = ? AND (title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
                 ORDER BY updated_at DESC
-                LIMIT 12
+                LIMIT ?
                 """,
-                (user["id"], like, like),
-            ).fetchall():
+                (user["id"], like, like, SEARCH_SECTION_LIMIT + 1),
+            ).fetchall()
+            results_truncated = results_truncated or len(rows) > SEARCH_SECTION_LIMIT
+            for row in rows[:SEARCH_SECTION_LIMIT]:
                 results.append({
                     "type": "筆記本",
                     "title": f"{row['emoji'] or '📓'} {row['title']}",
@@ -406,17 +410,19 @@ def global_search(
                     "url": f"/notebooks/{row['id']}",
                     "time": relative_time(row["updated_at"]),
                 })
-            for row in conn.execute(
+            rows = conn.execute(
                 """
                 SELECT s.id, s.notebook_id, s.filename, s.summary, s.updated_at, n.title AS notebook_title
                 FROM sources s JOIN notebooks n ON n.id = s.notebook_id
                 WHERE s.user_id = ? AND s.notebook_id IS NOT NULL
                   AND (s.filename LIKE ? ESCAPE '\\' OR s.summary LIKE ? ESCAPE '\\')
                 ORDER BY s.updated_at DESC
-                LIMIT 12
+                LIMIT ?
                 """,
-                (user["id"], like, like),
-            ).fetchall():
+                (user["id"], like, like, SEARCH_SECTION_LIMIT + 1),
+            ).fetchall()
+            results_truncated = results_truncated or len(rows) > SEARCH_SECTION_LIMIT
+            for row in rows[:SEARCH_SECTION_LIMIT]:
                 results.append({
                     "type": "來源",
                     "title": row["filename"],
@@ -424,17 +430,19 @@ def global_search(
                     "url": f"/notebooks/{row['notebook_id']}",
                     "time": relative_time(row["updated_at"]),
                 })
-            for row in conn.execute(
+            rows = conn.execute(
                 """
                 SELECT c.id, c.notebook_id, c.title, c.updated_at, n.title AS notebook_title,
                     (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id AND user_id = c.user_id) AS message_count
                 FROM conversations c JOIN notebooks n ON n.id = c.notebook_id
                 WHERE c.user_id = ? AND c.title LIKE ? ESCAPE '\\'
                 ORDER BY c.updated_at DESC
-                LIMIT 12
+                LIMIT ?
                 """,
-                (user["id"], like),
-            ).fetchall():
+                (user["id"], like, SEARCH_SECTION_LIMIT + 1),
+            ).fetchall()
+            results_truncated = results_truncated or len(rows) > SEARCH_SECTION_LIMIT
+            for row in rows[:SEARCH_SECTION_LIMIT]:
                 results.append({
                     "type": "對話",
                     "title": row["title"],
@@ -442,16 +450,18 @@ def global_search(
                     "url": f"/notebooks/{row['notebook_id']}?conversation_id={row['id']}",
                     "time": relative_time(row["updated_at"]),
                 })
-            for row in conn.execute(
+            rows = conn.execute(
                 """
                 SELECT notes.id, notes.notebook_id, notes.title, notes.content, notes.updated_at, notebooks.title AS notebook_title
                 FROM notes JOIN notebooks ON notebooks.id = notes.notebook_id
                 WHERE notes.user_id = ? AND (notes.title LIKE ? ESCAPE '\\' OR notes.content LIKE ? ESCAPE '\\')
                 ORDER BY notes.updated_at DESC
-                LIMIT 12
+                LIMIT ?
                 """,
-                (user["id"], like, like),
-            ).fetchall():
+                (user["id"], like, like, SEARCH_SECTION_LIMIT + 1),
+            ).fetchall()
+            results_truncated = results_truncated or len(rows) > SEARCH_SECTION_LIMIT
+            for row in rows[:SEARCH_SECTION_LIMIT]:
                 content = " ".join((row["content"] or "").split())
                 results.append({
                     "type": "筆記",
@@ -463,7 +473,13 @@ def global_search(
     return render(
         request,
         "search.html",
-        {"user": user, "query": query, "results": results},
+        {
+            "user": user,
+            "query": query,
+            "results": results,
+            "results_truncated": results_truncated,
+            "search_section_limit": SEARCH_SECTION_LIMIT,
+        },
     )
 
 
@@ -660,22 +676,32 @@ def cleanup_source_artifacts(source: dict) -> None:
 @app.get("/notebooks", response_class=HTMLResponse)
 def list_notebooks(request: Request, user: Annotated[dict, Depends(require_login)]):
     """Render the notebook grid for the current user."""
+    NOTEBOOKS_LIMIT = 100
     with connect() as conn:
-        notebooks = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT n.*,
-                    (SELECT COUNT(*) FROM sources WHERE notebook_id = n.id) AS source_count,
-                    (SELECT COUNT(*) FROM conversations WHERE notebook_id = n.id) AS conversation_count
-                FROM notebooks n
-                WHERE n.user_id = ?
-                ORDER BY n.updated_at DESC, n.id DESC
-                """,
-                (user["id"],),
-            ).fetchall()
-        ]
-    return render(request, "home.html", {"user": user, "notebooks": notebooks})
+        rows = conn.execute(
+            """
+            SELECT n.*,
+                (SELECT COUNT(*) FROM sources WHERE notebook_id = n.id) AS source_count,
+                (SELECT COUNT(*) FROM conversations WHERE notebook_id = n.id) AS conversation_count
+            FROM notebooks n
+            WHERE n.user_id = ?
+            ORDER BY n.updated_at DESC, n.id DESC
+            LIMIT ?
+            """,
+            (user["id"], NOTEBOOKS_LIMIT + 1),
+        ).fetchall()
+    notebooks_truncated = len(rows) > NOTEBOOKS_LIMIT
+    notebooks = [dict(row) for row in rows[:NOTEBOOKS_LIMIT]]
+    return render(
+        request,
+        "home.html",
+        {
+            "user": user,
+            "notebooks": notebooks,
+            "notebooks_truncated": notebooks_truncated,
+            "notebooks_limit": NOTEBOOKS_LIMIT,
+        },
+    )
 
 
 @app.post("/notebooks/new")

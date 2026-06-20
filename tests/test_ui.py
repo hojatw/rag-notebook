@@ -105,6 +105,57 @@ def test_notebook_forms_render_preset_emoji_picker(monkeypatch, tmp_path):
         assert "⚙️" in notebook.text
 
 
+def test_notebook_grid_caps_large_lists_with_hint(monkeypatch, tmp_path):
+    """M4: the notebook landing page should not render an unbounded grid silently."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+            for i in range(101):
+                conn.execute(
+                    "INSERT INTO notebooks (user_id, title, updated_at) VALUES (?, ?, datetime('now', ?))",
+                    (user["id"], f"Notebook {i:03d}", f"-{i} seconds"),
+                )
+
+        home = client.get("/notebooks")
+        assert home.status_code == 200
+        assert home.text.count('class="card notebook-card"') == 100
+        assert "Notebook 000" in home.text
+        assert "Notebook 100" not in home.text
+        assert "僅顯示最近 100 筆" in home.text
+
+
+def test_search_caps_each_result_section_with_hint(monkeypatch, tmp_path):
+    """M4: search should tell users when a per-type result cap hides older rows."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+            notebook_id = conn.execute(
+                "INSERT INTO notebooks (user_id, title) VALUES (?, 'Search container')",
+                (user["id"],),
+            ).lastrowid
+            for i in range(13):
+                conn.execute(
+                    """
+                    INSERT INTO notes (notebook_id, user_id, title, content, updated_at)
+                    VALUES (?, ?, ?, 'content', datetime('now', ?))
+                    """,
+                    (notebook_id, user["id"], f"needle note {i:02d}", f"-{i} seconds"),
+                )
+
+        resp = client.get("/search?q=needle")
+        assert resp.status_code == 200
+        assert resp.text.count('<span class="result-type">筆記</span>') == 12
+        assert "needle note 00" in resp.text
+        assert "needle note 12" not in resp.text
+        assert "僅顯示最近 12 筆" in resp.text
+
+
 def test_notebook_renders_mobile_workspace_switcher(monkeypatch, tmp_path):
     """U10: narrow viewports get a pane switcher with chat selected by default."""
     main, db = _fresh_app(monkeypatch, tmp_path)
