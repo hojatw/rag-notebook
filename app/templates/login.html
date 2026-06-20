@@ -8,6 +8,7 @@
   </div>
   {% if error %}<div class="alert">{{ error }}</div>{% endif %}
   <form method="post" action="/login" class="stack" data-loading-form>
+    {{ csrf_input() }}
     <label>
       帳號
       <input name="username" autocomplete="username" autofocus required>

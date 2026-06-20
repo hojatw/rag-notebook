@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import os
+import secrets
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -101,6 +102,11 @@ def serializer(secret: str) -> URLSafeSerializer:
     return URLSafeSerializer(secret, salt="notebooklm-rag-poc")
 
 
+def csrf_serializer(secret: str) -> URLSafeSerializer:
+    """Create the CSRF-token serializer for the given application secret."""
+    return URLSafeSerializer(secret, salt="notebooklm-rag-poc.csrf")
+
+
 def sign_user_id(user_id: int, secret: str) -> str:
     """Encode a user id into a tamper-resistant session cookie value."""
     return serializer(secret).dumps({"uid": user_id})
@@ -115,3 +121,19 @@ def unsign_user_id(value: str | None, secret: str) -> int | None:
         return int(data["uid"])
     except (BadSignature, KeyError, TypeError, ValueError):
         return None
+
+
+def new_csrf_token(secret: str) -> str:
+    """Return a signed, random CSRF token suitable for a double-submit cookie."""
+    return csrf_serializer(secret).dumps({"nonce": secrets.token_urlsafe(32)})
+
+
+def valid_csrf_token(value: str | None, secret: str) -> bool:
+    """Return True when a CSRF token was signed by this application."""
+    if not value:
+        return False
+    try:
+        data = csrf_serializer(secret).loads(value)
+        return isinstance(data.get("nonce"), str) and bool(data["nonce"])
+    except (BadSignature, AttributeError, TypeError, ValueError):
+        return False

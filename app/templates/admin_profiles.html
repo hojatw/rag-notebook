@@ -34,6 +34,7 @@
             <a class="ghost small" href="/admin/evals/profiles/{{ prof.id }}/export">{{ t('prof.export') }}</a>
             {% if not prof.is_active %}
               <form method="post" action="/admin/evals/profiles/{{ prof.id }}/apply" data-confirm="{{ t('prof.apply_confirm') }}">
+                {{ csrf_input() }}
                 <button type="submit" class="small">{{ t('prof.apply') }}</button>
               </form>
             {% endif %}
@@ -43,6 +44,7 @@
               <span class="muted small">{{ t('prof.default_note') }}</span>
             {% else %}
               <form method="post" action="/admin/evals/profiles/{{ prof.id }}/delete" data-confirm="{{ t('prof.delete_confirm') }}">
+                {{ csrf_input() }}
                 <button type="submit" class="danger small">{{ t('common.delete') }}</button>
               </form>
             {% endif %}
@@ -54,6 +56,7 @@
     <details class="profile-create">
       <summary>{{ t('prof.create') }}</summary>
       <form method="post" action="/admin/evals/profiles" class="stacked-form">
+        {{ csrf_input() }}
         <label>
           {{ t('common.name') }}
           <input name="name" maxlength="120" placeholder="{{ t('prof.name_ph') }}" required>

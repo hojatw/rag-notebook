@@ -29,6 +29,7 @@
                   x-data="{ pinned: {{ 'true' if message.id in pinned_message_ids else 'false' }} }"
                   @htmx:after-request="if ($event.detail.successful) pinned = true"
                   @pin-cleared.window="if ($event.detail.message_id === {{ message.id }}) pinned = false">
+              {{ csrf_input() }}
               <input type="hidden" name="message_id" value="{{ message.id }}">
               <button type="submit"
                       class="ghost small pin-btn"

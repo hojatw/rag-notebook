@@ -32,6 +32,8 @@ eval_sets ─< eval_items
           └─< eval_runs ─< eval_results
 retrieval_profiles ─< eval_runs
 users ─< audit_events (actor_user_id SET NULL)
+users/notebooks/conversations/messages/sources/eval_* ─< llm_usage_events (all SET NULL)
+users/notebooks/conversations/messages/sources/eval_* ─< ai_safety_events (all SET NULL)
 ```
 
 Every user-owned table carries `user_id` so authorization is enforced per-row at the route layer (defence in depth alongside the notebook FK).
@@ -66,6 +68,61 @@ Global LLM/embedding configuration. **Exactly one row** (`CHECK (id = 1)`).
 | `timeout_seconds` | REAL DEFAULT 60 | |
 | `embedding_query_prefix` | TEXT DEFAULT `''` | e.g. `query: ` for e5; blank for OpenAI |
 | `embedding_passage_prefix` | TEXT DEFAULT `''` | e.g. `passage: ` for e5 |
+
+## `llm_usage_events`
+High-volume AI governance telemetry for LLM and embedding calls (G1a/G1b). This table is intentionally separate from `audit_events`: usage events are frequent, report-oriented, and must not copy prompts, source text, retrieved snippets, API keys, or model outputs. Context ids are nullable and use `ON DELETE SET NULL` so telemetry can remain useful after user data is deleted without preserving the deleted content.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `user_id` | INTEGER → `users(id)` SET NULL | user associated with the call, when known |
+| `notebook_id` | INTEGER → `notebooks(id)` SET NULL | notebook associated with the call, when known |
+| `conversation_id` | INTEGER → `conversations(id)` SET NULL | chat conversation, when known |
+| `message_id` | INTEGER → `messages(id)` SET NULL | message associated with the call, when known |
+| `source_id` | INTEGER → `sources(id)` SET NULL | source associated with ingest/source-summary/tool calls, when known |
+| `eval_run_id` | INTEGER → `eval_runs(id)` SET NULL | eval run associated with retrieval calls, when known |
+| `eval_set_id` | INTEGER → `eval_sets(id)` SET NULL | eval set associated with authoring/run calls, when known |
+| `call_type` | TEXT NOT NULL | e.g. `answer`, `answer_stream`, `query_rewrite`, `embedding_query`, `embedding_passage`, `rerank`, `source_summary`, `briefing`, `compare`, `meeting_minutes`, `starter_questions`, `followups`, `eval_authoring`, `artifact_*`, `translate_summary` |
+| `provider` / `model` | TEXT NOT NULL DEFAULT `''` | provider and chat/embedding model or deployment |
+| `status` | TEXT NOT NULL DEFAULT `'succeeded'` | `succeeded` or `failed` |
+| `latency_ms` | REAL NOT NULL DEFAULT 0 | end-to-end provider call latency |
+| `prompt_tokens` / `completion_tokens` / `total_tokens` | INTEGER | normalized provider-reported usage when available, otherwise estimates |
+| `input_chars` / `output_chars` | INTEGER NOT NULL DEFAULT 0 | character counts used for fallback estimates and sanity checks |
+| `is_estimated` | INTEGER NOT NULL DEFAULT 1 | 0 = provider usage was present; 1 = char/4 estimate |
+| `error_class` | TEXT NOT NULL DEFAULT `''` | compact exception class for failed calls |
+| `metadata_json` | TEXT NOT NULL DEFAULT `'{}'` | compact scalar metadata only (e.g. text count, role, temperature, retry count, stream usage flags); prompt/source/output/API-key style keys are dropped |
+| `created_at` | TEXT | |
+
+Indexes: `idx_llm_usage_events_created`, `idx_llm_usage_events_call_created`, `idx_llm_usage_events_user_created`, `idx_llm_usage_events_notebook_created`, `idx_llm_usage_events_eval_run_created`.
+
+Usage normalization accepts OpenAI-compatible / Azure-style `prompt_tokens`, `completion_tokens`, and `total_tokens`, common `input_tokens` / `output_tokens`, camelCase token-count fields, and nested `usage`, `token_usage`, or `tokens` objects. Streaming chat requests ask providers for usage; if an endpoint rejects `stream_options` before any output is emitted, the call is retried without stream usage and the row remains estimated.
+
+## `ai_safety_events`
+High-volume AI safety / guardrail telemetry for local scanner findings (G1c). This table is separate from both `audit_events` and `llm_usage_events`: it records review signals such as input length, invisible/control text, likely secrets, and prompt-injection-style phrases without copying raw prompts, source text, model output, retrieved snippets, or API keys. Context ids are nullable and use `ON DELETE SET NULL`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `user_id` | INTEGER → `users(id)` SET NULL | user associated with the scanned input, when known |
+| `notebook_id` | INTEGER → `notebooks(id)` SET NULL | notebook associated with the scanned input, when known |
+| `conversation_id` | INTEGER → `conversations(id)` SET NULL | conversation associated with chat input, when known |
+| `message_id` | INTEGER → `messages(id)` SET NULL | message associated with the event, when known |
+| `source_id` | INTEGER → `sources(id)` SET NULL | source associated with the input, when known |
+| `eval_run_id` | INTEGER → `eval_runs(id)` SET NULL | eval run associated with the input, when known |
+| `eval_set_id` | INTEGER → `eval_sets(id)` SET NULL | eval set associated with eval-authoring input, when known |
+| `event_type` | TEXT NOT NULL | e.g. `input_scan` |
+| `surface` | TEXT NOT NULL DEFAULT `''` | route/workflow surface such as `chat.ask_stream`, `tool.compare_focus`, `eval_authoring.manual_question` |
+| `category` | TEXT NOT NULL | `input_length`, `invisible_or_control_text`, `secret_or_credential`, `prompt_injection` |
+| `severity` | TEXT NOT NULL | `medium` or `high` in the local rules MVP |
+| `decision` | TEXT NOT NULL | `warn` or `block_candidate`; the MVP records signals but does not block the user flow |
+| `detector_version` | TEXT NOT NULL DEFAULT `''` | local detector version, currently `local.rules.v1` |
+| `rule_id` | TEXT NOT NULL DEFAULT `''` | stable local rule id |
+| `content_hash` | TEXT NOT NULL DEFAULT `''` | SHA-256 of the scanned input for correlation without storing content |
+| `redacted_summary` | TEXT NOT NULL DEFAULT `''` | short non-sensitive explanation |
+| `metadata_json` | TEXT NOT NULL DEFAULT `'{}'` | compact scalar metadata only; prompt/source/output/API-key style keys are dropped |
+| `created_at` | TEXT | |
+
+Indexes: `idx_ai_safety_events_created`, `idx_ai_safety_events_category_created`, `idx_ai_safety_events_user_created`, `idx_ai_safety_events_notebook_created`.
 
 ## `notebooks`
 A workspace owned by a user. Holds cached Studio outputs.

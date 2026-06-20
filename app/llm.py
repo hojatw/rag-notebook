@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from .config import config
+from .governance import normalize_usage, record_llm_usage_event
 
 
 SYSTEM_PROMPT = """You are a source-grounded RAG assistant.
@@ -261,6 +262,7 @@ async def _post_json_with_retry(
     timeout: float,
     *,
     max_attempts: int = LLM_RETRY_MAX_ATTEMPTS,
+    retry_stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """POST JSON and return the decoded body, retrying transient failures.
 
@@ -272,18 +274,27 @@ async def _post_json_with_retry(
     attempt = 0
     while True:
         attempt += 1
+        if retry_stats is not None:
+            retry_stats["attempts"] = attempt
         try:
             response = await client.post(url, headers=headers, json=payload, timeout=timeout)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as exc:
+            if retry_stats is not None:
+                retry_stats["last_error_class"] = exc.__class__.__name__
+                retry_stats["last_status_code"] = exc.response.status_code
             if exc.response.status_code not in LLM_RETRYABLE_STATUS or attempt >= max_attempts:
                 raise
-        except httpx.RequestError:
+        except httpx.RequestError as exc:
             # Covers connect/read/write/pool timeouts and transport/network errors.
+            if retry_stats is not None:
+                retry_stats["last_error_class"] = exc.__class__.__name__
             if attempt >= max_attempts:
                 raise
         delay = LLM_RETRY_BACKOFF_BASE_S * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25)
+        if retry_stats is not None:
+            retry_stats["retry_count"] = int(retry_stats.get("retry_count") or 0) + 1
         logger.warning(
             "llm_http_retry attempt=%s/%s delay_ms=%.0f url=%s",
             attempt, max_attempts, delay * 1000, url,
@@ -337,6 +348,7 @@ async def embed_texts(
     settings: dict[str, Any],
     *,
     role: str | None = None,
+    usage_context: dict[str, Any] | None = None,
 ) -> list[list[float]]:
     """Embed texts using the configured embedding API.
 
@@ -364,7 +376,7 @@ async def embed_texts(
     if not batches:
         return []
     if len(batches) == 1:
-        return await embed_text_batch(batches[0], settings)
+        return await embed_text_batch(batches[0], settings, role=role, usage_context=usage_context)
 
     # Run batches with bounded concurrency instead of one-at-a-time, so a large
     # ingest isn't dominated by serial round-trips to the embedding endpoint.
@@ -374,7 +386,7 @@ async def embed_texts(
 
     async def _run(batch: list[str]) -> list[list[float]]:
         async with semaphore:
-            return await embed_text_batch(batch, settings)
+            return await embed_text_batch(batch, settings, role=role, usage_context=usage_context)
 
     results = await asyncio.gather(*(_run(batch) for batch in batches))
     embeddings: list[list[float]] = []
@@ -394,14 +406,43 @@ async def probe_embedding_dimension(settings: dict[str, Any]) -> int:
     return len(vectors[0]) if vectors else 0
 
 
-async def embed_text_batch(texts: list[str], settings: dict[str, Any]) -> list[list[float]]:
+async def embed_text_batch(
+    texts: list[str],
+    settings: dict[str, Any],
+    *,
+    role: str | None = None,
+    usage_context: dict[str, Any] | None = None,
+) -> list[list[float]]:
     """Embed one bounded batch through the configured embedding API."""
     request = build_embedding_request(settings, texts)
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
+    input_chars = sum(len(text) for text in texts)
+    call_type = f"embedding_{role}" if role in {"query", "passage"} else "embedding"
+    retry_stats: dict[str, Any] = {}
     try:
-        data = await _post_json_with_retry(request["url"], request["headers"], request["json"], timeout)
-    except Exception:
+        data = await _post_json_with_retry(
+            request["url"],
+            request["headers"],
+            request["json"],
+            timeout,
+            retry_stats=retry_stats,
+        )
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        _record_usage_event(
+            settings=settings,
+            call_type=call_type,
+            status="failed",
+            latency_ms=elapsed_ms,
+            input_chars=input_chars,
+            output_chars=0,
+            usage=None,
+            usage_context=usage_context,
+            error_class=exc.__class__.__name__,
+            metadata=_usage_metadata({"text_count": len(texts), "role": role or ""}, retry_stats),
+            model_key="embedding_model",
+        )
         logger.exception(
             "embedding_api_failed provider=%s model=%s text_count=%s",
             settings.get("provider") or "openai_compatible",
@@ -410,6 +451,18 @@ async def embed_text_batch(texts: list[str], settings: dict[str, Any]) -> list[l
         )
         raise
     elapsed_ms = (time.perf_counter() - started) * 1000
+    _record_usage_event(
+        settings=settings,
+        call_type=call_type,
+        status="succeeded",
+        latency_ms=elapsed_ms,
+        input_chars=input_chars,
+        output_chars=0,
+        usage=data.get("usage"),
+        usage_context=usage_context,
+        metadata=_usage_metadata({"text_count": len(texts), "role": role or ""}, retry_stats),
+        model_key="embedding_model",
+    )
     logger.info(
         "embedding_api_completed provider=%s model=%s batch_text_count=%s elapsed_ms=%.1f",
         settings.get("provider") or "openai_compatible",
@@ -420,22 +473,46 @@ async def embed_text_batch(texts: list[str], settings: dict[str, Any]) -> list[l
     return [item["embedding"] for item in data["data"]]
 
 
-async def generate_answer(question: str, chunks: list[dict[str, Any]], settings: dict[str, Any]) -> str:
+async def generate_answer(
+    question: str,
+    chunks: list[dict[str, Any]],
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+) -> str:
     """Ask the configured chat model to answer from retrieved chunks only."""
     if not settings.get("api_key") or not settings.get("chat_model"):
         raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
 
     logger.info("answer_generation_started chunks=%s question_chars=%s", len(chunks), len(question))
-    return await chat_completion(settings, answer_prompt(question, chunks), SYSTEM_PROMPT)
+    return await chat_completion(
+        settings,
+        answer_prompt(question, chunks),
+        SYSTEM_PROMPT,
+        call_type="answer",
+        usage_context=usage_context,
+    )
 
 
-async def generate_answer_stream(question: str, chunks: list[dict[str, Any]], settings: dict[str, Any]):
+async def generate_answer_stream(
+    question: str,
+    chunks: list[dict[str, Any]],
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+):
     """Stream answer text from the configured chat model."""
     if not settings.get("api_key") or not settings.get("chat_model"):
         raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
 
     logger.info("answer_stream_started chunks=%s question_chars=%s", len(chunks), len(question))
-    async for chunk in chat_completion_stream(settings, answer_prompt(question, chunks), SYSTEM_PROMPT):
+    async for chunk in chat_completion_stream(
+        settings,
+        answer_prompt(question, chunks),
+        SYSTEM_PROMPT,
+        call_type="answer_stream",
+        usage_context=usage_context,
+    ):
         yield chunk
 
 
@@ -448,7 +525,13 @@ def answer_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
     return f"Source excerpts:\n{context}\n\nQuestion: {question}"
 
 
-async def rewrite_search_queries(question: str, history: list[dict[str, str]], settings: dict[str, Any]) -> list[str]:
+async def rewrite_search_queries(
+    question: str,
+    history: list[dict[str, str]],
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+) -> list[str]:
     """Ask the chat model for retrieval-focused query rewrites."""
     if not settings.get("api_key") or not settings.get("chat_model"):
         logger.info("query_rewrite_skipped reason=no_chat_settings")
@@ -461,7 +544,14 @@ async def rewrite_search_queries(question: str, history: list[dict[str, str]], s
         "Return retrieval queries as JSON."
     )
     try:
-        content = await chat_completion(settings, user_prompt, QUERY_REWRITE_PROMPT, temperature=0.0)
+        content = await chat_completion(
+            settings,
+            user_prompt,
+            QUERY_REWRITE_PROMPT,
+            temperature=0.0,
+            call_type="query_rewrite",
+            usage_context=usage_context,
+        )
         queries = parse_json_strings(content)
     except Exception:
         logger.exception("query_rewrite_failed question_chars=%s history_messages=%s", len(question), len(history))
@@ -478,6 +568,7 @@ async def rerank_chunks(
     limit: int = 6,
     rerank_weight: float | None = None,
     rerank_base_weight: float | None = None,
+    usage_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Ask the chat model to rerank candidate chunks, falling back to hybrid scores.
 
@@ -503,7 +594,14 @@ async def rerank_chunks(
     )
     user_prompt = f"Question:\n{question}\n\nCandidates:\n{excerpts}"
     try:
-        content = await chat_completion(settings, user_prompt, RERANK_PROMPT, temperature=0.0)
+        content = await chat_completion(
+            settings,
+            user_prompt,
+            RERANK_PROMPT,
+            temperature=0.0,
+            call_type="rerank",
+            usage_context=usage_context,
+        )
         scores = parse_rerank_scores(content)
     except Exception:
         logger.exception("rerank_failed candidates=%s", len(candidates))
@@ -525,7 +623,12 @@ async def rerank_chunks(
     return reranked
 
 
-async def generate_starter_questions(excerpts: list[dict[str, Any]], settings: dict[str, Any]) -> list[str]:
+async def generate_starter_questions(
+    excerpts: list[dict[str, Any]],
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+) -> list[str]:
     """Ask the chat model for 4 short starter questions grounded in sample excerpts."""
     if not excerpts:
         return []
@@ -539,7 +642,14 @@ async def generate_starter_questions(excerpts: list[dict[str, Any]], settings: d
     )
     user_prompt = f"Source excerpts:\n{context}\n\nReturn the JSON array now."
     try:
-        content = await chat_completion(settings, user_prompt, STARTER_QUESTIONS_PROMPT, temperature=0.6)
+        content = await chat_completion(
+            settings,
+            user_prompt,
+            STARTER_QUESTIONS_PROMPT,
+            temperature=0.6,
+            call_type="starter_questions",
+            usage_context=usage_context,
+        )
         questions = parse_json_strings(content)
     except Exception:
         logger.exception("starter_questions_failed excerpts=%s", len(samples))
@@ -555,6 +665,7 @@ async def generate_eval_candidates(
     count: int = 5,
     item_types: list[str] | None = None,
     target_language: str = "Traditional Chinese",
+    usage_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Ask the chat model for draft eval items from selected source excerpts."""
     if not excerpts:
@@ -587,7 +698,14 @@ async def generate_eval_candidates(
         "Return the JSON array now."
     )
     try:
-        content = await chat_completion(settings, user_prompt, EVAL_AUTHORING_PROMPT, temperature=0.4)
+        content = await chat_completion(
+            settings,
+            user_prompt,
+            EVAL_AUTHORING_PROMPT,
+            temperature=0.4,
+            call_type="eval_authoring",
+            usage_context=usage_context,
+        )
         candidates = parse_eval_candidates(content)
     except Exception:
         logger.exception("eval_candidates_failed excerpts=%s count=%s", len(samples), count)
@@ -607,6 +725,7 @@ async def suggest_followup_questions(
     answer: str,
     settings: dict[str, Any],
     source_context: list[str] | None = None,
+    usage_context: dict[str, Any] | None = None,
 ) -> list[str]:
     """Suggest up to 3 follow-up questions for the latest answered QA pair (A2)."""
     if not question.strip() or not answer.strip():
@@ -628,7 +747,14 @@ async def suggest_followup_questions(
         "Return the JSON array now."
     )
     try:
-        content = await chat_completion(settings, user_prompt, FOLLOWUP_QUESTIONS_PROMPT, temperature=0.6)
+        content = await chat_completion(
+            settings,
+            user_prompt,
+            FOLLOWUP_QUESTIONS_PROMPT,
+            temperature=0.6,
+            call_type="followups",
+            usage_context=usage_context,
+        )
         questions = parse_json_strings(content)
     except Exception:
         logger.exception("followups_failed")
@@ -673,7 +799,12 @@ def detect_dominant_language(text: str) -> str:
 MEETING_MINUTES_CONTEXT_CHARS = 16000
 
 
-async def generate_meeting_minutes(chunks: list[dict[str, Any]], settings: dict[str, Any]) -> str:
+async def generate_meeting_minutes(
+    chunks: list[dict[str, Any]],
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+) -> str:
     """Turn one source's chunks (a transcript) into structured minutes (A1).
 
     Returns an empty string on missing settings or upstream failure — the
@@ -694,7 +825,14 @@ async def generate_meeting_minutes(chunks: list[dict[str, Any]], settings: dict[
         used += len(text)
     user_prompt = f"Transcript:\n{'\n\n'.join(parts)}\n\nWrite the minutes now."
     try:
-        minutes = await chat_completion(settings, user_prompt, MEETING_MINUTES_PROMPT, temperature=0.3)
+        minutes = await chat_completion(
+            settings,
+            user_prompt,
+            MEETING_MINUTES_PROMPT,
+            temperature=0.3,
+            call_type="meeting_minutes",
+            usage_context=usage_context,
+        )
     except Exception:
         logger.exception("meeting_minutes_failed chunks=%s", len(chunks))
         return ""
@@ -702,7 +840,12 @@ async def generate_meeting_minutes(chunks: list[dict[str, Any]], settings: dict[
     return minutes.strip()
 
 
-async def summarize_source(chunks: list[dict[str, Any]], settings: dict[str, Any]) -> str:
+async def summarize_source(
+    chunks: list[dict[str, Any]],
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+) -> str:
     """Generate a 2-4 sentence summary of one source from its first chunks.
 
     Returns an empty string on missing settings or upstream failure — the
@@ -721,7 +864,14 @@ async def summarize_source(chunks: list[dict[str, Any]], settings: dict[str, Any
     )
     user_prompt = f"Source excerpts:\n{context}\n\nWrite the summary now."
     try:
-        content = await chat_completion(settings, user_prompt, SOURCE_SUMMARY_PROMPT, temperature=0.3)
+        content = await chat_completion(
+            settings,
+            user_prompt,
+            SOURCE_SUMMARY_PROMPT,
+            temperature=0.3,
+            call_type="source_summary",
+            usage_context=usage_context,
+        )
     except Exception:
         logger.exception("source_summary_failed chunks=%s", len(samples))
         return ""
@@ -730,7 +880,12 @@ async def summarize_source(chunks: list[dict[str, Any]], settings: dict[str, Any
     return summary
 
 
-async def generate_briefing(summaries: list[dict[str, Any]], settings: dict[str, Any]) -> str:
+async def generate_briefing(
+    summaries: list[dict[str, Any]],
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+) -> str:
     """Synthesize a one-paragraph briefing across multiple source summaries.
 
     Each item should look like ``{"filename": str, "summary": str}``. Sources
@@ -749,7 +904,14 @@ async def generate_briefing(summaries: list[dict[str, Any]], settings: dict[str,
     )
     user_prompt = f"Source summaries:\n{context}\n\nWrite the briefing now."
     try:
-        content = await chat_completion(settings, user_prompt, NOTEBOOK_BRIEFING_PROMPT, temperature=0.4)
+        content = await chat_completion(
+            settings,
+            user_prompt,
+            NOTEBOOK_BRIEFING_PROMPT,
+            temperature=0.4,
+            call_type="briefing",
+            usage_context=usage_context,
+        )
     except Exception:
         logger.exception("briefing_failed summaries=%s", len(items))
         return ""
@@ -762,6 +924,8 @@ async def compare_sources(
     summaries: list[dict[str, Any]],
     focus: str,
     settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
 ) -> str:
     """Compare 2+ sources by their summaries.
 
@@ -783,7 +947,14 @@ async def compare_sources(
     focus_line = f"Focus: {focus.strip()}\n\n" if (focus or "").strip() else ""
     user_prompt = f"{focus_line}Sources to compare:\n{context}\n\nWrite the comparison now."
     try:
-        content = await chat_completion(settings, user_prompt, SOURCE_COMPARE_PROMPT, temperature=0.3)
+        content = await chat_completion(
+            settings,
+            user_prompt,
+            SOURCE_COMPARE_PROMPT,
+            temperature=0.3,
+            call_type="compare",
+            usage_context=usage_context,
+        )
     except Exception:
         logger.exception("compare_failed summaries=%s focus_chars=%s", len(items), len(focus or ""))
         return ""
@@ -796,6 +967,8 @@ async def generate_artifact(
     kind: str,
     summaries: list[dict[str, Any]],
     settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
 ) -> str:
     """Generate an A4 artifact (study guide / FAQ / timeline) from source summaries.
 
@@ -820,7 +993,14 @@ async def generate_artifact(
     )
     user_prompt = f"Source summaries:\n{context}\n\nWrite the {label.replace('_', ' ')} now."
     try:
-        content = await chat_completion(settings, user_prompt, prompt, temperature=temperature)
+        content = await chat_completion(
+            settings,
+            user_prompt,
+            prompt,
+            temperature=temperature,
+            call_type=f"artifact_{label}",
+            usage_context=usage_context,
+        )
     except Exception:
         logger.exception("artifact_failed kind=%s summaries=%s", label, len(items))
         return ""
@@ -829,7 +1009,13 @@ async def generate_artifact(
     return artifact
 
 
-async def translate_summary(text: str, target_language: str, settings: dict[str, Any]) -> str:
+async def translate_summary(
+    text: str,
+    target_language: str,
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+) -> str:
     """Translate a source summary into ``target_language`` (A5).
 
     Returns an empty string on empty input, missing settings, or upstream
@@ -843,7 +1029,14 @@ async def translate_summary(text: str, target_language: str, settings: dict[str,
         return ""
     user_prompt = f"TARGET LANGUAGE: {target_language}\n\nSummary to translate:\n{text}\n\nWrite the translation now."
     try:
-        content = await chat_completion(settings, user_prompt, TRANSLATE_SUMMARY_PROMPT, temperature=0.2)
+        content = await chat_completion(
+            settings,
+            user_prompt,
+            TRANSLATE_SUMMARY_PROMPT,
+            temperature=0.2,
+            call_type="translate_summary",
+            usage_context=usage_context,
+        )
     except Exception:
         logger.exception("translate_failed target_language=%s chars=%s", target_language, len(text))
         return ""
@@ -857,14 +1050,40 @@ async def chat_completion(
     user_prompt: str,
     system_prompt: str,
     temperature: float | None = None,
+    *,
+    call_type: str = "chat_completion",
+    usage_context: dict[str, Any] | None = None,
 ) -> str:
     """Call the configured chat completion endpoint and return message text."""
     request = build_chat_request(settings, user_prompt, system_prompt, temperature)
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
+    input_chars = len(system_prompt) + len(user_prompt)
+    retry_stats: dict[str, Any] = {}
     try:
-        data = await _post_json_with_retry(request["url"], request["headers"], request["json"], timeout)
-    except Exception:
+        data = await _post_json_with_retry(
+            request["url"],
+            request["headers"],
+            request["json"],
+            timeout,
+            retry_stats=retry_stats,
+        )
+        content = data["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        _record_usage_event(
+            settings=settings,
+            call_type=call_type,
+            status="failed",
+            latency_ms=elapsed_ms,
+            input_chars=input_chars,
+            output_chars=0,
+            usage=None,
+            usage_context=usage_context,
+            error_class=exc.__class__.__name__,
+            metadata=_usage_metadata({"temperature": request["json"].get("temperature")}, retry_stats),
+            model_key="chat_model",
+        )
         logger.exception(
             "chat_completion_failed provider=%s model=%s prompt_chars=%s",
             settings.get("provider") or "openai_compatible",
@@ -872,8 +1091,19 @@ async def chat_completion(
             len(user_prompt),
         )
         raise
-    content = data["choices"][0]["message"]["content"].strip()
     elapsed_ms = (time.perf_counter() - started) * 1000
+    _record_usage_event(
+        settings=settings,
+        call_type=call_type,
+        status="succeeded",
+        latency_ms=elapsed_ms,
+        input_chars=input_chars,
+        output_chars=len(content),
+        usage=data.get("usage"),
+        usage_context=usage_context,
+        metadata=_usage_metadata({"temperature": request["json"].get("temperature")}, retry_stats),
+        model_key="chat_model",
+    )
     # Token estimates are chars/4 — accurate enough for cost monitoring
     # without pulling in a tokenizer dependency. Used by the per-message
     # cost badge in the chat UI.
@@ -895,50 +1125,148 @@ async def chat_completion_stream(
     user_prompt: str,
     system_prompt: str,
     temperature: float | None = None,
+    *,
+    call_type: str = "chat_stream",
+    usage_context: dict[str, Any] | None = None,
 ):
     """Stream message text from an OpenAI-compatible chat completion endpoint."""
     request = build_chat_request(settings, user_prompt, system_prompt, temperature)
     request["json"]["stream"] = True
+    request["json"]["stream_options"] = {"include_usage": True}
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
+    input_chars = len(system_prompt) + len(user_prompt)
     chars = 0
+    usage: dict[str, Any] | None = None
+    retry_stats: dict[str, Any] = {}
+    stream_usage_requested = True
+    stream_usage_fallback = False
     client = get_http_client()
-    try:
-        async with client.stream(
-            "POST",
-            request["url"],
-            headers=request["headers"],
-            json=request["json"],
-            timeout=timeout,
-        ) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                payload = line.removeprefix("data:").strip()
-                if not payload or payload == "[DONE]":
-                    continue
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    logger.warning("chat_stream_bad_json payload_chars=%s", len(payload))
-                    continue
-                choices = data.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta", {}).get("content") or ""
-                if delta:
-                    chars += len(delta)
-                    yield delta
-    except Exception:
-        logger.exception(
-            "chat_stream_failed provider=%s model=%s prompt_chars=%s",
-            settings.get("provider") or "openai_compatible",
-            settings.get("chat_model"),
-            len(user_prompt),
+    attempt = 0
+    while True:
+        attempt += 1
+        retry_stats["attempts"] = attempt
+        chars_at_attempt_start = chars
+        try:
+            async with client.stream(
+                "POST",
+                request["url"],
+                headers=request["headers"],
+                json=request["json"],
+                timeout=timeout,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line.removeprefix("data:").strip()
+                    if not payload or payload == "[DONE]":
+                        continue
+                    try:
+                        data = json.loads(payload)
+                    except json.JSONDecodeError:
+                        logger.warning("chat_stream_bad_json payload_chars=%s", len(payload))
+                        continue
+                    if isinstance(data.get("usage"), dict):
+                        usage = data["usage"]
+                    choices = data.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {}).get("content") or ""
+                    if delta:
+                        chars += len(delta)
+                        yield delta
+            break
+        except httpx.HTTPStatusError as exc:
+            retry_stats["last_error_class"] = exc.__class__.__name__
+            retry_stats["last_status_code"] = exc.response.status_code
+            can_retry_without_duplicate_output = chars == chars_at_attempt_start
+            if (
+                stream_usage_requested
+                and can_retry_without_duplicate_output
+                and exc.response.status_code in {400, 422}
+            ):
+                request["json"].pop("stream_options", None)
+                stream_usage_requested = False
+                stream_usage_fallback = True
+                retry_stats["retry_count"] = int(retry_stats.get("retry_count") or 0) + 1
+                logger.warning("chat_stream_usage_option_rejected status=%s retrying_without_usage", exc.response.status_code)
+                continue
+            if not can_retry_without_duplicate_output or exc.response.status_code not in LLM_RETRYABLE_STATUS or attempt >= LLM_RETRY_MAX_ATTEMPTS:
+                _record_stream_usage_failure(
+                    settings=settings,
+                    call_type=call_type,
+                    started=started,
+                    input_chars=input_chars,
+                    chars=chars,
+                    usage_context=usage_context,
+                    error_class=exc.__class__.__name__,
+                    request=request,
+                    retry_stats=retry_stats,
+                    stream_usage_requested=stream_usage_requested,
+                    stream_usage_fallback=stream_usage_fallback,
+                )
+                raise
+        except httpx.RequestError as exc:
+            retry_stats["last_error_class"] = exc.__class__.__name__
+            can_retry_without_duplicate_output = chars == chars_at_attempt_start
+            if not can_retry_without_duplicate_output or attempt >= LLM_RETRY_MAX_ATTEMPTS:
+                _record_stream_usage_failure(
+                    settings=settings,
+                    call_type=call_type,
+                    started=started,
+                    input_chars=input_chars,
+                    chars=chars,
+                    usage_context=usage_context,
+                    error_class=exc.__class__.__name__,
+                    request=request,
+                    retry_stats=retry_stats,
+                    stream_usage_requested=stream_usage_requested,
+                    stream_usage_fallback=stream_usage_fallback,
+                )
+                raise
+        except Exception as exc:
+            retry_stats["last_error_class"] = exc.__class__.__name__
+            _record_stream_usage_failure(
+                settings=settings,
+                call_type=call_type,
+                started=started,
+                input_chars=input_chars,
+                chars=chars,
+                usage_context=usage_context,
+                error_class=exc.__class__.__name__,
+                request=request,
+                retry_stats=retry_stats,
+                stream_usage_requested=stream_usage_requested,
+                stream_usage_fallback=stream_usage_fallback,
+            )
+            raise
+        retry_stats["retry_count"] = int(retry_stats.get("retry_count") or 0) + 1
+        delay = LLM_RETRY_BACKOFF_BASE_S * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25)
+        logger.warning(
+            "chat_stream_retry attempt=%s/%s delay_ms=%.0f url=%s",
+            attempt, LLM_RETRY_MAX_ATTEMPTS, delay * 1000, request["url"],
         )
-        raise
+        await asyncio.sleep(delay)
     elapsed_ms = (time.perf_counter() - started) * 1000
+    _record_usage_event(
+        settings=settings,
+        call_type=call_type,
+        status="succeeded",
+        latency_ms=elapsed_ms,
+        input_chars=input_chars,
+        output_chars=chars,
+        usage=usage,
+        usage_context=usage_context,
+        metadata=_stream_usage_metadata(
+            request=request,
+            retry_stats=retry_stats,
+            stream_usage_requested=stream_usage_requested,
+            stream_usage_fallback=stream_usage_fallback,
+            usage=usage,
+        ),
+        model_key="chat_model",
+    )
     logger.info(
         "chat_stream_completed provider=%s model=%s prompt_chars=%s response_chars=%s elapsed_ms=%.1f",
         settings.get("provider") or "openai_compatible",
@@ -946,6 +1274,113 @@ async def chat_completion_stream(
         len(user_prompt),
         chars,
         elapsed_ms,
+    )
+
+
+def _record_stream_usage_failure(
+    *,
+    settings: dict[str, Any],
+    call_type: str,
+    started: float,
+    input_chars: int,
+    chars: int,
+    usage_context: dict[str, Any] | None,
+    error_class: str,
+    request: dict[str, Any],
+    retry_stats: dict[str, Any],
+    stream_usage_requested: bool,
+    stream_usage_fallback: bool,
+) -> None:
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    _record_usage_event(
+        settings=settings,
+        call_type=call_type,
+        status="failed",
+        latency_ms=elapsed_ms,
+        input_chars=input_chars,
+        output_chars=chars,
+        usage=None,
+        usage_context=usage_context,
+        error_class=error_class,
+        metadata=_stream_usage_metadata(
+            request=request,
+            retry_stats=retry_stats,
+            stream_usage_requested=stream_usage_requested,
+            stream_usage_fallback=stream_usage_fallback,
+            usage=None,
+        ),
+        model_key="chat_model",
+    )
+    logger.exception(
+        "chat_stream_failed provider=%s model=%s prompt_chars=%s",
+        settings.get("provider") or "openai_compatible",
+        settings.get("chat_model"),
+        input_chars,
+    )
+
+
+def _usage_metadata(base: dict[str, Any], retry_stats: dict[str, Any] | None = None) -> dict[str, Any]:
+    metadata = dict(base)
+    attempts = int((retry_stats or {}).get("attempts") or 1)
+    retry_count = int((retry_stats or {}).get("retry_count") or max(0, attempts - 1))
+    metadata["attempts"] = attempts
+    metadata["retry_count"] = retry_count
+    status_code = (retry_stats or {}).get("last_status_code")
+    if status_code is not None:
+        metadata["last_status_code"] = status_code
+    last_error_class = (retry_stats or {}).get("last_error_class")
+    if last_error_class:
+        metadata["last_error_class"] = str(last_error_class)
+    return metadata
+
+
+def _stream_usage_metadata(
+    *,
+    request: dict[str, Any],
+    retry_stats: dict[str, Any],
+    stream_usage_requested: bool,
+    stream_usage_fallback: bool,
+    usage: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return _usage_metadata(
+        {
+            "stream": True,
+            "temperature": request["json"].get("temperature"),
+            "stream_usage_requested": stream_usage_requested,
+            "stream_usage_fallback": stream_usage_fallback,
+            "stream_usage_available": isinstance(usage, dict),
+        },
+        retry_stats,
+    )
+
+
+def _record_usage_event(
+    *,
+    settings: dict[str, Any],
+    call_type: str,
+    status: str,
+    latency_ms: float,
+    input_chars: int,
+    output_chars: int,
+    usage: dict[str, Any] | None,
+    usage_context: dict[str, Any] | None,
+    error_class: str = "",
+    metadata: dict[str, Any] | None = None,
+    model_key: str = "chat_model",
+) -> None:
+    provider = settings.get("provider") or "openai_compatible"
+    model = settings.get(model_key) or ""
+    normalized = normalize_usage(usage, input_chars=input_chars, output_chars=output_chars)
+    record_llm_usage_event(
+        call_type=call_type,
+        provider=provider,
+        model=model,
+        status=status,
+        latency_ms=latency_ms,
+        usage=normalized,
+        context=usage_context,
+        error_class=error_class,
+        metadata=metadata or {},
     )
 
 

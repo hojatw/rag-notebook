@@ -44,6 +44,11 @@ document.addEventListener("DOMContentLoaded", () => {
   initSourceScope();
 });
 
+document.body.addEventListener("htmx:configRequest", (event) => {
+  const token = csrfToken();
+  if (token) event.detail.headers["X-CSRF-Token"] = token;
+});
+
 document.addEventListener("htmx:afterSwap", (event) => {
   bindAll(event.target);
   restoreSourceScopeState();
@@ -98,10 +103,13 @@ function bindStreamingAskForms(root) {
       };
 
       try {
+        const headers = { "Accept": "text/event-stream" };
+        const token = csrfToken();
+        if (token) headers["X-CSRF-Token"] = token;
         const response = await fetch(form.dataset.streamUrl, {
           method: "POST",
           body: new FormData(form),
-          headers: { "Accept": "text/event-stream" },
+          headers,
         });
         if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
         await consumeEventStream(response.body, (eventName, data) => {
@@ -131,6 +139,11 @@ function bindStreamingAskForms(root) {
       }
     });
   });
+}
+
+function csrfToken() {
+  const meta = document.querySelector("meta[name='csrf-token']");
+  return meta ? meta.getAttribute("content") || "" : "";
 }
 
 function createStreamingMessage(messages, question) {

@@ -9,6 +9,7 @@
       hx-swap="outerHTML"
       x-data="{ saved: false }"
       @htmx:after-request="if ($event.detail.successful) saved = true">
+  {{ csrf_input() }}
   <input type="hidden" name="title" value="{{ note_title }}">
   <input type="hidden" name="content" value="{{ note_content }}">
   <button type="submit" class="ghost small"

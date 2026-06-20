@@ -5,6 +5,7 @@
       <p class="hint muted small">{{ t('evalr.items_hint') }}</p>
     </div>
     <form method="post" action="/admin/evals/sets/{{ eval_set.id }}/run" class="run-form" data-loading-form>
+      {{ csrf_input() }}
       {% if profiles %}
         <label class="run-profile-label">
           Profile
@@ -41,6 +42,7 @@
                       hx-post="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/approve"
                       hx-target="#eval-items"
                       hx-swap="outerHTML">
+                  {{ csrf_input() }}
                   <button type="submit" class="secondary small">{{ t('evalr.approve_btn') }}</button>
                 </form>
               {% endif %}
@@ -50,6 +52,7 @@
                     hx-post="/admin/evals/sets/{{ eval_set.id }}/items/{{ item.id }}/delete"
                     hx-target="#eval-items"
                     hx-swap="outerHTML">
+                {{ csrf_input() }}
                 <button type="submit" class="danger small">{{ t('common.delete') }}</button>
               </form>
             </div>

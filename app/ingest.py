@@ -558,6 +558,24 @@ def _split_long_sentence(sentence: str, target_chars: int) -> list[str]:
     return final
 
 
+def _section_kind(location: str) -> str:
+    """Classify extractor locations so unrelated section kinds do not merge."""
+    label = (location or "").lower()
+    if " table" in f" {label}" or label.startswith("table"):
+        return "table"
+    if "header" in label:
+        return "header"
+    if "footer" in label:
+        return "footer"
+    if "footnote" in label or "endnote" in label:
+        return "footnote"
+    if "text box" in label:
+        return "text_box"
+    if "transcript" in label:
+        return "transcript"
+    return "body"
+
+
 def _span_label(locations: list[str]) -> str:
     """Build a citation label for a chunk that may span several sections.
 
@@ -608,25 +626,33 @@ def chunk_sections(
         combined = "\n".join(text for _, text in normalized_sections)
         target_chars = CJK_TARGET_CHARS if is_mostly_cjk(combined) else LATIN_TARGET_CHARS
 
-    # Flatten to (location, sentence) units across all sections.
-    units: list[tuple[str, str]] = []
+    # Flatten to (location, sentence, section_kind) units across all sections.
+    units: list[tuple[str, str, str]] = []
     for location, text in normalized_sections:
+        kind = _section_kind(location)
         for sentence in split_sentences(text):
-            units.append((location, sentence))
+            units.append((location, sentence, kind))
     if not units:
         return []
 
     chunks: list[tuple[str, str]] = []
-    current: list[tuple[str, str]] = []  # (location, sentence)
+    current: list[tuple[str, str, str]] = []  # (location, sentence, section_kind)
     current_len = 0
 
     def flush() -> None:
         if current:
-            body = " ".join(sentence for _, sentence in current).strip()
+            body = " ".join(sentence for _, sentence, _ in current).strip()
             if body:
-                chunks.append((_span_label([loc for loc, _ in current]), body))
+                chunks.append((_span_label([loc for loc, _, _ in current]), body))
 
-    for location, sentence in units:
+    for location, sentence, kind in units:
+        if current and kind != current[-1][2]:
+            flush()
+            # Do not carry overlap across body/table/header/footer/etc.; it
+            # pollutes citations and can glue unrelated extractor regions.
+            current = []
+            current_len = 0
+
         if len(sentence) > target_chars:
             flush()
             # Carry-over does not apply across an over-long sentence — by
@@ -642,12 +668,18 @@ def chunk_sections(
             flush()
             if overlap_sentences > 0:
                 current = current[-overlap_sentences:]
-                current_len = sum(len(s) + 1 for _, s in current)
+                current_len = sum(len(s) + 1 for _, s, _ in current)
+                # If carrying overlap would make the next chunk exceed the
+                # target, drop the overlap. This keeps e5-sized CJK chunks from
+                # doubling up around dense boundary sentences.
+                if current and current_len + len(sentence) + 1 > target_chars:
+                    current = []
+                    current_len = 0
             else:
                 current = []
                 current_len = 0
 
-        current.append((location, sentence))
+        current.append((location, sentence, kind))
         current_len += len(sentence) + 1
 
     flush()
@@ -690,6 +722,7 @@ async def _generate_source_summary(source_id: int) -> None:
     """Generate and persist a per-source TL;DR. Failures are logged only."""
     try:
         with connect() as conn:
+            source = conn.execute("SELECT user_id, notebook_id FROM sources WHERE id = ?", (source_id,)).fetchone()
             chunk_rows = conn.execute(
                 "SELECT location, text FROM chunks WHERE source_id = ? ORDER BY chunk_index ASC LIMIT 12",
                 (source_id,),
@@ -698,7 +731,12 @@ async def _generate_source_summary(source_id: int) -> None:
         chunks = [dict(r) for r in chunk_rows]
         if not chunks:
             return
-        summary = await summarize_source(chunks, settings)
+        usage_context = {
+            "source_id": source_id,
+            "user_id": source["user_id"] if source else None,
+            "notebook_id": source["notebook_id"] if source else None,
+        }
+        summary = await summarize_source(chunks, settings, usage_context=usage_context)
         if not summary:
             return
         with connect() as conn:
@@ -747,7 +785,12 @@ async def process_source(source_id: int) -> None:
             len(sections),
             len(records),
         )
-        embeddings = await embed_texts([text for _, text in records], get_settings(), role="passage")
+        embeddings = await embed_texts(
+            [text for _, text in records],
+            get_settings(),
+            role="passage",
+            usage_context={"user_id": source["user_id"], "notebook_id": source["notebook_id"], "source_id": source_id},
+        )
         with connect() as conn:
             chunk_rows = [
                 (source["user_id"], source_id, index, location, text, dumps(embedding))

@@ -54,6 +54,7 @@
           @dragleave.prevent="leave"
           @drop.prevent="drop($event)"
           :class="{ 'is-dragover': over }">
+      {{ csrf_input() }}
       <label class="file-picker">
         <span class="file-picker-heading">新增來源</span>
         <input type="file"
@@ -117,6 +118,7 @@
             </button>
             <div id="conversation-menu" class="convo-menu" role="menu" x-show="open" style="display: none;">
               <form action="/notebooks/{{ notebook.id }}/chat/new" method="post" data-loading-form>
+                {{ csrf_input() }}
                 <button type="submit" class="ghost small wide" data-loading-text="建立中...">+ 新對話</button>
               </form>
               {% if conversation %}
@@ -124,6 +126,7 @@
                       method="post"
                       class="convo-rename-form"
                       data-loading-form>
+                  {{ csrf_input() }}
                   <label>
                     <span>重新命名對話</span>
                     <input name="title" value="{{ conversation.title }}" maxlength="80" required>
@@ -146,6 +149,7 @@
                       <form action="/notebooks/{{ notebook.id }}/chat/{{ item.id }}/delete" method="post"
                             data-confirm="刪除這個對話與其中所有訊息？"
                             class="convo-del">
+                        {{ csrf_input() }}
                         <button type="submit" class="ghost small danger-link" title="刪除對話" aria-label="刪除對話">×</button>
                       </form>
                     </li>
@@ -167,6 +171,7 @@
                   :class="{ 'is-open': open }">筆記本 ▾</button>
           <div id="notebook-menu" class="convo-menu notebook-menu-content" role="menu" x-show="open" style="display: none;">
             <form action="/notebooks/{{ notebook.id }}/rename" method="post" class="rename-form" data-loading-form>
+              {{ csrf_input() }}
               {% with emoji_value=notebook.emoji or "📓" %}
                 {% include "_emoji_picker.html" %}
               {% endwith %}
@@ -189,6 +194,7 @@
             </form>
             <hr>
             <form action="/notebooks/{{ notebook.id }}/delete" method="post" data-confirm="刪除這本筆記本？其中的來源、分塊、對話與筆記都會一併移除。">
+              {{ csrf_input() }}
               <button type="submit" class="ghost small danger-link wide">刪除筆記本</button>
             </form>
           </div>
@@ -206,6 +212,7 @@
        OOB-update it once the conversation exists. #}
     <form action="/notebooks/{{ notebook.id }}/chat/ask" method="post" class="ask-form" data-loading-form
           data-stream-url="/notebooks/{{ notebook.id }}/chat/ask-stream">
+      {{ csrf_input() }}
       <input type="hidden" id="conversation-id-field" name="conversation_id"
              value="{{ conversation.id if conversation else '' }}">
 

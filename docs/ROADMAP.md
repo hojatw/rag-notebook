@@ -1,10 +1,22 @@
-# Product roadmap — UX & AI features
+# Product roadmap
 
-UX improvements and new AI capabilities for the NotebookLM-style personal AI assistant, prioritised with effort and prerequisites. Same tick-off format as `PERFORMANCE.md` / `QUALITY.md`. Performance and retrieval-quality work stay in their own backlogs — this file is about **product surface**.
+Product-facing roadmap for the NotebookLM-style personal AI assistant: UX, admin workflows, Eval Workbench, AI governance, source-format support, and new AI-assisted surfaces. Same tick-off format as `PERFORMANCE.md` / `QUALITY.md`.
 
-**Capability constraint:** the inference side is borrowed and fixed (Gemma 4 31B chat + multilingual-e5-large embeddings — **chat + embedding only**). Features needing only chat completions are cheap; new extraction paths (web, OCR) are app-side work; new model capabilities (vision, speech) must be verified against the customer endpoint first.
+Performance and retrieval-quality engineering stay in their own backlogs (`PERFORMANCE.md`, `QUALITY.md`). Security policy and dependency triage stay in `SECURITY.md`. This file tracks the product/admin capability surface and points to those deeper references when needed.
+
+**Current target-deployment constraint:** the known customer inference side is borrowed and fixed (Gemma 4 31B chat + multilingual-e5-large embeddings — **chat + embedding only**). Features needing only chat completions are cheap; new extraction paths (web, PPTX, spreadsheets, OCR) are app-side work; new model capabilities (vision, speech) must be verified against the active customer endpoint first. `O1` adds admin capability probes so this assumption can be tested per deployment before enabling vision-dependent work.
 
 Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
+
+---
+
+## Recommended next round
+
+1. **Answer-quality loop:** implement `E1e-2` answer/citation judging together with `E2` notebook domain hints and answer policy, then validate changes through Eval Workbench comparisons.
+2. **Admin LLM operations:** implement `O1` Phase 1 first — separate chat/embedding tests and capability probes, including the optional image-understanding checkbox.
+3. **Format foundation:** implement `A6a` ingestion diagnostics before adding more source formats.
+4. **Source-format MVP path:** after `A6a`, prioritize `A6c` Q&A-style spreadsheets, then `A6` Web URL with SSRF guards, then `A6b` PPTX text-first ingestion.
+5. **Customer-driven later work:** keep `A9`/`A10`/`A11` low priority unless a customer requirement or verified serving capability changes the economics.
 
 ---
 
@@ -43,15 +55,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [ ] Phase 2 — unify Notes into an **outputs shelf** (type badges; all generators save here; inline edit = U8).
   - [ ] Phase 3 *(optional)* — tabbed or fully-collapsible Studio if the tile grid itself grows large.
 - **Note for new AI features:** A4/A5 and later generators should be implemented as **tools (tiles) writing to the outputs shelf**, not as new stacked cards.
-
-> **Design exploration — alternative Studio paradigms (beyond the NotebookLM tools+notes frame).** Recorded for future direction; not committed:
-> 1. **Chat-centric commands** — dissolve the Studio panel; expose generators as `/`-commands (or a `+` menu) in the chat input, results appear inline as rich, saveable message cards. The right pane shrinks to a pure outputs/clipboard shelf. Best declutter; fits HTMX/server-render.
-> 2. **Selection-driven inspector** — the right pane shows actions relevant to whatever is focused (a source → summarize/translate/minutes; an answer → follow-ups/pin; selected text → explain/find-related). Context-sensitive, not a static list.
-> 3. **Report/compose builder** — the pane becomes a document the user assembles from briefing + comparisons + pinned answers + minutes, then edits and exports. Output-centric; fits the research-report use case.
-> 4. **Proactive insights feed** — the app surfaces insights unprompted ("these 3 sources disagree on X", "new source contradicts a pinned note"); pull → push. Most "assistant"-like; higher LLM cost, needs eval.
-> 5. **Spatial canvas** — draggable cards (sources/artifacts/notes) on a freeform board for synthesis. Most divergent, but heavy and fights the no-build/no-CDN constraint — likely too heavy for the POC.
->
-> **Direction (future design reference only — NOT committed, NOT a decision).** For the "personal AI research assistant + produces research reports" positioning, a plausible long-term shape is: **near-term** — U16's tools-tiles + outputs-shelf as the base, *plus* folding in chat-centric `/`-commands (paradigm 1), since both declutter and fit the existing HTMX/server-render stack; **mid-term** — grow the outputs shelf toward a report/compose builder (paradigm 3), which best fits the long-report use case; **accent** — selectively adopt the selection-driven inspector (paradigm 2), e.g. highlight source text → explain; **far-term / data-gated** — proactive insights feed (paradigm 4) once compute headroom + an eval harness exist; spatial canvas (paradigm 5) stays out (violates no-build). These are directional notes to revisit, not scheduled work — only U16's checkboxes above are tracked items.
+- **Design reference:** broader Studio/reporting paradigms are kept in [`PRODUCT_DESIGN_NOTES.md`](PRODUCT_DESIGN_NOTES.md). Only the checkboxes above are scheduled `U16` work.
 
 ### Medium priority
 
@@ -100,7 +104,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 #### [ ] U17 · Meaningful "focus" for source comparison (deferred feature)
 - The compare tool used to expose a **聚焦重點 (focus)** free-text input. The value *was* passed to the prompt (`Focus: …` + "prioritise points relevant to it"), but because the comparison runs on each source's thin 2–4-sentence **summary**, the focus had little material to differentiate and the output barely changed — so the input was **removed from the UI** to avoid implying an effect it can't deliver. `POST /compare` still accepts an (empty) `focus` param, so re-enabling is a template-only change.
-- **To make it meaningful when revisited:** on a non-empty focus, retrieve the **focus-relevant chunks** from each selected source (a small per-source retrieval) and compare on those instead of the summaries. Heavier (an extra retrieval step) but gives the focus real material to work with. Measure against a representative set first.
+- **Future direction: topic-focused source comparison.** Re-introduce focus as a **topic** field, not a cosmetic prompt hint. On a non-empty topic, run a small source-scoped retrieval for each selected source, collect the topic-relevant chunks from each source, then compare on those chunks instead of the thin source summaries. The report should show Shared / Distinct / Contradictions plus which sources had weak or no topic evidence. This fits the current vector RAG design; the key change is using per-source retrieval before comparison. Measure against a representative set first.
+- **Later extension:** section-focused comparison can follow once ingestion preserves stronger section metadata (DOCX/HTML headings, PPTX slide titles, PDF page ranges, spreadsheet sheet/table names). Until then, topic retrieval is the safer v1.
 
 ---
 
@@ -122,11 +127,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] E1c — **Done.** Profile comparison + apply/rollback landed. A runtime active-params layer (`ACTIVE_RETRIEVAL_PARAMS` in `app/main.py`) now backs the retrieval path: admins author candidate profiles (7 runtime-safe params), run an eval set against any profile via an isolated per-run override (the runner applies the run's frozen snapshot, not live config), compare two succeeded runs of the same set (param diff + metric diff + per-question improved/regressed), then **apply** a profile to live chat retrieval (persisted via `retrieval_profiles.is_active`, reloaded on startup) or **roll back** by applying a previous profile. Index-affecting profiles (`requires_reindex = 1`) are refused at apply. Routes: `/admin/evals/profiles` (create/delete/apply), `/admin/evals/compare`.
   - [x] E1d — **Done.** Export + audit foundation landed. Retrieval profiles can be exported as sanitized JSON, eval runs can be exported as sanitized JSON (no questions/evidence/retrieved snippets) or full internal JSON (questions, expected evidence, diagnostics, retrieved snippets) gated by explicit confirmation. A durable `audit_events` table and `/admin/audit` viewer now record export events plus high-risk admin actions: retrieval profile create/apply/delete/export, LLM settings updates, index Clear/Rebuild, user-management changes, and notebook/source/chat/note lifecycle or Markdown-export actions.
   - [x] E1e-1 — **Done.** LLM-assisted eval authoring landed as a draft-only flow: admins can generate candidate questions from selected indexed sources, request answerable / cross-lingual / unanswerable item types, review item type, reference answer, expected substrings, and source/chunk grounding, then approve manually. Generated metadata records compact origin/model/prompt-version/source ids without copying prompts or source text. The deterministic chunk-based generator remains available as a no-LLM fallback.
-  - [ ] E1e-2 — Answer-quality and citation judging: optionally generate an answer during eval runs and score answer quality, groundedness, citation correctness, and abstain correctness as secondary metrics. Keep these metrics separate from retrieval-only Recall/MRR, and include full judging detail only in full internal exports.
+  - [ ] E1e-2 — **High priority for answer quality.** Answer-quality and citation judging: optionally generate an answer during eval runs and score answer quality, groundedness, citation correctness, and abstain correctness as secondary metrics. Keep these metrics separate from retrieval-only Recall/MRR, and include full judging detail only in full internal exports.
   - [x] E1f — **Done.** Eval tuning guide landed as `/admin/evals/help` and as a first-class tab in the Eval workbench. It converts the internal tuning PDF/discussion into HTML covering: when to tune parameters vs fix Eval items, symptom -> likely cause -> parameter guidance, profile experiment workflow, starter profiles, non-runtime-safe changes that require reindex, and the role of future domain hints / answer policy. The PDF remains optional/shareable, but the product source of truth is now HTML so labels stay aligned with the live profile UI.
-- **Recommended next implementation round:** do **E1e-2** if the team wants answer-level judging costs and judge reliability tradeoffs. Further audit expansion should wait for customer requirements, e.g. explicit read-access audit for source preview/result viewing. Defer index-affecting parameter application until there is a clear Clear/Rebuild UX.
+- **Recommended next implementation round:** prioritize **E1e-2** together with **E2** because they directly improve and measure answer quality. Further audit expansion should wait for customer requirements, e.g. explicit read-access audit for source preview/result viewing. Defer index-affecting parameter application until there is a clear Clear/Rebuild UX.
 
-#### [ ] E2 · Notebook domain hints and answer policy
+#### [ ] E2 · Notebook domain hints and answer policy — high priority for answer quality
 - **Issue:** Some "inaccurate" answers are not fixed by retrieval-weight tuning alone. Domain-specific aliases, abbreviations, internal product names, and deployment-specific answer rules may need to be available at the notebook level so query rewrite can find the right evidence and final answers follow the customer's rules.
 - **Target model:** each notebook can carry bounded, structured **domain hints** (term/synonyms/definition/query expansion/answer note) plus a concise **answer policy**. Hints improve retrieval/query rewrite; policy controls final answer behavior. Neither should become an unbounded extra knowledge base.
 - **Guardrails:**
@@ -161,9 +166,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - Treat safety detections as review signals, not perfect truth. Keep detector version, rule version, category, severity, and decision so future audits can explain why something was allowed, warned, blocked, or redacted.
   - Keep customer data-residency constraints explicit: external moderation or gateway services are optional integration points, not baseline assumptions.
 - **Phase 1 — low-cost in-app foundation (no new gateway required):**
-  - [ ] G1a — Add `llm_usage_events` and record per-call telemetry for rewrite, embedding, rerank, answer, summaries/artifacts, follow-ups, and eval runs. Store user/notebook/conversation/message ids where available, provider/model, call type, prompt/output token counts or estimates, latency, status, and error class.
-  - [ ] G1b — Normalize provider `usage` responses when present; retain `is_estimated` for char/token estimates so reports do not imply billing precision that the endpoint did not provide.
-  - [ ] G1c — Add `ai_safety_events` plus a first local rules engine: input length limits, invisible/control text checks, obvious secret patterns, simple prompt-injection phrases, and deployment-specific deny/allow lists. Record redacted summary/hash, not raw sensitive content.
+  - [x] G1a — Add `llm_usage_events` and record per-call telemetry for rewrite, embedding, rerank, answer, summaries/artifacts, follow-ups, and eval runs. Store user/notebook/conversation/message ids where available, provider/model, call type, prompt/output token counts or estimates, latency, status, and error class. **Backend complete:** schema + sanitized recorder + core call-site instrumentation record compact usage events for chat completions, streaming answers, embeddings, query rewrite, rerank, starter/follow-up questions, source summaries, briefing/compare/artifacts/meeting-minutes/translation, and eval authoring/runs. Answer usage is backfilled with the saved assistant `message_id` when available, and retry/failure metadata is stored as compact scalar metadata.
+  - [x] G1b — Normalize provider `usage` responses when present; retain `is_estimated` for char/token estimates so reports do not imply billing precision that the endpoint did not provide. **Backend complete:** OpenAI-compatible/Azure-style `prompt_tokens` / `completion_tokens` / `total_tokens`, common `input_tokens` / `output_tokens`, camelCase/gateway token-count fields, and nested `usage` / `token_usage` / `tokens` shapes normalize into `llm_usage_events`. Streaming chat requests ask for provider usage and safely retry without `stream_options` if the endpoint rejects it; missing usage falls back to char/4 estimates marked `is_estimated=1`.
+  - [~] G1c — Add `ai_safety_events` plus a first local rules engine: input length limits, invisible/control text checks, obvious secret patterns, simple prompt-injection phrases, and deployment-specific deny/allow lists. Record redacted summary/hash, not raw sensitive content. **Backend MVP landed:** schema + sanitized recorder + local rules (`local.rules.v1`) now record findings for chat questions, streaming chat questions, compare focus text, eval authoring target language, and manual eval questions. The MVP records `warn` / `block_candidate` review signals without blocking user workflows. Remaining full-scope work: deployment-specific deny/allow configuration, broader surfaces/output scanning, and dashboard/reporting in G1d/G1e.
   - [ ] G1d — Add an admin governance dashboard and report surface with tabs for LLM usage, safety events, high-sensitivity exports, and settings/profile changes. Start with aggregate tables and filters before charts: daily usage, user/notebook/function breakdown, estimated/provider token totals, latency/error rates, eval-run cost summary, safety-event counts by category/severity/decision, and high-sensitivity action summaries.
   - [ ] G1e — Add governance report export and retention policy: CSV/JSON exports for usage and safety summaries first, optionally PDF later. Summarized usage can be retained longer; raw safety context should be short-lived or redacted, with full-content lookup going through existing message permissions.
 - **Phase 2 — productized governance integrations:**
@@ -172,6 +177,29 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [ ] G1h — Evaluate LLM Guard for input/output scanners such as prompt injection, secrets, toxicity, invisible text, token limits, and malicious URLs.
   - [ ] G1i — Evaluate NeMo Guardrails when policy flows need input, retrieval, dialog, execution, and output rails rather than only scanner-style detection.
   - [ ] G1j — Add connector abstraction so external guardrail/gateway decisions still write the same `ai_safety_events` / `llm_usage_events` records and remain auditable in the in-app governance dashboard.
+
+---
+
+## Admin operations
+
+### Medium priority — safer LLM configuration and deployment flexibility
+
+#### [ ] O1 · Admin-only LLM settings diagnostics and profiles
+- **Issue:** The current `/settings` page stores one global LLM configuration (`llm_settings`, `id = 1`). It probes embedding dimension on save, but admins cannot test chat connectivity separately, keep multiple candidate configurations, or switch between known-good endpoints safely.
+- **Target model:** only admins manage LLM settings. Do not expose LLM profile selection or editing to normal users in this phase. Admins can test, save, compare, and activate configurations while the app protects existing indexes from incompatible embedding changes.
+- **Phase 1 — diagnostics before profile management:**
+  - [ ] O1a — Add "Test chat model" and "Test embedding model" actions on `/settings`, with separate status, latency, provider/model/deployment summary, embedding dimension, and last-tested timestamp. Test results should avoid storing raw prompts/outputs; audit/governance metadata should keep compact status/error-class details only.
+  - [ ] O1b — Add a capability probe section for optional model features: streaming support, provider usage reporting, JSON-following sanity check, and multimodal/vision support. The settings test UI should include an admin-controlled checkbox such as "also test image understanding"; it is off by default, and when checked sends a tiny built-in test image to the chat endpoint. Record capability/status only, without enabling A9 automatically.
+- **Phase 2 — multiple profiles + safe activation:**
+  - [ ] O1c — Replace the single global settings row with admin-managed LLM profiles: name, provider, base URLs, encrypted API key, chat model, embedding model/prefixes, temperature, timeout, last test status, and active flag. Migrate the existing `llm_settings` row into the default active profile.
+  - [ ] O1d — Add safe profile activation rules. Chat-only changes can activate directly after a successful chat test. Embedding-affecting changes (model/base URL/prefix/dimension) must be blocked or strongly gated when the existing Chroma index dimension/config is incompatible, with clear Clear/Rebuild or reindex guidance.
+- **Future phase — task-specific routing:**
+  - [ ] O1e — Allow admins to assign different profiles to answer generation, embeddings, eval judging, eval authoring, source summaries, Studio artifacts, and low-cost follow-up/starter questions. Keep this out of the MVP until global profile switching is stable.
+- **Guardrails:**
+  - Keep all profile management admin-only.
+  - Never expose stored API keys back to the browser.
+  - Record profile create/update/test/activate/delete actions in audit metadata without storing secrets, prompts, outputs, or full endpoint payloads.
+  - Treat multimodal probing as capability detection only; PPTX/image understanding still depends on A8/A9 roadmap items and customer need.
 
 ---
 
@@ -199,8 +227,26 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ### Tier 2 — new extraction paths (app-side, no inference change)
 
+**Recommended implementation order:** start with `A6a` diagnostics so every later format can explain extraction quality; then ship `A6c` Q&A-style spreadsheets; then add `A6` Web URL with SSRF protection; then `A6b` PPTX Phase 1 text-first ingestion. `A8` OCR and `A6b` Phase 2 visual extraction should follow only when the extraction diagnostics and model/OCR capability are ready. `A9` vision remains customer-driven.
+
+#### [ ] A6a · Ingestion diagnostics for source quality
+- **What:** show what the app actually extracted before/after indexing: extracted character count, section/page/table counts when available, chunk count, OCR/fallback flags, warnings, failure reason, and a small extracted-text preview. This should be visible from the source row / preview drawer and included in admin troubleshooting surfaces.
+- **Why first:** adding Web URL, PPTX, XLSX/CSV, and OCR support increases the chance of "indexed but useless" sources. Diagnostics make format support trustworthy and give users/admins a way to distinguish extraction failure from retrieval/answer failure.
+- **Guardrails:** do not duplicate full source text into audit/governance logs; keep diagnostics scoped to the owning user's source and avoid exposing extracted snippets outside normal source permissions.
+
 #### [ ] A6 · Web page as a source
 - Paste URL → server-side fetch → readability extraction (`beautifulsoup4` already a dep) → existing chunk/embed pipeline. **Must add SSRF guards (block private IPs) and respect the customer's egress policy.**
+- **SSRF guardrail for implementation:** only allow `http`/`https`; resolve DNS and block loopback/private/link-local/multicast/reserved IP ranges; re-check every redirect target; cap redirects, response size, and request timeout; restrict accepted content types; optionally support deployment allow/block lists; record URL/status/diagnostics without copying full fetched content into audit/governance logs.
+
+#### [ ] A6b · PowerPoint decks as sources (.pptx)
+- **Phase 1 — text-first ingestion:** extract slide titles, body text, tables, and speaker notes into slide-scoped sections (`slide N`, `slide N notes`, `slide N table K`) that flow through the existing chunk/embed pipeline. Keep slide order and location labels stable so citations can point back to a specific slide. Visual-only slide content should be surfaced in ingestion diagnostics as unsupported visual content.
+- **Phase 2 — image understanding after OCR / vision support:** only revisit embedded images, screenshots, diagrams, and visual-only slides after A8 OCR and/or A9 vision support is available. OCR can extract text from screenshots; a vision-capable model is needed for chart/diagram/photo semantics. The resulting text should be stored as explicit sections such as `slide N image K OCR text` or `slide N image K visual description`, with diagnostics showing which method was used.
+- **MVP guardrail:** do not block Phase 1 on image understanding; ship text-first PPTX support first, then add Phase 2 only when the required OCR/vision capability exists or a customer explicitly needs it.
+
+#### [ ] A6c · Spreadsheet sources (.xlsx / .csv)
+- Extract workbook/sheet metadata, detected header rows, bounded row groups, and compact table summaries into sheet/table-scoped sections. Chunk rows as structured records rather than flattening entire sheets into one blob; preserve sheet name, row range, and column names in chunk metadata/location.
+- **MVP priority:** implement Q&A-style sheets first (`question` + `answer`, optional category/tags/keywords) because they are naturally aligned with RAG and require no numeric recomputation. Treat each Q&A pair as the minimum semantic unit.
+- **MVP guardrail:** enforce row/column/file-size limits, skip or warn on formula-heavy/hidden/very wide sheets, and show a preview in ingestion diagnostics so users can see how tabular data was interpreted. Keep implementation details in [`SPREADSHEET_INGESTION.md`](SPREADSHEET_INGESTION.md).
 
 #### [x] A7 · Subtitle files as sources (.srt / .vtt)
 - **Done.** `_extract_subtitles` (`app/ingest.py`) strips cue indices, timestamp lines, the WebVTT header + NOTE/STYLE/REGION blocks, and inline VTT tags, and collapses rolling-caption repeats — leaving the spoken text as one `transcript` section that flows through the existing chunk/embed pipeline. `.srt`/`.vtt` added to `ALLOWED_EXTENSIONS` + the upload accept list. No new deps. Pairs naturally with A1 meeting minutes. Verified end-to-end (upload → indexed → clean transcript chunk).
@@ -208,13 +254,13 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [ ] A8 · OCR for scanned PDFs / images
 - `pytesseract` + tesseract in the Docker image (`chi_tra` model for Traditional Chinese). Decades-old scanned research reports are likely in the customer corpus — high practical value, no LLM dependency.
 
-### Tier 3 — verify infrastructure first
+### Tier 3 — low priority / customer-driven only
 
 #### [ ] A9 · Image understanding (vision QA)
-- **Blocked on:** whether the customer's Gemma 4 31B deployment accepts image input on `/v1/chat/completions`. If yes: image upload → vision description → description text joins RAG. If no: A8 OCR is the fallback.
+- **Low priority unless a customer explicitly needs it.** Blocked on whether the customer's Gemma 4 31B deployment accepts image input on `/v1/chat/completions`. If yes: image upload → vision description → description text joins RAG. If no: A8 OCR is the fallback.
 
 #### [ ] A10 · Audio transcription (meeting recordings)
-- Needs a Whisper-class endpoint (customer serving has none). Local CPU whisper is slow. Mitigate with A7 (accept transcripts) until infrastructure exists.
+- **Low priority unless a customer explicitly needs it.** Needs a Whisper-class endpoint (customer serving has none). Local CPU whisper is slow. Mitigate with A7 (accept transcripts) until infrastructure exists.
 
 #### [ ] A11 · Audio overview / TTS, mind map
-- TTS not available on the serving side; mind map needs a self-hosted render lib (markmap/mermaid — no-CDN rule). Nice-to-haves, not this phase.
+- **Low priority unless a customer explicitly needs it.** TTS not available on the serving side; mind map needs a self-hosted render lib (markmap/mermaid — no-CDN rule). Nice-to-haves, not this phase.

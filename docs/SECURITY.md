@@ -26,13 +26,11 @@ The app keeps a DB-backed admin audit trail in `audit_events`, viewable at `/adm
 
 Audit metadata is intentionally compact: store action identifiers, target ids, flags, and parameter summaries only. Do **not** copy API keys, source text, retrieved snippets, prompts, or full exported payloads into `audit_events`; the audit trail should prove that an action happened, not duplicate sensitive content.
 
-## Known hardening follow-ups
+## Hardening status
 
-These are deliberately deferred for the POC and tracked in `../README.md` / `../AGENTS.md`. Address them before any untrusted-network exposure:
+No currently known application-level hardening item is intentionally deferred here. Keep treating the app as a POC and re-audit before any untrusted-network exposure.
 
-- No CSRF protection on POST routes.
-
-(Resolved: streaming responses, LLM/embedding HTTP retry/backoff, and worker-backed ingest — a DB-backed queue (`app/jobs.py`) with a dedicated/inline worker — are now implemented. See `docs/PERFORMANCE.md`.)
+(Resolved: CSRF protection on unsafe routes, streaming responses, LLM/embedding HTTP retry/backoff, and worker-backed ingest — a DB-backed queue (`app/jobs.py`) with a dedicated/inline worker — are now implemented. See `docs/PERFORMANCE.md`.)
 
 ## Triaged dependency-audit findings
 

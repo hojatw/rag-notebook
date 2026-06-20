@@ -230,6 +230,36 @@ def test_chunk_sections_labels_span_first_to_last():
     assert "–" in first_label  # "page 1 paragraph 1 – page 1 paragraph N"
 
 
+def test_chunk_sections_flushes_when_section_kind_changes():
+    body = "這是正文段落，應該跟下一段正文合併。" * 4
+    table = "Table:\n欄位 | 數值\nA | 123\nB | 456"
+    sections = [
+        ("page 1 paragraph 1", body),
+        ("page 1 table 1", table),
+        ("page 1 paragraph 2", body),
+    ]
+
+    out = chunk_sections(sections, target_chars=400, overlap_sentences=1)
+
+    assert len(out) == 3
+    assert out[0][0] == "page 1 paragraph 1"
+    assert out[1][0] == "page 1 table 1"
+    assert out[2][0] == "page 1 paragraph 2"
+    assert "Table:" not in out[0][1]
+    assert "Table:" in out[1][1]
+
+
+def test_chunk_sections_drops_overlap_when_it_would_exceed_target():
+    sentence_a = "甲" * 399 + "。"
+    sentence_b = "乙" * 399 + "。"
+    out = chunk_sections([("document", sentence_a + sentence_b)], target_chars=400, overlap_sentences=1)
+
+    assert len(out) == 2
+    assert all(len(body) <= 400 for _, body in out)
+    assert out[0][1] == sentence_a
+    assert out[1][1] == sentence_b
+
+
 def test_chunk_sections_single_contributor_keeps_plain_label():
     # A lone section long enough to split into several chunks: every chunk must
     # keep that section's own label (never a span), since nothing else merged in.

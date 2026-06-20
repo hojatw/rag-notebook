@@ -8,6 +8,7 @@
   </header>
   {% if saved %}<div class="notice">設定已儲存。</div>{% endif %}
   <form method="post" action="/settings" class="settings-grid" data-loading-form>
+    {{ csrf_input() }}
     <section class="settings-section">
       <h2>連線</h2>
       <label>

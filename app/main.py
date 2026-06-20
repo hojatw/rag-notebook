@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import os
 import re
@@ -11,15 +12,18 @@ import time
 import uuid
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
+from markupsafe import Markup, escape
 
 from .config import config
 from .db import UPLOAD_DIR, connect, dumps, encrypt_for_storage, init_db, load_llm_settings, load_llm_settings_for_display, loads
+from .governance import record_ai_safety_events
 from .ingest import supported
 from .jobs import enqueue_source
 from .worker import run_worker_loop
@@ -27,7 +31,7 @@ from . import i18n
 import httpx
 
 from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_eval_candidates, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
-from .security import INSECURE_DEV_SECRET, get_app_secret, hash_password, sign_user_id, unsign_user_id, verify_password
+from .security import INSECURE_DEV_SECRET, get_app_secret, hash_password, new_csrf_token, sign_user_id, unsign_user_id, valid_csrf_token, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
 from .vector_store import delete_source as delete_source_vectors
@@ -47,6 +51,11 @@ LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 # `uvicorn app.main:app` ingests as before; set to 0 in deployments that run a
 # dedicated `python -m app.worker` to keep ingest off the web process.
 INLINE_WORKER = os.environ.get("NOTEBOOKLM_INLINE_WORKER", "1").strip().lower() in {"1", "true", "yes", "on"}
+CSRF_COOKIE_NAME = "csrf_token"
+CSRF_FORM_FIELD = "csrf_token"
+CSRF_HEADER_NAME = "x-csrf-token"
+CSRF_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
+CSRF_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def configure_logging() -> None:
@@ -144,6 +153,90 @@ templates.env.globals["run_status_labels"] = i18n.RUN_STATUS_LABELS
 templates.env.globals["eval_result_status_labels"] = i18n.EVAL_RESULT_STATUS_LABELS
 
 
+def csrf_token_for_request(request: Request) -> str:
+    """Return the signed CSRF token for this request, creating one if needed."""
+    token = getattr(request.state, "csrf_token", None)
+    if token:
+        return token
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+    token = cookie_token if valid_csrf_token(cookie_token, SECRET) else new_csrf_token(SECRET)
+    request.state.csrf_token = token
+    return token
+
+
+@pass_context
+def csrf_input(context) -> Markup:
+    """Render the hidden CSRF field used by non-JavaScript form submits."""
+    request = context.get("request")
+    token = csrf_token_for_request(request) if request is not None else ""
+    return Markup(
+        f'<input type="hidden" name="{CSRF_FORM_FIELD}" value="{escape(token)}">'
+    )
+
+
+templates.env.globals["csrf_input"] = csrf_input
+
+
+def _csrf_response_token(request: Request) -> str:
+    """Return the token that should be persisted to the CSRF cookie."""
+    return csrf_token_for_request(request)
+
+
+def _set_csrf_cookie(request: Request, response: Response) -> None:
+    response.set_cookie(
+        CSRF_COOKIE_NAME,
+        _csrf_response_token(request),
+        max_age=CSRF_COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
+
+
+async def _submitted_csrf_token(request: Request) -> str | None:
+    token = request.headers.get(CSRF_HEADER_NAME)
+    if token:
+        return token
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type == "application/x-www-form-urlencoded":
+        body = await request.body()
+        values = parse_qs(body.decode("utf-8", errors="ignore"), keep_blank_values=True)
+        token_values = values.get(CSRF_FORM_FIELD)
+        return token_values[0] if token_values else None
+    if content_type == "multipart/form-data":
+        body = await request.body()
+        match = re.search(
+            rb'name="' + re.escape(CSRF_FORM_FIELD.encode("ascii")) + rb'"\r?\n\r?\n([^\r\n]+)',
+            body,
+        )
+        if match:
+            return match.group(1).decode("ascii", errors="ignore")
+    return None
+
+
+@app.middleware("http")
+async def csrf_protection(request: Request, call_next):
+    """Reject unsafe requests unless they carry the page's signed CSRF token."""
+    if request.method.upper() in CSRF_UNSAFE_METHODS:
+        cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+        submitted_token = await _submitted_csrf_token(request)
+        valid = (
+            valid_csrf_token(cookie_token, SECRET)
+            and submitted_token is not None
+            and hmac.compare_digest(cookie_token, submitted_token)
+        )
+        if not valid:
+            logger.warning("csrf_rejected method=%s path=%s", request.method, request.url.path)
+            return HTMLResponse("CSRF token invalid", status_code=403)
+        request.state.csrf_token = cookie_token
+    else:
+        csrf_token_for_request(request)
+
+    response = await call_next(request)
+    _set_csrf_cookie(request, response)
+    return response
+
+
 @app.middleware("http")
 async def request_logger(request: Request, call_next):
     """Log each HTTP request with status and elapsed time."""
@@ -202,7 +295,12 @@ def render(request: Request, name: str, context: dict, status_code: int = 200) -
     return templates.TemplateResponse(
         request,
         name,
-        {"request": request, "followups_cache_version": FOLLOWUPS_CACHE_VERSION, **context},
+        {
+            "request": request,
+            "csrf_token": csrf_token_for_request(request),
+            "followups_cache_version": FOLLOWUPS_CACHE_VERSION,
+            **context,
+        },
         status_code=status_code,
     )
 
@@ -470,6 +568,14 @@ def _release_briefing_lock(notebook_id: int) -> None:
         conn.execute("DELETE FROM briefing_locks WHERE notebook_id = ?", (notebook_id,))
 
 
+def _sqlite_utc_timestamp(value: str) -> datetime:
+    """Parse SQLite CURRENT_TIMESTAMP strings as timezone-aware UTC datetimes."""
+    dt = datetime.fromisoformat(value.replace(" ", "T"))
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _cached_suggestions(notebook: dict) -> list[str]:
     """Return cached suggestions if within TTL, else empty list."""
     raw = (notebook.get("suggestions_json") or "").strip()
@@ -477,8 +583,8 @@ def _cached_suggestions(notebook: dict) -> list[str]:
     if not raw or not saved_at:
         return []
     try:
-        cutoff = datetime.utcnow() - timedelta(hours=SUGGESTIONS_TTL_HOURS)
-        if datetime.fromisoformat(saved_at.replace(" ", "T")) > cutoff:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=SUGGESTIONS_TTL_HOURS)
+        if _sqlite_utc_timestamp(saved_at) > cutoff:
             return loads(raw)
     except Exception:
         pass
@@ -492,8 +598,8 @@ def _cached_briefing(notebook: dict) -> str:
     if not raw or not saved_at:
         return ""
     try:
-        cutoff = datetime.utcnow() - timedelta(hours=BRIEFING_TTL_HOURS)
-        if datetime.fromisoformat(saved_at.replace(" ", "T")) > cutoff:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=BRIEFING_TTL_HOURS)
+        if _sqlite_utc_timestamp(saved_at) > cutoff:
             return raw
     except Exception:
         pass
@@ -1042,7 +1148,11 @@ async def notebook_suggestions(
         error = i18n.t("flow.suggestions_no_llm")
     else:
         try:
-            questions = await generate_starter_questions(excerpts, settings or {})
+            questions = await generate_starter_questions(
+                excerpts,
+                settings or {},
+                usage_context={"user_id": user["id"], "notebook_id": notebook_id},
+            )
             if not questions:
                 error = i18n.t("flow.suggestions_empty")
         except Exception as exc:
@@ -1201,7 +1311,11 @@ async def notebook_briefing(
             error = i18n.t("flow.briefing_no_llm")
         else:
             try:
-                briefing = await generate_briefing(summaries, settings)
+                briefing = await generate_briefing(
+                    summaries,
+                    settings,
+                    usage_context={"user_id": user["id"], "notebook_id": notebook_id},
+                )
                 if not briefing:
                     error = i18n.t("flow.briefing_empty")
             except Exception as exc:
@@ -1233,6 +1347,14 @@ async def notebook_compare(
 ):
     """Compare 2+ indexed sources using their summaries; returns a result fragment."""
     selected_ids = [sid for sid in source_ids if isinstance(sid, int)]
+    if focus.strip():
+        record_ai_safety_events(
+            text=focus,
+            event_type="input_scan",
+            surface="tool.compare_focus",
+            context={"user_id": user["id"], "notebook_id": notebook_id},
+            metadata={"source_count": len(selected_ids)},
+        )
     if len(selected_ids) < 2:
         return render(
             request,
@@ -1281,7 +1403,12 @@ async def notebook_compare(
     error = ""
     comparison = ""
     try:
-        comparison = await compare_sources(summaries, focus, settings)
+        comparison = await compare_sources(
+            summaries,
+            focus,
+            settings,
+            usage_context={"user_id": user["id"], "notebook_id": notebook_id},
+        )
         if not comparison:
             error = i18n.t("flow.compare_empty")
     except Exception as exc:
@@ -1666,12 +1793,15 @@ async def _answer_question(
     settings: dict[str, Any],
     history: list[dict[str, str]],
     user_id: int,
+    notebook_id: int,
+    conversation_id: int,
     source_ids: list[int],
 ) -> tuple[str, list[dict], dict[str, Any]]:
     """Run retrieval and non-streaming answer generation."""
     metadata: dict[str, Any] = {}
+    usage_context = {"user_id": user_id, "notebook_id": notebook_id, "conversation_id": conversation_id}
     retrieve_started = time.perf_counter()
-    retrieved = await retrieve(question, None, settings, history, user_id, source_ids)
+    retrieved = await retrieve(question, None, settings, history, user_id, source_ids, usage_context=usage_context)
     metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
     metadata["retrieved_chunks"] = len(retrieved)
     top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -1689,7 +1819,7 @@ async def _answer_question(
         return i18n.t("chat.abstain"), [], metadata
 
     generate_started = time.perf_counter()
-    answer = await generate_answer(question, retrieved, settings)
+    answer = await generate_answer(question, retrieved, settings, usage_context=usage_context)
     metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
     metadata["answer_chars"] = len(answer)
     citations = _referenced_citations(answer, retrieved)
@@ -1711,9 +1841,9 @@ def _save_assistant_message(
     answer: str,
     citations: list[dict],
     metadata: dict[str, Any],
-) -> None:
+) -> int:
     with connect() as conn:
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO messages (conversation_id, user_id, role, content, citations_json, metadata_json)
             VALUES (?, ?, 'assistant', ?, ?, ?)
@@ -1730,6 +1860,39 @@ def _save_assistant_message(
             (question[:80], conversation_id, user_id),
         )
         touch_notebook(conn, notebook_id)
+        return int(cursor.lastrowid)
+
+
+def _llm_usage_event_watermark() -> int:
+    with connect() as conn:
+        row = conn.execute("SELECT COALESCE(MAX(id), 0) AS last_id FROM llm_usage_events").fetchone()
+    return int(row["last_id"] if row else 0)
+
+
+def _attach_usage_events_to_message(
+    *,
+    user_id: int,
+    notebook_id: int,
+    conversation_id: int,
+    message_id: int,
+    after_event_id: int,
+    call_types: tuple[str, ...],
+) -> None:
+    placeholders = ",".join("?" for _ in call_types)
+    with connect() as conn:
+        conn.execute(
+            f"""
+            UPDATE llm_usage_events
+            SET message_id = ?
+            WHERE id > ?
+              AND user_id = ?
+              AND notebook_id = ?
+              AND conversation_id = ?
+              AND message_id IS NULL
+              AND call_type IN ({placeholders})
+            """,
+            (message_id, after_event_id, user_id, notebook_id, conversation_id, *call_types),
+        )
 
 
 def _messages_context(notebook_id: int, user_id: int, conversation_id: int) -> dict[str, Any]:
@@ -1791,9 +1954,19 @@ async def ask(
         return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
     metadata: dict[str, Any] = {}
+    usage_watermark = _llm_usage_event_watermark()
     try:
         conversation_id, history, settings = _prepare_question(notebook_id, user, question, conversation_id, source_ids)
-        answer, citations, metadata = await _answer_question(question, settings, history, user["id"], source_ids)
+        record_ai_safety_events(
+            text=question,
+            event_type="input_scan",
+            surface="chat.ask",
+            context={"user_id": user["id"], "notebook_id": notebook_id, "conversation_id": conversation_id},
+            metadata={"source_count": len(source_ids)},
+        )
+        answer, citations, metadata = await _answer_question(
+            question, settings, history, user["id"], notebook_id, conversation_id, source_ids
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -1805,7 +1978,15 @@ async def ask(
         metadata["error"] = str(exc)[:200]
         logger.exception("chat_failed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
 
-    _save_assistant_message(notebook_id, user["id"], conversation_id, question, answer, citations, metadata)
+    assistant_message_id = _save_assistant_message(notebook_id, user["id"], conversation_id, question, answer, citations, metadata)
+    _attach_usage_events_to_message(
+        user_id=user["id"],
+        notebook_id=notebook_id,
+        conversation_id=conversation_id,
+        message_id=assistant_message_id,
+        after_event_id=usage_watermark,
+        call_types=("answer",),
+    )
 
     if request.headers.get("HX-Request") == "true":
         response = _render_messages_partial(request, notebook_id, user["id"], conversation_id, oob=True)
@@ -1834,13 +2015,23 @@ async def ask_stream(
         metadata: dict[str, Any] = {}
         citations: list[dict] = []
         answer = ""
+        usage_watermark = 0
         try:
             conversation, history, settings = _prepare_question(notebook_id, user, question, conversation, source_ids)
+            usage_watermark = _llm_usage_event_watermark()
+            usage_context = {"user_id": user["id"], "notebook_id": notebook_id, "conversation_id": conversation}
+            record_ai_safety_events(
+                text=question,
+                event_type="input_scan",
+                surface="chat.ask_stream",
+                context=usage_context,
+                metadata={"source_count": len(source_ids)},
+            )
             yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
             yield sse_event("status", {"text": i18n.t("js.retrieving")})
 
             retrieve_started = time.perf_counter()
-            retrieved = await retrieve(question, None, settings, history, user["id"], source_ids)
+            retrieved = await retrieve(question, None, settings, history, user["id"], source_ids, usage_context=usage_context)
             metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
             metadata["retrieved_chunks"] = len(retrieved)
             top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -1855,7 +2046,7 @@ async def ask_stream(
             else:
                 yield sse_event("status", {"text": i18n.t("js.generating")})
                 generate_started = time.perf_counter()
-                async for piece in generate_answer_stream(question, retrieved, settings):
+                async for piece in generate_answer_stream(question, retrieved, settings, usage_context=usage_context):
                     answer += piece
                     yield sse_event("chunk", {"text": piece})
                 metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
@@ -1863,7 +2054,15 @@ async def ask_stream(
                 citations = _referenced_citations(answer, retrieved)
                 metadata["outcome"] = "answered"
 
-            _save_assistant_message(notebook_id, user["id"], conversation, question, answer, citations, metadata)
+            assistant_message_id = _save_assistant_message(notebook_id, user["id"], conversation, question, answer, citations, metadata)
+            _attach_usage_events_to_message(
+                user_id=user["id"],
+                notebook_id=notebook_id,
+                conversation_id=conversation,
+                message_id=assistant_message_id,
+                after_event_id=usage_watermark,
+                call_types=("answer_stream",),
+            )
         except Exception as exc:
             logger.exception("chat_stream_failed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation)
             if conversation is None:
@@ -1882,7 +2081,15 @@ async def ask_stream(
             # Update (not replace) so retrieval metrics gathered before the
             # failure survive into the saved metadata.
             metadata.update({"outcome": "error", "error": str(exc)[:200]})
-            _save_assistant_message(notebook_id, user["id"], conversation, question, answer, [], metadata)
+            assistant_message_id = _save_assistant_message(notebook_id, user["id"], conversation, question, answer, [], metadata)
+            _attach_usage_events_to_message(
+                user_id=user["id"],
+                notebook_id=notebook_id,
+                conversation_id=conversation,
+                message_id=assistant_message_id,
+                after_event_id=usage_watermark,
+                call_types=("answer_stream",),
+            )
             yield sse_event("error", {"text": answer})
 
         final = _render_messages_partial(request, notebook_id, user["id"], conversation, oob=False)
@@ -1930,7 +2137,18 @@ async def followups_partial(
         settings = load_llm_settings(conn)
     if prior_question is None:
         return HTMLResponse("")
-    questions = await suggest_followup_questions(prior_question["content"], message["content"], settings or {}, source_context)
+    questions = await suggest_followup_questions(
+        prior_question["content"],
+        message["content"],
+        settings or {},
+        source_context,
+        usage_context={
+            "user_id": user["id"],
+            "notebook_id": notebook_id,
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+        },
+    )
     if questions:
         # json_set patches only the followups key inside SQLite, so a slow LLM
         # call here can't clobber metadata written concurrently elsewhere.
@@ -2296,7 +2514,11 @@ async def source_minutes(
             status_code=400,
         )
 
-    minutes = await generate_meeting_minutes(chunks, settings)
+    minutes = await generate_meeting_minutes(
+        chunks,
+        settings,
+        usage_context={"user_id": user["id"], "notebook_id": notebook_id, "source_id": source_id},
+    )
     if not minutes:
         return render(
             request, "_minutes_result.html",
@@ -2433,7 +2655,12 @@ async def notebook_artifact(
     error = ""
     artifact = ""
     try:
-        artifact = await generate_artifact(kind, summaries, settings)
+        artifact = await generate_artifact(
+            kind,
+            summaries,
+            settings,
+            usage_context={"user_id": user["id"], "notebook_id": notebook_id},
+        )
         if not artifact:
             error = i18n.t("flow.artifact_empty")
     except Exception as exc:
@@ -2488,7 +2715,12 @@ async def translate_source_summary(
     error = ""
     translated = ""
     try:
-        translated = await translate_summary(source["summary"], target_language, settings)
+        translated = await translate_summary(
+            source["summary"],
+            target_language,
+            settings,
+            usage_context={"user_id": user["id"], "notebook_id": notebook_id, "source_id": source_id},
+        )
         if not translated:
             error = i18n.t("flow.translate_empty")
     except Exception as exc:
@@ -2532,6 +2764,7 @@ async def retrieve(
     user_id: int | None = None,
     source_ids: list[int] | None = None,
     params: dict | None = None,
+    usage_context: dict[str, Any] | None = None,
 ) -> list[dict]:
     """Retrieve chunks with query rewriting, hybrid search, and optional LLM reranking.
 
@@ -2547,8 +2780,8 @@ async def retrieve(
     keyword_weight = float(p["keyword_weight"])
     rerank_weight = float(p["rerank_weight"])
     rerank_base_weight = float(p["rerank_base_weight"])
-    queries = await rewrite_search_queries(question, history or [], settings)
-    query_embeddings = await embed_texts(queries, settings, role="query")
+    queries = await rewrite_search_queries(question, history or [], settings, usage_context=usage_context)
+    query_embeddings = await embed_texts(queries, settings, role="query", usage_context=usage_context)
     if user_id is not None:
         try:
             # Vector (Chroma) and keyword (SQLite) search are independent — run
@@ -2559,10 +2792,14 @@ async def retrieve(
                 asyncio.to_thread(keyword_candidates_from_sqlite, user_id, source_ids or [], queries, limit=pool_size),
             )
             candidates = merge_candidates(vector_candidates, keyword_candidates, queries, params=p)
-            ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:pool_size]
+            ranked = diversify_candidates(
+                sorted(candidates.values(), key=lambda item: item["score"], reverse=True),
+                limit=pool_size,
+            )
             retrieved = await rerank_chunks(
                 question, ranked, settings, limit=final_count,
                 rerank_weight=rerank_weight, rerank_base_weight=rerank_base_weight,
+                usage_context=usage_context,
             )
             elapsed_ms = (time.perf_counter() - started) * 1000
             logger.info(
@@ -2603,10 +2840,14 @@ async def retrieve(
             "vector_score": vector_score,
             "keyword_score": keyword,
         }
-    ranked = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)[:pool_size]
+    ranked = diversify_candidates(
+        sorted(candidates.values(), key=lambda item: item["score"], reverse=True),
+        limit=pool_size,
+    )
     retrieved = await rerank_chunks(
         question, ranked, settings, limit=final_count,
         rerank_weight=rerank_weight, rerank_base_weight=rerank_base_weight,
+        usage_context=usage_context,
     )
     elapsed_ms = (time.perf_counter() - started) * 1000
     logger.info(
@@ -2726,6 +2967,48 @@ def merge_candidates(
             "keyword_score": keyword,
         }
     return {chunk_id: item for chunk_id, item in candidates.items() if item["score"] > 0}
+
+
+def diversify_candidates(
+    candidates: list[dict],
+    *,
+    limit: int,
+    overlap_threshold: float = 0.88,
+    min_tokens: int = 8,
+) -> list[dict]:
+    """Keep high-scoring candidates while dropping near-duplicate text.
+
+    Sentence overlap is useful at ingest time, but adjacent chunks can
+    otherwise occupy several pre-rerank slots with nearly the same evidence.
+    This runs after hybrid scoring, so the best-scoring representative wins.
+    """
+    selected: list[dict] = []
+    selected_tokens: list[set[str]] = []
+    for item in candidates:
+        tokens = _candidate_overlap_tokens(item.get("text") or "")
+        if len(tokens) >= min_tokens and any(
+            _jaccard(tokens, existing) >= overlap_threshold
+            for existing in selected_tokens
+            if existing
+        ):
+            continue
+        selected.append(item)
+        selected_tokens.append(tokens)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _candidate_overlap_tokens(text: str) -> set[str]:
+    """Token set for candidate diversity, normalized more than keyword search."""
+    stripped = ".,;:!?()[]{}\"'`“”‘’"
+    return {token.strip(stripped) for token in search_tokens(text) if token.strip(stripped)}
 
 
 def keyword_score(queries: list[str], text: str) -> float:
@@ -3359,6 +3642,12 @@ async def run_eval_job(run_id: int) -> None:
                     eval_set["target_user_id"],
                     source_ids,
                     params=run_params,
+                    usage_context={
+                        "user_id": eval_set["target_user_id"],
+                        "notebook_id": eval_set["notebook_id"],
+                        "eval_run_id": run_id,
+                        "eval_set_id": eval_set["id"],
+                    },
                 )
                 latency_ms = round((time.perf_counter() - started) * 1000, 1)
                 top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -3970,6 +4259,13 @@ async def admin_generate_eval_items_llm(
         eval_set = load_eval_set(conn, eval_set_id)
         settings = load_llm_settings(conn) or {}
         chunks = eval_authoring_chunks(conn, eval_set, selected_source_ids, limit=max(count * 3, 8))
+    record_ai_safety_events(
+        text=target_language,
+        event_type="input_scan",
+        surface="eval_authoring.target_language",
+        context={"user_id": user["id"], "notebook_id": eval_set["notebook_id"], "eval_set_id": eval_set_id},
+        metadata={"requested_type_count": len(requested_types), "selected_source_count": len(selected_source_ids)},
+    )
     if not settings.get("api_key") or not settings.get("chat_model"):
         return eval_set_items_response(
             request,
@@ -3990,6 +4286,11 @@ async def admin_generate_eval_items_llm(
         count=count,
         item_types=requested_types,
         target_language=target_language,
+        usage_context={
+            "user_id": user["id"],
+            "notebook_id": eval_set["notebook_id"],
+            "eval_set_id": eval_set_id,
+        },
     )
     if not candidates:
         return eval_set_items_response(
@@ -4116,6 +4417,15 @@ def admin_add_eval_item(
     except ValueError:
         raise HTTPException(status_code=400, detail="預期來源格式不正確。") from None
     snippets = split_expected_substrings(expected_substrings)
+    with connect() as conn:
+        eval_set_context = load_eval_set(conn, eval_set_id)
+    record_ai_safety_events(
+        text=question,
+        event_type="input_scan",
+        surface="eval_authoring.manual_question",
+        context={"user_id": user["id"], "notebook_id": eval_set_context["notebook_id"], "eval_set_id": eval_set_id},
+        metadata={"has_expected_source": bool(source_id), "substring_count": len(snippets)},
+    )
     with connect() as conn:
         eval_set = load_eval_set(conn, eval_set_id)
         if source_id is not None:

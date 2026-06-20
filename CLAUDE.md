@@ -5,11 +5,14 @@ NotebookLM-style RAG proof of concept: FastAPI + Jinja2 + HTMX + Alpine.js, SQLi
 ## Authoritative docs — read before working
 
 - **@AGENTS.md** — the engineering rulebook (runtime, verification, persistence safety, conventions, security, git hygiene). Follow it; this file only adds Claude-specific orientation on top.
-- `README.md` — user-facing feature set, the full route list, LLM settings, run/test.
+- `README.md` — onboarding overview: what the app does, quick start, core feature set, LLM setup, and doc map.
+- `docs/ROUTES.md` — full HTTP route reference.
+- `docs/DEVELOPMENT.md` — detailed setup, deployment, tuning, logging, verification, and repository layout.
 - `docs/RETRIEVAL.md` — read before changing retrieval, chunking, ranking, reranking, evals, or vector-store behavior.
 - `docs/PERFORMANCE.md` / `docs/QUALITY.md` — prioritised, tick-off backlogs for performance and retrieval-quality work.
 - `docs/SCHEMA.md` — DB schema reference (tables, columns, FKs, indexes). Keep in sync with `app/db.py` on every schema change.
-- `docs/ROADMAP.md` — product-surface backlog (UX improvements + new AI features, with effort/prerequisites). Performance/quality items stay in their own backlogs.
+- `docs/ROADMAP.md` — product/admin roadmap: UX, Eval Workbench, AI governance, LLM operations, source-format support, and new AI features. Performance/quality items stay in their own backlogs.
+- `docs/SPREADSHEET_INGESTION.md` — design notes for XLSX/CSV ingestion, spreadsheet types, Q&A-first chunking, and diagnostics expectations.
 - `docs/UI.md` — front-end design conventions (page archetypes, components, data presentation, interaction, voice). Read before adding or restyling any page/component; align new UI to it.
 - `docs/I18N.md` — UI localisation reference: the message catalog + `t()`/`window.I18N`, how to add strings/locales, how to switch the locale, and known exceptions. Read before adding user-facing copy or touching language behavior; never hardcode UI strings.
 - `handover.md` (gitignored, when present) — cross-session work state; useful context, not a durable rule source.
@@ -52,7 +55,7 @@ When adding a fragment that depends on indexed-source availability, listen for `
 - Never modify or commit `data/` or `logs/` (user state); keep `.env` and real secrets uncommitted. Changing `NOTEBOOKLM_SECRET` invalidates encrypted API keys.
 - Preserve per-user / per-notebook authorization checks on every route that reads or mutates notebook data.
 - Keep password hashing and API-key encryption centralized in `app/security.py`.
-- CSRF protection and streaming responses are known hardening follow-ups — don't add them unless asked. (LLM retry/backoff and worker-backed ingest are now implemented — see `docs/PERFORMANCE.md`.)
+- CSRF protection, streaming responses, LLM retry/backoff, and worker-backed ingest are implemented; keep them working when touching forms, HTMX requests, chat streaming, provider HTTP, or ingest flow. See `docs/SECURITY.md` and `docs/PERFORMANCE.md`.
 
 ## Verifying in the browser
 

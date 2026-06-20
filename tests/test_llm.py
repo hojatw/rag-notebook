@@ -123,7 +123,7 @@ def test_followup_prompt_uses_source_language_context(monkeypatch):
     """Follow-up questions should follow source language, not just the user's question."""
     captured = {}
 
-    async def fake_chat(settings, user_prompt, system_prompt, temperature=None):
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
         captured["user_prompt"] = user_prompt
         captured["system_prompt"] = system_prompt
         return '["What evidence supports the conclusion?"]'
@@ -206,7 +206,7 @@ def test_generate_artifact_dispatches_and_short_circuits(monkeypatch):
     and rejects unknown kinds."""
     captured = {}
 
-    async def fake_chat(settings, user_prompt, system_prompt, temperature=None):
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
         captured["system_prompt"] = system_prompt
         captured["temperature"] = temperature
         return "## Key concepts\n- alpha"
@@ -232,7 +232,7 @@ def test_translate_summary_dispatches_and_short_circuits(monkeypatch):
     """A5: translate_summary passes the target language and short-circuits cleanly."""
     captured = {}
 
-    async def fake_chat(settings, user_prompt, system_prompt, temperature=None):
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
         captured["user_prompt"] = user_prompt
         captured["system_prompt"] = system_prompt
         return "Translated."
@@ -256,7 +256,7 @@ def test_translate_summary_dispatches_and_short_circuits(monkeypatch):
 def test_embed_texts_runs_batches_concurrently_and_in_order(monkeypatch):
     inflight = {"current": 0, "max": 0}
 
-    async def fake_batch(texts, settings):
+    async def fake_batch(texts, settings, **kwargs):
         inflight["current"] += 1
         inflight["max"] = max(inflight["max"], inflight["current"])
         await asyncio.sleep(0.01)
@@ -284,7 +284,7 @@ def test_embed_texts_runs_batches_concurrently_and_in_order(monkeypatch):
 def _capture_batch(monkeypatch):
     captured = {}
 
-    async def fake_batch(texts, settings):
+    async def fake_batch(texts, settings, **kwargs):
         captured["texts"] = list(texts)
         return [[0.0] for _ in texts]
 

@@ -47,9 +47,11 @@
   {% endif %}
   <div class="source-actions">
     <form action="/notebooks/{{ notebook.id }}/sources/{{ source.id }}/reindex" method="post" data-loading-form>
+      {{ csrf_input() }}
       <button class="ghost small" type="submit" data-loading-text="...">重新索引</button>
     </form>
     <form action="/notebooks/{{ notebook.id }}/sources/{{ source.id }}/delete" method="post" data-confirm="刪除這個來源與其索引分塊？">
+      {{ csrf_input() }}
       <button class="ghost small danger-link" type="submit">刪除</button>
     </form>
   </div>
