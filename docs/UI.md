@@ -182,8 +182,10 @@
 
 ## 4. 互動行為標準(已半成形,以下為定版)
 
-- **送出鎖**:表單加 `data-loading-form`,主要鈕加 `data-loading-text="處理中..."`。
-  app.js 會加 `.is-submitting`(鎖住表單 + 轉圈)並換鈕文字(`app.js:337`)。**所有會送出的表單都要加。**
+- **送出鎖(兩種機制,依場景擇一,不要混用)**:
+  - **整頁送出 / 一般 POST 表單** → `data-loading-form` + 主要鈕 `data-loading-text="處理中..."`。app.js 會加 `.is-submitting`(鎖住表單 + 轉圈)並換鈕文字(`app.js`)。
+  - **HTMX partial 送出**(`hx-post` 就地換片段) → 用 HTMX 原生 `hx-disabled-elt="find button[type=submit]"` + `hx-indicator="#…"`。這類請求生命週期由 HTMX 管,用原生屬性比 `data-loading-form` 更貼合,毋須強套。
+  > 判準:**這個送出會整頁/重導,還是只換一個片段?** 整頁 → `data-loading-form`;只換片段(partial) → `hx-disabled-elt`。**每個會送出的表單都要有其中一種鎖**,不可兩者皆無。
 - **破壞性確認**:任何刪除/清除/會改變線上行為的動作,在 `<form>` 加
   `data-confirm="清楚說明後果的一句話"`(`app.js:321` 觸發原生確認框)。
 - **HTMX 局部更新**:就地更新用 `hx-target`/`hx-swap="outerHTML"`,partial 命名 `_*.html`;

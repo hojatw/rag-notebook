@@ -4,7 +4,7 @@
   <div>
     <h2>{{ source.filename }}</h2>
     <p class="preview-meta">
-      <span class="status {{ source.status }}">{{ source.status }}</span>
+      <span class="status {{ source.status }}">{{ source_status_labels.get(source.status, source.status) }}</span>
       <span class="muted">·</span>
       <span class="muted">{{ chunks|length }} 個分塊</span>
       {% if source.content_type %}
@@ -13,7 +13,6 @@
       {% endif %}
     </p>
   </div>
-  <button type="button" class="ghost preview-close" @click="$dispatch('close-preview')" aria-label="關閉預覽">×</button>
 </header>
 
 {% if source.error %}

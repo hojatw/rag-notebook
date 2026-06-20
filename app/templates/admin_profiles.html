@@ -2,17 +2,17 @@
 {% block content %}
 <section class="settings eval-workbench">
   <header class="settings-head">
-    <p class="eyebrow">管理主控台</p>
-    <h1>Retrieval Profiles</h1>
-    <p class="muted">調整 runtime-safe 檢索參數（不影響索引）。作用中的 profile 會即時套用到線上 chat 檢索並在重啟後保留。</p>
+    <p class="eyebrow">{{ t('common.admin_console') }}</p>
+    <h1>{{ t('eval.tab_profiles') }}</h1>
+    <p class="muted">{{ t('prof.intro') }}</p>
   </header>
 
   {% include "_eval_nav.html" %}
 
   <section class="settings-section">
-    <h2>Profiles</h2>
+    <h2>{{ t('prof.list_heading') }}</h2>
     <p class="hint muted small">
-      建立候選 profile → 在「評測集」用它跑 eval、比較結果 → 滿意後按「套用」上線，或對先前 profile 按「套用」即為回滾。
+      {{ t('prof.hint') }}
     </p>
     <div class="profile-grid">
       {% for prof in profiles %}
@@ -20,8 +20,8 @@
           <header class="profile-card-head">
             <h3 class="profile-name" title="{{ prof.name }}">{{ prof.name }}</h3>
             <div class="profile-badges">
-              {% if prof.is_active %}<span class="badge badge-active">作用中</span>{% endif %}
-              {% if prof.is_default %}<span class="badge badge-default">系統預設</span>{% endif %}
+              {% if prof.is_active %}<span class="badge badge-active">{{ t('prof.badge_active') }}</span>{% endif %}
+              {% if prof.is_default %}<span class="badge badge-default">{{ t('prof.badge_default') }}</span>{% endif %}
             </div>
           </header>
           {% if prof.description %}<p class="profile-desc muted small" title="{{ prof.description }}">{{ prof.description }}</p>{% endif %}
@@ -31,21 +31,21 @@
             {% endfor %}
           </dl>
           <footer class="profile-card-foot">
-            <a class="ghost small" href="/admin/evals/profiles/{{ prof.id }}/export">匯出設定</a>
+            <a class="ghost small" href="/admin/evals/profiles/{{ prof.id }}/export">{{ t('prof.export') }}</a>
             {% if not prof.is_active %}
-              <form method="post" action="/admin/evals/profiles/{{ prof.id }}/apply" data-confirm="套用此 profile 到線上檢索？這會立即改變所有使用者的 chat 檢索行為。">
+              <form method="post" action="/admin/evals/profiles/{{ prof.id }}/apply" data-confirm="{{ t('prof.apply_confirm') }}">
                 {{ csrf_input() }}
-                <button type="submit" class="small">套用</button>
+                <button type="submit" class="small">{{ t('prof.apply') }}</button>
               </form>
             {% endif %}
             {% if prof.is_active %}
-              <span class="muted small">線上使用中</span>
+              <span class="muted small">{{ t('prof.in_use') }}</span>
             {% elif prof.is_default %}
-              <span class="muted small">回復預設的保底，不可刪除</span>
+              <span class="muted small">{{ t('prof.default_note') }}</span>
             {% else %}
-              <form method="post" action="/admin/evals/profiles/{{ prof.id }}/delete" data-confirm="刪除此 profile？歷史 run 的 snapshot 會保留。">
+              <form method="post" action="/admin/evals/profiles/{{ prof.id }}/delete" data-confirm="{{ t('prof.delete_confirm') }}">
                 {{ csrf_input() }}
-                <button type="submit" class="danger small">刪除</button>
+                <button type="submit" class="danger small">{{ t('common.delete') }}</button>
               </form>
             {% endif %}
           </footer>
@@ -54,16 +54,16 @@
     </div>
 
     <details class="profile-create">
-      <summary>建立候選 Profile</summary>
+      <summary>{{ t('prof.create') }}</summary>
       <form method="post" action="/admin/evals/profiles" class="stacked-form">
         {{ csrf_input() }}
         <label>
-          名稱
-          <input name="name" maxlength="120" placeholder="例如：keyword 權重提高 candidate" required>
+          {{ t('common.name') }}
+          <input name="name" maxlength="120" placeholder="{{ t('prof.name_ph') }}" required>
         </label>
         <label>
-          描述
-          <input name="description" maxlength="500" placeholder="這個候選想驗證什麼假設">
+          {{ t('common.description') }}
+          <input name="description" maxlength="500" placeholder="{{ t('prof.desc_ph') }}">
         </label>
         <div class="profile-field-grid">
           {% for field in new_profile_fields %}
@@ -75,7 +75,7 @@
             </label>
           {% endfor %}
         </div>
-        <button type="submit" data-loading-text="建立中...">建立候選 Profile</button>
+        <button type="submit" data-loading-text="{{ t('eval.create_loading') }}">{{ t('prof.create') }}</button>
       </form>
     </details>
   </section>

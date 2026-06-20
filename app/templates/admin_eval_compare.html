@@ -2,7 +2,7 @@
 {% block content %}
 <section class="settings eval-workbench">
   <header class="settings-head">
-    <p class="eyebrow">Run 比較</p>
+    <p class="eyebrow">評測比較</p>
     <h1>{{ base_run.eval_set_name }}</h1>
     <p class="muted">
       Baseline <strong>#{{ base_run.id }}</strong> ↔ Candidate <strong>#{{ candidate_run.id }}</strong>
@@ -67,11 +67,11 @@
             <tr class="diff-row-{{ row.trend }}">
               <td data-label="問題">{{ row.question }}</td>
               <td data-label="Baseline">
-                <span class="status {{ 'indexed' if row.base_status == 'hit' else 'processing' if row.base_status in ['unscored','—'] else 'failed' }}">{{ row.base_status }}</span>
+                <span class="status {{ 'indexed' if row.base_status == 'hit' else 'processing' if row.base_status in ['unscored','—'] else 'failed' }}">{{ eval_result_status_labels.get(row.base_status, row.base_status) }}</span>
                 {% if row.base_rank %}<span class="muted small"> @{{ row.base_rank }}</span>{% endif %}
               </td>
               <td data-label="Candidate">
-                <span class="status {{ 'indexed' if row.candidate_status == 'hit' else 'processing' if row.candidate_status in ['unscored','—'] else 'failed' }}">{{ row.candidate_status }}</span>
+                <span class="status {{ 'indexed' if row.candidate_status == 'hit' else 'processing' if row.candidate_status in ['unscored','—'] else 'failed' }}">{{ eval_result_status_labels.get(row.candidate_status, row.candidate_status) }}</span>
                 {% if row.candidate_rank %}<span class="muted small"> @{{ row.candidate_rank }}</span>{% endif %}
               </td>
               <td data-label="變化">

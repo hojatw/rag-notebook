@@ -2,77 +2,77 @@
 {% block content %}
 <section class="settings eval-workbench">
   <header class="settings-head">
-    <p class="eyebrow">管理主控台</p>
-    <h1>Eval 工作台</h1>
-    <p class="muted">在部署內使用既有 DB 資料建立評測題組、執行 retrieval-only eval，避免客戶資料外流。</p>
+    <p class="eyebrow">{{ t('common.admin_console') }}</p>
+    <h1>{{ t('eval.title') }}</h1>
+    <p class="muted">{{ t('eval.intro') }}</p>
   </header>
 
   {% include "_eval_nav.html" %}
 
   <p class="active-profile-line muted small">
-    目前作用中的 Retrieval Profile：<strong>{{ profile.name }}</strong>
-    · <a href="/admin/evals/profiles">管理 / 調整參數 →</a>
+    {{ t('eval.active_profile') }}<strong>{{ profile.name }}</strong>
+    · <a href="/admin/evals/profiles">{{ t('eval.manage_params') }}</a>
   </p>
 
   <section class="settings-section">
-    <h2>建立 Eval Set</h2>
+    <h2>{{ t('eval.create_set') }}</h2>
     <form method="get" action="/admin/evals" class="inline-form eval-search-form">
       <label>
-        搜尋全站已索引筆記本
-        <input name="notebook_q" value="{{ notebook_q }}" placeholder="Notebook 名稱或 owner">
+        {{ t('eval.search_notebooks') }}
+        <input name="notebook_q" value="{{ notebook_q }}" placeholder="{{ t('eval.search_ph') }}">
       </label>
-      <button type="submit" class="ghost">搜尋</button>
-      {% if notebook_q %}<a class="ghost" href="/admin/evals">清除</a>{% endif %}
+      <button type="submit" class="ghost">{{ t('common.search') }}</button>
+      {% if notebook_q %}<a class="ghost" href="/admin/evals">{{ t('common.clear') }}</a>{% endif %}
     </form>
-    <p class="hint muted small">目前 Eval Set 綁定單一目標筆記本。清單列出全站最近 100 個「已有 indexed source」的筆記本；資料量大時請先搜尋。</p>
+    <p class="hint muted small">{{ t('eval.create_hint') }}</p>
     {% if notebooks %}
       <form method="post" action="/admin/evals/sets" class="stacked-form">
         {{ csrf_input() }}
         <label>
-          名稱
-          <input name="name" placeholder="例如：客戶中文研究報告 baseline" required>
+          {{ t('common.name') }}
+          <input name="name" placeholder="{{ t('eval.set_name_ph') }}" required>
         </label>
         <label>
-          單一目標筆記本
+          {{ t('eval.target_notebook') }}
           <select name="notebook_id" required>
             {% for notebook in notebooks %}
               <option value="{{ notebook.id }}">
-                {{ notebook.emoji or "📓" }} {{ notebook.title }} · {{ notebook.username }} · {{ notebook.indexed_count }} indexed sources
+                {{ notebook.emoji or "📓" }} {{ notebook.title }} · {{ notebook.username }} · {{ notebook.indexed_count }} {{ t('eval.indexed_sources_suffix') }}
               </option>
             {% endfor %}
           </select>
         </label>
         <label>
-          描述
-          <textarea name="description" rows="3" placeholder="資料範圍、語言、用途或注意事項"></textarea>
+          {{ t('common.description') }}
+          <textarea name="description" rows="3" placeholder="{{ t('eval.set_desc_ph') }}"></textarea>
         </label>
-        <button type="submit" data-loading-text="建立中...">建立 Eval Set</button>
+        <button type="submit" data-loading-text="{{ t('eval.create_loading') }}">{{ t('eval.create_set') }}</button>
       </form>
     {% else %}
-      <p class="muted">目前沒有可用的筆記本。</p>
+      <p class="muted">{{ t('eval.no_notebooks') }}</p>
     {% endif %}
   </section>
 
   <section class="settings-section">
-    <h2>Eval Sets</h2>
+    <h2>{{ t('eval.sets_heading') }}</h2>
     {% if eval_sets %}
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>名稱</th><th>筆記本</th><th>題數</th><th>建立時間</th><th>操作</th></tr>
+            <tr><th>{{ t('common.name') }}</th><th>{{ t('eval.col_notebook') }}</th><th>{{ t('eval.col_count') }}</th><th>{{ t('common.created_at') }}</th><th>{{ t('common.actions') }}</th></tr>
           </thead>
           <tbody>
             {% for item in eval_sets %}
               <tr>
-                <td data-label="名稱">{{ item.name }}</td>
-                <td data-label="筆記本">{{ item.notebook_emoji or "📓" }} {{ item.notebook_title }} · {{ item.target_username }}</td>
-                <td data-label="題數">{{ item.approved_count }} / {{ item.item_count }} approved</td>
-                <td data-label="建立時間">{{ item.created_at }}</td>
-                <td data-label="操作" class="action-cell">
-                  <a class="ghost small" href="/admin/evals/sets/{{ item.id }}">開啟</a>
-                  <form method="post" action="/admin/evals/sets/{{ item.id }}/delete" data-confirm="刪除此 Eval Set？相關題目、run history 與結果都會一併刪除。">
+                <td data-label="{{ t('common.name') }}">{{ item.name }}</td>
+                <td data-label="{{ t('eval.col_notebook') }}">{{ item.notebook_emoji or "📓" }} {{ item.notebook_title }} · {{ item.target_username }}</td>
+                <td data-label="{{ t('eval.col_count') }}">{{ item.approved_count }} / {{ item.item_count }} {{ t('eval.approved_suffix') }}</td>
+                <td data-label="{{ t('common.created_at') }}">{{ item.created_at }}</td>
+                <td data-label="{{ t('common.actions') }}" class="action-cell">
+                  <a class="ghost small" href="/admin/evals/sets/{{ item.id }}">{{ t('common.open') }}</a>
+                  <form method="post" action="/admin/evals/sets/{{ item.id }}/delete" data-confirm="{{ t('eval.delete_set_confirm') }}">
                     {{ csrf_input() }}
-                    <button type="submit" class="danger small">刪除</button>
+                    <button type="submit" class="danger small">{{ t('common.delete') }}</button>
                   </form>
                 </td>
               </tr>
@@ -81,36 +81,38 @@
         </table>
       </div>
     {% else %}
-      <div class="empty"><h2>尚未建立 eval set</h2><p>從上方選一個筆記本建立第一個評測集。</p></div>
+      <div class="empty"><h2>{{ t('eval.empty_sets_title') }}</h2><p>{{ t('eval.empty_sets_body') }}</p></div>
     {% endif %}
+    {% if eval_sets_truncated %}<p class="truncated-hint muted small">{{ t('common.list_truncated', count=50) }}</p>{% endif %}
   </section>
 
   <section class="settings-section">
-    <h2>歷史執行紀錄</h2>
+    <h2>{{ t('eval.runs_heading') }}</h2>
     {% if runs %}
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Run</th><th>Eval Set</th><th>狀態</th><th>Recall</th><th>MRR</th><th>Latency</th><th></th></tr>
+            <tr><th>Run</th><th>Eval Set</th><th>{{ t('common.status') }}</th><th>Recall</th><th>MRR</th><th>{{ t('eval.col_latency') }}</th><th></th></tr>
           </thead>
           <tbody>
             {% for run in runs %}
               <tr>
                 <td data-label="Run">#{{ run.id }}</td>
                 <td data-label="Eval Set">{{ run.eval_set_name }}<br><span class="muted small">{{ run.notebook_title }}</span></td>
-                <td data-label="狀態"><span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run.status }}</span></td>
+                <td data-label="{{ t('common.status') }}"><span class="status {{ 'indexed' if run.status == 'succeeded' else 'processing' if run.status in ['queued', 'running'] else 'failed' }}">{{ run_status_labels.get(run.status, run.status) }}</span></td>
                 <td data-label="Recall">{{ run.metrics.recall_at_k if run.metrics else "—" }}</td>
                 <td data-label="MRR">{{ run.metrics.mrr if run.metrics else "—" }}</td>
-                <td data-label="Latency">{% if run.metrics %}{{ run.metrics.avg_latency_ms }}ms{% else %}—{% endif %}</td>
-                <td data-label="操作"><a class="ghost small" href="/admin/evals/runs/{{ run.id }}">查看</a></td>
+                <td data-label="{{ t('eval.col_latency') }}">{% if run.metrics %}{{ run.metrics.avg_latency_ms }}ms{% else %}—{% endif %}</td>
+                <td data-label="{{ t('common.actions') }}"><a class="ghost small" href="/admin/evals/runs/{{ run.id }}">{{ t('common.view') }}</a></td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
     {% else %}
-      <div class="empty"><h2>尚未執行任何 eval</h2><p>建立評測集並 approve 題目後即可執行 retrieval eval。</p></div>
+      <div class="empty"><h2>{{ t('eval.empty_runs_title') }}</h2><p>{{ t('eval.empty_runs_body') }}</p></div>
     {% endif %}
+    {% if runs_truncated %}<p class="truncated-hint muted small">{{ t('common.list_truncated', count=20) }}</p>{% endif %}
   </section>
 </section>
 {% endblock %}

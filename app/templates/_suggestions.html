@@ -14,8 +14,8 @@
    this section no longer self-polls; POST /suggestions still swaps it in place. #}
 <section class="studio-section studio-suggestions chat-suggestions" id="studio-suggestions">
   <h3>
-    建議問題
-    {% if questions %}{{ gen_button("重新生成", notebook.id) }}{% endif %}
+    {{ t('studio.suggestions_heading') }}
+    {% if questions %}{{ gen_button(t('common.regenerate'), notebook.id) }}{% endif %}
   </h3>
   {% if questions %}
     <ul class="suggestion-list">
@@ -27,12 +27,12 @@
     </ul>
   {% elif error %}
     <p class="muted small">{{ error }}</p>
-    {{ gen_button("再試一次", notebook.id) }}
+    {{ gen_button(t('common.retry'), notebook.id) }}
   {% elif not has_indexed %}
-    <p class="muted small">先完成來源索引，才能生成建議問題。</p>
+    <p class="muted small">{{ t('studio.suggestions_need_index') }}</p>
   {% else %}
-    <p class="muted small">從你的來源生成 4 個有依據的起始問題。</p>
-    {{ gen_button("生成建議問題", notebook.id) }}
+    <p class="muted small">{{ t('studio.suggestions_blurb') }}</p>
+    {{ gen_button(t('studio.suggestions_generate'), notebook.id) }}
   {% endif %}
-  <p id="suggestions-loading" class="studio-loading htmx-indicator">建議問題生成中…</p>
+  <p id="suggestions-loading" class="studio-loading htmx-indicator">{{ t('studio.suggestions_loading') }}</p>
 </section>

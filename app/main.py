@@ -27,10 +27,11 @@ from .governance import record_ai_safety_events
 from .ingest import supported
 from .jobs import enqueue_source
 from .worker import run_worker_loop
+from . import i18n
 import httpx
 
 from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_eval_candidates, generate_meeting_minutes, generate_starter_questions, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
-from .security import get_app_secret, hash_password, new_csrf_token, sign_user_id, unsign_user_id, valid_csrf_token, verify_password
+from .security import INSECURE_DEV_SECRET, get_app_secret, hash_password, new_csrf_token, sign_user_id, unsign_user_id, valid_csrf_token, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
 from .vector_store import delete_source as delete_source_vectors
@@ -130,6 +131,26 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="NotebookLM-like RAG POC", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
+
+# Human-readable (zh-Hant) labels for the source lifecycle status pill, shared
+# by the left source list and the preview header so the two never drift.
+templates.env.globals["source_status_labels"] = {
+    "uploaded": "已上傳",
+    "processing": "處理中",
+    "indexed": "已索引",
+    "failed": "失敗",
+}
+
+# i18n (Phase 0): `t()` resolves UI copy from the message catalog; `i18n_js()`
+# feeds window.I18N in base.html so app.js shares the same source of truth.
+templates.env.globals["t"] = i18n.t
+templates.env.globals["i18n_js"] = i18n.js_messages
+# Localised display for the audit sensitivity classification (raw value kept).
+templates.env.globals["audit_sensitivity_labels"] = i18n.SENSITIVITY_LABELS
+# Localised display for the eval run lifecycle status (raw value kept).
+templates.env.globals["run_status_labels"] = i18n.RUN_STATUS_LABELS
+# Localised display for per-question eval result status (raw value kept).
+templates.env.globals["eval_result_status_labels"] = i18n.EVAL_RESULT_STATUS_LABELS
 
 
 def csrf_token_for_request(request: Request) -> str:
@@ -284,23 +305,24 @@ def render(request: Request, name: str, context: dict, status_code: int = 200) -
     )
 
 
-def friendly_error_message(exc: Exception | str, action: str = "處理") -> str:
+def friendly_error_message(exc: Exception | str, action: str | None = None) -> str:
     """Return a user-facing error without leaking provider/raw exception text."""
+    action = action if action is not None else i18n.t("error.action_default")
     text = str(exc)
     if isinstance(exc, httpx.TimeoutException) or "timeout" in text.lower():
-        return f"{action}逾時，請稍後再試。"
+        return i18n.t("error.timeout", action=action)
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         if status == 401:
-            return "模型服務驗證失敗，請檢查系統設定中的 API key。"
+            return i18n.t("error.auth")
         if status == 429:
-            return f"{action}暫時被模型服務限流，請稍後再試。"
+            return i18n.t("error.ratelimit", action=action)
         if status >= 500:
-            return f"模型服務暫時無法回應，請稍後再試。"
-        return f"{action}失敗，請檢查系統設定後再試。"
+            return i18n.t("error.unavailable")
+        return i18n.t("error.generic_check", action=action)
     if isinstance(exc, RuntimeError) and "settings" in text.lower():
-        return "尚未完成 LLM 設定，請先到系統設定填入模型連線資訊。"
-    return f"{action}失敗，請稍後再試；如果持續發生，請查看系統記錄。"
+        return i18n.t("error.no_llm")
+    return i18n.t("error.generic_retry", action=action)
 
 
 def relative_time(value: str | None) -> str:
@@ -447,8 +469,12 @@ def global_search(
 
 @app.get("/login", response_class=HTMLResponse)
 def login_form(request: Request):
-    """Render the login form."""
-    return render(request, "login.html", {"error": ""})
+    """Render the login form.
+
+    The demo-account hint is shown only when running with the insecure dev
+    secret, so a real (network-exposed) deployment never prints credentials.
+    """
+    return render(request, "login.html", {"error": "", "demo_hint": SECRET == INSECURE_DEV_SECRET})
 
 
 @app.post("/login")
@@ -1119,7 +1145,7 @@ async def notebook_suggestions(
     if not has_indexed:
         error = ""
     elif not (settings or {}).get("api_key") or not (settings or {}).get("chat_model"):
-        error = "請先完成 LLM 設定，才能生成建議問題。"
+        error = i18n.t("flow.suggestions_no_llm")
     else:
         try:
             questions = await generate_starter_questions(
@@ -1128,10 +1154,10 @@ async def notebook_suggestions(
                 usage_context={"user_id": user["id"], "notebook_id": notebook_id},
             )
             if not questions:
-                error = "模型未回傳建議問題，請再試一次。"
+                error = i18n.t("flow.suggestions_empty")
         except Exception as exc:
             logger.exception("suggestions_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
-            error = friendly_error_message(exc, "建議問題生成")
+            error = friendly_error_message(exc, i18n.t("error.action_suggestions"))
 
     if questions:
         with connect() as conn:
@@ -1282,7 +1308,7 @@ async def notebook_briefing(
         if not summaries:
             error = ""  # nothing to brief; template falls back on has_indexed
         elif not settings.get("api_key") or not settings.get("chat_model"):
-            error = "請先完成 LLM 設定，才能生成簡報。"
+            error = i18n.t("flow.briefing_no_llm")
         else:
             try:
                 briefing = await generate_briefing(
@@ -1291,10 +1317,10 @@ async def notebook_briefing(
                     usage_context={"user_id": user["id"], "notebook_id": notebook_id},
                 )
                 if not briefing:
-                    error = "模型未回傳簡報內容，請再試一次。"
+                    error = i18n.t("flow.briefing_empty")
             except Exception as exc:
                 logger.exception("briefing_failed user_id=%s notebook_id=%s", user["id"], notebook_id)
-                error = friendly_error_message(exc, "簡報生成")
+                error = friendly_error_message(exc, i18n.t("error.action_briefing"))
 
         if briefing:
             with connect() as conn:
@@ -1336,7 +1362,7 @@ async def notebook_compare(
             {
                 "notebook_id": notebook_id,
                 "comparison": "",
-                "error": "請至少勾選 2 個來源進行比較。",
+                "error": i18n.t("flow.compare_need_2"),
                 "filenames": [],
                 "focus": focus,
             },
@@ -1354,7 +1380,7 @@ async def notebook_compare(
             {
                 "notebook_id": notebook_id,
                 "comparison": "",
-                "error": "至少需要 2 個有內容的來源才能比較。",
+                "error": i18n.t("flow.compare_need_2_content"),
                 "filenames": [s["filename"] for s in summaries],
                 "focus": focus,
             },
@@ -1367,7 +1393,7 @@ async def notebook_compare(
             {
                 "notebook_id": notebook_id,
                 "comparison": "",
-                "error": "請先完成 LLM 設定，才能比較來源。",
+                "error": i18n.t("flow.compare_no_llm"),
                 "filenames": [s["filename"] for s in summaries],
                 "focus": focus,
             },
@@ -1384,10 +1410,10 @@ async def notebook_compare(
             usage_context={"user_id": user["id"], "notebook_id": notebook_id},
         )
         if not comparison:
-            error = "模型回傳的比較結果為空，請再試一次。"
+            error = i18n.t("flow.compare_empty")
     except Exception as exc:
         logger.exception("compare_failed user_id=%s notebook_id=%s sources=%s", user["id"], notebook_id, len(summaries))
-        error = friendly_error_message(exc, "來源比較")
+        error = friendly_error_message(exc, i18n.t("error.action_compare"))
 
     logger.info(
         "compare_completed user_id=%s notebook_id=%s sources=%s focus_chars=%s chars=%s",
@@ -1790,7 +1816,7 @@ async def _answer_question(
             "chat_no_retrieval_results user_id=%s top_score=%.3f threshold=%.2f",
             user_id, top_score, threshold,
         )
-        return "依據所選的來源，我無法判斷這個問題的答案。", [], metadata
+        return i18n.t("chat.abstain"), [], metadata
 
     generate_started = time.perf_counter()
     answer = await generate_answer(question, retrieved, settings, usage_context=usage_context)
@@ -1946,7 +1972,7 @@ async def ask(
     except Exception as exc:
         if conversation_id is None:
             conversation_id, _history, _settings = _prepare_question(notebook_id, user, question, None, source_ids)
-        answer = friendly_error_message(exc, "回答生成")
+        answer = friendly_error_message(exc, i18n.t("error.action_answer"))
         citations = []
         metadata["outcome"] = "error"
         metadata["error"] = str(exc)[:200]
@@ -2002,7 +2028,7 @@ async def ask_stream(
                 metadata={"source_count": len(source_ids)},
             )
             yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
-            yield sse_event("status", {"text": "正在檢索來源…"})
+            yield sse_event("status", {"text": i18n.t("js.retrieving")})
 
             retrieve_started = time.perf_counter()
             retrieved = await retrieve(question, None, settings, history, user["id"], source_ids, usage_context=usage_context)
@@ -2013,12 +2039,12 @@ async def ask_stream(
                 metadata["top_score"] = round(top_score, 3)
 
             if not retrieved or top_score < active_low_confidence_threshold():
-                answer = "依據所選的來源，我無法判斷這個問題的答案。"
+                answer = i18n.t("chat.abstain")
                 metadata["outcome"] = "low_confidence" if retrieved else "no_retrieval"
                 metadata["threshold"] = active_low_confidence_threshold()
                 yield sse_event("chunk", {"text": answer})
             else:
-                yield sse_event("status", {"text": "正在生成回答…"})
+                yield sse_event("status", {"text": i18n.t("js.generating")})
                 generate_started = time.perf_counter()
                 async for piece in generate_answer_stream(question, retrieved, settings, usage_context=usage_context):
                     answer += piece
@@ -2049,9 +2075,9 @@ async def ask_stream(
                     # Still can't establish a conversation. Report the error and
                     # end the stream cleanly rather than aborting the generator
                     # (which would leave the client with no error/done event).
-                    yield sse_event("error", {"text": friendly_error_message(exc, "回答生成")})
+                    yield sse_event("error", {"text": friendly_error_message(exc, i18n.t("error.action_answer"))})
                     return
-            answer = friendly_error_message(exc, "回答生成")
+            answer = friendly_error_message(exc, i18n.t("error.action_answer"))
             # Update (not replace) so retrieval metrics gathered before the
             # failure survive into the saved metadata.
             metadata.update({"outcome": "error", "error": str(exc)[:200]})
@@ -2231,7 +2257,7 @@ def export_conversation(
         else:
             lines += [message["content"], ""]
             if message["citations"]:
-                lines.append("> 引用來源：")
+                lines.append("> " + i18n.t("export.citations"))
                 for c in message["citations"]:
                     lines.append(f"> [{c.get('index')}] {c.get('filename')} · {c.get('location')}")
                 lines.append("")
@@ -2261,7 +2287,7 @@ def export_notes(
             "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
             (notebook_id, user["id"]),
         ).fetchall()
-    lines = [f"# {notebook['title']} — 筆記", ""]
+    lines = [f"# {notebook['title']} — {i18n.t('export.notes_suffix')}", ""]
     for note in notes:
         title = note["title"] or note["content"][:40]
         lines += [f"## {title}", "", note["content"], "", f"_{note['created_at']}_", "", "---", ""]
@@ -2294,7 +2320,7 @@ def export_note(
         ).fetchone()
         if note is None:
             raise HTTPException(status_code=404, detail="找不到筆記")
-    title = note["title"] or note["content"][:40] or "筆記"
+    title = note["title"] or note["content"][:40] or i18n.t("export.notes_suffix")
     lines = [f"# {title}", "", note["content"], "", f"_{note['created_at']}_", ""]
     record_audit_event(
         request,
@@ -2449,7 +2475,7 @@ async def source_minutes(
         if source is None:
             return render(
                 request, "_minutes_result.html",
-                {"minutes": "", "error": "找不到已索引的來源，請重新整理後再試。", "filename": ""},
+                {"minutes": "", "error": i18n.t("flow.minutes_no_source"), "filename": ""},
                 status_code=404,
             )
         # Cap the fetch: generate_meeting_minutes uses ~16k chars and chunks are
@@ -2474,7 +2500,7 @@ async def source_minutes(
                 "minutes": "",
                 "error": "",
                 "filename": source["filename"],
-                "warning": "這份來源看起來不像會議逐字稿或會議紀錄。",
+                "warning": i18n.t("flow.minutes_not_meeting"),
                 "warning_detail": likelihood["reason"],
                 "notebook_id": notebook_id,
                 "source_id": source_id,
@@ -2484,7 +2510,7 @@ async def source_minutes(
     if not settings.get("api_key") or not settings.get("chat_model"):
         return render(
             request, "_minutes_result.html",
-            {"minutes": "", "error": "請先在系統設定完成 LLM 設定。", "filename": source["filename"], "warning": ""},
+            {"minutes": "", "error": i18n.t("flow.minutes_no_llm"), "filename": source["filename"], "warning": ""},
             status_code=400,
         )
 
@@ -2496,7 +2522,7 @@ async def source_minutes(
     if not minutes:
         return render(
             request, "_minutes_result.html",
-            {"minutes": "", "error": "模型未能產生會議記錄，請再試一次。", "filename": source["filename"]},
+            {"minutes": "", "error": i18n.t("flow.minutes_empty"), "filename": source["filename"]},
             status_code=502,
         )
 
@@ -2616,13 +2642,13 @@ async def notebook_artifact(
     if not summaries:
         return render(
             request, "_artifact_result.html",
-            {**base_ctx, "error": "先完成來源索引，才能生成。"},
+            {**base_ctx, "error": i18n.t("flow.artifact_need_index")},
             status_code=400,
         )
     if not settings.get("api_key") or not settings.get("chat_model"):
         return render(
             request, "_artifact_result.html",
-            {**base_ctx, "error": "請先完成 LLM 設定，才能生成。"},
+            {**base_ctx, "error": i18n.t("flow.artifact_no_llm")},
             status_code=400,
         )
 
@@ -2636,10 +2662,10 @@ async def notebook_artifact(
             usage_context={"user_id": user["id"], "notebook_id": notebook_id},
         )
         if not artifact:
-            error = "模型未回傳內容，請再試一次。"
+            error = i18n.t("flow.artifact_empty")
     except Exception as exc:
         logger.exception("artifact_failed user_id=%s notebook_id=%s kind=%s", user["id"], notebook_id, kind)
-        error = friendly_error_message(exc, f"{label}生成")
+        error = friendly_error_message(exc, i18n.t("error.action_generate", label=label))
 
     logger.info(
         "artifact_completed user_id=%s notebook_id=%s kind=%s sources=%s chars=%s",
@@ -2674,7 +2700,7 @@ async def translate_source_summary(
     if not summaries:
         return render(
             request, "_translate_result.html",
-            {**base_ctx, "error": "找不到已索引、且有摘要可翻譯的來源。"},
+            {**base_ctx, "error": i18n.t("flow.translate_no_source")},
             status_code=404,
         )
     source = summaries[0]
@@ -2682,7 +2708,7 @@ async def translate_source_summary(
     if not settings.get("api_key") or not settings.get("chat_model"):
         return render(
             request, "_translate_result.html",
-            {**base_ctx, "error": "請先完成 LLM 設定，才能翻譯。"},
+            {**base_ctx, "error": i18n.t("flow.translate_no_llm")},
             status_code=400,
         )
 
@@ -2696,10 +2722,10 @@ async def translate_source_summary(
             usage_context={"user_id": user["id"], "notebook_id": notebook_id, "source_id": source_id},
         )
         if not translated:
-            error = "模型未回傳翻譯，請再試一次。"
+            error = i18n.t("flow.translate_empty")
     except Exception as exc:
         logger.exception("translate_failed user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
-        error = friendly_error_message(exc, "摘要翻譯")
+        error = friendly_error_message(exc, i18n.t("error.action_translate"))
 
     logger.info(
         "translate_summary_completed user_id=%s notebook_id=%s source_id=%s lang=%s chars=%s",
@@ -3882,7 +3908,7 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
         runs = [
             dict(row)
             for row in conn.execute(
-                "SELECT * FROM eval_runs WHERE eval_set_id = ? ORDER BY created_at DESC, id DESC LIMIT 20",
+                "SELECT * FROM eval_runs WHERE eval_set_id = ? ORDER BY created_at DESC, id DESC LIMIT 21",
                 (eval_set_id,),
             ).fetchall()
         ]
@@ -3903,6 +3929,8 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
             "deterministic": "自動",
             "manual": "手動",
         }.get(origin, origin)
+    runs_truncated = len(runs) > 20  # LIMIT+1 → surface the cap (UX review M4)
+    runs = runs[:20]
     for run in runs:
         run["metrics"] = loads(run.get("metrics_json") or "{}")
     return {
@@ -3911,6 +3939,7 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
         "items": items,
         "approved_count": sum(1 for item in items if item["approved"]),
         "runs": runs,
+        "runs_truncated": runs_truncated,
         "profiles": profiles,
         "item_type_options": eval_item_type_options(),
     }
@@ -3971,7 +4000,7 @@ def admin_evals(
                 JOIN notebooks n ON n.id = es.notebook_id
                 JOIN users u ON u.id = es.target_user_id
                 ORDER BY es.updated_at DESC, es.id DESC
-                LIMIT 50
+                LIMIT 51
                 """
             ).fetchall()
         ]
@@ -3984,10 +4013,15 @@ def admin_evals(
                 JOIN eval_sets es ON es.id = er.eval_set_id
                 JOIN notebooks n ON n.id = es.notebook_id
                 ORDER BY er.created_at DESC, er.id DESC
-                LIMIT 20
+                LIMIT 21
                 """
             ).fetchall()
         ]
+    # LIMIT+1 → tell the user the list was capped (no pagination; UX review M4).
+    eval_sets_truncated = len(eval_sets) > 50
+    eval_sets = eval_sets[:50]
+    runs_truncated = len(runs) > 20
+    runs = runs[:20]
     for run in runs:
         run["metrics"] = loads(run.get("metrics_json") or "{}")
     return render(
@@ -4000,7 +4034,9 @@ def admin_evals(
             "notebooks": notebooks,
             "notebook_q": notebook_q,
             "eval_sets": eval_sets,
+            "eval_sets_truncated": eval_sets_truncated,
             "runs": runs,
+            "runs_truncated": runs_truncated,
         },
     )
 
@@ -4116,7 +4152,7 @@ def admin_eval_set_detail(
         {
             "user": user,
             "breadcrumb_items": [
-                {"label": "Eval 工作台", "href": "/admin/evals"},
+                {"label": i18n.t("eval.title"), "href": "/admin/evals"},
                 {"label": eval_set["name"], "href": None},
             ],
             **context,
@@ -4514,7 +4550,7 @@ def admin_eval_run_detail(
         {
             "user": user,
             "breadcrumb_items": [
-                {"label": "Eval 工作台", "href": "/admin/evals"},
+                {"label": i18n.t("eval.title"), "href": "/admin/evals"},
                 {"label": run["eval_set_name"], "href": f"/admin/evals/sets/{run['eval_set_id']}"},
                 {"label": f"Run #{run['id']}", "href": None},
             ],
@@ -4862,7 +4898,7 @@ def admin_eval_compare(
         {
             "user": user,
             "breadcrumb_items": [
-                {"label": "Eval 工作台", "href": "/admin/evals"},
+                {"label": i18n.t("eval.title"), "href": "/admin/evals"},
                 {"label": base_run["eval_set_name"], "href": f"/admin/evals/sets/{base_run['eval_set_id']}"},
                 {"label": f"比較 #{context['base_run']['id']} ↔ #{context['candidate_run']['id']}", "href": None},
             ],

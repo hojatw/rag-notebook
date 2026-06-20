@@ -160,8 +160,9 @@ available:
 ## Known Follow-Ups
 
 - No offline embedding fallback: configure embeddings before uploads.
-- UI strings are still hardcoded zh-TW; i18n work is tracked as
-  `ROADMAP.md` U15a/U15b.
+- UI copy is routed through a `zh-TW` message catalog (i18n foundation done,
+  `ROADMAP.md` U15a); adding an `en` locale + admin/per-user language controls
+  is U15b. See [`docs/I18N.md`](docs/I18N.md).
 - Admin LLM settings still use one global configuration; diagnostics and
   multi-profile activation are tracked as `ROADMAP.md` O1.
 - New source-format support should start with ingestion diagnostics, then

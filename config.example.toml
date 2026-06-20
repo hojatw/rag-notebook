@@ -50,3 +50,7 @@ briefing_lock_timeout_s = 90.0
 upload_batch_limit = 5        # max files per upload request
 suggestions_ttl_hours = 24
 briefing_ttl_hours = 24
+
+# --- UI / i18n ---------------------------------------------------------------
+[ui]
+language = "zh-TW"            # default UI locale; the i18n catalog falls back to this

@@ -15,6 +15,7 @@
      @keydown.escape.window="$dispatch('close-preview')">
   <div class="modal-backdrop" @click="$dispatch('close-preview')"></div>
   <div class="modal-panel" role="dialog" aria-modal="true" aria-label="預覽與工具視窗" tabindex="-1" x-ref="panel">
+    <button type="button" class="modal-close" aria-label="關閉視窗" @click="$dispatch('close-preview')">✕</button>
     <div id="preview-content"></div>
   </div>
 </div>
@@ -22,7 +23,7 @@
 <section class="workspace">
 
   {# ---------------- LEFT: Sources ---------------- #}
-  <aside class="workspace-pane workspace-sources" aria-label="Sources">
+  <aside class="workspace-pane workspace-sources" aria-label="{{ t('a11y.sources') }}">
     <header class="pane-head">
       <h2>來源</h2>
       <div class="inline-actions">
@@ -55,23 +56,26 @@
           :class="{ 'is-dragover': over }">
       {{ csrf_input() }}
       <label class="file-picker">
-        <span>新增來源</span>
+        <span class="file-picker-heading">新增來源</span>
         <input type="file"
                name="files"
                accept=".pdf,.txt,.md,.markdown,.docx,.html,.htm,.srt,.vtt"
                multiple
                required
+               class="file-picker-input"
+               aria-label="選擇要上傳的來源檔案"
                x-ref="input"
                data-file-label="#nb-selected-file"
                data-file-summary="#nb-file-summary"
                data-max-files="{{ upload_batch_limit }}"
                {% if not llm_status.ready %}disabled{% endif %}>
+        <span class="file-picker-trigger" aria-hidden="true">＋ 選擇檔案</span>
       </label>
-      <span id="nb-selected-file" class="file-name">拖曳最多 {{ upload_batch_limit }} 個檔案到此，或點擊選擇</span>
+      <span id="nb-selected-file" class="file-name">{{ t('js.upload_hint', max=upload_batch_limit) }}</span>
       <div id="nb-file-summary" class="upload-file-summary" aria-live="polite"></div>
       <button type="submit" class="wide" data-loading-text="上傳中..."
               {% if not llm_status.ready %}disabled{% endif %}>上傳</button>
-      <p class="hint">PDF · TXT · Markdown · DOCX · HTML · 字幕(SRT/VTT) · 一次最多 {{ upload_batch_limit }} 個</p>
+      <p class="hint">{{ t('upload.formats', count=upload_batch_limit) }}</p>
     </form>
 
     <ul class="source-list">
@@ -90,7 +94,7 @@
   </aside>
 
   {# ---------------- CENTER: Chat ---------------- #}
-  <section class="workspace-pane workspace-chat" aria-label="Chat" id="chat-pane">
+  <section class="workspace-pane workspace-chat" aria-label="{{ t('a11y.chat') }}" id="chat-pane">
     <header class="chat-head">
       <div class="chat-title-row">
         <span class="notebook-emoji">{{ notebook.emoji or "📓" }}</span>
@@ -230,7 +234,7 @@
      generator is a tile that opens in the preview-modal and writes its result
      to the notes shelf — adding a feature is +1 tile, not +1 stacked card.
      Starter questions moved to the chat empty-state. #}
-  <aside class="workspace-pane workspace-studio" aria-label="Studio">
+  <aside class="workspace-pane workspace-studio" aria-label="{{ t('a11y.studio') }}">
     <header class="pane-head">
       <h2>工作台</h2>
     </header>

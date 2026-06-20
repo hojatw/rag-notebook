@@ -867,7 +867,7 @@ def test_admin_eval_workbench_creates_default_profile(monkeypatch, tmp_path):
 
         resp = client.get("/admin/evals")
         assert resp.status_code == 200
-        assert "Eval 工作台" in resp.text
+        assert "評測工作台" in resp.text
         assert "目前系統預設" in resp.text           # active-profile line
         assert 'href="/admin/evals/profiles"' in resp.text
         assert "歷史執行紀錄" in resp.text
@@ -914,10 +914,10 @@ def test_admin_eval_help_page_documents_tuning_workflow(monkeypatch, tmp_path):
 
         help_page = client.get("/admin/evals/help")
         assert help_page.status_code == 200
-        assert "Eval 調參指南" in help_page.text
+        assert "調參指南" in help_page.text
         assert "先分類錯誤" in help_page.text
         assert "調參方向速查" in help_page.text
-        assert "Domain hints / answer policy" in help_page.text
+        assert "領域提示與回答規則" in help_page.text
         assert "current_profile_fields" not in help_page.text
         assert "<code>vector_weight</code>" in help_page.text
         assert 'aria-current="page">調參指南</a>' in help_page.text
@@ -967,7 +967,7 @@ def test_admin_eval_workbench_search_generate_approve_and_delete(monkeypatch, tm
         resp = client.get("/admin/evals", params={"notebook_q": "Customer"})
         assert resp.status_code == 200
         assert "Customer indexed" in resp.text
-        assert "user · 1 indexed sources" in resp.text
+        assert "user · 1 個已索引來源" in resp.text
         assert "Admin indexed" not in resp.text
 
         created = client.post(
@@ -994,8 +994,8 @@ def test_admin_eval_workbench_search_generate_approve_and_delete(monkeypatch, tm
 
         detail = client.get(f"/admin/evals/sets/{eval_set_id}")
         assert detail.status_code == 200
-        assert '<nav aria-label="Breadcrumb" class="breadcrumb">' in detail.text
-        assert 'href="/admin/evals">Eval 工作台</a>' in detail.text
+        assert '<nav aria-label="麵包屑導覽" class="breadcrumb">' in detail.text
+        assert 'href="/admin/evals">評測工作台</a>' in detail.text
         assert 'id="eval-items"' in detail.text
         assert "返回 Eval 工作台" not in detail.text
         assert "自動生成 draft 題目" in detail.text
@@ -1237,8 +1237,8 @@ def test_admin_eval_set_runner_records_results(monkeypatch, tmp_path):
         detail = client.get(f"/admin/evals/runs/{run_id}")
         assert detail.status_code == 200
         assert "Alpha Eval" in detail.text
-        assert '<nav aria-label="Breadcrumb" class="breadcrumb">' in detail.text
-        assert 'href="/admin/evals">Eval 工作台</a>' in detail.text
+        assert '<nav aria-label="麵包屑導覽" class="breadcrumb">' in detail.text
+        assert 'href="/admin/evals">評測工作台</a>' in detail.text
         assert f'href="/admin/evals/sets/{eval_set_id}">Alpha Eval</a>' in detail.text
         assert "返回 Eval Set" not in detail.text
         assert "hit" in detail.text
@@ -1275,11 +1275,11 @@ def test_create_apply_and_rollback_retrieval_profile(monkeypatch, tmp_path):
         landing = client.get("/admin/evals")
         assert landing.status_code == 200
         assert 'href="/admin/evals/profiles"' in landing.text
-        assert "目前作用中的 Retrieval Profile" in landing.text
+        assert "目前作用中的檢索 Profile" in landing.text
 
         profiles_page = client.get("/admin/evals/profiles")  # creates the baseline profile
         assert profiles_page.status_code == 200
-        assert "Retrieval Profiles" in profiles_page.text
+        assert "檢索 Profile" in profiles_page.text
         assert "建立候選 Profile" in profiles_page.text
         assert "系統預設" in profiles_page.text
 
@@ -1433,7 +1433,7 @@ def test_admin_eval_run_results_partial_polls_while_running(monkeypatch, tmp_pat
         assert page.status_code == 200
         assert f'hx-get="/admin/evals/runs/{run_id}/_status"' in page.text
         assert f'hx-get="/admin/evals/runs/{run_id}/_results"' in page.text
-        assert "尚未產生 per-question results" in page.text
+        assert "尚未產生逐題結果" in page.text
         assert "低信心閾值" in page.text
 
         with db.connect() as conn:

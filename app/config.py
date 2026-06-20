@@ -74,6 +74,11 @@ class RuntimeConfig:
 
 
 @dataclasses.dataclass
+class UIConfig:
+    language: str = "zh-TW"  # default UI locale; the i18n catalog falls back to this
+
+
+@dataclasses.dataclass
 class AppConfig:
     retrieval: RetrievalConfig = dataclasses.field(default_factory=RetrievalConfig)
     chunking: ChunkingConfig = dataclasses.field(default_factory=ChunkingConfig)
@@ -81,6 +86,7 @@ class AppConfig:
     llm_retry: LLMRetryConfig = dataclasses.field(default_factory=LLMRetryConfig)
     jobs: JobsConfig = dataclasses.field(default_factory=JobsConfig)
     runtime: RuntimeConfig = dataclasses.field(default_factory=RuntimeConfig)
+    ui: UIConfig = dataclasses.field(default_factory=UIConfig)
 
 
 def _coerce(raw: Any, field_type: type) -> Any:
@@ -132,6 +138,7 @@ def load_config() -> AppConfig:
         llm_retry=_load_group(LLMRetryConfig, "llm_retry", toml_data),
         jobs=_load_group(JobsConfig, "jobs", toml_data),
         runtime=_load_group(RuntimeConfig, "runtime", toml_data),
+        ui=_load_group(UIConfig, "ui", toml_data),
     )
 
 

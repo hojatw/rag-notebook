@@ -1,3 +1,15 @@
+// i18n (Phase 1): client-side strings come from window.I18N (emitted by
+// base.html from the app/i18n.py catalog). `tr()` falls back to the literal so
+// a missing key degrades safely. Pass `vars` to fill `{name}` placeholders
+// (all occurrences), matching the server-side t(**kwargs) contract.
+function tr(key, fallback, vars) {
+  let s = (window.I18N && window.I18N[key]) || fallback;
+  if (vars) {
+    for (const name in vars) s = s.split("{" + name + "}").join(String(vars[name]));
+  }
+  return s;
+}
+
 // Register the drag-and-drop component with Alpine. v3 sandboxes x-data
 // expressions, so a bare `dropzone()` lookup against window does NOT resolve.
 // Using Alpine.data() guarantees the factory is in scope.
@@ -19,7 +31,7 @@ document.addEventListener("alpine:init", () => {
       for (let i = 0; i < cap; i += 1) transfer.items.add(dropped[i]);
       input.files = transfer.files;
       if (max > 0 && dropped.length > max) {
-        window.alert(`一次最多上傳 ${max} 個檔案，已保留前 ${max} 個。`);
+        window.alert(tr("upload_too_many", "一次最多上傳 {max} 個檔案，已保留前 {max} 個。", { max }));
       }
       input.dispatchEvent(new Event("change", { bubbles: true }));
     },
@@ -106,14 +118,14 @@ function bindStreamingAskForms(root) {
             if (hidden && data.conversation_id) hidden.value = data.conversation_id;
             if (data.url) window.history.pushState({}, "", data.url);
           } else if (eventName === "status") {
-            stream.status.textContent = data.text || "處理中…";
+            stream.status.textContent = data.text || tr("processing", "處理中…");
           } else if (eventName === "chunk") {
-            stream.status.textContent = "正在生成回答…";
+            stream.status.textContent = tr("generating", "正在生成回答…");
             stream.answer += data.text || "";
             stream.body.textContent = stream.answer;
             stream.body.scrollIntoView({ behavior: "smooth", block: "end" });
           } else if (eventName === "error") {
-            stream.status.textContent = data.text || "回答生成失敗。";
+            stream.status.textContent = data.text || tr("answer_failed", "回答生成失敗。");
           } else if (eventName === "done") {
             replaceMessagesHtml(data.html);
             if (data.url) window.history.pushState({}, "", data.url);
@@ -121,7 +133,7 @@ function bindStreamingAskForms(root) {
         });
       } catch (error) {
         console.error("[notebook] stream failed", error);
-        stream.status.textContent = "回答生成失敗，請稍後再試。";
+        stream.status.textContent = tr("answer_failed_retry", "回答生成失敗，請稍後再試。");
       } finally {
         resetForm();
       }
@@ -140,7 +152,7 @@ function createStreamingMessage(messages, question) {
 
   const user = document.createElement("article");
   user.className = "message user";
-  user.innerHTML = "<div class=\"message-head\"><div class=\"role\">你</div></div>";
+  user.innerHTML = "<div class=\"message-head\"><div class=\"role\">" + tr("role_you", "你") + "</div></div>";
   const userBody = document.createElement("p");
   userBody.className = "message-body";
   userBody.textContent = question;
@@ -149,8 +161,8 @@ function createStreamingMessage(messages, question) {
   const assistant = document.createElement("article");
   assistant.className = "message assistant streaming-message";
   assistant.innerHTML =
-    "<div class=\"message-head\"><div class=\"role\">助理</div></div>" +
-    "<p class=\"stream-status muted small\">正在檢索來源…</p>";
+    "<div class=\"message-head\"><div class=\"role\">" + tr("role_assistant", "助理") + "</div></div>" +
+    "<p class=\"stream-status muted small\">" + tr("retrieving", "正在檢索來源…") + "</p>";
   const body = document.createElement("div");
   body.className = "message-body markdown-body streaming-body";
   assistant.appendChild(body);
@@ -222,7 +234,7 @@ function bindCopyButtons(root) {
       try {
         await navigator.clipboard.writeText(text);
         const original = button.textContent;
-        button.textContent = "✓ 已複製";
+        button.textContent = tr("copied", "✓ 已複製");
         setTimeout(() => { button.textContent = original; }, 1500);
       } catch (e) {
         console.error("[notebook] copy failed", e);
@@ -306,8 +318,9 @@ function bindAskFormThinkingBubble(root) {
       q.textContent = question;
       const bubble = document.createElement("div");
       bubble.className = "thinking-bubble";
+      const thinkingLabel = tr("thinking", "思考中");
       bubble.innerHTML =
-        "<span>思考中</span>" +
+        "<span>" + thinkingLabel + "</span>" +
         "<span class=\"thinking-dots\"><span></span><span></span><span></span></span>";
       wrap.appendChild(q);
       wrap.appendChild(bubble);
@@ -393,16 +406,16 @@ function bindFileLabels(root) {
     const max = parseInt(input.getAttribute("data-max-files") || "0", 10);
     input.addEventListener("change", () => {
       if (max > 0 && input.files.length > max) {
-        window.alert(`一次最多上傳 ${max} 個檔案，已保留前 ${max} 個。`);
+        window.alert(tr("upload_too_many", "一次最多上傳 {max} 個檔案，已保留前 {max} 個。", { max }));
         const transfer = new DataTransfer();
         for (let i = 0; i < max; i += 1) transfer.items.add(input.files[i]);
         input.files = transfer.files;
       }
       if (!label) return;
       const count = input.files.length;
-      if (!count) label.textContent = `拖曳最多 ${max || 5} 個檔案到此，或點擊選擇`;
+      if (!count) label.textContent = tr("upload_hint", "拖曳最多 {max} 個檔案到此，或點擊選擇", { max: max || 5 });
       else if (count === 1) label.textContent = input.files[0].name;
-      else label.textContent = `已選擇 ${count} 個檔案`;
+      else label.textContent = tr("upload_selected", "已選擇 {count} 個檔案", { count });
       if (summary) renderFileSummary(summary, input.files, max);
     });
   });
@@ -417,9 +430,12 @@ function renderFileSummary(summary, files, max) {
   const list = [...files].map((file) =>
     `<li><span>${escapeHtml(file.name)}</span><span>${formatBytes(file.size)}</span></li>`
   ).join("");
-  summary.innerHTML =
-    `<p>${files.length} / ${max || files.length} 個檔案 · ${formatBytes(total)} · 送出後會排入索引</p>` +
-    `<ul>${list}</ul>`;
+  const summaryText = tr(
+    "upload_summary",
+    "{count} / {max} 個檔案 · {size} · 送出後會排入索引",
+    { count: files.length, max: max || files.length, size: formatBytes(total) },
+  );
+  summary.innerHTML = `<p>${escapeHtml(summaryText)}</p><ul>${list}</ul>`;
 }
 
 function formatBytes(size) {
@@ -524,8 +540,8 @@ function bindProviderNotes() {
   if (provider.dataset.providerBound) return;
   provider.dataset.providerBound = "1";
   const notes = {
-    openai_compatible: "請填入相容 /v1 的 base URL；模型欄位填模型名稱。",
-    azure_openai: "請填入 Azure 資源端點；模型欄位填部署（deployment）名稱。",
+    openai_compatible: tr("provider_hint_openai", "請填入相容 /v1 的 base URL；模型欄位填模型名稱。"),
+    azure_openai: tr("provider_hint_azure", "請填入 Azure 資源端點；模型欄位填部署（deployment）名稱。"),
   };
   const updateNote = () => {
     providerNote.textContent = notes[provider.value] || notes.openai_compatible;

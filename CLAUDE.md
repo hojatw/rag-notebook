@@ -14,6 +14,7 @@ NotebookLM-style RAG proof of concept: FastAPI + Jinja2 + HTMX + Alpine.js, SQLi
 - `docs/ROADMAP.md` — product/admin roadmap: UX, Eval Workbench, AI governance, LLM operations, source-format support, and new AI features. Performance/quality items stay in their own backlogs.
 - `docs/SPREADSHEET_INGESTION.md` — design notes for XLSX/CSV ingestion, spreadsheet types, Q&A-first chunking, and diagnostics expectations.
 - `docs/UI.md` — front-end design conventions (page archetypes, components, data presentation, interaction, voice). Read before adding or restyling any page/component; align new UI to it.
+- `docs/I18N.md` — UI localisation reference: the message catalog + `t()`/`window.I18N`, how to add strings/locales, how to switch the locale, and known exceptions. Read before adding user-facing copy or touching language behavior; never hardcode UI strings.
 - `handover.md` (gitignored, when present) — cross-session work state; useful context, not a durable rule source.
 
 ## Commands

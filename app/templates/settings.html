@@ -24,7 +24,7 @@
         <input name="base_url" value="{{ settings.base_url }}" placeholder="https://api.openai.com/v1 or https://my-resource.openai.azure.com">
       </label>
       <label>
-        Embedding base URL <span class="muted">（選填 — 留空則沿用上方聊天 URL）</span>
+        Embedding Base URL / Azure embedding 端點 <span class="muted">（選填 — 留空則沿用上方聊天 URL）</span>
         <input name="embedding_base_url" value="{{ settings.embedding_base_url or '' }}" placeholder="http://localhost:11434/v1（聊天與 embedding 分開部署時填）">
       </label>
       <label>

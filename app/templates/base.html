@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="{{ csrf_token }}">
     <title>{{ title or "NotebookLM RAG POC" }}</title>
+    {# i18n (Phase 0): expose client-side strings before the deferred app.js runs. #}
+    <script>window.I18N = {{ i18n_js() | tojson }};</script>
     <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
     <script defer src="{{ url_for('static', path='/vendor/marked.min.js') }}"></script>
     <script defer src="{{ url_for('static', path='/vendor/purify.min.js') }}"></script>
@@ -26,7 +28,7 @@
       </a>
       {% if user %}
         {% if breadcrumb_items %}
-          <nav aria-label="Breadcrumb" class="breadcrumb">
+          <nav aria-label="{{ t('a11y.breadcrumb') }}" class="breadcrumb">
             {% for crumb in breadcrumb_items %}
               {% if crumb.href %}
                 <a href="{{ crumb.href }}">{{ crumb.label }}</a>
@@ -37,21 +39,21 @@
             {% endfor %}
           </nav>
         {% elif breadcrumb %}
-          <nav aria-label="Breadcrumb" class="breadcrumb">
+          <nav aria-label="{{ t('a11y.breadcrumb') }}" class="breadcrumb">
             <a href="/notebooks">筆記本</a>
             <span class="sep">›</span>
             <span class="crumb-current">{{ breadcrumb }}</span>
           </nav>
         {% else %}
-          <nav aria-label="Primary" class="primary-nav">
-            <a class="{% if request.url.path == '/notebooks' or request.url.path.startswith('/notebooks/') %}active{% endif %}" href="/notebooks" {% if request.url.path == '/notebooks' or request.url.path.startswith('/notebooks/') %}aria-current="page"{% endif %}>筆記本</a>
-            <a class="{% if request.url.path.startswith('/search') %}active{% endif %}" href="/search" {% if request.url.path.startswith('/search') %}aria-current="page"{% endif %}>搜尋</a>
+          <nav aria-label="{{ t('a11y.primary_nav') }}" class="primary-nav">
+            <a class="{% if request.url.path == '/notebooks' or request.url.path.startswith('/notebooks/') %}active{% endif %}" href="/notebooks" {% if request.url.path == '/notebooks' or request.url.path.startswith('/notebooks/') %}aria-current="page"{% endif %}>{{ t("nav.notebooks") }}</a>
+            <a class="{% if request.url.path.startswith('/search') %}active{% endif %}" href="/search" {% if request.url.path.startswith('/search') %}aria-current="page"{% endif %}>{{ t("nav.search") }}</a>
             {% if user.is_admin %}
-              <a class="{% if request.url.path.startswith('/admin/users') %}active{% endif %}" href="/admin/users" {% if request.url.path.startswith('/admin/users') %}aria-current="page"{% endif %}>使用者</a>
-              <a class="{% if request.url.path.startswith('/admin/index') %}active{% endif %}" href="/admin/index" {% if request.url.path.startswith('/admin/index') %}aria-current="page"{% endif %}>索引</a>
-              <a class="{% if request.url.path.startswith('/admin/evals') %}active{% endif %}" href="/admin/evals" {% if request.url.path.startswith('/admin/evals') %}aria-current="page"{% endif %}>Eval</a>
-              <a class="{% if request.url.path.startswith('/admin/audit') %}active{% endif %}" href="/admin/audit" {% if request.url.path.startswith('/admin/audit') %}aria-current="page"{% endif %}>稽核</a>
-              <a class="{% if request.url.path.startswith('/settings') %}active{% endif %}" href="/settings" {% if request.url.path.startswith('/settings') %}aria-current="page"{% endif %}>系統設定</a>
+              <a class="{% if request.url.path.startswith('/admin/users') %}active{% endif %}" href="/admin/users" {% if request.url.path.startswith('/admin/users') %}aria-current="page"{% endif %}>{{ t("nav.users") }}</a>
+              <a class="{% if request.url.path.startswith('/admin/index') %}active{% endif %}" href="/admin/index" {% if request.url.path.startswith('/admin/index') %}aria-current="page"{% endif %}>{{ t("nav.index") }}</a>
+              <a class="{% if request.url.path.startswith('/admin/evals') %}active{% endif %}" href="/admin/evals" {% if request.url.path.startswith('/admin/evals') %}aria-current="page"{% endif %}>{{ t("nav.eval") }}</a>
+              <a class="{% if request.url.path.startswith('/admin/audit') %}active{% endif %}" href="/admin/audit" {% if request.url.path.startswith('/admin/audit') %}aria-current="page"{% endif %}>{{ t("nav.audit") }}</a>
+              <a class="{% if request.url.path.startswith('/settings') %}active{% endif %}" href="/settings" {% if request.url.path.startswith('/settings') %}aria-current="page"{% endif %}>{{ t("nav.settings") }}</a>
             {% endif %}
           </nav>
         {% endif %}
@@ -61,7 +63,7 @@
           <a href="/account"
              class="user-chip {% if request.url.path.startswith('/account') %}active{% endif %}"
              title="帳號設定">{{ user.username }}</a>
-          <button type="submit" class="ghost">登出</button>
+          <button type="submit" class="ghost">{{ t("nav.logout") }}</button>
         </form>
       {% endif %}
     </header>
