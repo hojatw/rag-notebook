@@ -88,7 +88,7 @@ For Docker/runtime changes, build the image and smoke-test at least `/` and `/lo
 - Preserve per-user and per-notebook authorization checks on every route that reads or mutates notebook data.
 - Use `load_llm_settings()` when plaintext API keys are needed; do not bypass decryption by reading `llm_settings` directly.
 - Keep password hashing and API-key encryption centralized in `app/security.py`.
-- Treat CSRF protection and streaming responses as known hardening follow-ups unless the user asks to implement them. (LLM retry/backoff and worker-backed ingest are implemented — see `docs/PERFORMANCE.md`.)
+- CSRF protection, streaming responses, LLM retry/backoff, and worker-backed ingest are implemented; keep them working when touching forms, HTMX requests, chat streaming, provider HTTP, or ingest flow. See `docs/SECURITY.md` and `docs/PERFORMANCE.md`.
 
 ## Git Hygiene
 

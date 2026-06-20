@@ -51,7 +51,7 @@ When adding a fragment that depends on indexed-source availability, listen for `
 - Never modify or commit `data/` or `logs/` (user state); keep `.env` and real secrets uncommitted. Changing `NOTEBOOKLM_SECRET` invalidates encrypted API keys.
 - Preserve per-user / per-notebook authorization checks on every route that reads or mutates notebook data.
 - Keep password hashing and API-key encryption centralized in `app/security.py`.
-- CSRF protection and streaming responses are known hardening follow-ups — don't add them unless asked. (LLM retry/backoff and worker-backed ingest are now implemented — see `docs/PERFORMANCE.md`.)
+- CSRF protection, streaming responses, LLM retry/backoff, and worker-backed ingest are implemented; keep them working when touching forms, HTMX requests, chat streaming, provider HTTP, or ingest flow. See `docs/SECURITY.md` and `docs/PERFORMANCE.md`.
 
 ## Verifying in the browser
 

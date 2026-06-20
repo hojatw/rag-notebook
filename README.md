@@ -224,7 +224,7 @@ POST /notebooks/{id}/sources/{sid}/reindex                requeue ingest
 POST /notebooks/{id}/sources/{sid}/delete                 delete source + vectors + file
 GET  /notebooks/{id}/sources/{sid}/_partial               HTMX polling: source row
 GET  /notebooks/{id}/sources/{sid}/preview                source preview drawer (chunk list)
-GET  /notebooks/{id}/_source-picker                       HTMX swap: chat-form picker
+GET  /notebooks/{id}/_chat-empty                          HTMX swap: chat empty-state after indexing changes
 
 POST /notebooks/{id}/chat/new                             new conversation
 POST /notebooks/{id}/chat/ask                             ask a question (HTMX: returns messages partial; no-JS: 303)
@@ -250,6 +250,7 @@ POST /notebooks/{id}/notes/{note_id}/edit                 edit a note's title/co
 POST /notebooks/{id}/notes/{note_id}/delete               remove pinned note (also broadcasts pin-cleared)
 GET  /notebooks/{id}/_notes                               HTMX swap: notes section (notes-changed event)
 GET  /notebooks/{id}/notes/export                         download all notes as Markdown
+GET  /notebooks/{id}/notes/{note_id}/export               download one note as Markdown
 
 GET  /account                                             change own password
 POST /account/password                                    save new password
@@ -380,7 +381,7 @@ config.example.toml    Tunable-config template (copy to config.toml to override)
 
 Runtime-generated, gitignored:
 data/
-  app.sqlite3          SQLite metadata (users, notebooks, sources, chunks, conversations, messages, notes, llm_settings).
+  app.sqlite3          SQLite metadata (users, notebooks, sources, chunks, conversations, messages, notes, llm_settings, audit/governance/eval tables).
   uploads/             Per-user original files.
   chroma/              Vector index.
 logs/app.log           Rotating app log.
