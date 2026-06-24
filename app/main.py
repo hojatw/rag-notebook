@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -31,20 +31,25 @@ from . import i18n
 import httpx
 
 from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_meeting_minutes, generate_starter_questions, set_http_client, suggest_followup_questions, translate_summary
+# Used by main itself (chat/ask flow, lifespan, message rendering):
 from .retrieval import (
+    active_low_confidence_threshold,
+    citation_payload,
+    load_active_retrieval_profile,
+    message_with_citations,
+    retrieve,
+)
+# Re-exported only so the test suite can reach them as ``app.main.<name>`` (the
+# retrieval engine now lives in app/retrieval.py); not used by main itself.
+from .retrieval import (  # noqa: F401
     FINAL_CHUNK_COUNT,
     RETRIEVAL_PARAM_DEFAULTS,
-    active_low_confidence_threshold,
     active_retrieval_params,
-    citation_payload,
     current_retrieval_profile_params,
     diversify_candidates,
     fetch_candidate_rows,
     keyword_score,
-    load_active_retrieval_profile,
     merge_candidates,
-    message_with_citations,
-    retrieve,
 )
 from .security import INSECURE_DEV_SECRET, get_app_secret, hash_password, new_csrf_token, sign_user_id, unsign_user_id, valid_csrf_token, verify_password
 from .vector_store import delete_source as delete_source_vectors

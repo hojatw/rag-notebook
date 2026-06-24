@@ -28,6 +28,13 @@ def _fresh_app(monkeypatch, tmp_path):
     monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("NOTEBOOKLM_SECRET", "ui-test-secret")
 
+    # Import app.main FIRST: it is the package's import root. Its bottom-of-file
+    # `app.include_router` block pulls in app.admin / app.evals / app.settings,
+    # which in turn import shared helpers back from app.main. Touching one of
+    # those route modules before app.main is in sys.modules would hit the
+    # circular import mid-initialisation (ImportError). Loading app.main first
+    # resolves the whole graph; the later imports just grab cached modules.
+    import app.main as main
     import app.security as security
     import app.db as db
     import app.vector_store as vector_store
@@ -36,7 +43,6 @@ def _fresh_app(monkeypatch, tmp_path):
     import app.admin as admin
     import app.evals as evals
     import app.settings as app_settings
-    import app.main as main
 
     # Reload in dependency order; main last so its bottom-of-file router includes
     # pick up the freshly reloaded app.admin / app.evals / app.settings modules.
