@@ -59,6 +59,9 @@ def init_db() -> None:
                 chat_model TEXT NOT NULL DEFAULT '',
                 embedding_model TEXT NOT NULL DEFAULT '',
                 api_version TEXT NOT NULL DEFAULT '2024-02-15-preview',
+                embedding_provider TEXT NOT NULL DEFAULT 'openai_compatible',
+                embedding_api_key TEXT NOT NULL DEFAULT '',
+                embedding_api_version TEXT NOT NULL DEFAULT '2024-02-15-preview',
                 temperature REAL NOT NULL DEFAULT 0.2,
                 timeout_seconds REAL NOT NULL DEFAULT 60,
                 diagnostics_json TEXT NOT NULL DEFAULT '{}'
@@ -380,6 +383,35 @@ def init_db() -> None:
         # is unchanged and the app stays embedding-model-agnostic.
         _ensure_column(conn, "llm_settings", "embedding_query_prefix", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "llm_settings", "embedding_passage_prefix", "TEXT NOT NULL DEFAULT ''")
+        # Embedding now has its own independent connection (provider / key /
+        # api-version), so chat and embedding can point at different services
+        # (e.g. Gemma chat on one host, e5 embedding on another). Detect a fresh
+        # add so we can backfill the embedding connection from the previously
+        # shared chat fields once — preserving any already-working setup.
+        _embedding_conn_is_new = "embedding_provider" not in {
+            row["name"] for row in conn.execute("PRAGMA table_info(llm_settings)")
+        }
+        _ensure_column(conn, "llm_settings", "embedding_provider", "TEXT NOT NULL DEFAULT 'openai_compatible'")
+        _ensure_column(conn, "llm_settings", "embedding_api_key", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "llm_settings", "embedding_api_version", "TEXT NOT NULL DEFAULT '2024-02-15-preview'")
+        if _embedding_conn_is_new:
+            # One-time backfill: copy the shared chat connection into the new
+            # embedding connection so existing deployments keep working. Make the
+            # embedding base URL explicit instead of relying on the old implicit
+            # "empty embedding_base_url falls back to base_url" behaviour.
+            conn.execute(
+                """
+                UPDATE llm_settings
+                   SET embedding_provider = provider,
+                       embedding_api_key = api_key,
+                       embedding_api_version = api_version,
+                       embedding_base_url = CASE
+                           WHEN embedding_base_url = '' THEN base_url
+                           ELSE embedding_base_url
+                       END
+                 WHERE id = 1
+                """
+            )
         # O1 Phase 1: compact admin diagnostics for the current single global
         # settings row. Stores only status/capability metadata, never prompts,
         # model outputs, API keys, or raw provider payloads.
@@ -532,6 +564,7 @@ def load_llm_settings(conn: sqlite3.Connection) -> dict[str, Any] | None:
         return None
     settings = dict(row)
     settings["api_key"] = decrypt_secret(settings.get("api_key") or "", _app_secret())
+    settings["embedding_api_key"] = decrypt_secret(settings.get("embedding_api_key") or "", _app_secret())
     return settings
 
 
@@ -549,6 +582,8 @@ def load_llm_settings_for_display(conn: sqlite3.Connection) -> dict[str, Any]:
     row = dict(conn.execute("SELECT * FROM llm_settings WHERE id = 1").fetchone())
     row["api_key_masked"] = bool(row["api_key"])
     row["api_key"] = ""
+    row["embedding_api_key_masked"] = bool(row["embedding_api_key"])
+    row["embedding_api_key"] = ""
     try:
         diagnostics = loads(row.get("diagnostics_json") or "{}")
     except (TypeError, json.JSONDecodeError):

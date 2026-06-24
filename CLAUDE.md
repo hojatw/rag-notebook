@@ -35,7 +35,7 @@ NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload -
 - `app/ingest.py` — text extraction, chunking, vector upsert, per-source summary (best-effort after indexing).
 - `app/jobs.py` — DB-backed ingest queue (`ingest_jobs` table): `enqueue_source`, atomic `claim_next_job`, retry/visibility-timeout. The single swap-point if ingest ever moves to Redis/RQ.
 - `app/worker.py` — ingest worker loop; runs standalone (`python -m app.worker`) or inline in the web lifespan.
-- `app/llm.py` — LLM/embedding HTTP, query rewrite, rerank, starter questions, briefing, compare. Providers: `openai_compatible` and `azure_openai` only (Ollama/vLLM/TEI go through the OpenAI-compatible `/v1` path).
+- `app/llm.py` — LLM/embedding HTTP, query rewrite, rerank, starter questions, briefing, compare. Providers: `openai_compatible` and `azure_openai` only (Ollama/vLLM/TEI go through the OpenAI-compatible `/v1` path). Chat and embedding are **independent connections** (own provider/base-url/key/api-version) resolved via `chat_settings()` / `embedding_settings()`; API key is optional (blank → no auth header).
 - `app/vector_store.py` — Chroma persistent client, diff/full sync, `index_status`, `clear_all_vectors`.
 - `app/security.py` — password hashing, signed session cookies, Fernet API-key encryption (KDF over `NOTEBOOKLM_SECRET`).
 - `app/templates/` — Jinja; HTMX partials are `_*.html`. `app/static/` — `style.css` + `app.js`; self-hosted vendor JS in `app/static/vendor/`.

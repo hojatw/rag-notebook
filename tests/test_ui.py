@@ -1811,7 +1811,8 @@ def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_p
         }
 
     async def fake_embedding_probe(settings, usage_context=None):
-        assert settings["api_key"] == "sk-stored"
+        # Embedding has its own connection/key now, independent of chat.
+        assert settings["api_key"] == "sk-embed"
         assert settings["embedding_model"] == "embed-candidate"
         assert usage_context["user_id"] == 1
         return {
@@ -1837,13 +1838,20 @@ def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_p
         "api_version": "2024-02-15-preview",
         "temperature": "0.2",
         "timeout_seconds": "60",
+        "embedding_provider": "openai_compatible",
+        "embedding_api_key": "",
+        "embedding_api_version": "2024-02-15-preview",
     }
 
     with TestClient(main.app) as client:
         _login(client)
         with db.connect() as conn:
             encrypted = db.encrypt_for_storage("sk-stored")
-            conn.execute("UPDATE llm_settings SET api_key = ? WHERE id = 1", (encrypted,))
+            encrypted_embed = db.encrypt_for_storage("sk-embed")
+            conn.execute(
+                "UPDATE llm_settings SET api_key = ?, embedding_api_key = ? WHERE id = 1",
+                (encrypted, encrypted_embed),
+            )
 
         page = client.get("/settings")
         assert page.status_code == 200

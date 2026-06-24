@@ -253,6 +253,18 @@ MESSAGES: dict[str, dict[str, str]] = {
         "settings.status_failed": "失敗",
         "settings.status_skipped": "未測試",
         "settings.status_not_tested": "未測試",
+        # Split chat/embedding settings cards
+        "settings.chat_card_title": "聊天模型",
+        "settings.chat_card_intro": "回答問題、摘要、簡報等所有生成式功能使用的聊天模型與其連線。",
+        "settings.embedding_card_title": "Embedding 模型",
+        "settings.embedding_card_intro": "把來源切塊向量化、供檢索使用的 embedding 模型與其連線；可與聊天模型指向不同服務。",
+        "settings.connection": "連線",
+        "settings.model_section": "模型",
+        "settings.api_key_optional": "選填 — 本地服務（如 e5 / Ollama / vLLM）不需要 key 時可留空",
+        "settings.api_key_saved": "已儲存 — 留空表示沿用",
+        "settings.azure_api_version": "Azure API 版本",
+        "settings.runtime_params": "執行參數",
+        "settings.dim_mismatch_warn": "偵測到的維度與目前索引不同：更換 embedding 維度需先到 /admin/index 點 Clear 再 Rebuild，現有向量才會相容。",
         # --- Audit log page (Phase 2) ----------------------------------------
         "audit.title": "稽核紀錄",
         "audit.intro": "查核高風險操作、匯出、權限與系統設定變更。中繼資料只保存識別資訊與摘要，不保存 API key 或完整文件內容。",

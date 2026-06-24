@@ -1,10 +1,11 @@
 import asyncio
+import importlib
 
 import httpx
 import pytest
 
 import app.llm as llm
-from app.llm import build_chat_request, build_embedding_request, close_http_client, compare_sources, generate_briefing, get_http_client, parse_eval_candidates, parse_json_strings, parse_rerank_scores, summarize_source
+from app.llm import build_chat_request, build_embedding_request, chat_settings, close_http_client, compare_sources, embedding_settings, generate_briefing, get_http_client, parse_eval_candidates, parse_json_strings, parse_rerank_scores, summarize_source
 
 
 def test_openai_compatible_request_shapes():
@@ -54,6 +55,161 @@ def test_azure_openai_request_shapes():
         "embedding-deployment/embeddings?api-version=2024-02-15-preview"
     )
     assert embedding["headers"] == {"api-key": "secret"}
+
+
+def test_empty_api_key_omits_auth_header():
+    """Local services (e5 / Ollama) need no key — send no auth header at all."""
+    openai_settings = {
+        "provider": "openai_compatible",
+        "base_url": "http://localhost:8001/v1",
+        "api_key": "",
+        "chat_model": "chat-model",
+        "embedding_model": "embedding-model",
+        "embedding_api_key": "",
+    }
+    chat = build_chat_request(openai_settings, "Question")
+    embedding = build_embedding_request(openai_settings, ["Text"])
+    assert chat["headers"] == {}
+    assert embedding["headers"] == {}
+
+    azure_settings = {
+        "provider": "azure_openai",
+        "base_url": "https://r.openai.azure.com",
+        "api_key": "",
+        "chat_model": "chat-deployment",
+        "api_version": "2024-02-15-preview",
+    }
+    azure_chat = build_chat_request(azure_settings, "Question")
+    assert azure_chat["headers"] == {}
+
+
+def test_chat_and_embedding_use_independent_connections():
+    """A split settings row routes chat and embedding to their own endpoints/keys."""
+    settings = {
+        "provider": "azure_openai",
+        "base_url": "https://chat.openai.azure.com",
+        "api_key": "chat-key",
+        "api_version": "2024-02-15-preview",
+        "chat_model": "gpt",
+        "embedding_provider": "openai_compatible",
+        "embedding_base_url": "http://10.0.0.1:8001/v1",
+        "embedding_api_key": "embed-key",
+        "embedding_model": "intfloat/multilingual-e5-large",
+    }
+
+    chat = build_chat_request(settings, "Q")
+    embedding = build_embedding_request(settings, ["T"])
+
+    # Chat → Azure deployment + api-key header.
+    assert chat["url"].startswith("https://chat.openai.azure.com/openai/deployments/gpt/")
+    assert chat["headers"] == {"api-key": "chat-key"}
+    # Embedding → independent OpenAI-compatible host + bearer with its own key.
+    assert embedding["url"] == "http://10.0.0.1:8001/v1/embeddings"
+    assert embedding["headers"] == {"Authorization": "Bearer embed-key"}
+
+
+def test_embedding_settings_honours_empty_split_key():
+    """An explicitly-empty embedding key is kept (not inherited from chat)."""
+    resolved = embedding_settings({
+        "provider": "openai_compatible",
+        "api_key": "chat-key",
+        "embedding_provider": "openai_compatible",
+        "embedding_base_url": "http://e5/v1",
+        "embedding_api_key": "",
+        "embedding_model": "e5",
+    })
+    assert resolved["api_key"] == ""
+    assert resolved["base_url"] == "http://e5/v1"
+
+
+def test_embedding_settings_falls_back_to_chat_for_legacy_dict():
+    """A combined dict without embedding_* columns reuses the chat connection."""
+    resolved = embedding_settings({
+        "provider": "azure_openai",
+        "base_url": "https://legacy",
+        "api_key": "shared-key",
+        "api_version": "2099-01-01",
+        "embedding_model": "ada",
+    })
+    assert resolved["provider"] == "azure_openai"
+    assert resolved["api_key"] == "shared-key"
+    assert resolved["api_version"] == "2099-01-01"
+
+
+def test_embedding_connection_backfilled_from_legacy_shared_fields(monkeypatch, tmp_path):
+    """Upgrading a pre-split DB copies the shared chat connection into embedding."""
+    monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
+    import app.db as db
+    importlib.reload(db)
+    # Pre-create the OLD (pre-split) llm_settings schema, then run migrations.
+    with db.connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE llm_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                provider TEXT NOT NULL DEFAULT 'openai_compatible',
+                base_url TEXT NOT NULL DEFAULT '',
+                embedding_base_url TEXT NOT NULL DEFAULT '',
+                api_key TEXT NOT NULL DEFAULT '',
+                chat_model TEXT NOT NULL DEFAULT '',
+                embedding_model TEXT NOT NULL DEFAULT '',
+                api_version TEXT NOT NULL DEFAULT '2024-02-15-preview',
+                temperature REAL NOT NULL DEFAULT 0.2,
+                timeout_seconds REAL NOT NULL DEFAULT 60
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model, api_version) "
+            "VALUES (1, 'azure_openai', 'https://legacy', ?, 'gpt', 'ada', '2099-01-01')",
+            (db.encrypt_for_storage("legacy-key"),),
+        )
+        conn.commit()
+
+    db.init_db()
+
+    with db.connect() as conn:
+        row = dict(conn.execute("SELECT * FROM llm_settings WHERE id = 1").fetchone())
+        decrypted = db.load_llm_settings(conn)
+    # Existing chat connection untouched; embedding backfilled from it.
+    assert row["embedding_provider"] == "azure_openai"
+    assert row["embedding_api_version"] == "2099-01-01"
+    assert row["embedding_base_url"] == "https://legacy"
+    assert decrypted["embedding_api_key"] == "legacy-key"
+    importlib.reload(db)
+
+
+def test_usage_event_records_embedding_provider_not_chat(monkeypatch):
+    """Embedding usage events must log the embedding connection's provider."""
+    captured = {}
+
+    def fake_record(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(llm, "record_llm_usage_event", fake_record)
+    settings = {
+        "provider": "azure_openai",          # chat connection
+        "embedding_provider": "openai_compatible",  # embedding connection
+        "chat_model": "gpt",
+        "embedding_model": "e5",
+    }
+
+    llm._record_usage_event(
+        settings=settings, call_type="embedding", status="succeeded",
+        latency_ms=1.0, input_chars=1, output_chars=0, usage=None,
+        usage_context=None, model_key="embedding_model",
+    )
+    assert captured["provider"] == "openai_compatible"
+    assert captured["model"] == "e5"
+
+    captured.clear()
+    llm._record_usage_event(
+        settings=settings, call_type="chat", status="succeeded",
+        latency_ms=1.0, input_chars=1, output_chars=0, usage=None,
+        usage_context=None, model_key="chat_model",
+    )
+    assert captured["provider"] == "azure_openai"
+    assert captured["model"] == "gpt"
 
 
 def test_model_json_helpers_accept_fenced_output():

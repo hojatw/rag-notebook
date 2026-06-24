@@ -6,48 +6,139 @@
 {% set diagnostics = settings.diagnostics or {} %}
 {% set chat_diag = diagnostics.get('chat', {}) %}
 {% set embedding_diag = diagnostics.get('embedding', {}) %}
+{% set is_azure_chat = settings.provider == 'azure_openai' %}
+{% set is_azure_embedding = settings.embedding_provider == 'azure_openai' %}
 <section class="settings">
   <header class="settings-head">
     <p class="eyebrow">管理主控台</p>
     <h1>LLM 設定</h1>
-    <p class="muted">所有使用者共用。API key 儲存後即遮罩，不會再回傳到瀏覽器。</p>
+    <p class="muted">所有使用者共用。聊天模型與 embedding 模型各自獨立設定連線；API key 儲存後即遮罩，不會再回傳到瀏覽器。</p>
   </header>
   {% if saved %}<div class="notice">設定已儲存。</div>{% endif %}
-  <form method="post" action="/settings" class="settings-grid" data-loading-form>
+  {% if diagnostic_notice %}<div class="notice">{{ diagnostic_notice }}</div>{% endif %}
+  <form method="post" action="/settings" class="settings-grid" data-loading-form
+        x-data="{ tab: '{{ active_tab or 'chat' }}' }">
     {{ csrf_input() }}
-    <section class="settings-section">
-      <h2>連線</h2>
+
+    <nav class="eval-tabs" aria-label="{{ t('settings.model_section') }}">
+      <button type="button" class="eval-tab" :class="{ 'is-current': tab === 'chat' }"
+              :aria-current="tab === 'chat' ? 'page' : false" @click="tab = 'chat'">{{ t('settings.chat_card_title') }}</button>
+      <button type="button" class="eval-tab" :class="{ 'is-current': tab === 'embedding' }"
+              :aria-current="tab === 'embedding' ? 'page' : false" @click="tab = 'embedding'">{{ t('settings.embedding_card_title') }}</button>
+    </nav>
+
+    {# ===== Chat model card ===== #}
+    <section class="settings-section" data-provider-scope="chat" x-show="tab === 'chat'" x-cloak>
+      <p class="muted">{{ t('settings.chat_card_intro') }}</p>
+
       <label>
-        提供者
-        <select name="provider" data-provider-select>
+        {{ t('settings.provider') }}
+        <select name="provider" data-provider-select data-provider-scope="chat">
           <option value="openai_compatible" {% if settings.provider == "openai_compatible" %}selected{% endif %}>OpenAI-compatible</option>
           <option value="azure_openai" {% if settings.provider == "azure_openai" %}selected{% endif %}>Azure OpenAI</option>
         </select>
       </label>
-      <p class="hint" data-provider-note></p>
+      <p class="hint" data-provider-note data-provider-scope="chat"></p>
       <label>
         Base URL / Azure 端點
         <input name="base_url" value="{{ settings.base_url }}" placeholder="https://api.openai.com/v1 or https://my-resource.openai.azure.com">
       </label>
       <label>
-        Embedding Base URL / Azure embedding 端點 <span class="muted">（選填 — 留空則沿用上方聊天 URL）</span>
-        <input name="embedding_base_url" value="{{ settings.embedding_base_url or '' }}" placeholder="http://localhost:11434/v1（聊天與 embedding 分開部署時填）">
+        API key <span class="muted">（{% if settings.api_key_masked %}{{ t('settings.api_key_saved') }}{% else %}{{ t('settings.api_key_optional') }}{% endif %}）</span>
+        <input name="api_key" type="password" autocomplete="off" placeholder="{% if settings.api_key_masked %}••••••••{% else %}sk-...（可留空）{% endif %}">
       </label>
-      <label>
-        API key {% if settings.api_key_masked %}<span class="muted">（已儲存 — 留空表示沿用）</span>{% endif %}
-        <input name="api_key" type="password" autocomplete="off" placeholder="{% if settings.api_key_masked %}••••••••{% else %}sk-...{% endif %}">
+      <label data-azure-field data-provider-scope="chat" {% if not is_azure_chat %}hidden{% endif %}>
+        {{ t('settings.azure_api_version') }}
+        <input name="api_version" value="{{ settings.api_version }}" placeholder="2024-02-15-preview">
       </label>
-    </section>
-
-    <section class="settings-section">
-      <h2>模型</h2>
       <label>
         聊天模型 / Azure 聊天部署名稱
         <input name="chat_model" value="{{ settings.chat_model }}" placeholder="gpt-4.1-mini or my-chat-deployment">
       </label>
       <label>
+        Temperature（溫度）
+        <input name="temperature" type="number" min="0" max="2" step="0.1" value="{{ settings.temperature }}">
+      </label>
+
+      <div class="diagnostic-action-head">
+        <div>
+          <strong>{{ t('settings.test_chat') }}</strong>
+          <p class="muted">{{ t('settings.test_chat_hint') }}</p>
+        </div>
+        <button type="submit" class="secondary" formaction="/settings/test-chat" data-loading-text="{{ t('settings.test_chat_loading') }}">{{ t('settings.test_chat') }}</button>
+      </div>
+      <label class="diagnostic-checkbox">
+        <input type="checkbox" name="include_image_understanding" value="1">
+        <span>
+          {{ t('settings.test_image') }}
+          <small>{{ t('settings.test_image_hint') }}</small>
+        </span>
+      </label>
+
+      <article class="card card--flat diagnostic-card">
+        <div class="diagnostic-card-head">
+          <h3>{{ t('settings.chat_diag') }}</h3>
+          {% if chat_diag %}
+            <span class="status {{ status_class(chat_diag.status) }}">{{ diagnostic_status_labels.get(chat_diag.status, chat_diag.status) }}</span>
+          {% endif %}
+        </div>
+        {% if chat_diag %}
+          <dl class="diagnostic-list">
+            <div><dt>{{ t('settings.provider') }}</dt><dd>{{ chat_diag.provider or '—' }}</dd></div>
+            <div><dt>{{ t('settings.model') }}</dt><dd>{{ chat_diag.model or '—' }}</dd></div>
+            <div><dt>{{ t('settings.latency') }}</dt><dd>{{ chat_diag.latency_ms }} ms</dd></div>
+            <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ chat_diag.tested_at or '—' }}</dd></div>
+            {% if chat_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ chat_diag.error_class }}</dd></div>{% endif %}
+          </dl>
+          {% set caps = chat_diag.capabilities or {} %}
+          <h4>{{ t('settings.capabilities') }}</h4>
+          <ul class="diagnostic-capabilities">
+            {% for key, label in [
+              ('streaming', t('settings.cap_streaming')),
+              ('usage_reporting', t('settings.cap_usage')),
+              ('json_following', t('settings.cap_json')),
+              ('image_understanding', t('settings.cap_image'))
+            ] %}
+              {% set cap = caps.get(key, {}) %}
+              <li>
+                <span>{{ label }}</span>
+                <span class="status {{ status_class(cap.status or 'not_tested') }}">{{ diagnostic_status_labels.get(cap.status or 'not_tested', cap.status or 'not_tested') }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">{{ t('settings.no_diag') }}</p>
+        {% endif %}
+      </article>
+    </section>
+
+    {# ===== Embedding model card ===== #}
+    <section class="settings-section" data-provider-scope="embedding" x-show="tab === 'embedding'" x-cloak>
+      <p class="muted">{{ t('settings.embedding_card_intro') }}</p>
+
+      <label>
+        {{ t('settings.provider') }}
+        <select name="embedding_provider" data-provider-select data-provider-scope="embedding">
+          <option value="openai_compatible" {% if settings.embedding_provider == "openai_compatible" %}selected{% endif %}>OpenAI-compatible</option>
+          <option value="azure_openai" {% if settings.embedding_provider == "azure_openai" %}selected{% endif %}>Azure OpenAI</option>
+        </select>
+      </label>
+      <p class="hint" data-provider-note data-provider-scope="embedding"></p>
+      <label>
+        Base URL / Azure embedding 端點
+        <input name="embedding_base_url" value="{{ settings.embedding_base_url or '' }}" placeholder="http://localhost:8001/v1 or https://my-resource.openai.azure.com">
+      </label>
+      <label>
+        API key <span class="muted">（{% if settings.embedding_api_key_masked %}{{ t('settings.api_key_saved') }}{% else %}{{ t('settings.api_key_optional') }}{% endif %}）</span>
+        <input name="embedding_api_key" type="password" autocomplete="off" placeholder="{% if settings.embedding_api_key_masked %}••••••••{% else %}sk-...（可留空）{% endif %}">
+      </label>
+      <label data-azure-field data-provider-scope="embedding" {% if not is_azure_embedding %}hidden{% endif %}>
+        {{ t('settings.azure_api_version') }}
+        <input name="embedding_api_version" value="{{ settings.embedding_api_version }}" placeholder="2024-02-15-preview">
+      </label>
+      <label>
         Embedding 模型 / Azure embedding 部署名稱
-        <input name="embedding_model" value="{{ settings.embedding_model }}" placeholder="text-embedding-3-small or my-embedding-deployment">
+        <input name="embedding_model" value="{{ settings.embedding_model }}" placeholder="text-embedding-3-small or intfloat/multilingual-e5-large">
       </label>
       <label>
         Embedding 查詢前綴 <span class="muted">（選填 — e5 系列填 <code>query:</code>，分隔空格會自動補上；OpenAI 等留空）</span>
@@ -57,118 +148,48 @@
         Embedding 段落前綴 <span class="muted">（選填 — e5 系列填 <code>passage:</code>，分隔空格會自動補上；OpenAI 等留空）</span>
         <input name="embedding_passage_prefix" value="{{ settings.embedding_passage_prefix or '' }}" placeholder="passage:">
       </label>
-      <label>
-        Azure API 版本
-        <input name="api_version" value="{{ settings.api_version }}" placeholder="2024-02-15-preview">
-      </label>
-    </section>
 
-    <section class="settings-section">
-      <h2>執行參數</h2>
-      <div class="two-col">
-        <label>
-          Temperature（溫度）
-          <input name="temperature" type="number" min="0" max="2" step="0.1" value="{{ settings.temperature }}">
-        </label>
-        <label>
-          逾時秒數
-          <input name="timeout_seconds" type="number" min="1" step="1" value="{{ settings.timeout_seconds }}">
-        </label>
-      </div>
-    </section>
-
-    <section class="settings-section llm-diagnostics">
-      <h2>{{ t('settings.diag_title') }}</h2>
-      <p class="muted">{{ t('settings.diag_intro') }}</p>
-      {% if diagnostic_notice %}<div class="notice">{{ diagnostic_notice }}</div>{% endif %}
-
-      <div class="diagnostic-actions">
-        <div class="diagnostic-action-card">
-          <div class="diagnostic-action-head">
-            <div>
-              <strong>{{ t('settings.chat_diag') }}</strong>
-              <p class="muted">{{ t('settings.test_chat_hint') }}</p>
-            </div>
-            <button type="submit" class="secondary" formaction="/settings/test-chat" data-loading-text="{{ t('settings.test_chat_loading') }}">{{ t('settings.test_chat') }}</button>
-          </div>
-          <label class="diagnostic-checkbox">
-            <input type="checkbox" name="include_image_understanding" value="1">
-            <span>
-              {{ t('settings.test_image') }}
-              <small>{{ t('settings.test_image_hint') }}</small>
-            </span>
-          </label>
+      <div class="diagnostic-action-head">
+        <div>
+          <strong>{{ t('settings.test_embedding') }}</strong>
+          <p class="muted">{{ t('settings.test_embedding_hint') }}</p>
         </div>
-        <div class="diagnostic-action-card">
-          <div class="diagnostic-action-head">
-            <div>
-              <strong>{{ t('settings.embedding_diag') }}</strong>
-              <p class="muted">{{ t('settings.test_embedding_hint') }}</p>
-            </div>
-            <button type="submit" class="secondary" formaction="/settings/test-embedding" data-loading-text="{{ t('settings.test_embedding_loading') }}">{{ t('settings.test_embedding') }}</button>
-          </div>
-        </div>
+        <button type="submit" class="secondary" formaction="/settings/test-embedding" data-loading-text="{{ t('settings.test_embedding_loading') }}">{{ t('settings.test_embedding') }}</button>
       </div>
 
-      <div class="diagnostic-grid">
-        <article class="card card--flat diagnostic-card">
-          <div class="diagnostic-card-head">
-            <h3>{{ t('settings.chat_diag') }}</h3>
-            {% if chat_diag %}
-              <span class="status {{ status_class(chat_diag.status) }}">{{ diagnostic_status_labels.get(chat_diag.status, chat_diag.status) }}</span>
-            {% endif %}
-          </div>
-          {% if chat_diag %}
-            <dl class="diagnostic-list">
-              <div><dt>{{ t('settings.provider') }}</dt><dd>{{ chat_diag.provider or '—' }}</dd></div>
-              <div><dt>{{ t('settings.model') }}</dt><dd>{{ chat_diag.model or '—' }}</dd></div>
-              <div><dt>{{ t('settings.latency') }}</dt><dd>{{ chat_diag.latency_ms }} ms</dd></div>
-              <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ chat_diag.tested_at or '—' }}</dd></div>
-              {% if chat_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ chat_diag.error_class }}</dd></div>{% endif %}
-            </dl>
-            {% set caps = chat_diag.capabilities or {} %}
-            <h4>{{ t('settings.capabilities') }}</h4>
-            <ul class="diagnostic-capabilities">
-              {% for key, label in [
-                ('streaming', t('settings.cap_streaming')),
-                ('usage_reporting', t('settings.cap_usage')),
-                ('json_following', t('settings.cap_json')),
-                ('image_understanding', t('settings.cap_image'))
-              ] %}
-                {% set cap = caps.get(key, {}) %}
-                <li>
-                  <span>{{ label }}</span>
-                  <span class="status {{ status_class(cap.status or 'not_tested') }}">{{ diagnostic_status_labels.get(cap.status or 'not_tested', cap.status or 'not_tested') }}</span>
-                </li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <p class="muted">{{ t('settings.no_diag') }}</p>
-          {% endif %}
-        </article>
-
-        <article class="card card--flat diagnostic-card">
-          <div class="diagnostic-card-head">
-            <h3>{{ t('settings.embedding_diag') }}</h3>
-            {% if embedding_diag %}
-              <span class="status {{ status_class(embedding_diag.status) }}">{{ diagnostic_status_labels.get(embedding_diag.status, embedding_diag.status) }}</span>
-            {% endif %}
-          </div>
+      <article class="card card--flat diagnostic-card">
+        <div class="diagnostic-card-head">
+          <h3>{{ t('settings.embedding_diag') }}</h3>
           {% if embedding_diag %}
-            <dl class="diagnostic-list">
-              <div><dt>{{ t('settings.provider') }}</dt><dd>{{ embedding_diag.provider or '—' }}</dd></div>
-              <div><dt>{{ t('settings.model') }}</dt><dd>{{ embedding_diag.model or '—' }}</dd></div>
-              <div><dt>{{ t('settings.latency') }}</dt><dd>{{ embedding_diag.latency_ms }} ms</dd></div>
-              <div><dt>{{ t('settings.embedding_dimension') }}</dt><dd>{{ embedding_diag.embedding_dimension if embedding_diag.embedding_dimension is not none else '—' }}</dd></div>
-              <div><dt>{{ t('settings.current_index_dimension') }}</dt><dd>{{ embedding_diag.current_index_dimension if embedding_diag.current_index_dimension is not none else '—' }}</dd></div>
-              <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ embedding_diag.tested_at or '—' }}</dd></div>
-              {% if embedding_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ embedding_diag.error_class }}</dd></div>{% endif %}
-            </dl>
-          {% else %}
-            <p class="muted">{{ t('settings.no_diag') }}</p>
+            <span class="status {{ status_class(embedding_diag.status) }}">{{ diagnostic_status_labels.get(embedding_diag.status, embedding_diag.status) }}</span>
           {% endif %}
-        </article>
-      </div>
+        </div>
+        {% if embedding_diag %}
+          <dl class="diagnostic-list">
+            <div><dt>{{ t('settings.provider') }}</dt><dd>{{ embedding_diag.provider or '—' }}</dd></div>
+            <div><dt>{{ t('settings.model') }}</dt><dd>{{ embedding_diag.model or '—' }}</dd></div>
+            <div><dt>{{ t('settings.latency') }}</dt><dd>{{ embedding_diag.latency_ms }} ms</dd></div>
+            <div><dt>{{ t('settings.embedding_dimension') }}</dt><dd>{{ embedding_diag.embedding_dimension if embedding_diag.embedding_dimension is not none else '—' }}</dd></div>
+            <div><dt>{{ t('settings.current_index_dimension') }}</dt><dd>{{ embedding_diag.current_index_dimension if embedding_diag.current_index_dimension is not none else '—' }}</dd></div>
+            <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ embedding_diag.tested_at or '—' }}</dd></div>
+            {% if embedding_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ embedding_diag.error_class }}</dd></div>{% endif %}
+          </dl>
+          {% if embedding_diag.embedding_dimension is not none and embedding_diag.current_index_dimension is not none and embedding_diag.embedding_dimension != embedding_diag.current_index_dimension %}
+            <p class="notice failed">{{ t('settings.dim_mismatch_warn') }}</p>
+          {% endif %}
+        {% else %}
+          <p class="muted">{{ t('settings.no_diag') }}</p>
+        {% endif %}
+      </article>
+    </section>
+
+    {# ===== Shared runtime params ===== #}
+    <section class="settings-section">
+      <h2>{{ t('settings.runtime_params') }}</h2>
+      <label>
+        逾時秒數
+        <input name="timeout_seconds" type="number" min="1" step="1" value="{{ settings.timeout_seconds }}">
+      </label>
     </section>
 
     <div class="settings-foot">

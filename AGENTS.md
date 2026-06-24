@@ -83,7 +83,8 @@ For Docker/runtime changes, build the image and smoke-test at least `/` and `/lo
 
 - Supported providers are `openai_compatible` and `azure_openai`.
 - Ollama, vLLM, and TEI are supported only through OpenAI-compatible `/v1` endpoints, not native provider adapters.
-- Local OpenAI-compatible services may still need a non-empty dummy API key in settings.
+- **Chat and embedding are configured as independent connections** (separate provider / base URL / API key / Azure api-version, plus their own model). They can point at different services — e.g. Gemma chat on one host and e5 embedding on another. Build requests via `chat_settings()` / `embedding_settings()` in `app/llm.py`; do not reintroduce a single shared connection.
+- **The API key is optional** on both connections. Local services (e5, Ollama, vLLM, TEI) accept requests without one — a blank key sends no auth header; readiness is decided by the model being set, not the key. Do not re-add `not api_key` to the "configured" guards.
 - Embedding responses must provide OpenAI-compatible `data[].embedding`; chat responses must provide `choices[0].message.content`.
 - Changing embedding models can change vector dimensions. Preserve the existing dimension check and require clearing/rebuilding the Chroma index when needed.
 - Before changing query rewrite, hybrid retrieval, reranking, chunking, or scoring, read `docs/RETRIEVAL.md` and update eval expectations where appropriate.

@@ -78,22 +78,35 @@ provider usage reporting, JSON-following, and opt-in image understanding.
 Diagnostics store compact status metadata only, not raw prompts, model output,
 API keys, or raw provider payloads.
 
-OpenAI-compatible example:
+The settings page has **two independent cards** — a **Chat model** card and an
+**Embedding model** card — each with its own provider, base URL, API key, model,
+and **Test** button. They can point at completely different services (e.g. a
+hosted chat model plus a local e5 embedding server).
+
+OpenAI-compatible example (chat card):
 
 ```text
 Provider:           OpenAI-compatible
 Base URL:           https://api.openai.com/v1
-Embedding base URL: (blank - share the chat URL)
 API key:            sk-...
 Chat model:         gpt-4.1-mini
-Embedding model:    text-embedding-3-small
 Temperature:        0.2
-Timeout seconds:    60
+```
+
+Embedding card (here a local e5 server, no key):
+
+```text
+Provider:           OpenAI-compatible
+Base URL:           http://10.0.0.1:8001/v1
+API key:            (blank — local services need no key)
+Embedding model:    intfloat/multilingual-e5-large
+Query prefix:       query:
+Passage prefix:     passage:
 ```
 
 Local OpenAI-compatible services such as Ollama, vLLM, and TEI are supported
-through their `/v1` endpoints. Some local services still require a non-empty
-dummy API key.
+through their `/v1` endpoints. **The API key is optional** — a blank key sends no
+auth header, which is what local services expect.
 
 Optional embedding query/passage prefixes support models such as
 `multilingual-e5-large`, where search queries should use `query: ` and indexed
