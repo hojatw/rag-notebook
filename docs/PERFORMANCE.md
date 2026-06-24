@@ -35,7 +35,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Fix:** **Done — DB-backed queue, no new infra (Redis deferred).** Uploads/reindex now `enqueue_source()` into an `ingest_jobs` SQLite table (`app/jobs.py`); a worker drains it via `process_source`. Two modes: a dedicated `python -m app.worker` process (compose `worker` service; `NOTEBOOKLM_INLINE_WORKER=0` on the web app) gives true off-process isolation, **or** an inline worker in the web lifespan (`NOTEBOOKLM_INLINE_WORKER=1`, the default) so a lone `uvicorn` still ingests. The queue also **fixes the restart-drops-the-queue gap** (queued jobs survive) and adds crash recovery via a visibility timeout + capped retries. `app/jobs.py` is the single swap-point for Redis + RQ later. Same single-machine constraint as P2-3: valid while all processes share one `data/app.sqlite3`.
 
 ### [ ] P1-2 · Keyword search → SQLite FTS5 + BM25
-- **Issue:** `keyword_candidates_from_sqlite` (`app/main.py`) uses `WHERE chunks.text LIKE '%token%'`.
+- **Issue:** `keyword_candidates_from_sqlite` (`app/retrieval.py`) uses `WHERE chunks.text LIKE '%token%'`.
 - **Impact:** Full-table scan per query; slows down past tens of thousands of chunks. See `RETRIEVAL.md` open follow-ups.
 - **Fix:** FTS5 virtual table + BM25 ranking.
 - **Blocked on:** a representative **CJK** corpus + eval set — **not** config. FTS5's `trigram` tokenizer can't match <3-char Chinese queries (2-char terms are the backbone of CN search), so a naive swap regresses Chinese recall, and BM25 ranking needs real-data validation. Segmentation options (jieba search-mode / custom bigram / ICU / neural) and the measured trigram limitation are written up in `docs/RETRIEVAL.md` → *P1-2 design note — CJK tokenization*.

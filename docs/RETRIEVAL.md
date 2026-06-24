@@ -2,7 +2,7 @@
 
 This doc explains how the NotebookLM-style POC turns a user question into the chunks the answer LLM sees. It is the canonical retrieval reference; [`README.md`](../README.md) describes the user-facing feature set and operational workflow.
 
-Last updated: 2026-05-16. Pipeline lives in [app/main.py](../app/main.py) (`retrieve()`, `ask()`), [app/llm.py](../app/llm.py) (rewrite / rerank / embedding), [app/ingest.py](../app/ingest.py) (chunking), [app/vector_store.py](../app/vector_store.py) (Chroma).
+Last updated: 2026-06-25. Pipeline lives in [app/retrieval.py](../app/retrieval.py) (`retrieve()`, hybrid search, scoring, `ACTIVE_RETRIEVAL_PARAMS`), [app/main.py](../app/main.py) (`ask()` — low-confidence gate + citation filtering), [app/llm.py](../app/llm.py) (rewrite / rerank / embedding), [app/ingest.py](../app/ingest.py) (chunking), [app/vector_store.py](../app/vector_store.py) (Chroma).
 
 ## Pipeline at a glance
 
@@ -17,10 +17,10 @@ question
   ├─► (3a) vector search       app/vector_store.py:query (top-20 per query)
   │       Chroma cosine, scoped by user_id + optional source_ids
   │
-  └─► (3b) keyword search      app/main.py:keyword_candidates_from_sqlite (top-20)
+  └─► (3b) keyword search      app/retrieval.py:keyword_candidates_from_sqlite (top-20)
           SQLite LIKE on Latin tokens + CJK 2/3-grams
   │
-  ▼ (4) hybrid merge           app/main.py:merge_candidates
+  ▼ (4) hybrid merge           app/retrieval.py:merge_candidates
   │     score = 0.7·vector + 0.3·keyword     (per chunk, dedup)
   │     keep top-20 by score
   │
@@ -69,24 +69,24 @@ Skipped (`return [question]`) when no chat key/model is configured, or on any pa
 
 Filter is always `{user_id}` (multi-tenant isolation) and adds `{source_id: {$in: [...]}}` when the user picked specific sources in the chat form. `n_results=20`.
 
-No-embedding-fallback policy: `embed_texts` raises when the embedding model isn't configured (previously fell back to a SHA-256 hash bag-of-tokens vector — removed because the resulting vectors are dim-incompatible with any real model and silent fallback masked misconfiguration as poor retrieval). The upload route refuses ingestion when LLM isn't configured ([`llm_settings_status`](../app/main.py:232)), and `/settings` save probes the embedding endpoint to validate connectivity + dim consistency against the existing Chroma index.
+No-embedding-fallback policy: `embed_texts` raises when the embedding model isn't configured (previously fell back to a SHA-256 hash bag-of-tokens vector — removed because the resulting vectors are dim-incompatible with any real model and silent fallback masked misconfiguration as poor retrieval). The upload route refuses ingestion when LLM isn't configured ([`llm_settings_status`](../app/main.py:660)), and `/settings` save probes the embedding endpoint to validate connectivity + dim consistency against the existing Chroma index.
 
 Model-specific prefixes: `embed_texts(..., role="query"|"passage")` prepends an optional, settings-driven prefix (`/settings` → *Embedding query/passage prefix*). Retrieve embeds queries with `role="query"`, ingest embeds chunks with `role="passage"`. The e5 family needs `query: ` / `passage: `; OpenAI and others leave them blank (default), so the prefix is opt-in and only changes the text sent to the endpoint, never the stored chunk. **Changing a prefix changes the vectors → re-index** (`/admin/index` Rebuild).
 
 ### 3b. Keyword search
 
-[`app/main.py:keyword_candidates_from_sqlite`](../app/main.py:1002). Tokenises every rewritten query via [`search_tokens`](../app/main.py:1086):
+[`app/retrieval.py:keyword_candidates_from_sqlite`](../app/retrieval.py:187). Tokenises every rewritten query via [`search_tokens`](../app/retrieval.py:322):
 
 - Latin: `re.findall(r"[\w.-]+", text.lower())` minus a small EN+ZH stopword set; tokens shorter than 2 chars dropped.
-- CJK: 2-grams plus 3-grams over the `[一-鿿]` characters of the text ([`cjk_ngrams`](../app/main.py:1135)).
+- CJK: 2-grams plus 3-grams over the `[一-鿿]` characters of the text ([`cjk_ngrams`](../app/retrieval.py:371)).
 
-Unique tokens are capped at 12, fed into a single `WHERE chunks.text LIKE ? OR ...` query (with `LIMIT limit*4`), then re-ranked locally by [`keyword_score`](../app/main.py:1069) — token overlap fraction with a `+0.15` phrase bonus when the full query string appears verbatim. Returns top-20.
+Unique tokens are capped at 12, fed into a single `WHERE chunks.text LIKE ? OR ...` query (with `LIMIT limit*4`), then re-ranked locally by [`keyword_score`](../app/retrieval.py:305) — token overlap fraction with a `+0.15` phrase bonus when the full query string appears verbatim. Returns top-20.
 
 This is the part most worth replacing with **SQLite FTS5 + BM25** when corpus size grows — see *Open follow-ups* below.
 
 ### 4. Hybrid merge
 
-[`app/main.py:merge_candidates`](../app/main.py:1046). Vector + keyword candidate lists are deduped by `chunk_id`, scored as
+[`app/retrieval.py:merge_candidates`](../app/retrieval.py:231). Vector + keyword candidate lists are deduped by `chunk_id`, scored as
 
 ```
 score = 0.7 · max(0, vector_score) + 0.3 · keyword_score
@@ -115,7 +115,7 @@ Full chunk text is sent (no `text[:900]` truncation) because chunks are already 
 
 ### 6. Low-confidence abstain
 
-[`app/main.py:ask`](../app/main.py:776), threshold `LOW_CONFIDENCE_THRESHOLD = 0.25` ([app/main.py:909](../app/main.py:909)). When `not retrieved` or `top.score < 0.25` we skip `generate_answer` entirely and return the canned "I cannot determine that from the selected sources." This avoids paying for a generation call that would either hallucinate or echo the same refusal back.
+[`app/main.py:ask`](../app/main.py:1984), threshold `LOW_CONFIDENCE_THRESHOLD = 0.25` ([app/retrieval.py:34](../app/retrieval.py:34), read live via `active_low_confidence_threshold()`). When `not retrieved` or `top.score < 0.25` we skip `generate_answer` entirely and return the canned "I cannot determine that from the selected sources." This avoids paying for a generation call that would either hallucinate or echo the same refusal back.
 
 `metadata.outcome` is set to `low_confidence` / `no_retrieval` / `answered` / `error` so the per-message debug pane can render the reason.
 
@@ -132,9 +132,9 @@ User prompt is `"Source excerpts:\n{numbered chunks}\n\nQuestion: {question}"`.
 
 ### 8. Citation filtering & UI
 
-[`app/main.py:ask`](../app/main.py:776) parses `[N]` markers out of the answer with `re.finditer(r"\[(\d+)\]", answer)` and only persists citations the model actually referenced — same behaviour as NotebookLM. Falls back to all retrieved chunks if the answer contains no markers (defensive: lets the user still see what was retrieved).
+[`app/main.py:ask`](../app/main.py:1984) parses `[N]` markers out of the answer with `re.finditer(r"\[(\d+)\]", answer)` and only persists citations the model actually referenced — same behaviour as NotebookLM. Falls back to all retrieved chunks if the answer contains no markers (defensive: lets the user still see what was retrieved).
 
-[`citation_payload`](../app/main.py:1145) serialises each chunk with `score / vector_score / keyword_score / rerank_score` so the per-message debug pane (`📊 N chunks · retrieved Xms · generated Yms · top score Z`) can show the table.
+[`citation_payload`](../app/retrieval.py:381) serialises each chunk with `score / vector_score / keyword_score / rerank_score` so the per-message debug pane (`📊 N chunks · retrieved Xms · generated Yms · top score Z`) can show the table.
 
 Per-message `messages.metadata_json` row carries `{retrieval_ms, generation_ms, retrieved_chunks, top_score, outcome, threshold?, answer_chars?, error?}` for the debug pane. Legacy messages stored before the column existed default to `'{}'` and render with whatever data is available.
 
@@ -197,7 +197,7 @@ for q in questions:
 
 Most of these are now **centralized in [`app/config.py`](../app/config.py)** and overridable at runtime without code edits — defaults ← `config.toml` ← `NOTEBOOKLM_<GROUP>_<FIELD>` env (see the README "Tuning / configuration" section). The mapping: hybrid weights → `[retrieval] vector_weight/keyword_weight`; rerank weights → `rerank_weight/rerank_base_weight`; vector/keyword/rerank candidate counts → `candidate_pool_size`; rerank limit → `final_chunk_count`; abstain → `low_confidence_threshold`; chunking → `[chunking] *`; embedding batch → `[embedding] batch_size`. The module constants below still exist (call sites read them) but their values come from config. `is_mostly_cjk` threshold and the rewrite-history count remain plain constants.
 
-> **Runtime override (E1c eval workbench).** The seven runtime-safe retrieval knobs (`vector_weight`, `keyword_weight`, `candidate_pool_size`, `final_chunk_count`, `rerank_weight`, `rerank_base_weight`, `low_confidence_threshold`) are read at request time from `ACTIVE_RETRIEVAL_PARAMS` in `app/main.py`, not the import-time module constants. The config/env values still define the **defaults**; an admin can override them live by **applying a retrieval profile** at `/admin/evals` (persisted via `retrieval_profiles.is_active`, reloaded on startup). `retrieve()` / `merge_candidates()` / `rerank_chunks()` also accept a per-call `params` override, which the eval runner uses to test a candidate profile in isolation without changing live chat retrieval. Index-affecting parameters (chunking, embedding model/prefix/dimension) are **not** part of this override path and still require a Clear/Rebuild.
+> **Runtime override (E1c eval workbench).** The seven runtime-safe retrieval knobs (`vector_weight`, `keyword_weight`, `candidate_pool_size`, `final_chunk_count`, `rerank_weight`, `rerank_base_weight`, `low_confidence_threshold`) are read at request time from `ACTIVE_RETRIEVAL_PARAMS` in `app/retrieval.py`, not the import-time module constants. The config/env values still define the **defaults**; an admin can override them live by **applying a retrieval profile** at `/admin/evals` (persisted via `retrieval_profiles.is_active`, reloaded on startup). `retrieve()` / `merge_candidates()` / `rerank_chunks()` also accept a per-call `params` override, which the eval runner uses to test a candidate profile in isolation without changing live chat retrieval. Index-affecting parameters (chunking, embedding model/prefix/dimension) are **not** part of this override path and still require a Clear/Rebuild.
 
 | Knob | Default | Location | What it controls |
 |---|---:|---|---|
@@ -205,13 +205,13 @@ Most of these are now **centralized in [`app/config.py`](../app/config.py)** and
 | `CJK_TARGET_CHARS` | 400 | [app/ingest.py:72](../app/ingest.py:72) | Max chars per CJK-dominant chunk |
 | `DEFAULT_OVERLAP_SENTENCES` | 1 | [app/ingest.py:73](../app/ingest.py:73) | Sentences carried into the next chunk |
 | `is_mostly_cjk` threshold | 0.30 | [app/ingest.py:76](../app/ingest.py:76) | CJK char ratio that flips to CJK chunk size |
-| Vector `n_results` | 20 | [app/main.py:926](../app/main.py:926) | Per-query vector candidates pulled from Chroma |
-| Keyword `limit` | 20 | [app/main.py:927](../app/main.py:927) | Top-N kept after SQLite LIKE search |
-| Hybrid weights | 0.7 / 0.3 | [app/main.py:1053](../app/main.py:1053) | `vector` / `keyword` blend in `merge_candidates` |
+| Vector `n_results` | 20 | [app/retrieval.py:82](../app/retrieval.py:82) | Per-query vector candidates pulled from Chroma |
+| Keyword `limit` | 20 | [app/retrieval.py:83](../app/retrieval.py:83) | Top-N kept after SQLite LIKE search |
+| Hybrid weights | 0.7 / 0.3 | [app/retrieval.py:238](../app/retrieval.py:238) | `vector` / `keyword` blend in `merge_candidates` |
 | Rerank candidates | 20 | [app/llm.py:176](../app/llm.py:176) | How many candidates the LLM reranker sees |
 | Rerank weights | 0.8 / 0.2 | [app/llm.py:191](../app/llm.py:191) | `rerank` / `hybrid` blend after LLM rerank |
 | Rerank `limit` | 6 | [app/llm.py:161](../app/llm.py:161) | Chunks returned from `rerank_chunks` |
-| `LOW_CONFIDENCE_THRESHOLD` | 0.25 | [app/main.py:909](../app/main.py:909) | Top-score under which `ask()` abstains |
+| `LOW_CONFIDENCE_THRESHOLD` | 0.25 | [app/retrieval.py:34](../app/retrieval.py:34) | Top-score under which `ask()` abstains |
 | History turns for rewrite | 6 | [app/llm.py:144](../app/llm.py:144) | Trailing history passed to query rewriter |
 | Embedding batch size | 64 | [app/llm.py:35](../app/llm.py:35) | Per-HTTP batch for `embed_texts` |
 
@@ -279,7 +279,7 @@ Other ideas, in rough order of cost-benefit:
 
 ## Pointers
 
-- Retrieval orchestration: [`app/main.py:retrieve`](../app/main.py:912), [`app/main.py:ask`](../app/main.py:776)
+- Retrieval engine: [`app/retrieval.py:retrieve`](../app/retrieval.py:50); answer orchestration: [`app/main.py:ask`](../app/main.py:1984)
 - LLM helpers: [`app/llm.py`](../app/llm.py) (rewrite / embed / rerank / generate)
 - Chunker: [`app/ingest.py`](../app/ingest.py)
 - Vector store: [`app/vector_store.py`](../app/vector_store.py)

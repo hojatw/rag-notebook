@@ -16,7 +16,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Fix:** **Done.** `embed_texts(..., role="query"|"passage")` prepends a **settings-driven** prefix (`/settings` → *Embedding query/passage prefix*), default empty so OpenAI and other models are unaffected (the app stays embedding-model-agnostic). Ingest embeds with `role="passage"`, retrieve with `role="query"`; the prefix only changes the text sent to the API, never the stored chunk. For e5, set the prefixes to `query: ` / `passage: ` and re-index.
 
 ### [ ] Q0-2 · Re-tune the low-confidence abstain threshold
-- **Issue:** `LOW_CONFIDENCE_THRESHOLD = 0.25` (`../app/main.py`) was tuned against OpenAI-1536; e5-1024 cosine scores have a different distribution.
+- **Issue:** `LOW_CONFIDENCE_THRESHOLD = 0.25` (`../app/retrieval.py`) was tuned against OpenAI-1536; e5-1024 cosine scores have a different distribution.
 - **Impact:** Over-abstaining ("I cannot determine that…") or under-abstaining (hallucinating) on the new model.
 - **Fix:** Re-measure the score distribution on a representative set (needs Q1-3) and re-set the threshold.
 

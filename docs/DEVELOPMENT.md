@@ -124,7 +124,12 @@ LLM key is configured.
 ## Layout
 
 ```text
-app/main.py            Routes, auth, retrieval orchestration, lifespan, logging.
+app/main.py            Core routes (notebooks/sources/chat/notes/tools/account), auth + shared
+                       web helpers, lifespan, logging; mounts the route modules below.
+app/retrieval.py       Retrieval engine: hybrid search, scoring, ACTIVE_RETRIEVAL_PARAMS state.
+app/evals.py           Admin Eval Workbench router (/admin/evals/*).
+app/admin.py           Admin console router (/admin/index*, /admin/audit, /admin/users*).
+app/settings.py        Admin LLM settings router (/settings, connection diagnostics).
 app/config.py          Centralized tunables (defaults <- config.toml <- env vars).
 app/db.py              SQLite schema, default-notebook migration, load_llm_settings.
 app/ingest.py          Text extraction, chunking, vector upsert.
