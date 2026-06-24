@@ -246,7 +246,7 @@ DB-backed ingest queue (P1-1). At most one job per source.
 | `created_at` / `updated_at` | TEXT | |
 
 ## `retrieval_profiles`
-Admin-created retrieval parameter snapshots for the in-deployment eval workbench (E1). Profiles are audit/history records **and** applyable: the `is_active` row seeds the live `ACTIVE_RETRIEVAL_PARAMS` in `app/main.py` at startup (E1c apply/rollback).
+Admin-created retrieval parameter snapshots for the in-deployment eval workbench (E1). Profiles are audit/history records **and** applyable: the `is_active` row seeds the live `ACTIVE_RETRIEVAL_PARAMS` in `app/retrieval.py` at startup (E1c apply/rollback).
 
 | Column | Type | Notes |
 |---|---|---|

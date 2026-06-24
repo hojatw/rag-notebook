@@ -72,7 +72,7 @@ For Docker/runtime changes, build the image and smoke-test at least `/` and `/lo
 ## Implementation Conventions
 
 - Keep the app server-rendered with Jinja templates and progressive enhancement through HTMX and Alpine.
-- Prefer existing helper functions and route patterns in `app/main.py`, `app/db.py`, `app/llm.py`, `app/ingest.py`, and `app/vector_store.py`.
+- Prefer existing helper functions and route patterns in `app/main.py` (core routes + shared web helpers), `app/retrieval.py` (retrieval engine), the admin route modules (`app/evals.py`, `app/admin.py`, `app/settings.py`), `app/db.py`, `app/llm.py`, `app/ingest.py`, and `app/vector_store.py`. New routes mount on `app` via `app.include_router(...)` at the bottom of `app/main.py`; route modules import shared helpers (`render`, `require_admin`, `record_audit_event`) back from `app.main`, so reach the app only through `app.main` (the package import root).
 - Schema changes are currently handled through idempotent SQLite setup/migration helpers in `app/db.py`; add tests for new persistence behavior. **When you change the schema (new table, column, index, or constraint), update [`docs/SCHEMA.md`](docs/SCHEMA.md) in the same change** — it is the human-readable reference and must not drift from `app/db.py`.
 - Keep generated UI fragments in `app/templates/_*.html` when they are HTMX partials.
 - Keep Markdown rendering sanitized through the existing marked + DOMPurify path.
