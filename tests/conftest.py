@@ -44,12 +44,12 @@ def local_embed(monkeypatch):
     but NOT for asserting real model output."""
     async def fake_embed(texts, settings, *, role=None, usage_context=None):
         return [local_embedding(t) for t in texts]
-    # ingest.py and main.py each bind ``embed_texts`` at import time, so we
+    # ingest.py and retrieval.py each bind ``embed_texts`` at import time, so we
     # patch them where they look it up rather than at app.llm.
     import app.ingest
-    import app.main
+    import app.retrieval
     monkeypatch.setattr(app.ingest, "embed_texts", fake_embed)
-    monkeypatch.setattr(app.main, "embed_texts", fake_embed)
+    monkeypatch.setattr(app.retrieval, "embed_texts", fake_embed)
     return fake_embed
 
 
