@@ -33,12 +33,13 @@ def _fresh_app(monkeypatch, tmp_path):
     import app.vector_store as vector_store
     import app.ingest as ingest
     import app.retrieval as retrieval
+    import app.admin as admin
     import app.evals as evals
     import app.main as main
 
-    # Reload in dependency order; main last so its bottom-of-file router include
-    # picks up the freshly reloaded app.evals module.
-    for module in (security, db, vector_store, ingest, retrieval, evals, main):
+    # Reload in dependency order; main last so its bottom-of-file router includes
+    # pick up the freshly reloaded app.admin / app.evals modules.
+    for module in (security, db, vector_store, ingest, retrieval, admin, evals, main):
         importlib.reload(module)
     vector_store.reset_client()
     return main, db
