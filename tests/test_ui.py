@@ -35,11 +35,12 @@ def _fresh_app(monkeypatch, tmp_path):
     import app.retrieval as retrieval
     import app.admin as admin
     import app.evals as evals
+    import app.settings as app_settings
     import app.main as main
 
     # Reload in dependency order; main last so its bottom-of-file router includes
-    # pick up the freshly reloaded app.admin / app.evals modules.
-    for module in (security, db, vector_store, ingest, retrieval, admin, evals, main):
+    # pick up the freshly reloaded app.admin / app.evals / app.settings modules.
+    for module in (security, db, vector_store, ingest, retrieval, admin, evals, app_settings, main):
         importlib.reload(module)
     vector_store.reset_client()
     return main, db
@@ -1798,6 +1799,7 @@ def test_high_risk_admin_actions_are_audited(monkeypatch, tmp_path):
 def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_path):
     """O1 Phase 1: admins can test chat/embedding without storing prompts or secrets."""
     main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.settings as app_settings
 
     async def fake_chat_probe(settings, include_image=False, usage_context=None):
         assert settings["api_key"] == "sk-stored"
@@ -1830,8 +1832,8 @@ def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_p
             "embedding_dimension": 384,
         }
 
-    monkeypatch.setattr(main, "probe_chat_diagnostics", fake_chat_probe)
-    monkeypatch.setattr(main, "probe_embedding_diagnostics", fake_embedding_probe)
+    monkeypatch.setattr(app_settings, "probe_chat_diagnostics", fake_chat_probe)
+    monkeypatch.setattr(app_settings, "probe_embedding_diagnostics", fake_embedding_probe)
 
     form = {
         "provider": "openai_compatible",
