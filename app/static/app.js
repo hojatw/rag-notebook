@@ -580,20 +580,27 @@ function initSourceScope() {
 // ---- Settings provider note ----------------------------------------------
 
 function bindProviderNotes() {
-  const provider = document.querySelector("[data-provider-select]");
-  const providerNote = document.querySelector("[data-provider-note]");
-  if (!provider || !providerNote) return;
-  if (provider.dataset.providerBound) return;
-  provider.dataset.providerBound = "1";
   const notes = {
     openai_compatible: tr("provider_hint_openai", "請填入相容 /v1 的 base URL；模型欄位填模型名稱。"),
     azure_openai: tr("provider_hint_azure", "請填入 Azure 資源端點；模型欄位填部署（deployment）名稱。"),
   };
-  const updateNote = () => {
-    providerNote.textContent = notes[provider.value] || notes.openai_compatible;
-  };
-  provider.addEventListener("change", updateNote);
-  updateNote();
+  // Chat and embedding each have their own provider select, scoped via
+  // data-provider-scope. Each drives its own hint and Azure-only field
+  // visibility independently.
+  document.querySelectorAll("[data-provider-select]").forEach((provider) => {
+    if (provider.dataset.providerBound) return;
+    provider.dataset.providerBound = "1";
+    const scope = provider.dataset.providerScope || "";
+    const note = document.querySelector(`[data-provider-note][data-provider-scope="${scope}"]`);
+    const azureFields = document.querySelectorAll(`[data-azure-field][data-provider-scope="${scope}"]`);
+    const update = () => {
+      if (note) note.textContent = notes[provider.value] || notes.openai_compatible;
+      const isAzure = provider.value === "azure_openai";
+      azureFields.forEach((field) => { field.hidden = !isAzure; });
+    };
+    provider.addEventListener("change", update);
+    update();
+  });
 }
 
 // ---- Markdown rendering + inline citation links --------------------------

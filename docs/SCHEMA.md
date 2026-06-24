@@ -54,21 +54,38 @@ Login accounts. Seeded with `admin` / `user` on first init.
 ## `llm_settings`
 Global LLM/embedding configuration. **Exactly one row** (`CHECK (id = 1)`).
 
+Chat and embedding have **independent connections** so they can point at
+different services (e.g. Gemma chat on one host, e5 embedding on another). The
+top-level `provider` / `base_url` / `api_key` / `api_version` columns are the
+**chat** connection; the `embedding_*` columns below are the **embedding**
+connection. The API key is **optional** on both sides — local services (e5,
+Ollama, vLLM, TEI) accept requests without one; when present it is sent as a
+bearer / `api-key` header, when blank no auth header is sent.
+
 | Column | Type | Notes |
 |---|---|---|
 | `id` | INTEGER PK `CHECK (id = 1)` | always 1 |
-| `provider` | TEXT NOT NULL DEFAULT `'openai_compatible'` | `openai_compatible` \| `azure_openai` |
+| `provider` | TEXT NOT NULL DEFAULT `'openai_compatible'` | **chat** provider: `openai_compatible` \| `azure_openai` |
 | `base_url` | TEXT DEFAULT `''` | chat endpoint base / Azure endpoint |
-| `embedding_base_url` | TEXT DEFAULT `''` | optional; blank = share `base_url` |
-| `api_key` | TEXT DEFAULT `''` | **Fernet-encrypted at rest**; read only via `load_llm_settings()` (never `SELECT` directly) |
+| `embedding_base_url` | TEXT DEFAULT `''` | embedding endpoint base / Azure endpoint (blank falls back to `base_url`) |
+| `api_key` | TEXT DEFAULT `''` | **chat** key. Optional. **Fernet-encrypted at rest**; read only via `load_llm_settings()` (never `SELECT` directly) |
 | `chat_model` | TEXT DEFAULT `''` | model / Azure deployment |
 | `embedding_model` | TEXT DEFAULT `''` | model / Azure deployment |
-| `api_version` | TEXT DEFAULT `'2024-02-15-preview'` | Azure only |
-| `temperature` | REAL DEFAULT 0.2 | |
-| `timeout_seconds` | REAL DEFAULT 60 | |
+| `api_version` | TEXT DEFAULT `'2024-02-15-preview'` | chat Azure only |
+| `embedding_provider` | TEXT NOT NULL DEFAULT `'openai_compatible'` | **embedding** provider: `openai_compatible` \| `azure_openai` |
+| `embedding_api_key` | TEXT DEFAULT `''` | **embedding** key. Optional. **Fernet-encrypted at rest**; read only via `load_llm_settings()` |
+| `embedding_api_version` | TEXT DEFAULT `'2024-02-15-preview'` | embedding Azure only |
+| `temperature` | REAL DEFAULT 0.2 | shared (chat) |
+| `timeout_seconds` | REAL DEFAULT 60 | shared |
 | `embedding_query_prefix` | TEXT DEFAULT `''` | e.g. `query: ` for e5; blank for OpenAI |
 | `embedding_passage_prefix` | TEXT DEFAULT `''` | e.g. `passage: ` for e5 |
 | `diagnostics_json` | TEXT DEFAULT `'{}'` | O1 Phase 1 compact admin test results for chat/embedding diagnostics: status, latency, provider/model summary, embedding dimension, capability statuses, timestamp, and error class only; no prompts, outputs, API keys, or raw provider payloads |
+
+> **Migration note:** the `embedding_provider` / `embedding_api_key` /
+> `embedding_api_version` columns are added idempotently in `app/db.py`. On first
+> upgrade they are **backfilled once** from the previously-shared chat fields
+> (`provider` / `api_key` / `api_version`), and a blank `embedding_base_url` is
+> set to `base_url`, so existing single-connection deployments keep working.
 
 ## `llm_usage_events`
 High-volume AI governance telemetry for LLM and embedding calls (G1a/G1b). This table is intentionally separate from `audit_events`: usage events are frequent, report-oriented, and must not copy prompts, source text, retrieved snippets, API keys, or model outputs. Context ids are nullable and use `ON DELETE SET NULL` so telemetry can remain useful after user data is deleted without preserving the deleted content.

@@ -31,7 +31,7 @@ from .worker import run_worker_loop
 from . import i18n
 import httpx
 
-from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, cosine, embed_texts, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_eval_candidates, generate_meeting_minutes, generate_starter_questions, probe_chat_diagnostics, probe_embedding_diagnostics, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
+from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, chat_settings, close_http_client, compare_sources, cosine, embed_texts, embedding_settings, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_eval_candidates, generate_meeting_minutes, generate_starter_questions, probe_chat_diagnostics, probe_embedding_diagnostics, probe_embedding_dimension, rerank_chunks, set_http_client, rewrite_search_queries, suggest_followup_questions, translate_summary
 from .security import INSECURE_DEV_SECRET, get_app_secret, hash_password, new_csrf_token, sign_user_id, unsign_user_id, valid_csrf_token, verify_password
 from .vector_store import clear_all_vectors as clear_all_vectors
 from .vector_store import current_dimension as vector_current_dimension
@@ -649,12 +649,17 @@ def llm_settings_status(conn) -> dict:
     chunks via the local fallback hash) and by templates that warn the user.
     """
     settings = load_llm_settings(conn) or {}
+    # API key is optional: local services (e5, Ollama, vLLM, TEI) accept
+    # requests without one. Readiness now hinges on having both models
+    # configured; the key, when present, is sent as a bearer/api-key header.
     has_api_key = bool(settings.get("api_key"))
+    has_embedding_api_key = bool(settings.get("embedding_api_key"))
     has_chat_model = bool(settings.get("chat_model"))
     has_embedding_model = bool(settings.get("embedding_model"))
     return {
-        "ready": has_api_key and has_chat_model and has_embedding_model,
+        "ready": has_chat_model and has_embedding_model,
         "has_api_key": has_api_key,
+        "has_embedding_api_key": has_embedding_api_key,
         "has_chat_model": has_chat_model,
         "has_embedding_model": has_embedding_model,
     }
@@ -1171,7 +1176,7 @@ async def notebook_suggestions(
     error = ""
     if not has_indexed:
         error = ""
-    elif not (settings or {}).get("api_key") or not (settings or {}).get("chat_model"):
+    elif not (settings or {}).get("chat_model"):
         error = i18n.t("flow.suggestions_no_llm")
     else:
         try:
@@ -1334,7 +1339,7 @@ async def notebook_briefing(
         error = ""
         if not summaries:
             error = ""  # nothing to brief; template falls back on has_indexed
-        elif not settings.get("api_key") or not settings.get("chat_model"):
+        elif not settings.get("chat_model"):
             error = i18n.t("flow.briefing_no_llm")
         else:
             try:
@@ -1413,7 +1418,7 @@ async def notebook_compare(
             },
             status_code=400,
         )
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         return render(
             request,
             "_compare_result.html",
@@ -2534,7 +2539,7 @@ async def source_minutes(
             },
         )
 
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         return render(
             request, "_minutes_result.html",
             {"minutes": "", "error": i18n.t("flow.minutes_no_llm"), "filename": source["filename"], "warning": ""},
@@ -2672,7 +2677,7 @@ async def notebook_artifact(
             {**base_ctx, "error": i18n.t("flow.artifact_need_index")},
             status_code=400,
         )
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         return render(
             request, "_artifact_result.html",
             {**base_ctx, "error": i18n.t("flow.artifact_no_llm")},
@@ -2732,7 +2737,7 @@ async def translate_source_summary(
         )
     source = summaries[0]
     base_ctx["filename"] = source["filename"]
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         return render(
             request, "_translate_result.html",
             {**base_ctx, "error": i18n.t("flow.translate_no_llm")},
@@ -4293,7 +4298,7 @@ async def admin_generate_eval_items_llm(
         context={"user_id": user["id"], "notebook_id": eval_set["notebook_id"], "eval_set_id": eval_set_id},
         metadata={"requested_type_count": len(requested_types), "selected_source_count": len(selected_source_ids)},
     )
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         return eval_set_items_response(
             request,
             user,
@@ -5186,6 +5191,7 @@ def render_settings(
     *,
     saved: bool = False,
     diagnostic_notice: str = "",
+    active_tab: str = "chat",
 ) -> HTMLResponse:
     return render(
         request,
@@ -5195,6 +5201,7 @@ def render_settings(
             "settings": settings,
             "saved": saved,
             "diagnostic_notice": diagnostic_notice,
+            "active_tab": active_tab,
             "diagnostic_status_labels": {
                 "succeeded": i18n.t("settings.status_succeeded"),
                 "failed": i18n.t("settings.status_failed"),
@@ -5219,9 +5226,14 @@ def candidate_settings_from_form(
     api_version: str,
     temperature: float,
     timeout_seconds: float,
+    embedding_provider: str,
+    embedding_api_key: str,
+    embedding_api_version: str,
 ) -> dict[str, Any]:
     if provider not in {"openai_compatible", "azure_openai"}:
         raise HTTPException(status_code=400, detail="Unsupported LLM provider")
+    if embedding_provider not in {"openai_compatible", "azure_openai"}:
+        raise HTTPException(status_code=400, detail="Unsupported embedding provider")
     return {
         "provider": provider,
         "base_url": base_url.strip(),
@@ -5234,6 +5246,10 @@ def candidate_settings_from_form(
         "api_version": api_version.strip(),
         "temperature": temperature,
         "timeout_seconds": timeout_seconds,
+        # Independent embedding connection. Blank key keeps the stored one.
+        "embedding_provider": embedding_provider,
+        "embedding_api_key": embedding_api_key.strip() or existing_decrypted.get("embedding_api_key", ""),
+        "embedding_api_version": embedding_api_version.strip(),
     }
 
 
@@ -5251,6 +5267,9 @@ def llm_settings_fingerprint(settings: dict[str, Any]) -> str:
         "api_version": settings.get("api_version") or "",
         "temperature": float(settings.get("temperature") or 0),
         "timeout_seconds": float(settings.get("timeout_seconds") or 0),
+        "embedding_provider": settings.get("embedding_provider") or "openai_compatible",
+        "embedding_api_key_set": bool(settings.get("embedding_api_key")),
+        "embedding_api_version": settings.get("embedding_api_version") or "",
     }
     return hashlib.sha256(dumps(summary).encode("utf-8")).hexdigest()
 
@@ -5354,6 +5373,9 @@ async def test_chat_settings(
     api_version: str = Form("2024-02-15-preview"),
     temperature: float = Form(0.2),
     timeout_seconds: float = Form(60),
+    embedding_provider: str = Form("openai_compatible"),
+    embedding_api_key: str = Form(""),
+    embedding_api_version: str = Form("2024-02-15-preview"),
     include_image_understanding: str | None = Form(None),
 ):
     with connect() as conn:
@@ -5371,10 +5393,13 @@ async def test_chat_settings(
         api_version=api_version,
         temperature=temperature,
         timeout_seconds=timeout_seconds,
+        embedding_provider=embedding_provider,
+        embedding_api_key=embedding_api_key,
+        embedding_api_version=embedding_api_version,
     )
     include_image = bool(include_image_understanding)
     raw_result = await probe_chat_diagnostics(
-        candidate,
+        chat_settings(candidate),
         include_image=include_image,
         usage_context={"user_id": user["id"]},
     )
@@ -5419,6 +5444,9 @@ async def test_embedding_settings(
     api_version: str = Form("2024-02-15-preview"),
     temperature: float = Form(0.2),
     timeout_seconds: float = Form(60),
+    embedding_provider: str = Form("openai_compatible"),
+    embedding_api_key: str = Form(""),
+    embedding_api_version: str = Form("2024-02-15-preview"),
 ):
     with connect() as conn:
         existing_decrypted = load_llm_settings(conn) or {}
@@ -5435,8 +5463,11 @@ async def test_embedding_settings(
         api_version=api_version,
         temperature=temperature,
         timeout_seconds=timeout_seconds,
+        embedding_provider=embedding_provider,
+        embedding_api_key=embedding_api_key,
+        embedding_api_version=embedding_api_version,
     )
-    raw_result = await probe_embedding_diagnostics(candidate, usage_context={"user_id": user["id"]})
+    raw_result = await probe_embedding_diagnostics(embedding_settings(candidate), usage_context={"user_id": user["id"]})
     compact = compact_diagnostic_result(
         "embedding",
         raw_result,
@@ -5459,7 +5490,7 @@ async def test_embedding_settings(
         compact["model"],
         compact.get("embedding_dimension"),
     )
-    return render_settings(request, user, settings, diagnostic_notice=i18n.t("settings.diag_notice_embedding"))
+    return render_settings(request, user, settings, diagnostic_notice=i18n.t("settings.diag_notice_embedding"), active_tab="embedding")
 
 
 @app.post("/settings")
@@ -5477,26 +5508,37 @@ async def update_settings(
     api_version: str = Form("2024-02-15-preview"),
     temperature: float = Form(0.2),
     timeout_seconds: float = Form(60),
+    embedding_provider: str = Form("openai_compatible"),
+    embedding_api_key: str = Form(""),
+    embedding_api_version: str = Form("2024-02-15-preview"),
 ):
     """Validate and save global LLM provider settings.
 
-    Probes the embedding endpoint before persisting when embedding-affecting
-    fields changed, so connectivity errors and dim mismatches surface at
-    save time instead of at first ingest.
+    Chat and embedding have independent connections (provider / key /
+    api-version), so they can point at different services. Probes the embedding
+    endpoint before persisting when embedding-affecting fields changed, so
+    connectivity errors and dim mismatches surface at save time instead of at
+    first ingest.
     """
     if provider not in {"openai_compatible", "azure_openai"}:
         raise HTTPException(status_code=400, detail="Unsupported LLM provider")
+    if embedding_provider not in {"openai_compatible", "azure_openai"}:
+        raise HTTPException(status_code=400, detail="Unsupported embedding provider")
 
     with connect() as conn:
         existing_row = conn.execute("SELECT * FROM llm_settings WHERE id = 1").fetchone()
         existing = dict(existing_row) if existing_row else {}
-        # The stored api_key is either Fernet ciphertext or legacy plaintext.
-        # Either way it is opaque to us here; we just keep it if the form
-        # field was left blank (the "keep existing" UX).
+        # The stored keys are either Fernet ciphertext or legacy plaintext.
+        # Either way they are opaque to us here; we keep the stored value when
+        # the form field was left blank (the "keep existing" UX).
         if api_key.strip():
             stored_key = encrypt_for_storage(api_key.strip())
         else:
             stored_key = existing.get("api_key", "")
+        if embedding_api_key.strip():
+            stored_embedding_key = encrypt_for_storage(embedding_api_key.strip())
+        else:
+            stored_embedding_key = existing.get("embedding_api_key", "")
 
         # Decide whether the embedding endpoint changed materially. If it
         # didn't, skip the probe — admins editing temperature shouldn't be
@@ -5504,9 +5546,9 @@ async def update_settings(
         embedding_changed = (
             embedding_model.strip() != (existing.get("embedding_model") or "")
             or embedding_base_url.strip() != (existing.get("embedding_base_url") or "")
-            or base_url.strip() != (existing.get("base_url") or "")
-            or provider != (existing.get("provider") or "openai_compatible")
-            or bool(api_key.strip())
+            or embedding_provider != (existing.get("embedding_provider") or "openai_compatible")
+            or embedding_api_version.strip() != (existing.get("embedding_api_version") or "")
+            or bool(embedding_api_key.strip())
         )
 
     if embedding_changed and embedding_model.strip():
@@ -5515,15 +5557,14 @@ async def update_settings(
         # when the form field was left blank.
         with connect() as conn:
             existing_decrypted = load_llm_settings(conn) or {}
-        probe_settings = {
-            "provider": provider,
-            "base_url": base_url.strip(),
+        probe_settings = embedding_settings({
+            "embedding_provider": embedding_provider,
             "embedding_base_url": embedding_base_url.strip(),
-            "api_key": api_key.strip() or existing_decrypted.get("api_key", ""),
+            "embedding_api_key": embedding_api_key.strip() or existing_decrypted.get("embedding_api_key", ""),
             "embedding_model": embedding_model.strip(),
-            "api_version": api_version.strip(),
+            "embedding_api_version": embedding_api_version.strip(),
             "timeout_seconds": timeout_seconds,
-        }
+        })
         try:
             new_dim = await probe_embedding_dimension(probe_settings)
         except Exception as exc:
@@ -5553,7 +5594,8 @@ async def update_settings(
             SET provider = ?, base_url = ?, embedding_base_url = ?, api_key = ?,
                 chat_model = ?, embedding_model = ?,
                 embedding_query_prefix = ?, embedding_passage_prefix = ?,
-                api_version = ?, temperature = ?, timeout_seconds = ?
+                api_version = ?, temperature = ?, timeout_seconds = ?,
+                embedding_provider = ?, embedding_api_key = ?, embedding_api_version = ?
             WHERE id = 1
             """,
             (
@@ -5570,6 +5612,9 @@ async def update_settings(
                 api_version.strip(),
                 temperature,
                 timeout_seconds,
+                embedding_provider,
+                stored_embedding_key,
+                embedding_api_version.strip(),
             ),
         )
         settings = load_llm_settings_for_display(conn)
@@ -5588,6 +5633,15 @@ async def update_settings(
         "temperature": {"before": existing.get("temperature"), "after": temperature},
         "timeout_seconds": {"before": existing.get("timeout_seconds"), "after": timeout_seconds},
         "api_key_changed": bool(api_key.strip()),
+        "embedding_provider": {
+            "before": existing.get("embedding_provider"),
+            "after": embedding_provider,
+        },
+        "embedding_api_version": {
+            "before": existing.get("embedding_api_version") or "",
+            "after": embedding_api_version.strip(),
+        },
+        "embedding_api_key_changed": bool(embedding_api_key.strip()),
         "embedding_changed": embedding_changed,
     }
     record_audit_event(
@@ -5597,7 +5651,7 @@ async def update_settings(
         "llm_settings",
         1,
         audited_fields,
-        "high" if embedding_changed or api_key.strip() else "normal",
+        "high" if embedding_changed or api_key.strip() or embedding_api_key.strip() else "normal",
     )
     logger.info(
         "settings_updated admin_user_id=%s provider=%s base_url_set=%s embedding_base_url_set=%s chat_model_set=%s embedding_model_set=%s api_version=%s temperature=%s timeout_seconds=%s api_key_changed=%s",

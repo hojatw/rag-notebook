@@ -361,10 +361,10 @@ async def embed_texts(
     vectors are incompatible with whatever real model the index was built
     against, and silent-fallback masks misconfiguration as poor retrieval.
     """
-    if not settings.get("api_key") or not settings.get("embedding_model"):
+    if not settings.get("embedding_model"):
         raise RuntimeError(
             "Embedding model is not configured. An admin must set the embedding "
-            "model and API key at /settings before embeddings can be generated."
+            "model at /settings before embeddings can be generated."
         )
 
     prefix = _embedding_prefix(settings, role)
@@ -432,7 +432,7 @@ async def probe_embedding_diagnostics(
         "embedding_dimension": None,
         "error_class": "",
     }
-    if not settings.get("api_key") or not model:
+    if not model:
         result["error_class"] = "MissingSettings"
         return result
 
@@ -523,7 +523,7 @@ async def probe_chat_diagnostics(
             "image_understanding": {"status": "not_tested" if include_image else "skipped"},
         },
     }
-    if not settings.get("api_key") or not model:
+    if not model:
         result["error_class"] = "MissingSettings"
         return result
 
@@ -893,7 +893,7 @@ async def embed_text_batch(
         )
         logger.exception(
             "embedding_api_failed provider=%s model=%s text_count=%s",
-            settings.get("provider") or "openai_compatible",
+            settings.get("embedding_provider") or settings.get("provider") or "openai_compatible",
             settings.get("embedding_model"),
             len(texts),
         )
@@ -913,7 +913,7 @@ async def embed_text_batch(
     )
     logger.info(
         "embedding_api_completed provider=%s model=%s batch_text_count=%s elapsed_ms=%.1f",
-        settings.get("provider") or "openai_compatible",
+        settings.get("embedding_provider") or settings.get("provider") or "openai_compatible",
         settings.get("embedding_model"),
         len(texts),
         elapsed_ms,
@@ -929,7 +929,7 @@ async def generate_answer(
     usage_context: dict[str, Any] | None = None,
 ) -> str:
     """Ask the configured chat model to answer from retrieved chunks only."""
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
 
     logger.info("answer_generation_started chunks=%s question_chars=%s", len(chunks), len(question))
@@ -950,7 +950,7 @@ async def generate_answer_stream(
     usage_context: dict[str, Any] | None = None,
 ):
     """Stream answer text from the configured chat model."""
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
 
     logger.info("answer_stream_started chunks=%s question_chars=%s", len(chunks), len(question))
@@ -981,7 +981,7 @@ async def rewrite_search_queries(
     usage_context: dict[str, Any] | None = None,
 ) -> list[str]:
     """Ask the chat model for retrieval-focused query rewrites."""
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         logger.info("query_rewrite_skipped reason=no_chat_settings")
         return [question]
 
@@ -1028,7 +1028,7 @@ async def rerank_chunks(
     if not candidates:
         return []
     fallback = sorted(candidates, key=lambda item: item["score"], reverse=True)[:limit]
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         logger.info("rerank_skipped reason=no_chat_settings candidates=%s returned=%s", len(candidates), len(fallback))
         return fallback
 
@@ -1080,7 +1080,7 @@ async def generate_starter_questions(
     """Ask the chat model for 4 short starter questions grounded in sample excerpts."""
     if not excerpts:
         return []
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         logger.info("starter_questions_skipped reason=no_chat_settings")
         return []
     samples = excerpts[:8]
@@ -1118,7 +1118,7 @@ async def generate_eval_candidates(
     """Ask the chat model for draft eval items from selected source excerpts."""
     if not excerpts:
         return []
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         logger.info("eval_candidates_skipped reason=no_chat_settings")
         return []
     allowed_types = {"answerable", "cross_lingual", "unanswerable"}
@@ -1178,7 +1178,7 @@ async def suggest_followup_questions(
     """Suggest up to 3 follow-up questions for the latest answered QA pair (A2)."""
     if not question.strip() or not answer.strip():
         return []
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         logger.info("followups_skipped reason=no_chat_settings")
         return []
     target_language = followup_target_language(source_context or [], answer, question)
@@ -1260,7 +1260,7 @@ async def generate_meeting_minutes(
     """
     if not chunks:
         return ""
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         logger.info("meeting_minutes_skipped reason=no_chat_settings")
         return ""
     parts: list[str] = []
@@ -1302,7 +1302,7 @@ async def summarize_source(
     """
     if not chunks:
         return ""
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         logger.info("source_summary_skipped reason=no_chat_settings")
         return ""
     samples = chunks[:12]
@@ -1343,7 +1343,7 @@ async def generate_briefing(
     items = [item for item in summaries if (item.get("summary") or "").strip()]
     if not items:
         return ""
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         logger.info("briefing_skipped reason=no_chat_settings")
         return ""
     context = "\n\n".join(
@@ -1385,7 +1385,7 @@ async def compare_sources(
     if len(items) < 2:
         logger.info("compare_skipped reason=fewer_than_two_summaries provided=%s", len(items))
         return ""
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         logger.info("compare_skipped reason=no_chat_settings")
         return ""
     context = "\n\n".join(
@@ -1432,7 +1432,7 @@ async def generate_artifact(
     items = [item for item in summaries if (item.get("summary") or "").strip()]
     if not items:
         return ""
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         logger.info("artifact_skipped kind=%s reason=no_chat_settings", label)
         return ""
     context = "\n\n".join(
@@ -1472,7 +1472,7 @@ async def translate_summary(
     text = (text or "").strip()
     if not text:
         return ""
-    if not settings.get("api_key") or not settings.get("chat_model"):
+    if not settings.get("chat_model"):
         logger.info("translate_skipped reason=no_chat_settings")
         return ""
     user_prompt = f"TARGET LANGUAGE: {target_language}\n\nSummary to translate:\n{text}\n\nWrite the translation now."
@@ -1816,7 +1816,13 @@ def _record_usage_event(
     metadata: dict[str, Any] | None = None,
     model_key: str = "chat_model",
 ) -> None:
-    provider = settings.get("provider") or "openai_compatible"
+    # Chat and embedding are independent connections, so the provider recorded
+    # must match the model: embedding usage belongs to the embedding provider,
+    # not the (possibly different) chat provider.
+    if model_key == "embedding_model":
+        provider = settings.get("embedding_provider") or settings.get("provider") or "openai_compatible"
+    else:
+        provider = settings.get("provider") or "openai_compatible"
     model = settings.get(model_key) or ""
     normalized = normalize_usage(usage, input_chars=input_chars, output_chars=output_chars)
     record_llm_usage_event(
@@ -1933,23 +1939,80 @@ def unique_nonempty(values: list[str]) -> list[str]:
     return output
 
 
+def chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Project the global settings row onto the chat connection.
+
+    Chat keeps using the original top-level columns (``provider`` / ``base_url``
+    / ``api_key`` / ``api_version``), so this is mostly a pass-through. It exists
+    so chat and embedding resolve symmetrically and request builders never have
+    to know which columns belong to which connection.
+    """
+    return {
+        "provider": settings.get("provider") or "openai_compatible",
+        "base_url": settings.get("base_url") or "",
+        "api_key": settings.get("api_key") or "",
+        "api_version": settings.get("api_version") or "",
+        "chat_model": settings.get("chat_model") or "",
+        "temperature": settings.get("temperature"),
+        "timeout_seconds": settings.get("timeout_seconds"),
+    }
+
+
+def embedding_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Project the global settings row onto the embedding connection.
+
+    Embedding has its own ``embedding_provider`` / ``embedding_api_key`` /
+    ``embedding_api_version`` columns so it can point at a different service from
+    chat (e.g. Gemma chat on one host, e5 embedding on another). When those
+    columns are absent — a legacy combined settings dict, e.g. in tests — we fall
+    back to the shared chat fields, preserving the previous single-connection
+    behaviour. An explicitly-empty embedding API key is honoured (local services
+    such as e5 need no key), so the key fallback only triggers when the column is
+    missing entirely.
+    """
+    has_split_key = "embedding_api_key" in settings
+    api_key = (settings.get("embedding_api_key") or "") if has_split_key else (settings.get("api_key") or "")
+    has_split_version = "embedding_api_version" in settings
+    api_version = settings.get("embedding_api_version") if has_split_version else settings.get("api_version")
+    base_url = settings.get("embedding_base_url") or settings.get("base_url") or ""
+    return {
+        "provider": settings.get("embedding_provider") or settings.get("provider") or "openai_compatible",
+        "base_url": base_url,
+        "embedding_base_url": base_url,
+        "api_key": api_key,
+        "api_version": api_version or "",
+        "embedding_model": settings.get("embedding_model") or "",
+        "embedding_query_prefix": settings.get("embedding_query_prefix") or "",
+        "embedding_passage_prefix": settings.get("embedding_passage_prefix") or "",
+        "timeout_seconds": settings.get("timeout_seconds"),
+    }
+
+
+def _bearer_headers(api_key: str) -> dict[str, str]:
+    """OpenAI-style auth header, omitted when no key is set.
+
+    Local services (e5, Ollama, vLLM, TEI) accept requests without a key, so an
+    empty key must mean "send no Authorization header", not "send an empty one".
+    """
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
 def build_embedding_request(settings: dict[str, Any], texts: list[str]) -> dict[str, Any]:
     """Build the provider-specific HTTP request for embeddings.
 
-    When ``embedding_base_url`` is set it overrides ``base_url`` for this
-    call only — needed when chat and embeddings live on different services
-    (typical with vLLM for chat + Ollama / TEI for embeddings, since vLLM's
-    /v1/embeddings only supports encoder-style models).
+    Resolves the embedding connection first (see ``embedding_settings``), so the
+    embedding endpoint, key and provider are independent of chat.
     """
-    provider = settings.get("provider") or "openai_compatible"
+    resolved = embedding_settings(settings)
+    provider = resolved.get("provider") or "openai_compatible"
     if provider == "azure_openai":
-        return _azure_request(settings, settings["embedding_model"], "embeddings", {"input": texts})
+        return _azure_request(resolved, resolved["embedding_model"], "embeddings", {"input": texts})
 
-    base_url = settings.get("embedding_base_url") or settings.get("base_url") or "https://api.openai.com/v1"
+    base_url = resolved.get("base_url") or "https://api.openai.com/v1"
     return {
         "url": base_url.rstrip("/") + "/embeddings",
-        "headers": {"Authorization": f"Bearer {settings['api_key']}"},
-        "json": {"model": settings["embedding_model"], "input": texts},
+        "headers": _bearer_headers(resolved.get("api_key") or ""),
+        "json": {"model": resolved["embedding_model"], "input": texts},
     }
 
 
@@ -1959,8 +2022,13 @@ def build_chat_request(
     system_prompt: str = SYSTEM_PROMPT,
     temperature: float | None = None,
 ) -> dict[str, Any]:
-    """Build the provider-specific HTTP request for chat completion."""
-    effective_temperature = settings.get("temperature") if temperature is None else temperature
+    """Build the provider-specific HTTP request for chat completion.
+
+    Resolves the chat connection first (see ``chat_settings``), so the chat
+    endpoint, key and provider are independent of embedding.
+    """
+    resolved = chat_settings(settings)
+    effective_temperature = resolved.get("temperature") if temperature is None else temperature
     payload = {
         "temperature": float(0.2 if effective_temperature is None else effective_temperature),
         "messages": [
@@ -1968,29 +2036,35 @@ def build_chat_request(
             {"role": "user", "content": user_prompt},
         ],
     }
-    provider = settings.get("provider") or "openai_compatible"
+    provider = resolved.get("provider") or "openai_compatible"
     if provider == "azure_openai":
-        return _azure_request(settings, settings["chat_model"], "chat/completions", payload)
+        return _azure_request(resolved, resolved["chat_model"], "chat/completions", payload)
 
-    base_url = settings.get("base_url") or "https://api.openai.com/v1"
-    payload["model"] = settings["chat_model"]
+    base_url = resolved.get("base_url") or "https://api.openai.com/v1"
+    payload["model"] = resolved["chat_model"]
     return {
         "url": base_url.rstrip("/") + "/chat/completions",
-        "headers": {"Authorization": f"Bearer {settings['api_key']}"},
+        "headers": _bearer_headers(resolved.get("api_key") or ""),
         "json": payload,
     }
 
 
 def _azure_request(settings: dict[str, Any], deployment: str, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Build an Azure OpenAI deployment URL and api-key request payload."""
+    """Build an Azure OpenAI deployment URL and api-key request payload.
+
+    Expects an already-resolved per-connection settings dict (see
+    ``chat_settings`` / ``embedding_settings``). The api-key header is omitted
+    when no key is set, matching the OpenAI-compatible path.
+    """
     if not settings.get("base_url"):
         raise RuntimeError("Azure OpenAI endpoint is required.")
     if not settings.get("api_version"):
         raise RuntimeError("Azure OpenAI API version is required.")
     base_url = settings["base_url"].rstrip("/")
     url = f"{base_url}/openai/deployments/{deployment}/{operation}?api-version={settings['api_version']}"
+    headers = {"api-key": settings["api_key"]} if settings.get("api_key") else {}
     return {
         "url": url,
-        "headers": {"api-key": settings["api_key"]},
+        "headers": headers,
         "json": payload,
     }
