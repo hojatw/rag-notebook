@@ -32,9 +32,13 @@ def _fresh_app(monkeypatch, tmp_path):
     import app.db as db
     import app.vector_store as vector_store
     import app.ingest as ingest
+    import app.retrieval as retrieval
+    import app.evals as evals
     import app.main as main
 
-    for module in (security, db, vector_store, ingest, main):
+    # Reload in dependency order; main last so its bottom-of-file router include
+    # picks up the freshly reloaded app.evals module.
+    for module in (security, db, vector_store, ingest, retrieval, evals, main):
         importlib.reload(module)
     vector_store.reset_client()
     return main, db
@@ -1132,6 +1136,7 @@ def test_admin_eval_workbench_search_generate_approve_and_delete(monkeypatch, tm
 def test_admin_eval_set_llm_authoring_generates_draft_items(monkeypatch, tmp_path):
     """E1e-1: LLM-assisted authoring stores reviewed-only draft eval candidates."""
     main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.evals as evals
 
     async def fake_generate_eval_candidates(chunks, settings, count=5, item_types=None, target_language="", **kwargs):
         assert settings["chat_model"] == "chat"
@@ -1169,7 +1174,7 @@ def test_admin_eval_set_llm_authoring_generates_draft_items(monkeypatch, tmp_pat
             },
         ]
 
-    monkeypatch.setattr(main, "generate_eval_candidates", fake_generate_eval_candidates)
+    monkeypatch.setattr(evals, "generate_eval_candidates", fake_generate_eval_candidates)
 
     with TestClient(main.app) as client:
         _login(client)
@@ -1258,6 +1263,7 @@ def test_admin_eval_set_llm_authoring_requires_settings(monkeypatch, tmp_path):
 def test_admin_eval_set_runner_records_results(monkeypatch, tmp_path):
     """E1b: admin can create a manual eval item, run it, and inspect stored metrics."""
     main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.evals as evals
 
     async def fake_retrieve(question, conversation_id, settings, history, user_id, source_ids=None, params=None, **kwargs):
         assert question == "alpha?"
@@ -1278,7 +1284,7 @@ def test_admin_eval_set_runner_records_results(monkeypatch, tmp_path):
             }
         ]
 
-    monkeypatch.setattr(main, "retrieve", fake_retrieve)
+    monkeypatch.setattr(evals, "retrieve", fake_retrieve)
 
     with TestClient(main.app) as client:
         _login(client)
