@@ -181,6 +181,7 @@ def test_retrieve_runs_vector_and_keyword_search_concurrently(local_embed, monke
     import threading
     import time as _time
     import app.main as main
+    import app.retrieval as retrieval
 
     inflight = {"cur": 0, "max": 0}
     lock = threading.Lock()
@@ -210,10 +211,10 @@ def test_retrieve_runs_vector_and_keyword_search_concurrently(local_embed, monke
     async def fake_rerank(question, candidates, settings, limit=6, **kwargs):
         return candidates
 
-    monkeypatch.setattr(main, "query_vectors", fake_vectors)
-    monkeypatch.setattr(main, "keyword_candidates_from_sqlite", fake_keyword)
-    monkeypatch.setattr(main, "rewrite_search_queries", fake_rewrite)
-    monkeypatch.setattr(main, "rerank_chunks", fake_rerank)
+    monkeypatch.setattr(retrieval, "query_vectors", fake_vectors)
+    monkeypatch.setattr(retrieval, "keyword_candidates_from_sqlite", fake_keyword)
+    monkeypatch.setattr(retrieval, "rewrite_search_queries", fake_rewrite)
+    monkeypatch.setattr(retrieval, "rerank_chunks", fake_rerank)
 
     chunks = asyncio.run(main.retrieve("api_version setting", [], {}, user_id=1, source_ids=[1, 2]))
 
@@ -278,6 +279,7 @@ def test_diversify_candidates_drops_near_duplicate_lower_ranked_chunks():
 def test_retrieve_threads_override_params_to_rerank(local_embed, monkeypatch):
     """E1c: final_chunk_count + rerank weights from params reach rerank_chunks."""
     import app.main as main
+    import app.retrieval as retrieval
 
     captured = {}
 
@@ -298,10 +300,10 @@ def test_retrieve_threads_override_params_to_rerank(local_embed, monkeypatch):
         captured.update(limit=limit, rw=rerank_weight, rbw=rerank_base_weight)
         return candidates[:limit]
 
-    monkeypatch.setattr(main, "query_vectors", fake_vectors)
-    monkeypatch.setattr(main, "keyword_candidates_from_sqlite", fake_keyword)
-    monkeypatch.setattr(main, "rewrite_search_queries", fake_rewrite)
-    monkeypatch.setattr(main, "rerank_chunks", fake_rerank)
+    monkeypatch.setattr(retrieval, "query_vectors", fake_vectors)
+    monkeypatch.setattr(retrieval, "keyword_candidates_from_sqlite", fake_keyword)
+    monkeypatch.setattr(retrieval, "rewrite_search_queries", fake_rewrite)
+    monkeypatch.setattr(retrieval, "rerank_chunks", fake_rerank)
 
     out = asyncio.run(main.retrieve(
         "alpha", [], {}, user_id=1, source_ids=[1, 2],

@@ -29,7 +29,11 @@ NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload -
 
 ## Architecture map
 
-- `app/main.py` — routes, auth, retrieval orchestration, lifespan, logging; SQLite-backed briefing concurrency lock; optional inline ingest worker (`NOTEBOOKLM_INLINE_WORKER`).
+- `app/main.py` — core routes (notebooks, sources, chat, notes, tools, account), auth + shared web helpers (`render`, `require_login`/`require_admin`, `record_audit_event`, CSRF middleware, `templates`), lifespan, logging; SQLite-backed briefing concurrency lock; optional inline ingest worker (`NOTEBOOKLM_INLINE_WORKER`). Mounts the route modules below via `app.include_router(...)` at the bottom of the file (after the shared helpers are defined, since those modules import them back from `main` — `app.main` is the package's import root and the only safe entry point).
+- `app/retrieval.py` — the retrieval engine extracted from `main`: query rewrite → hybrid (vector + keyword) search → diversify → rerank (`retrieve`), candidate fetch/merge, keyword scoring/tokenization, `citation_payload`, plus the runtime-safe retrieval-parameter machinery (`ACTIVE_RETRIEVAL_PARAMS` state, `resolve/active/set_active_retrieval_params`, profile param coerce/display helpers). `main` re-exports several of these for back-compat. Read `docs/RETRIEVAL.md` first.
+- `app/evals.py` — Admin Eval Workbench (E1) `APIRouter`: retrieval-profile management and eval set/item/run/compare endpoints (`/admin/evals/*`) plus their helpers (`run_eval_job`, metrics, export payloads).
+- `app/admin.py` — Admin console `APIRouter`: vector-index management (`/admin/index*`), audit log (`/admin/audit`), user administration (`/admin/users*`).
+- `app/settings.py` — Admin LLM settings `APIRouter`: the `/settings` page, connection diagnostics (`/settings/test-chat`, `/settings/test-embedding`), and saving the chat + embedding connections.
 - `app/config.py` — centralized tunables (retrieval weights, top-k, chunking, retry, queue, TTLs). Defaults ← `config.toml` ← `NOTEBOOKLM_<GROUP>_<FIELD>` env. Constants in other modules now read from `config`; **keep dataclass defaults equal to current behavior** (guarded by `tests/test_config.py`).
 - `app/db.py` — SQLite schema + idempotent migrations (`_ensure_column`); `load_llm_settings()` decrypts the API key — **always go through it**, never `SELECT` the key directly. Schema reference: `docs/SCHEMA.md` (**keep it in sync on any schema change**).
 - `app/ingest.py` — text extraction, chunking, vector upsert, per-source summary (best-effort after indexing).
