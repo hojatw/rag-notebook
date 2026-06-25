@@ -2118,3 +2118,80 @@ def test_citation_payload_and_merge_carry_chunk_id(monkeypatch, tmp_path):
     vec = [{"id": 5, "source_id": 2, "filename": "f", "location": "l", "text": "alpha beta", "vector_score": 0.8}]
     merged = main.merge_candidates(vec, [], ["alpha"])
     assert merged[5]["id"] == 5
+
+
+def test_healthz_reports_build(monkeypatch, tmp_path):
+    """/healthz is unauthenticated and returns the build identifier for bug reports."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with FastAPITestClient(main.app) as client:
+        resp = client.get("/healthz")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        # version comes from the repo-root VERSION file; commit is best-effort.
+        assert body["version"]
+        assert "commit" in body
+
+
+def test_footer_shows_build_label(monkeypatch, tmp_path):
+    """Every page footer carries the version so a screenshot ties to a build."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with FastAPITestClient(main.app) as client:
+        page = client.get("/login")
+        assert page.status_code == 200
+        assert 'class="app-footer"' in page.text
+        assert f"v{main.app_version()}" in page.text
+
+
+def test_unknown_route_renders_styled_404(monkeypatch, tmp_path):
+    """A typo'd URL gets the styled error page (not Starlette's raw JSON)."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with FastAPITestClient(main.app) as client:
+        resp = client.get("/this-route-does-not-exist")
+        assert resp.status_code == 404
+        # Localized friendly copy + the shared footer chrome, i.e. error.html.
+        assert "找不到頁面" in resp.text
+        assert 'class="app-footer"' in resp.text
+        # No raw framework detail leaked.
+        assert "Not Found" not in resp.text
+
+
+def test_unhandled_exception_renders_styled_500(monkeypatch, tmp_path):
+    """An unhandled error renders the 500 page instead of a bare 'Internal
+    Server Error', and never leaks the raw exception text."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    secret = "leak-me-please-do-not-show-the-user"
+
+    async def _boom():
+        raise RuntimeError(secret)
+
+    main.app.add_api_route("/__boom", _boom, methods=["GET"])
+    try:
+        # raise_server_exceptions=False so the registered handler's response is
+        # returned rather than re-raised into the test.
+        with FastAPITestClient(main.app, raise_server_exceptions=False) as client:
+            resp = client.get("/__boom")
+            assert resp.status_code == 500
+            assert "伺服器發生錯誤" in resp.text
+            assert secret not in resp.text
+    finally:
+        main.app.router.routes = [
+            r for r in main.app.router.routes if getattr(r, "path", None) != "/__boom"
+        ]
+
+
+def test_hx_request_error_returns_fragment(monkeypatch, tmp_path):
+    """HTMX requests get a compact notice fragment, not a full nested page."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with FastAPITestClient(main.app) as client:
+        resp = client.get("/this-route-does-not-exist", headers={"HX-Request": "true"})
+        assert resp.status_code == 404
+        assert 'class="notice failed"' in resp.text
+        # Fragment only — no full document chrome.
+        assert "<!doctype html>" not in resp.text.lower()
+        assert 'class="app-footer"' not in resp.text

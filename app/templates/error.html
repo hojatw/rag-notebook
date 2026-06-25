@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="auth-panel">
-  <h1>{{ status_code }}</h1>
-  <p>{{ detail }}</p>
-  <a href="/">返回首頁</a>
+<section class="auth-panel error-panel">
+  <p class="error-status">{{ status_code }}</p>
+  <h1>{{ title or status_code }}</h1>
+  <p class="muted">{{ detail }}</p>
+  <a class="ghost" href="/">{{ t('error.back_home') }}</a>
 </section>
 {% endblock %}

@@ -46,6 +46,19 @@ services. They share the same `./data` bind mount.
   that UID, or set `user:` in `docker-compose.yml`.
 - Use a stable, strong `NOTEBOOKLM_SECRET`. Changing it invalidates encrypted
   API keys and requires re-entering them at `/settings`.
+- **Stamp the build so bug reports map to a commit.** The semantic version
+  lives in the repo-root `VERSION` file; the commit is read at runtime. For
+  Docker, pass the commit at build time so it survives into the image (the
+  `.git` dir is not copied in):
+
+  ```bash
+  docker build --build-arg NOTEBOOKLM_GIT_SHA=$(git rev-parse --short HEAD) -t notebooklm .
+  ```
+
+  The build identifier (`vX.Y.Z (sha)`) shows in the page footer, the
+  `app_started` log line, and `GET /healthz` (`{status, version, commit}`,
+  unauthenticated). `NOTEBOOKLM_VERSION` / `NOTEBOOKLM_GIT_SHA` env vars
+  override the file/git lookup when a release pipeline sets them.
 
 Backup is one archive of `data/`:
 

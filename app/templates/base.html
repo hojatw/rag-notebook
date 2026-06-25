@@ -70,5 +70,8 @@
     <main id="main-content" tabindex="-1" {% if wide %}class="wide"{% endif %}>
       {% block content %}{% endblock %}
     </main>
+    <footer class="app-footer">
+      <span class="muted small">RAG Notebook · {{ t('footer.version_prefix') }} {{ build_label() }}</span>
+    </footer>
   </body>
 </html>

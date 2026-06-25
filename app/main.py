@@ -15,9 +15,10 @@ from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from jinja2 import pass_context
 from markupsafe import Markup, escape
 
@@ -52,6 +53,7 @@ from .retrieval import (  # noqa: F401
     merge_candidates,
 )
 from .security import INSECURE_DEV_SECRET, get_app_secret, hash_password, new_csrf_token, sign_user_id, unsign_user_id, valid_csrf_token, verify_password
+from .version import app_version, build_label, git_revision
 from .vector_store import delete_source as delete_source_vectors
 from .vector_store import sync_from_sqlite
 
@@ -127,8 +129,8 @@ async def lifespan(_app: FastAPI):
         worker_stop = asyncio.Event()
         worker_task = asyncio.create_task(run_worker_loop(stop_event=worker_stop))
     logger.info(
-        "app_started log_level=%s log_file=%s data_dir=%s inline_worker=%s",
-        LOG_LEVEL, LOG_FILE, os.environ.get("NOTEBOOKLM_DATA_DIR", "data"), INLINE_WORKER,
+        "app_started version=%s log_level=%s log_file=%s data_dir=%s inline_worker=%s",
+        build_label(), LOG_LEVEL, LOG_FILE, os.environ.get("NOTEBOOKLM_DATA_DIR", "data"), INLINE_WORKER,
     )
     try:
         yield
@@ -161,6 +163,9 @@ templates.env.globals["source_status_labels"] = {
 # feeds window.I18N in base.html so app.js shares the same source of truth.
 templates.env.globals["t"] = i18n.t
 templates.env.globals["i18n_js"] = i18n.js_messages
+# Build identifier surfaced in the page footer (and error page), so a user's
+# screenshot ties back to an exact build. See app/version.py.
+templates.env.globals["build_label"] = build_label
 # Localised display for the audit sensitivity classification (raw value kept).
 templates.env.globals["audit_sensitivity_labels"] = i18n.SENSITIVITY_LABELS
 # Localised display for the eval run lifecycle status (raw value kept).
@@ -369,14 +374,68 @@ def sql_like_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    """Convert application HTTP exceptions into redirects or error pages."""
+# Default user-facing copy per status. App-raised HTTPExceptions may carry a
+# more specific `detail` (e.g. "找不到筆記本"); the framework's generic detail
+# ("Not Found") and any raw 500 text are replaced with these instead.
+_ERROR_TITLE_KEYS = {
+    403: "error.page_403_title",
+    404: "error.page_404_title",
+    500: "error.page_500_title",
+}
+_ERROR_DETAIL_KEYS = {
+    403: "error.page_403_detail",
+    404: "error.page_404_detail",
+    500: "error.page_500_detail",
+}
+
+
+def render_error(request: Request, status_code: int, detail: str | None = None) -> HTMLResponse:
+    """Render the shared error page (or a compact fragment for HTMX swaps).
+
+    `detail` is shown only when provided by the application; framework/unknown
+    errors fall back to the localized generic message so we never leak raw
+    exception text to the user.
+    """
+    title = i18n.t(_ERROR_TITLE_KEYS.get(status_code, "error.page_generic_title"))
+    body = detail or i18n.t(_ERROR_DETAIL_KEYS.get(status_code, "error.page_generic_detail"))
+    if request.headers.get("HX-Request"):
+        # Inside an HTMX swap a full page would inject nested chrome; return a
+        # self-contained notice fragment instead.
+        return HTMLResponse(
+            f'<div class="notice failed" role="alert"><strong>{escape(str(status_code))}</strong> '
+            f'{escape(title)} — {escape(body)}</div>',
+            status_code=status_code,
+        )
+    return render(request, "error.html", {"status_code": status_code, "title": title, "detail": body}, status_code)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Convert HTTP exceptions — including framework 404s — into redirects or
+    the styled error page. Registered on the Starlette base class so unmatched
+    routes (which raise the base, not FastAPI's subclass) are covered too."""
     if exc.status_code == 303:
         return RedirectResponse(str(exc.headers["Location"]), status_code=303)
     if exc.status_code == 401:
         return RedirectResponse("/login", status_code=303)
-    return render(request, "error.html", {"status_code": exc.status_code, "detail": exc.detail}, exc.status_code)
+    # The framework's stock 404 detail is "Not Found"; prefer our localized copy.
+    detail = exc.detail if (exc.detail and exc.status_code != 404) else None
+    return render_error(request, exc.status_code, detail)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Last-resort handler so an unhandled error (e.g. a corrupt vector index)
+    renders the styled 500 page with a build identifier instead of Starlette's
+    bare 'Internal Server Error'. The traceback is already logged by the
+    request_logger middleware; we never echo raw exception text to the user."""
+    return render_error(request, 500)
+
+
+@app.get("/healthz")
+def healthz():
+    """Unauthenticated liveness + build probe for ops and bug reports."""
+    return JSONResponse({"status": "ok", "version": app_version(), "commit": git_revision()})
 
 
 @app.get("/", response_class=HTMLResponse)
