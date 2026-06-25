@@ -188,6 +188,36 @@ def _chroma_ids() -> set[str]:
     return set(collection().get(include=[])["ids"])
 
 
+def probe_index_dimension() -> dict[str, Any]:
+    """Best-effort read of the Chroma collection's locked-in vector dimension.
+
+    Returns ``{"dimension": int | None, "readable": bool}``:
+
+    - ``dimension`` is the length of one stored vector, or ``None`` when the
+      collection is empty / Chroma is unavailable / the index can't be read.
+    - ``readable`` is ``False`` only when the collection *has* vectors but the
+      underlying HNSW segment files cannot be opened (corrupt or missing on
+      disk). Chroma surfaces that as ``InternalError: ... hnsw segment reader:
+      Nothing found on disk``. We catch it here so callers report a degraded
+      index instead of 500-ing — this path is hit by both ``/settings``
+      (test embedding) and ``/admin/index`` (the page used to rebuild).
+    """
+    if not chroma_available():
+        return {"dimension": None, "readable": True}
+    try:
+        first = collection().get(limit=1, include=["embeddings"])
+    except Exception:
+        # A corrupt/incomplete on-disk index raises here once the collection
+        # holds vectors. Degrade gracefully rather than failing the request.
+        logger.warning("vector_index_dimension_unreadable", exc_info=True)
+        return {"dimension": None, "readable": False}
+    embeddings = first.get("embeddings")
+    # Chroma sometimes returns a numpy array; len() works on both.
+    if embeddings is None or len(embeddings) == 0:
+        return {"dimension": None, "readable": True}
+    return {"dimension": len(embeddings[0]), "readable": True}
+
+
 def current_dimension() -> int | None:
     """Return the dimensionality the Chroma collection is locked to, if any.
 
@@ -195,17 +225,11 @@ def current_dimension() -> int | None:
     with a different length raise. We peek one stored vector and report its
     length, which lets ``/settings`` reject embedding-model changes that
     would break the existing index instead of failing at first ingest.
-    Returns ``None`` when the collection is empty (any dim is still legal)
-    or when Chroma is unavailable.
+    Returns ``None`` when the collection is empty (any dim is still legal),
+    when Chroma is unavailable, or when the index can't be read (see
+    :func:`probe_index_dimension`).
     """
-    if not chroma_available():
-        return None
-    first = collection().get(limit=1, include=["embeddings"])
-    embeddings = first.get("embeddings")
-    # Chroma sometimes returns a numpy array; len() works on both.
-    if embeddings is None or len(embeddings) == 0:
-        return None
-    return len(embeddings[0])
+    return probe_index_dimension()["dimension"]
 
 
 def index_status() -> dict[str, Any]:

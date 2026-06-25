@@ -32,7 +32,7 @@ from .llm import (
     probe_embedding_dimension,
 )
 from .main import record_audit_event, render, require_admin
-from .vector_store import current_dimension as vector_current_dimension
+from .vector_store import probe_index_dimension as vector_probe_index_dimension
 
 logger = logging.getLogger(__name__)
 
@@ -161,8 +161,10 @@ def compact_diagnostic_result(
     if kind == "embedding":
         dimension = result.get("embedding_dimension")
         compact["embedding_dimension"] = int(dimension) if dimension is not None else None
-        current_dimension = vector_current_dimension()
+        index_dim = vector_probe_index_dimension()
+        current_dimension = index_dim["dimension"]
         compact["current_index_dimension"] = int(current_dimension) if current_dimension is not None else None
+        compact["index_readable"] = bool(index_dim["readable"])
     if kind == "chat":
         compact["include_image_understanding"] = bool(include_image)
         compact["capabilities"] = compact_diagnostic_capabilities(result.get("capabilities") or {})
@@ -439,7 +441,7 @@ async def update_settings(
                     "Verify base URL / embedding base URL, API key, and model name before saving."
                 ),
             )
-        current_dim = vector_current_dimension()
+        current_dim = vector_probe_index_dimension()["dimension"]
         if current_dim is not None and current_dim != new_dim:
             raise HTTPException(
                 status_code=400,
