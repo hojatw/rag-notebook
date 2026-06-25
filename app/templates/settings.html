@@ -174,7 +174,9 @@
             <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ embedding_diag.tested_at or '—' }}</dd></div>
             {% if embedding_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ embedding_diag.error_class }}</dd></div>{% endif %}
           </dl>
-          {% if embedding_diag.embedding_dimension is not none and embedding_diag.current_index_dimension is not none and embedding_diag.embedding_dimension != embedding_diag.current_index_dimension %}
+          {% if embedding_diag.index_readable is defined and not embedding_diag.index_readable %}
+            <p class="notice failed">{{ t('settings.index_unreadable_warn') }}</p>
+          {% elif embedding_diag.embedding_dimension is not none and embedding_diag.current_index_dimension is not none and embedding_diag.embedding_dimension != embedding_diag.current_index_dimension %}
             <p class="notice failed">{{ t('settings.dim_mismatch_warn') }}</p>
           {% endif %}
         {% else %}

@@ -131,3 +131,38 @@ def test_clear_all_vectors_removes_everything(fresh_modules, local_embed, tmp_pa
     assert vs.index_status()["chroma_chunks"] == 0
     # SQLite chunks untouched
     assert vs.index_status()["sqlite_chunks"] == before
+
+
+def test_probe_index_dimension_reports_dimension(fresh_modules, local_embed, tmp_path):
+    """A healthy, populated index reports its locked-in dimension as readable."""
+    db, ingest, vs = fresh_modules.db, fresh_modules.ingest, fresh_modules.vector_store
+    seed_one_indexed_source(db, ingest, tmp_path)
+
+    probe = vs.probe_index_dimension()
+
+    assert probe["readable"] is True
+    assert probe["dimension"] == 384  # local_embed stand-in is 384-dim
+    assert vs.current_dimension() == 384
+
+
+def test_probe_index_dimension_survives_unreadable_index(fresh_modules, local_embed, tmp_path, monkeypatch):
+    """A corrupt on-disk index degrades gracefully instead of raising.
+
+    Mirrors the customer 500: the embedding endpoint is fine, but reading one
+    stored vector raises ``InternalError: ... hnsw segment reader: Nothing
+    found on disk``. probe_index_dimension must catch it and report the index
+    as unreadable so /settings and /admin/index don't 500.
+    """
+    vs = fresh_modules.vector_store
+
+    class _BrokenCollection:
+        def get(self, *args, **kwargs):
+            raise RuntimeError("Error creating hnsw segment reader: Nothing found on disk")
+
+    monkeypatch.setattr(vs, "collection", lambda: _BrokenCollection())
+
+    probe = vs.probe_index_dimension()
+
+    assert probe == {"dimension": None, "readable": False}
+    # Back-compat wrapper must not raise either.
+    assert vs.current_dimension() is None

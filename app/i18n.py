@@ -265,6 +265,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "settings.azure_api_version": "Azure API 版本",
         "settings.runtime_params": "執行參數",
         "settings.dim_mismatch_warn": "偵測到的維度與目前索引不同：更換 embedding 維度需先到 /admin/index 點 Clear 再 Rebuild，現有向量才會相容。",
+        "settings.index_unreadable_warn": "Embedding 連線正常，但目前的向量索引無法讀取（檔案可能已損壞或遺失），因此無法比對維度。請到「索引」管理頁面點 Rebuild 重建索引；若仍失敗，改用 Clear 後重新匯入來源。",
         # --- Audit log page (Phase 2) ----------------------------------------
         "audit.title": "稽核紀錄",
         "audit.intro": "查核高風險操作、匯出、權限與系統設定變更。中繼資料只保存識別資訊與摘要，不保存 API key 或完整文件內容。",
