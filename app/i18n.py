@@ -201,6 +201,18 @@ MESSAGES: dict[str, dict[str, str]] = {
         "error.action_compare": "來源比較",
         "error.action_translate": "摘要翻譯",
         "error.action_generate": "{label}生成",
+        # Full-page error templates (error.html) — title + generic body per status
+        "error.page_404_title": "找不到頁面",
+        "error.page_404_detail": "您要找的頁面不存在或已被移動。",
+        "error.page_403_title": "沒有存取權限",
+        "error.page_403_detail": "您沒有檢視此頁面的權限。",
+        "error.page_500_title": "伺服器發生錯誤",
+        "error.page_500_detail": "系統發生未預期的錯誤，請稍後再試；若持續發生，請聯絡管理員並提供頁尾的版本資訊。",
+        "error.page_generic_title": "發生錯誤",
+        "error.page_generic_detail": "請稍後再試；若持續發生，請聯絡管理員。",
+        "error.back_home": "返回首頁",
+        # Page footer
+        "footer.version_prefix": "版本",
         # per-flow inline errors shown in the Studio/chat partials
         "flow.suggestions_no_llm": "請先完成 LLM 設定，才能生成建議問題。",
         "flow.suggestions_empty": "模型未回傳建議問題，請再試一次。",

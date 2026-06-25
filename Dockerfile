@@ -49,6 +49,11 @@ COPY app ./app
 #     docker-compose.yml) or set NOTEBOOKLM_<GROUP>_<FIELD> env vars.
 COPY config.example.toml ./
 
+# 4c) Semantic version, read by app/version.py for the footer / /healthz. The
+#     .git dir is not copied into the image, so the commit comes from the
+#     NOTEBOOKLM_GIT_SHA build arg (step 6) instead.
+COPY VERSION ./
+
 # 5) Make sure mount targets exist with the right owner. Empty directories
 #    here get replaced by the bind mount at container start; the chown
 #    matters when the user runs without a mount (fresh-install demo).
@@ -64,6 +69,11 @@ ENV NOTEBOOKLM_DATA_DIR=/app/data \
     NOTEBOOKLM_LOG_MAX_BYTES=5242880 \
     NOTEBOOKLM_LOG_BACKUP_COUNT=5
 
+# Build identifier: pass `--build-arg NOTEBOOKLM_GIT_SHA=$(git rev-parse --short HEAD)`
+# so /healthz and the footer report the exact commit. Defaults to "unknown".
+ARG NOTEBOOKLM_GIT_SHA=unknown
+ENV NOTEBOOKLM_GIT_SHA=$NOTEBOOKLM_GIT_SHA
+
 # NOTEBOOKLM_SECRET intentionally NOT defaulted in the image. Without it the
 # app fails closed unless NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 is explicitly
 # set for local development. Compose requires NOTEBOOKLM_SECRET via .env.
@@ -72,13 +82,12 @@ ENV NOTEBOOKLM_DATA_DIR=/app/data \
 
 EXPOSE 8000
 
-# 7) Healthcheck without adding curl: ask Python to do the HTTP. The root
-#    route returns 303 (redirect to /login or /notebooks) so we accept
-#    anything < 400 as alive.
+# 7) Healthcheck without adding curl: ask Python to do the HTTP. /healthz is the
+#    dedicated liveness endpoint and returns 200 (no auth, no redirect).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request,sys; \
-        r=urllib.request.urlopen('http://127.0.0.1:8000/', timeout=4); \
-        sys.exit(0 if r.status < 400 else 1)" \
+        r=urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4); \
+        sys.exit(0 if r.status == 200 else 1)" \
         || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

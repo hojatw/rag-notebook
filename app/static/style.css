@@ -735,6 +735,26 @@ label {
 
 .auth-hero p { margin: 0; }
 
+/* Error page: oversized status code above a friendly title. */
+.error-panel { text-align: center; }
+.error-panel .error-status {
+  margin: 0 0 var(--sp-2);
+  font-size: 48px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--muted);
+  letter-spacing: -0.02em;
+}
+.error-panel .ghost { margin-top: var(--sp-4); }
+
+/* Global build-identifier footer. Quiet, centered, ties UI to a build. */
+.app-footer {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: var(--sp-4) var(--sp-5) var(--sp-6);
+  text-align: center;
+}
+
 .auth-hint {
   margin: var(--sp-4) 0 0;
   text-align: center;

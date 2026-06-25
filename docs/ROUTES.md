@@ -5,6 +5,7 @@ lives in [`README.md`](../README.md).
 
 ```text
 GET  /                                                    redirect to /notebooks (or /login)
+GET  /healthz                                             liveness + build info {status, version, commit} (no auth)
 GET  /login                                               sign-in page
 POST /login                                               authenticate
 POST /logout                                              clear session
