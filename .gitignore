@@ -27,9 +27,10 @@ logs/
 .coverage
 htmlcov/
 
-# Claude Code local state (ignore all of .claude/ except shared slash commands)
+# Claude Code local state (ignore all of .claude/ except shared config + slash commands)
 .claude/*
 !.claude/commands/
+!.claude/settings.json
 
 # Local engineering handoff notes
 handover.md

@@ -1,0 +1,44 @@
+{
+  "$comment": "Shared, committed Claude Code config for this project. Safe, high-frequency dev-loop commands are pre-approved so every worktree inherits them (per-checkout, ad-hoc grants still go to the gitignored settings.local.json). Network-binding commands (uvicorn) are intentionally NOT allow-listed — they should prompt. The hooks emit non-blocking reminders to keep docs/SCHEMA.md and config.example.toml in sync after edits. See AGENTS.md.",
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/pytest:*)",
+      "Bash(.venv/bin/python -m pytest:*)",
+      "Bash(.venv/bin/python -m py_compile:*)",
+      "Bash(.venv/bin/python -m tests.eval_retrieval:*)",
+      "Bash(.venv/bin/python -m app.worker:*)",
+      "Bash(./setup.sh:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git stash:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh issue:*)",
+      "Bash(wc:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(rg:*)",
+      "Bash(grep:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(lsof -ti:8000)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=$(cat); case \"$p\" in *app/db.py*) printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"Reminder: schema changed — keep docs/SCHEMA.md in sync with app/db.py (AGENTS.md).\"}}';; *app/config.py*) printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"Reminder: tunable changed — update config.example.toml (guarded by tests/test_config.py).\"}}';; *) :;; esac"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -2,20 +2,9 @@
 
 NotebookLM-style RAG proof of concept: FastAPI + Jinja2 + HTMX + Alpine.js, SQLite for metadata, Chroma for vectors, local filesystem for uploads. Single machine. Treat it as a **POC, not production** — keep changes scoped and behavior-preserving unless explicitly asked for a redesign.
 
-## Authoritative docs — read before working
+## Docs
 
-- **@AGENTS.md** — the engineering rulebook (runtime, verification, persistence safety, conventions, security, git hygiene). Follow it; this file only adds Claude-specific orientation on top.
-- `README.md` — onboarding overview: what the app does, quick start, core feature set, LLM setup, and doc map.
-- `docs/ROUTES.md` — full HTTP route reference.
-- `docs/DEVELOPMENT.md` — detailed setup, deployment, tuning, logging, verification, and repository layout.
-- `docs/RETRIEVAL.md` — read before changing retrieval, chunking, ranking, reranking, evals, or vector-store behavior.
-- `docs/PERFORMANCE.md` / `docs/QUALITY.md` — prioritised, tick-off backlogs for performance and retrieval-quality work.
-- `docs/SCHEMA.md` — DB schema reference (tables, columns, FKs, indexes). Keep in sync with `app/db.py` on every schema change.
-- `docs/ROADMAP.md` — product/admin roadmap: UX, Eval Workbench, AI governance, LLM operations, source-format support, and new AI features. Performance/quality items stay in their own backlogs.
-- `docs/SPREADSHEET_INGESTION.md` — design notes for XLSX/CSV ingestion, spreadsheet types, Q&A-first chunking, and diagnostics expectations.
-- `docs/UI.md` — front-end design conventions (page archetypes, components, data presentation, interaction, voice). Read before adding or restyling any page/component; align new UI to it.
-- `docs/I18N.md` — UI localisation reference: the message catalog + `t()`/`window.I18N`, how to add strings/locales, how to switch the locale, and known exceptions. Read before adding user-facing copy or touching language behavior; never hardcode UI strings.
-- `handover.md` (gitignored, when present) — cross-session work state; useful context, not a durable rule source.
+**@AGENTS.md** is the engineering rulebook (runtime, verification, persistence safety, conventions, security, git hygiene) — follow it; this file only adds Claude-specific orientation on top. AGENTS.md's "Context To Read First" holds the full **task-gated** doc map: load a `docs/*.md` only when your change touches its area, don't read the whole tree up front. Quick index of the gates: retrieval/chunking/ranking → `docs/RETRIEVAL.md`; schema → `docs/SCHEMA.md`; routes → `docs/ROUTES.md`; setup/deploy/tuning → `docs/DEVELOPMENT.md`; product/admin surfaces → `docs/ROADMAP.md`; XLSX/CSV ingestion → `docs/SPREADSHEET_INGESTION.md`; page/component UI → `docs/UI.md`; user-facing copy → `docs/I18N.md` (never hardcode strings); perf/quality backlogs → `docs/PERFORMANCE.md` / `docs/QUALITY.md`; onboarding → `README.md`. `handover.md` (gitignored, when present) is cross-session work state — useful context, not a durable rule source.
 
 ## Commands
 
