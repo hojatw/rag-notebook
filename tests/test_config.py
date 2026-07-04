@@ -39,6 +39,18 @@ def test_defaults_match_the_previously_hardcoded_values(tmp_path, monkeypatch):
 
     assert c.ui.language == "zh-TW"
 
+    assert c.auth.local_login_enabled is True
+    assert c.auth.trusted_header_enabled is False
+    assert c.auth.trusted_header_secret == ""
+    assert c.auth.trusted_header_secret_header == "X-NotebookLM-Auth-Secret"
+    assert c.auth.trusted_header_user_header == "X-Forwarded-User"
+    assert c.auth.trusted_header_email_header == "X-Forwarded-Email"
+    assert c.auth.trusted_header_name_header == "X-Forwarded-Name"
+    assert c.auth.trusted_header_groups_header == "X-Forwarded-Groups"
+    assert c.auth.trusted_header_admin_groups == ""
+    assert c.auth.trusted_header_auto_provision is True
+    assert c.auth.trusted_header_provider == "trusted_header"
+
 
 def test_toml_file_overrides_defaults(tmp_path, monkeypatch):
     config_file = tmp_path / "config.toml"
@@ -58,16 +70,22 @@ def test_toml_file_overrides_defaults(tmp_path, monkeypatch):
 
 def test_env_beats_toml_and_coerces_types(tmp_path, monkeypatch):
     config_file = tmp_path / "config.toml"
-    config_file.write_text("[retrieval]\nvector_weight = 0.6\n", encoding="utf-8")
+    config_file.write_text(
+        "[retrieval]\nvector_weight = 0.6\n"
+        "[auth]\ntrusted_header_enabled = false\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(config_file))
     monkeypatch.setenv("NOTEBOOKLM_RETRIEVAL_VECTOR_WEIGHT", "0.55")
     monkeypatch.setenv("NOTEBOOKLM_RETRIEVAL_CANDIDATE_POOL_SIZE", "30")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
     c = cfg.load_config()
 
     assert c.retrieval.vector_weight == 0.55       # env wins over TOML, coerced to float
     assert isinstance(c.retrieval.vector_weight, float)
     assert c.retrieval.candidate_pool_size == 30   # env string coerced to int
     assert isinstance(c.retrieval.candidate_pool_size, int)
+    assert c.auth.trusted_header_enabled is True
 
 
 def test_missing_file_is_not_an_error(tmp_path, monkeypatch):

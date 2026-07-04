@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import hmac
 import json
 import os
@@ -558,6 +559,67 @@ def global_search(
     )
 
 
+def _login_template_context(error: str = "", status: str = "") -> dict[str, Any]:
+    return {
+        "error": error,
+        "status": status,
+        "demo_hint": SECRET == INSECURE_DEV_SECRET and config.auth.local_login_enabled,
+        "local_login_enabled": config.auth.local_login_enabled,
+        "trusted_header_enabled": config.auth.trusted_header_enabled,
+    }
+
+
+def _split_auth_list(value: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[,;\n]+", value or "") if item.strip()]
+
+
+def _subject_hash(subject: str) -> str:
+    return hashlib.sha256(subject.encode("utf-8")).hexdigest()[:16]
+
+
+def _unique_external_username(conn, subject: str, email: str, display_name: str) -> str:
+    raw = (email or display_name or subject or "sso-user").strip()
+    if "\\" in raw:
+        raw = raw.rsplit("\\", 1)[-1]
+    candidate = re.sub(r"[^a-zA-Z0-9_.@-]+", "-", raw.lower()).strip("._-")
+    if not candidate:
+        candidate = "sso-user"
+    candidate = candidate[:48]
+    username = candidate
+    suffix = 2
+    while conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+        tail = f"-{suffix}"
+        username = f"{candidate[:64 - len(tail)]}{tail}"
+        suffix += 1
+    return username
+
+
+def _trusted_header_metadata(
+    provider: str,
+    subject: str,
+    groups: list[str],
+    matched_admin_groups: list[str],
+    reason: str = "",
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "provider": provider,
+        "subject_hash": _subject_hash(subject),
+        "group_count": len(groups),
+        "matched_admin_groups": matched_admin_groups,
+    }
+    if reason:
+        metadata["reason"] = reason
+    return metadata
+
+
+def _external_identity_count(user_id: int) -> int:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM external_identities WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_form(request: Request):
     """Render the login form.
@@ -565,20 +627,185 @@ def login_form(request: Request):
     The demo-account hint is shown only when running with the insecure dev
     secret, so a real (network-exposed) deployment never prints credentials.
     """
-    return render(request, "login.html", {"error": "", "demo_hint": SECRET == INSECURE_DEV_SECRET})
+    return render(request, "login.html", _login_template_context())
 
 
 @app.post("/login")
 def login(request: Request, username: str = Form(...), password: str = Form(...)):
     """Authenticate a username and password and issue a session cookie."""
+    if not config.auth.local_login_enabled:
+        logger.warning("local_login_disabled username=%s", username)
+        return render(
+            request,
+            "login.html",
+            _login_template_context(i18n.t("auth.local_login_disabled")),
+            403,
+        )
     with connect() as conn:
         user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
     if not user or not verify_password(password, user["password_hash"]):
         logger.warning("login_failed username=%s", username)
-        return render(request, "login.html", {"error": "帳號或密碼錯誤。"}, 400)
+        return render(request, "login.html", _login_template_context(i18n.t("auth.login_failed")), 400)
     redirect = RedirectResponse("/notebooks", status_code=303)
     redirect.set_cookie("session", sign_user_id(user["id"], SECRET), httponly=True, samesite="lax")
     logger.info("login_succeeded user_id=%s username=%s", user["id"], username)
+    return redirect
+
+
+@app.get("/auth/trusted-header")
+def trusted_header_login(request: Request):
+    """Sign in a user whose identity was verified by a trusted reverse proxy."""
+    auth = config.auth
+    provider = (auth.trusted_header_provider or "trusted_header").strip() or "trusted_header"
+    if not auth.trusted_header_enabled:
+        raise HTTPException(status_code=404)
+    if not auth.trusted_header_secret:
+        record_audit_event(
+            request,
+            None,
+            "trusted_header_login_rejected",
+            "auth",
+            None,
+            {"provider": provider, "reason": "missing_shared_secret"},
+            "high",
+        )
+        raise HTTPException(status_code=503, detail=i18n.t("auth.trusted_header_not_configured"))
+
+    submitted_secret = request.headers.get(auth.trusted_header_secret_header, "")
+    if not submitted_secret or not hmac.compare_digest(submitted_secret, auth.trusted_header_secret):
+        record_audit_event(
+            request,
+            None,
+            "trusted_header_login_rejected",
+            "auth",
+            None,
+            {"provider": provider, "reason": "shared_secret_mismatch"},
+            "high",
+        )
+        raise HTTPException(status_code=403, detail=i18n.t("auth.trusted_header_denied"))
+
+    subject = (request.headers.get(auth.trusted_header_user_header, "") or "").strip()
+    if not subject:
+        record_audit_event(
+            request,
+            None,
+            "trusted_header_login_rejected",
+            "auth",
+            None,
+            {"provider": provider, "reason": "missing_subject"},
+            "high",
+        )
+        raise HTTPException(status_code=400, detail=i18n.t("auth.trusted_header_missing_subject"))
+
+    email = (request.headers.get(auth.trusted_header_email_header, "") or "").strip()[:254]
+    display_name = (request.headers.get(auth.trusted_header_name_header, "") or "").strip()[:200]
+    groups = _split_auth_list(request.headers.get(auth.trusted_header_groups_header, ""))
+    admin_groups = {item.lower() for item in _split_auth_list(auth.trusted_header_admin_groups)}
+    matched_admin_groups = sorted({group for group in groups if group.lower() in admin_groups})
+    mapped_is_admin = bool(matched_admin_groups)
+    groups_json = dumps(groups[:200])
+
+    created_user = False
+    role_changed = False
+    old_is_admin = False
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT ei.id AS identity_id, u.*
+              FROM external_identities ei
+              JOIN users u ON u.id = ei.user_id
+             WHERE ei.provider = ? AND ei.subject = ?
+            """,
+            (provider, subject),
+        ).fetchone()
+        if row is None:
+            if not auth.trusted_header_auto_provision:
+                record_audit_event(
+                    request,
+                    None,
+                    "trusted_header_login_rejected",
+                    "auth",
+                    None,
+                    _trusted_header_metadata(
+                        provider, subject, groups, matched_admin_groups, "unknown_external_identity"
+                    ),
+                    "high",
+                )
+                raise HTTPException(status_code=403, detail=i18n.t("auth.trusted_header_unknown_user"))
+            username = _unique_external_username(conn, subject, email, display_name)
+            cursor = conn.execute(
+                "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
+                (username, hash_password(f"sso:{uuid.uuid4().hex}"), int(mapped_is_admin)),
+            )
+            user_id = cursor.lastrowid
+            conn.execute(
+                """
+                INSERT INTO external_identities
+                (user_id, provider, subject, email, display_name, groups_json, last_login_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                (user_id, provider, subject, email, display_name, groups_json),
+            )
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            created_user = True
+        else:
+            old_is_admin = bool(row["is_admin"])
+            conn.execute(
+                """
+                UPDATE external_identities
+                   SET email = ?,
+                       display_name = ?,
+                       groups_json = ?,
+                       last_login_at = CURRENT_TIMESTAMP,
+                       updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?
+                """,
+                (email, display_name, groups_json, row["identity_id"]),
+            )
+            if old_is_admin != mapped_is_admin:
+                conn.execute("UPDATE users SET is_admin = ? WHERE id = ?", (int(mapped_is_admin), row["id"]))
+                role_changed = True
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+
+    signed_in_user = dict(row)
+    base_metadata = _trusted_header_metadata(provider, subject, groups, matched_admin_groups)
+    if created_user:
+        record_audit_event(
+            request,
+            signed_in_user,
+            "trusted_header_user_provisioned",
+            "user",
+            signed_in_user["id"],
+            {**base_metadata, "username": signed_in_user["username"], "is_admin": bool(signed_in_user["is_admin"])},
+            "high",
+        )
+    if role_changed:
+        record_audit_event(
+            request,
+            signed_in_user,
+            "trusted_header_role_mapped",
+            "user",
+            signed_in_user["id"],
+            {**base_metadata, "old_is_admin": old_is_admin, "new_is_admin": bool(signed_in_user["is_admin"])},
+            "high",
+        )
+    record_audit_event(
+        request,
+        signed_in_user,
+        "trusted_header_login_succeeded",
+        "user",
+        signed_in_user["id"],
+        {**base_metadata, "created_user": created_user, "is_admin": bool(signed_in_user["is_admin"])},
+        "normal",
+    )
+    redirect = RedirectResponse("/notebooks", status_code=303)
+    redirect.set_cookie("session", sign_user_id(signed_in_user["id"], SECRET), httponly=True, samesite="lax")
+    logger.info(
+        "trusted_header_login_succeeded user_id=%s username=%s provider=%s",
+        signed_in_user["id"],
+        signed_in_user["username"],
+        provider,
+    )
     return redirect
 
 
@@ -2846,7 +3073,16 @@ async def translate_source_summary(
 @app.get("/account", response_class=HTMLResponse)
 def account_page(request: Request, user: Annotated[dict, Depends(require_login)]):
     """Render the per-user account page (currently: change own password)."""
-    return render(request, "account.html", {"user": user, "saved": False, "error": ""})
+    return render(
+        request,
+        "account.html",
+        {
+            "user": user,
+            "saved": False,
+            "error": "",
+            "external_identity_count": _external_identity_count(user["id"]),
+        },
+    )
 
 
 @app.post("/account/password")
@@ -2860,19 +3096,34 @@ def change_own_password(
     """Allow a signed-in user to change their own password."""
     error = ""
     with connect() as conn:
+        external_count = conn.execute(
+            "SELECT COUNT(*) FROM external_identities WHERE user_id = ?",
+            (user["id"],),
+        ).fetchone()[0]
         row = conn.execute("SELECT password_hash FROM users WHERE id = ?", (user["id"],)).fetchone()
-    if row is None or not verify_password(current_password, row["password_hash"]):
+    if external_count:
+        error = i18n.t("auth.password_change_sso_blocked")
+    elif row is None or not verify_password(current_password, row["password_hash"]):
         error = "目前密碼不正確。"
     elif len(new_password) < 6:
         error = "新密碼至少需要 6 個字元。"
     elif new_password != confirm_password:
         error = "新密碼與確認密碼不一致。"
     if error:
-        return render(request, "account.html", {"user": user, "saved": False, "error": error}, 400)
+        return render(
+            request,
+            "account.html",
+            {"user": user, "saved": False, "error": error, "external_identity_count": external_count},
+            400,
+        )
     with connect() as conn:
         conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), user["id"]))
     logger.info("password_changed user_id=%s", user["id"])
-    return render(request, "account.html", {"user": user, "saved": True, "error": ""})
+    return render(
+        request,
+        "account.html",
+        {"user": user, "saved": True, "error": "", "external_identity_count": 0},
+    )
 
 
 # Mounted last so the shared helpers above (render, require_admin,

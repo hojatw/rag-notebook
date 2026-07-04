@@ -35,6 +35,7 @@ def _fresh_app(monkeypatch, tmp_path):
     # circular import mid-initialisation (ImportError). Loading app.main first
     # resolves the whole graph; the later imports just grab cached modules.
     import app.main as main
+    import app.config as app_config
     import app.security as security
     import app.db as db
     import app.vector_store as vector_store
@@ -46,7 +47,7 @@ def _fresh_app(monkeypatch, tmp_path):
 
     # Reload in dependency order; main last so its bottom-of-file router includes
     # pick up the freshly reloaded app.admin / app.evals / app.settings modules.
-    for module in (security, db, vector_store, ingest, retrieval, admin, evals, app_settings, main):
+    for module in (app_config, security, db, vector_store, ingest, retrieval, admin, evals, app_settings, main):
         importlib.reload(module)
     vector_store.reset_client()
     return main, db
@@ -83,6 +84,179 @@ def test_csrf_token_required_for_login_post(monkeypatch, tmp_path):
             follow_redirects=False,
         )
         assert accepted.status_code == 303
+
+
+def test_trusted_header_auth_is_disabled_by_default(monkeypatch, tmp_path):
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        response = client.get("/auth/trusted-header", follow_redirects=False)
+        assert response.status_code == 404
+
+
+def test_trusted_header_auth_rejects_missing_shared_secret(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/auth/trusted-header",
+            headers={"X-Forwarded-User": "DOMAIN\\alice"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 403
+        with db.connect() as conn:
+            users = conn.execute("SELECT COUNT(*) FROM users WHERE username LIKE 'alice%'").fetchone()[0]
+            audit = conn.execute(
+                "SELECT action, metadata_json FROM audit_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert users == 0
+        assert audit["action"] == "trusted_header_login_rejected"
+        assert "shared_secret_mismatch" in audit["metadata_json"]
+
+
+def test_trusted_header_auth_provisions_user_maps_admin_and_audits(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ADMIN_GROUPS", "rag-admins")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    headers = {
+        "X-NotebookLM-Auth-Secret": "proxy-secret",
+        "X-Forwarded-User": "DOMAIN\\jane",
+        "X-Forwarded-Email": "jane@example.com",
+        "X-Forwarded-Name": "Jane Doe",
+        "X-Forwarded-Groups": "staff, rag-admins",
+    }
+    with TestClient(main.app) as client:
+        response = client.get("/auth/trusted-header", headers=headers, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/notebooks"
+
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'jane@example.com'").fetchone()
+            identity = conn.execute(
+                "SELECT * FROM external_identities WHERE provider = 'trusted_header' AND subject = ?",
+                ("DOMAIN\\jane",),
+            ).fetchone()
+            actions = [
+                row["action"]
+                for row in conn.execute("SELECT action FROM audit_events ORDER BY id").fetchall()
+            ]
+            stored_audit = "\n".join(
+                row["metadata_json"]
+                for row in conn.execute("SELECT metadata_json FROM audit_events ORDER BY id").fetchall()
+            )
+
+        assert user is not None
+        assert user["is_admin"] == 1
+        assert identity is not None
+        assert identity["user_id"] == user["id"]
+        assert json.loads(identity["groups_json"]) == ["staff", "rag-admins"]
+        assert actions == [
+            "trusted_header_user_provisioned",
+            "trusted_header_login_succeeded",
+        ]
+        assert "DOMAIN\\jane" not in stored_audit
+        assert "subject_hash" in stored_audit
+
+        second = client.get("/auth/trusted-header", headers=headers, follow_redirects=False)
+        assert second.status_code == 303
+        with db.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM external_identities WHERE subject = ?",
+                ("DOMAIN\\jane",),
+            ).fetchone()[0] == 1
+
+
+def test_trusted_header_auth_respects_auto_provision_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_AUTO_PROVISION", "false")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/auth/trusted-header",
+            headers={
+                "X-NotebookLM-Auth-Secret": "proxy-secret",
+                "X-Forwarded-User": "unknown-user",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 403
+        with db.connect() as conn:
+            users = conn.execute("SELECT COUNT(*) FROM users WHERE username = 'unknown-user'").fetchone()[0]
+            audit = conn.execute(
+                "SELECT action, metadata_json FROM audit_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert users == 0
+        assert audit["action"] == "trusted_header_login_rejected"
+        assert "unknown_external_identity" in audit["metadata_json"]
+        assert "unknown-user" not in audit["metadata_json"]
+
+
+def test_trusted_header_auth_can_disable_local_login(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_LOCAL_LOGIN_ENABLED", "false")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        page = client.get("/login")
+        assert page.status_code == 200
+        assert "企業登入" in page.text
+        assert 'name="username"' not in page.text
+
+        response = client.post(
+            "/login",
+            data={"username": "admin", "password": "admin123"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 403
+        assert "本機帳號登入已停用" in response.text
+
+
+def test_sso_linked_users_cannot_set_local_passwords(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ADMIN_GROUPS", "rag-admins")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    headers = {
+        "X-NotebookLM-Auth-Secret": "proxy-secret",
+        "X-Forwarded-User": "sso-admin",
+        "X-Forwarded-Groups": "rag-admins",
+    }
+    with TestClient(main.app) as client:
+        response = client.get("/auth/trusted-header", headers=headers, follow_redirects=False)
+        assert response.status_code == 303
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'sso-admin'").fetchone()["id"]
+
+        account = client.get("/account")
+        assert account.status_code == 200
+        assert "不能設定本機密碼" in account.text
+        assert 'action="/account/password"' not in account.text
+
+        own_reset = client.post(
+            "/account/password",
+            data={
+                "current_password": "anything",
+                "new_password": "new-password",
+                "confirm_password": "new-password",
+            },
+        )
+        assert own_reset.status_code == 400
+        assert "不能變更本機密碼" in own_reset.text
+
+        admin_reset = client.post(
+            f"/admin/users/{user_id}/reset-password",
+            data={"new_password": "new-password"},
+            follow_redirects=False,
+        )
+        assert admin_reset.status_code == 400
 
 
 def test_notebook_forms_render_preset_emoji_picker(monkeypatch, tmp_path):

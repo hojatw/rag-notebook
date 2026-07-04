@@ -54,3 +54,17 @@ briefing_ttl_hours = 24
 # --- UI / i18n ---------------------------------------------------------------
 [ui]
 language = "zh-TW"            # default UI locale; the i18n catalog falls back to this
+
+# --- Authentication / enterprise SSO ----------------------------------------
+[auth]
+local_login_enabled = true
+trusted_header_enabled = false
+trusted_header_secret = ""    # required when trusted_header_enabled = true
+trusted_header_secret_header = "X-NotebookLM-Auth-Secret"
+trusted_header_user_header = "X-Forwarded-User"      # stable external subject
+trusted_header_email_header = "X-Forwarded-Email"
+trusted_header_name_header = "X-Forwarded-Name"
+trusted_header_groups_header = "X-Forwarded-Groups" # comma/semicolon-separated
+trusted_header_admin_groups = ""                    # e.g. "rag-admins,domain admins"
+trusted_header_auto_provision = true
+trusted_header_provider = "trusted_header"

@@ -13,6 +13,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from . import i18n
 from .db import connect, loads
 from .main import record_audit_event, render, require_admin
 from .security import hash_password
@@ -22,6 +23,24 @@ from .vector_store import index_status as vector_index_status
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _admin_user_rows(conn) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT u.id,
+               u.username,
+               u.is_admin,
+               u.created_at,
+               COUNT(ei.id) AS external_identity_count,
+               GROUP_CONCAT(DISTINCT ei.provider) AS external_providers
+          FROM users u
+          LEFT JOIN external_identities ei ON ei.user_id = u.id
+         GROUP BY u.id, u.username, u.is_admin, u.created_at
+         ORDER BY u.id ASC
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 @router.get("/admin/index", response_class=HTMLResponse)
@@ -159,12 +178,7 @@ def admin_audit(
 def admin_users(request: Request, user: Annotated[dict, Depends(require_admin)]):
     """List all user accounts (admin only)."""
     with connect() as conn:
-        rows = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT id, username, is_admin, created_at FROM users ORDER BY id ASC"
-            ).fetchall()
-        ]
+        rows = _admin_user_rows(conn)
     return render(request, "admin_users.html", {"user": user, "users": rows, "error": "", "saved": False})
 
 
@@ -195,7 +209,7 @@ def admin_create_user(
         except Exception as exc:
             error = f"建立使用者失敗：{exc}"
     with connect() as conn:
-        rows = [dict(r) for r in conn.execute("SELECT id, username, is_admin, created_at FROM users ORDER BY id ASC").fetchall()]
+        rows = _admin_user_rows(conn)
     if error:
         return render(request, "admin_users.html", {"user": user, "users": rows, "error": error, "saved": False}, 400)
     record_audit_event(
@@ -222,9 +236,20 @@ def admin_reset_password(
     if len(new_password) < 6:
         raise HTTPException(status_code=400, detail="密碼至少需要 6 個字元。")
     with connect() as conn:
-        target = conn.execute("SELECT username FROM users WHERE id = ?", (target_id,)).fetchone()
+        target = conn.execute(
+            """
+            SELECT u.username, COUNT(ei.id) AS external_identity_count
+              FROM users u
+              LEFT JOIN external_identities ei ON ei.user_id = u.id
+             WHERE u.id = ?
+             GROUP BY u.id, u.username
+            """,
+            (target_id,),
+        ).fetchone()
         if target is None:
             raise HTTPException(status_code=404, detail="User not found")
+        if target["external_identity_count"]:
+            raise HTTPException(status_code=400, detail=i18n.t("auth.password_reset_sso_blocked"))
         result = conn.execute(
             "UPDATE users SET password_hash = ? WHERE id = ?",
             (hash_password(new_password), target_id),
@@ -311,4 +336,3 @@ def admin_delete_user(
     )
     logger.info("user_deleted admin_user_id=%s target_user_id=%s", user["id"], target_id)
     return RedirectResponse("/admin/users", status_code=303)
-

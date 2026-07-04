@@ -5,7 +5,10 @@ enterprise identity integration.
 
 ## Current state
 
-The app currently uses local SQLite-backed accounts:
+The app supports local SQLite-backed accounts and an optional trusted
+reverse-proxy header login bridge.
+
+Local accounts:
 
 - users sign in with username/password at `/login`;
 - passwords are PBKDF2-SHA256 hashes stored in `users.password_hash`;
@@ -13,6 +16,19 @@ The app currently uses local SQLite-backed accounts:
 - `users.is_admin` controls access to `/settings` and `/admin/*`;
 - admin user management can create users, reset passwords, toggle admin, and
   delete accounts.
+
+Trusted-header mode (`I1a`, disabled by default):
+
+- `GET /auth/trusted-header` accepts identity headers only when
+  `[auth].trusted_header_enabled = true` and the request carries the configured
+  shared-secret header;
+- external identities are persisted in `external_identities` as
+  `provider + subject -> users.id`, so all existing per-user authorization
+  continues to use the local user id;
+- first login can auto-provision a local user when enabled;
+- configured group names map to `users.is_admin` at login time;
+- SSO-linked accounts cannot set or reset a local password through `/account`
+  or `/admin/users`.
 
 This is enough for the single-machine POC, but it is not the target model for
 customer deployments that already have Active Directory, Microsoft Entra ID,
@@ -73,7 +89,7 @@ Trusted header mode comes before OIDC: it is much smaller (no new dependency,
 no discovery/JWKS, straightforward to cover with pytest) and it works in every
 Microsoft intranet topology.
 
-### Phase 1a: trusted reverse-proxy header mode
+### Phase 1a: trusted reverse-proxy header mode — implemented
 
 - deployment-disabled by default;
 - configurable trusted header names for user id, display name/email, and groups;
@@ -85,6 +101,28 @@ Microsoft intranet topology.
   inbound versions and set its own;
 - map groups to local admin/user roles;
 - record audit events for header-auth login and provisioning.
+
+Configuration lives in `config.toml` / `NOTEBOOKLM_AUTH_*` env vars:
+
+```toml
+[auth]
+local_login_enabled = true
+trusted_header_enabled = false
+trusted_header_secret = ""
+trusted_header_secret_header = "X-NotebookLM-Auth-Secret"
+trusted_header_user_header = "X-Forwarded-User"
+trusted_header_email_header = "X-Forwarded-Email"
+trusted_header_name_header = "X-Forwarded-Name"
+trusted_header_groups_header = "X-Forwarded-Groups"
+trusted_header_admin_groups = ""
+trusted_header_auto_provision = true
+trusted_header_provider = "trusted_header"
+```
+
+The proxy must strip inbound identity headers from clients, authenticate the
+user itself, then set both the identity headers and the shared-secret header
+when forwarding to the app. The app deliberately does not implement Kerberos,
+SPNEGO, or NTLM itself.
 
 ### Phase 1b: OIDC
 

@@ -8,6 +8,7 @@ GET  /                                                    redirect to /notebooks
 GET  /healthz                                             liveness + build info {status, version, commit} (no auth)
 GET  /login                                               sign-in page
 POST /login                                               authenticate
+GET  /auth/trusted-header                                 trusted reverse-proxy SSO callback/login bridge
 POST /logout                                              clear session
 
 GET  /notebooks                                           notebook grid

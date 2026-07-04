@@ -12,7 +12,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## Recommended next round
 
-1. **Enterprise authentication:** answer the `I1` customer-discovery questions first (which IdP is authoritative? is it OIDC-capable?), then implement `I1a` trusted reverse-proxy header mode, then `I1b` OIDC; keep local break-glass admin.
+1. **Enterprise authentication:** `I1a` trusted reverse-proxy header mode is implemented; answer the `I1` customer-discovery questions next (which IdP is authoritative? is it OIDC-capable?), then implement `I1b` OIDC; keep local break-glass admin.
 2. **Answer-quality loop:** implement `E1e-2` answer/citation judging together with `E2` notebook domain hints and answer policy, then validate changes through Eval Workbench comparisons.
 3. **Admin LLM operations:** `O1` Phase 1 is done; next LLM-ops work is Phase 2 profile management and safe activation once needed.
 4. **Format foundation:** implement `A6a` ingestion diagnostics before adding more source formats.
@@ -41,7 +41,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - Keep local break-glass admin available unless a deployment explicitly opts out.
   - Document the MVP lifecycle limits (login-time-only group mapping, no server-side session revocation, no IdP logout) as known limitations in `AUTHENTICATION.md` — they are accepted POC trade-offs, not security promises.
 - **Phased:**
-  - [ ] I1a — Customer discovery + trusted reverse-proxy header mode. Answer the `AUTHENTICATION.md` discovery questions first (authoritative IdP, OIDC capability, who terminates Kerberos/IWA). Then ship deployment-disabled-by-default trusted header auth for customer-owned SSO gateways: configurable header names, proxy shared-secret check, local user linking/provisioning, group-to-role mapping, and audit events. This is the smallest piece that satisfies "automatic Windows account" login in every topology, including on-prem-AD-only deployments.
+  - [x] I1a — Customer discovery + trusted reverse-proxy header mode. **Done.** Deployment-disabled-by-default trusted header auth for customer-owned SSO gateways: configurable header names, proxy shared-secret check, external identity persistence (`provider + subject -> users.id`), local user auto-provisioning, group-to-role mapping at login, audit events, and local-password reset/change blocking for SSO-linked accounts. This is the smallest piece that satisfies "automatic Windows account" login in every topology, including on-prem-AD-only deployments.
   - [ ] I1b — OIDC. Configurable issuer/discovery, client credentials, callback, token validation (`iss`/`aud`/`exp`/`nonce`, JWKS rotation), local user linking/provisioning by provider + `sub`, group-to-role mapping, and audit events. Requires an OIDC-capable IdP (Entra ID, ADFS, Keycloak).
   - [ ] I1c — SAML service-provider support when a customer IdP requires it: metadata, ACS endpoint, signed assertion validation, attribute mapping, group-to-role mapping, and audit events. Python SAML libraries pull in native `xmlsec` dependencies (a real Docker-image cost) — keep this strictly customer-driven.
   - [ ] I1d — Admin/operator documentation and diagnostics: setup checklist, current auth mode display, SSO health checks, and clear errors for missing claims or role mappings.

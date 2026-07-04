@@ -67,6 +67,23 @@ def init_db() -> None:
                 diagnostics_json TEXT NOT NULL DEFAULT '{}'
             );
 
+            CREATE TABLE IF NOT EXISTS external_identities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                email TEXT NOT NULL DEFAULT '',
+                display_name TEXT NOT NULL DEFAULT '',
+                groups_json TEXT NOT NULL DEFAULT '[]',
+                last_login_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(provider, subject)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_external_identities_user
+            ON external_identities(user_id);
+
             CREATE TABLE IF NOT EXISTS notebooks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

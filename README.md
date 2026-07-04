@@ -190,12 +190,12 @@ available:
 - UI copy is routed through a `zh-TW` message catalog (i18n foundation done,
   `ROADMAP.md` U15a); adding an `en` locale + admin/per-user language controls
   is U15b. See [`docs/I18N.md`](docs/I18N.md).
-- Enterprise authentication is now a high-priority customer requirement:
-  answer the customer identity-platform discovery questions first, then
-  implement trusted reverse-proxy header mode (`I1a`), then OIDC (`I1b`); keep
-  SAML as the customer-driven compatibility path and preserve local break-glass
-  admin. See [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) and
-  `ROADMAP.md` `I1`.
+- Enterprise authentication is now a high-priority customer requirement.
+  Trusted reverse-proxy header mode (`I1a`) is implemented and disabled by
+  default through `[auth]` config; OIDC (`I1b`) is next after customer IdP
+  discovery, with SAML as the customer-driven compatibility path. Preserve
+  local break-glass admin unless a deployment explicitly opts out. See
+  [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) and `ROADMAP.md` `I1`.
 - Admin LLM settings still use one global configuration. O1 Phase 1 diagnostics
   are done; multi-profile management and safe activation remain O1 Phase 2.
 - New source-format support should start with ingestion diagnostics, then
