@@ -5,8 +5,8 @@ enterprise identity integration.
 
 ## Current state
 
-The app supports local SQLite-backed accounts and an optional trusted
-reverse-proxy header login bridge.
+The app supports local SQLite-backed accounts, an optional trusted
+reverse-proxy header login bridge, and optional OIDC login.
 
 Local accounts:
 
@@ -29,6 +29,19 @@ Trusted-header mode (`I1a`, disabled by default):
 - configured group names map to `users.is_admin` at login time;
 - SSO-linked accounts cannot set or reset a local password through `/account`
   or `/admin/users`.
+
+OIDC mode (`I1b`, disabled by default):
+
+- `GET /auth/oidc/login` starts an Authorization Code flow and stores
+  `state`/`nonce` in a short-lived signed, HTTP-only cookie;
+- `GET /auth/oidc/callback` exchanges the code, validates the ID token
+  signature and `iss`/`aud`/`exp`/`nbf`/`iat`/`nonce`/`sub` claims, then issues
+  the same local `session` cookie used by local login;
+- provider subjects are persisted in `external_identities` as
+  `provider + sub -> users.id`;
+- configured group claims map to `users.is_admin` at login time;
+- OIDC-linked accounts share the same local-password guardrail as
+  trusted-header accounts.
 
 This is enough for the single-machine POC, but it is not the target model for
 customer deployments that already have Active Directory, Microsoft Entra ID,
@@ -124,22 +137,48 @@ user itself, then set both the identity headers and the shared-secret header
 when forwarding to the app. The app deliberately does not implement Kerberos,
 SPNEGO, or NTLM itself.
 
-### Phase 1b: OIDC
+### Phase 1b: OIDC — implemented
 
-- configurable issuer / discovery URL, client id, client secret, scopes, and
-  redirect URI;
-- Authorization Code flow;
-- ID token validation (`iss`, `aud`, `exp`, `nonce`) and JWKS key rotation;
-- local account linking by stable external subject (`sub`) plus provider id;
+- configurable issuer / discovery URL, client id, client secret, scopes,
+  redirect path, token endpoint auth method, claim names, admin group mapping,
+  and allowed signing algorithms;
+- Authorization Code flow with short-lived signed `state`/`nonce` cookie; no
+  Starlette SessionMiddleware or second app session store;
+- ID token validation using Authlib / joserfc against discovery JWKS:
+  signature, `iss`, `aud`, `exp`, `nbf`, `iat`, `nonce`, and `sub`;
+- local account linking by stable external subject (`sub`) plus provider id in
+  `external_identities`;
 - optional username/email display fields from claims;
 - group/role claim mapping to local `is_admin`;
-- client secret stored with the existing encrypted-at-rest pattern
-  (`app/security.py` Fernet keyed from `NOTEBOOKLM_SECRET`, as for LLM API
-  keys), or kept env/`config.toml`-only for the first iteration. Either way,
-  rotating `NOTEBOOKLM_SECRET` invalidates DB-stored encrypted secrets — note
-  this in the deployment checklist;
-- audit events for SSO login, first-time account provisioning, account linking,
-  role mapping changes, and SSO configuration changes.
+- client secret is config/env-only in this MVP. Keep it in `.env` or
+  gitignored `config.toml`, never in committed files or audit metadata;
+- audit events for OIDC login, first-time account provisioning, and role mapping
+  changes. Token/code values are never written to audit metadata.
+
+OIDC configuration lives in `[auth]`:
+
+```toml
+oidc_enabled = false
+oidc_provider = "oidc"
+oidc_issuer = ""
+oidc_discovery_url = ""
+oidc_client_id = ""
+oidc_client_secret = ""
+oidc_scopes = "openid profile email"
+oidc_redirect_path = "/auth/oidc/callback"
+oidc_token_auth_method = "client_secret_basic" # or client_secret_post
+oidc_email_claim = "email"
+oidc_name_claim = "name"
+oidc_groups_claim = "groups"
+oidc_admin_groups = ""
+oidc_auto_provision = true
+oidc_allowed_algorithms = "RS256"
+```
+
+Register the app callback URL with the IdP as
+`https://<app-host>/auth/oidc/callback` unless `oidc_redirect_path` is changed.
+For Microsoft Entra ID, prefer the tenant-specific v2.0 issuer URL and ensure
+the app registration returns any required group claim.
 
 ### Phase 2: SAML when required
 

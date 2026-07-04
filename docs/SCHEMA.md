@@ -53,7 +53,7 @@ Login accounts. Seeded with `admin` / `user` on first init.
 | `created_at` | TEXT | |
 
 ## `external_identities`
-Enterprise-auth identity links (I1a trusted-header mode, future OIDC/SAML).
+Enterprise-auth identity links (I1a trusted-header mode, I1b OIDC, future SAML).
 Application data still authorizes through the linked local `users.id`; this
 table maps a provider's stable external subject to that local user.
 
@@ -61,7 +61,7 @@ table maps a provider's stable external subject to that local user.
 |---|---|---|
 | `id` | INTEGER PK | |
 | `user_id` | INTEGER NOT NULL → `users(id)` CASCADE | local account used by sessions and authorization |
-| `provider` | TEXT NOT NULL | e.g. `trusted_header`; future OIDC/SAML provider id |
+| `provider` | TEXT NOT NULL | e.g. `trusted_header`, `oidc`; future SAML provider id |
 | `subject` | TEXT NOT NULL | stable external subject from the trusted proxy / IdP |
 | `email` | TEXT NOT NULL DEFAULT `''` | optional display/contact claim |
 | `display_name` | TEXT NOT NULL DEFAULT `''` | optional display claim |

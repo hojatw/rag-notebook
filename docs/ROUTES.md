@@ -9,6 +9,8 @@ GET  /healthz                                             liveness + build info 
 GET  /login                                               sign-in page
 POST /login                                               authenticate
 GET  /auth/trusted-header                                 trusted reverse-proxy SSO callback/login bridge
+GET  /auth/oidc/login                                     start OIDC Authorization Code login
+GET  /auth/oidc/callback                                  complete OIDC login, validate ID token, issue local session
 POST /logout                                              clear session
 
 GET  /notebooks                                           notebook grid

@@ -50,6 +50,21 @@ def test_defaults_match_the_previously_hardcoded_values(tmp_path, monkeypatch):
     assert c.auth.trusted_header_admin_groups == ""
     assert c.auth.trusted_header_auto_provision is True
     assert c.auth.trusted_header_provider == "trusted_header"
+    assert c.auth.oidc_enabled is False
+    assert c.auth.oidc_provider == "oidc"
+    assert c.auth.oidc_issuer == ""
+    assert c.auth.oidc_discovery_url == ""
+    assert c.auth.oidc_client_id == ""
+    assert c.auth.oidc_client_secret == ""
+    assert c.auth.oidc_scopes == "openid profile email"
+    assert c.auth.oidc_redirect_path == "/auth/oidc/callback"
+    assert c.auth.oidc_token_auth_method == "client_secret_basic"
+    assert c.auth.oidc_email_claim == "email"
+    assert c.auth.oidc_name_claim == "name"
+    assert c.auth.oidc_groups_claim == "groups"
+    assert c.auth.oidc_admin_groups == ""
+    assert c.auth.oidc_auto_provision is True
+    assert c.auth.oidc_allowed_algorithms == "RS256"
 
 
 def test_toml_file_overrides_defaults(tmp_path, monkeypatch):
@@ -72,13 +87,14 @@ def test_env_beats_toml_and_coerces_types(tmp_path, monkeypatch):
     config_file = tmp_path / "config.toml"
     config_file.write_text(
         "[retrieval]\nvector_weight = 0.6\n"
-        "[auth]\ntrusted_header_enabled = false\n",
+        "[auth]\ntrusted_header_enabled = false\noidc_enabled = false\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(config_file))
     monkeypatch.setenv("NOTEBOOKLM_RETRIEVAL_VECTOR_WEIGHT", "0.55")
     monkeypatch.setenv("NOTEBOOKLM_RETRIEVAL_CANDIDATE_POOL_SIZE", "30")
     monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ENABLED", "true")
     c = cfg.load_config()
 
     assert c.retrieval.vector_weight == 0.55       # env wins over TOML, coerced to float
@@ -86,6 +102,7 @@ def test_env_beats_toml_and_coerces_types(tmp_path, monkeypatch):
     assert c.retrieval.candidate_pool_size == 30   # env string coerced to int
     assert isinstance(c.retrieval.candidate_pool_size, int)
     assert c.auth.trusted_header_enabled is True
+    assert c.auth.oidc_enabled is True
 
 
 def test_missing_file_is_not_an_error(tmp_path, monkeypatch):

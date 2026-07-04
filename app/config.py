@@ -91,6 +91,21 @@ class AuthConfig:
     trusted_header_admin_groups: str = ""
     trusted_header_auto_provision: bool = True
     trusted_header_provider: str = "trusted_header"
+    oidc_enabled: bool = False
+    oidc_provider: str = "oidc"
+    oidc_issuer: str = ""
+    oidc_discovery_url: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_scopes: str = "openid profile email"
+    oidc_redirect_path: str = "/auth/oidc/callback"
+    oidc_token_auth_method: str = "client_secret_basic"
+    oidc_email_claim: str = "email"
+    oidc_name_claim: str = "name"
+    oidc_groups_claim: str = "groups"
+    oidc_admin_groups: str = ""
+    oidc_auto_provision: bool = True
+    oidc_allowed_algorithms: str = "RS256"
 
 
 @dataclasses.dataclass

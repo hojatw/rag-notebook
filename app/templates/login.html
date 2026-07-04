@@ -13,6 +13,12 @@
     <p class="hint muted small">{{ t("auth.enterprise_login_hint") }}</p>
   </form>
   {% endif %}
+  {% if oidc_enabled %}
+  <form method="get" action="/auth/oidc/login" class="stack">
+    <button type="submit" class="secondary">{{ t("auth.oidc_login") }}</button>
+    <p class="hint muted small">{{ t("auth.oidc_login_hint") }}</p>
+  </form>
+  {% endif %}
   {% if local_login_enabled %}
   <form method="post" action="/login" class="stack" data-loading-form>
     {{ csrf_input() }}
@@ -26,7 +32,7 @@
     </label>
     <button type="submit" data-loading-text="{{ t("auth.login_loading") }}">{{ t("auth.login") }}</button>
   </form>
-  {% elif not trusted_header_enabled %}
+  {% elif not trusted_header_enabled and not oidc_enabled %}
   <div class="support-note">{{ t("auth.no_login_methods") }}</div>
   {% endif %}
   {% if demo_hint %}
