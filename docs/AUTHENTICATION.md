@@ -150,6 +150,29 @@ user itself, then set both the identity headers and the shared-secret header
 when forwarding to the app. The app deliberately does not implement Kerberos,
 SPNEGO, or NTLM itself.
 
+For Linux/container customer environments, keep the Python app as a plain
+FastAPI service and put the enterprise web/auth layer in front of it instead of
+trying to embed IIS or Windows authentication into the app container. A typical
+deployment can use Docker Compose (or an equivalent orchestrator) with the app
+container on an internal network and one or more fronting services such as
+Nginx, Apache httpd, Traefik, `oauth2-proxy`, or a customer-owned SSO gateway.
+The fronting layer owns public ingress, TLS private keys and certificates,
+HTTP-to-HTTPS redirects, and upstream enterprise authentication. The app should
+only receive verified identity headers over the internal hop, together with the
+configured shared-secret header.
+
+Nginx alone is usually only the reverse proxy/TLS termination layer; it does
+not provide Integrated Windows Authentication by itself. If the customer needs
+domain-joined browser silent sign-in on Linux, the deployment normally needs an
+additional auth-capable component, for example Apache httpd with a Kerberos/
+GSSAPI module, an OIDC/OAuth2 sidecar such as `oauth2-proxy` backed by Entra ID,
+ADFS, or Keycloak, a third-party Nginx SPNEGO module, or an existing enterprise
+SSO gateway. Using both Nginx and Apache in front of the app is acceptable when
+the customer environment benefits from separating TLS/proxy duties from
+Kerberos/IWA duties, but the security contract remains the same: clients must
+not be able to reach the app directly, inbound identity headers must be stripped
+before auth, and only the trusted proxy may inject the app's identity headers.
+
 ### Phase 1b: OIDC — implemented
 
 - configurable issuer / discovery URL, client id, client secret, scopes,
