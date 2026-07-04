@@ -23,10 +23,12 @@ Include reproduction steps and the affected version/commit. We aim to acknowledg
   and designed in [`AUTHENTICATION.md`](AUTHENTICATION.md). Trusted
   reverse-proxy header mode (`I1a`) and OIDC (`I1b`) are implemented but
   disabled by default. Header mode must use a proxy shared-secret check, not
-  topology trust alone. OIDC client secrets belong in env/gitignored config
-  only, and tokens/codes must never be copied into audit metadata. SAML remains
-  a customer-driven follow-up. Do not implement browser silent SSO as raw LDAP
-  login; LDAP bind does not provide Integrated Windows Authentication.
+  topology trust alone. OIDC endpoints must use HTTPS except localhost
+  development endpoints, discovery issuer is bound to configured issuer, OIDC
+  client secrets belong in env/gitignored config only, and tokens/codes must
+  never be copied into audit metadata. SAML remains a customer-driven follow-up.
+  Do not implement browser silent SSO as raw LDAP login; LDAP bind does not
+  provide Integrated Windows Authentication.
 
 ## Audit trail
 
@@ -48,7 +50,7 @@ The items below are surfaced by Dependabot / `pip-audit` but have been assessed 
 
 The vulnerability is triggered through ChromaDB's **FastAPI server endpoint**. This application uses ChromaDB only as an **embedded library** via `chromadb.PersistentClient` (`app/vector_store.py`): it does **not** run a Chroma server, does not use `chromadb.HttpClient`, does not enable `allow_reset`, and exposes no Chroma HTTP endpoint. The only network port the app exposes is its own FastAPI/uvicorn server (`8000`).
 
-- No fixed release is available: the latest published `chromadb` on PyPI is also `1.5.9`, and `pip-audit` offers no remediation version.
+- No fixed release is available in the advisory data: GitHub Advisory Database lists patched versions as `None`, and `pip-audit` reports no `fix_versions`.
 - **Accepted risk** for the embedded-only usage pattern.
 - **Re-evaluate if** the app ever switches to `chromadb.HttpClient` / runs a Chroma server, or a patched `chromadb` release becomes available — then bump `requirements.txt` accordingly.
-- Reference: [NVD CVE-2026-45829](https://nvd.nist.gov/vuln/detail/CVE-2026-45829).
+- References: [GitHub Advisory GHSA-f4j7-r4q5-qw2c](https://github.com/advisories/GHSA-f4j7-r4q5-qw2c), [NVD CVE-2026-45829](https://nvd.nist.gov/vuln/detail/CVE-2026-45829).

@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -14,7 +15,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import parse_qs, quote, urlencode
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -677,22 +678,39 @@ def _external_auth_login(
                 )
                 raise HTTPException(status_code=403, detail=unknown_user_message)
             username = _unique_external_username(conn, subject, email, display_name)
-            cursor = conn.execute(
-                "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
-                (username, hash_password(f"sso:{uuid.uuid4().hex}"), int(mapped_is_admin)),
-            )
-            user_id = cursor.lastrowid
-            conn.execute(
-                """
-                INSERT INTO external_identities
-                (user_id, provider, subject, email, display_name, groups_json, last_login_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """,
-                (user_id, provider, subject, email[:254], display_name[:200], groups_json),
-            )
-            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-            created_user = True
-        else:
+            conn.execute("SAVEPOINT external_auth_provision")
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
+                    (username, hash_password(f"sso:{uuid.uuid4().hex}"), int(mapped_is_admin)),
+                )
+                user_id = cursor.lastrowid
+                conn.execute(
+                    """
+                    INSERT INTO external_identities
+                    (user_id, provider, subject, email, display_name, groups_json, last_login_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    (user_id, provider, subject, email[:254], display_name[:200], groups_json),
+                )
+                conn.execute("RELEASE SAVEPOINT external_auth_provision")
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+                created_user = True
+            except sqlite3.IntegrityError:
+                conn.execute("ROLLBACK TO SAVEPOINT external_auth_provision")
+                conn.execute("RELEASE SAVEPOINT external_auth_provision")
+                row = conn.execute(
+                    """
+                    SELECT ei.id AS identity_id, u.*
+                      FROM external_identities ei
+                      JOIN users u ON u.id = ei.user_id
+                     WHERE ei.provider = ? AND ei.subject = ?
+                    """,
+                    (provider, subject),
+                ).fetchone()
+                if row is None:
+                    raise
+        if row is not None and not created_user:
             old_is_admin = bool(row["is_admin"])
             conn.execute(
                 """
@@ -871,7 +889,15 @@ def _unsign_oidc_state(value: str | None) -> dict[str, Any] | None:
         data = _oidc_state_serializer().loads(value)
     except (BadSignature, TypeError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    issued_at = data.get("iat")
+    now = int(time.time())
+    if not isinstance(issued_at, int):
+        return None
+    if issued_at < now - OIDC_STATE_COOKIE_MAX_AGE or issued_at > now + 60:
+        return None
+    return data
 
 
 def _oidc_discovery_url(auth) -> str:
@@ -879,6 +905,25 @@ def _oidc_discovery_url(auth) -> str:
         return auth.oidc_discovery_url
     issuer = (auth.oidc_issuer or "").rstrip("/")
     return f"{issuer}/.well-known/openid-configuration" if issuer else ""
+
+
+def _is_local_oidc_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    return hostname.lower() in {"localhost", "127.0.0.1", "::1"}
+
+
+def _require_secure_oidc_url(url: str, label: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and _is_local_oidc_host(parsed.hostname):
+        return
+    raise ValueError(f"{label} must use HTTPS")
+
+
+def _normalize_oidc_issuer(value: str) -> str:
+    return (value or "").rstrip("/")
 
 
 def _oidc_redirect_uri(request: Request) -> str:
@@ -914,11 +959,21 @@ def _oidc_discover(auth) -> dict[str, Any]:
     url = _oidc_discovery_url(auth)
     if not url:
         raise ValueError("missing discovery URL")
+    _require_secure_oidc_url(url, "OIDC discovery URL")
     metadata = _oidc_fetch_json(url)
     required = ("authorization_endpoint", "token_endpoint", "jwks_uri")
     missing = [key for key in required if not metadata.get(key)]
     if missing:
         raise ValueError(f"OIDC discovery missing {','.join(missing)}")
+    issuer = _normalize_oidc_issuer(str(metadata.get("issuer") or ""))
+    if not issuer:
+        raise ValueError("OIDC discovery missing issuer")
+    _require_secure_oidc_url(issuer, "OIDC issuer")
+    configured_issuer = _normalize_oidc_issuer(auth.oidc_issuer)
+    if configured_issuer and issuer != configured_issuer:
+        raise ValueError("OIDC discovery issuer mismatch")
+    for endpoint in required:
+        _require_secure_oidc_url(str(metadata[endpoint]), f"OIDC {endpoint}")
     return metadata
 
 

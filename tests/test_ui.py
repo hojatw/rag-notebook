@@ -291,6 +291,88 @@ def test_sso_linked_users_cannot_set_local_passwords(monkeypatch, tmp_path):
         assert admin_reset.status_code == 400
 
 
+def test_sso_linked_users_cannot_have_local_admin_role_toggled(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/auth/trusted-header",
+            headers={
+                "X-NotebookLM-Auth-Secret": "proxy-secret",
+                "X-Forwarded-User": "sso-user",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        client.post("/logout", follow_redirects=False)
+        _login(client)
+
+        with db.connect() as conn:
+            target_id = conn.execute("SELECT id FROM users WHERE username = 'sso-user'").fetchone()["id"]
+
+        page = client.get("/admin/users")
+        assert page.status_code == 200
+        assert f'action="/admin/users/{target_id}/toggle-admin"' not in page.text
+        assert "管理員角色由企業群組映射管理" in page.text
+
+        toggled = client.post(f"/admin/users/{target_id}/toggle-admin", follow_redirects=False)
+        assert toggled.status_code == 400
+        assert "管理員角色由企業群組映射管理" in toggled.text
+
+
+def test_external_auth_auto_provision_recovers_from_identity_race(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    db.init_db()
+
+    def insert_racing_identity(conn, subject, email, display_name):
+        user_id = conn.execute(
+            "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, 0)",
+            ("race-winner", main.hash_password("placeholder")),
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO external_identities
+            (user_id, provider, subject, email, display_name, groups_json)
+            VALUES (?, 'trusted_header', ?, '', '', '[]')
+            """,
+            (user_id, subject),
+        )
+        return "race-loser"
+
+    monkeypatch.setattr(main, "_unique_external_username", insert_racing_identity)
+
+    signed_in = main._external_auth_login(
+        None,
+        provider="trusted_header",
+        subject="race-subject",
+        email="race@example.com",
+        display_name="Race User",
+        groups=["rag-admins"],
+        admin_groups=["rag-admins"],
+        auto_provision=True,
+        audit_prefix="trusted_header",
+        unknown_user_message="unknown",
+    )
+
+    assert signed_in["username"] == "race-winner"
+    assert signed_in["is_admin"] == 1
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM users WHERE username = 'race-loser'").fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM external_identities WHERE provider = 'trusted_header' AND subject = 'race-subject'"
+        ).fetchone()[0] == 1
+        identity = conn.execute(
+            "SELECT email, display_name, groups_json FROM external_identities WHERE subject = 'race-subject'"
+        ).fetchone()
+        actions = [row["action"] for row in conn.execute("SELECT action FROM audit_events ORDER BY id").fetchall()]
+    assert identity["email"] == "race@example.com"
+    assert identity["display_name"] == "Race User"
+    assert json.loads(identity["groups_json"]) == ["rag-admins"]
+    assert actions == ["trusted_header_role_mapped", "trusted_header_login_succeeded"]
+
+
 def test_oidc_login_redirect_sets_signed_state_cookie(monkeypatch, tmp_path):
     monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ENABLED", "true")
     monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ISSUER", "https://idp.example.test")
@@ -317,6 +399,62 @@ def test_oidc_login_redirect_sets_signed_state_cookie(monkeypatch, tmp_path):
         assert params.get("state", [""])[0]
         assert params.get("nonce", [""])[0]
         assert client.cookies.get(main.OIDC_STATE_COOKIE_NAME)
+
+
+def test_oidc_state_rejects_expired_or_future_iat(monkeypatch, tmp_path):
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    now = int(time.time())
+
+    fresh = main._sign_oidc_state({"state": "s", "nonce": "n", "iat": now})
+    expired = main._sign_oidc_state({
+        "state": "s",
+        "nonce": "n",
+        "iat": now - main.OIDC_STATE_COOKIE_MAX_AGE - 1,
+    })
+    future = main._sign_oidc_state({"state": "s", "nonce": "n", "iat": now + 61})
+    missing_iat = main._sign_oidc_state({"state": "s", "nonce": "n"})
+
+    assert main._unsign_oidc_state(fresh)["state"] == "s"
+    assert main._unsign_oidc_state(expired) is None
+    assert main._unsign_oidc_state(future) is None
+    assert main._unsign_oidc_state(missing_iat) is None
+
+
+def test_oidc_discovery_requires_https_and_matching_issuer(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ISSUER", "https://idp.example.test")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_ID", "oidc-client")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_SECRET", "oidc-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_DISCOVERY_URL", "http://idp.example.test/.well-known/openid-configuration")
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        insecure = client.get("/auth/oidc/login", follow_redirects=False)
+        assert insecure.status_code == 502
+
+    monkeypatch.delenv("NOTEBOOKLM_AUTH_OIDC_DISCOVERY_URL", raising=False)
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    bad_metadata = {
+        "issuer": "https://evil.example.test",
+        "authorization_endpoint": "https://idp.example.test/authorize",
+        "token_endpoint": "https://idp.example.test/token",
+        "jwks_uri": "https://idp.example.test/jwks",
+    }
+    monkeypatch.setattr(main, "_oidc_fetch_json", lambda url, **kwargs: bad_metadata)
+    with TestClient(main.app) as client:
+        mismatch = client.get("/auth/oidc/login", follow_redirects=False)
+        assert mismatch.status_code == 502
+
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    insecure_endpoint = {
+        "issuer": "https://idp.example.test",
+        "authorization_endpoint": "https://idp.example.test/authorize",
+        "token_endpoint": "http://idp.example.test/token",
+        "jwks_uri": "https://idp.example.test/jwks",
+    }
+    monkeypatch.setattr(main, "_oidc_fetch_json", lambda url, **kwargs: insecure_endpoint)
+    with TestClient(main.app) as client:
+        rejected = client.get("/auth/oidc/login", follow_redirects=False)
+        assert rejected.status_code == 502
 
 
 def test_oidc_callback_provisions_user_maps_admin_and_audits(monkeypatch, tmp_path):
@@ -439,6 +577,27 @@ def test_oidc_auto_provision_can_be_disabled(monkeypatch, tmp_path):
         assert audit["action"] == "oidc_login_rejected"
         assert "unknown_external_identity" in audit["metadata_json"]
         assert "not-provisioned" not in audit["metadata_json"]
+
+
+def test_admin_auth_diagnostics_page_shows_modes_and_checks(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ISSUER", "https://idp.example.test")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_ID", "oidc-client")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_SECRET", "oidc-secret")
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        page = client.get("/admin/auth")
+        assert page.status_code == 200
+        assert "認證狀態" in page.text
+        assert "本機帳號" in page.text
+        assert "Trusted header" in page.text
+        assert "OIDC" in page.text
+        assert "OIDC endpoint 使用 HTTPS" in page.text
+        assert "trusted_header_login_rejected" in page.text
 
 
 def test_notebook_forms_render_preset_emoji_picker(monkeypatch, tmp_path):

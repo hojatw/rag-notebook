@@ -191,10 +191,11 @@ available:
   `ROADMAP.md` U15a); adding an `en` locale + admin/per-user language controls
   is U15b. See [`docs/I18N.md`](docs/I18N.md).
 - Enterprise authentication is now a high-priority customer requirement.
-  Trusted reverse-proxy header mode (`I1a`) and OIDC (`I1b`) are implemented
-  and disabled by default through `[auth]` config; SAML remains the
-  customer-driven compatibility path. Preserve local break-glass admin unless a
-  deployment explicitly opts out. See
+  Trusted reverse-proxy header mode (`I1a`), OIDC (`I1b`), and the `/admin/auth`
+  operator diagnostics page (`I1d`) are implemented and disabled by default
+  through `[auth]` config where applicable; SAML remains the customer-driven
+  compatibility path. Preserve local break-glass admin unless a deployment
+  explicitly opts out. See
   [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) and `ROADMAP.md` `I1`.
 - Admin LLM settings still use one global configuration. O1 Phase 1 diagnostics
   are done; multi-profile management and safe activation remain O1 Phase 2.

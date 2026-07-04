@@ -28,7 +28,9 @@ Trusted-header mode (`I1a`, disabled by default):
 - first login can auto-provision a local user when enabled;
 - configured group names map to `users.is_admin` at login time;
 - SSO-linked accounts cannot set or reset a local password through `/account`
-  or `/admin/users`.
+  or `/admin/users`;
+- SSO-linked accounts cannot have their local admin role manually toggled in
+  `/admin/users`; the IdP/proxy group mapping is authoritative at login time.
 
 OIDC mode (`I1b`, disabled by default):
 
@@ -37,11 +39,22 @@ OIDC mode (`I1b`, disabled by default):
 - `GET /auth/oidc/callback` exchanges the code, validates the ID token
   signature and `iss`/`aud`/`exp`/`nbf`/`iat`/`nonce`/`sub` claims, then issues
   the same local `session` cookie used by local login;
+- discovery, authorization, token, and JWKS endpoints must use HTTPS, with an
+  HTTP exception only for localhost development, and discovery `issuer` must
+  match configured `oidc_issuer` when one is set;
 - provider subjects are persisted in `external_identities` as
   `provider + sub -> users.id`;
 - configured group claims map to `users.is_admin` at login time;
 - OIDC-linked accounts share the same local-password guardrail as
   trusted-header accounts.
+
+Admin/operator diagnostics (`I1d`):
+
+- `GET /admin/auth` displays enabled auth modes, static SSO configuration health
+  checks, trusted-header/OIDC claim mapping summaries, and operator pointers to
+  audit rejection reason codes;
+- the page is intentionally static and does not call the external IdP, so an
+  admin console view cannot hang on IdP network latency.
 
 This is enough for the single-machine POC, but it is not the target model for
 customer deployments that already have Active Directory, Microsoft Entra ID,
@@ -150,6 +163,8 @@ SPNEGO, or NTLM itself.
   `external_identities`;
 - optional username/email display fields from claims;
 - group/role claim mapping to local `is_admin`;
+- HTTPS-only IdP endpoints, except localhost HTTP for development, and discovery
+  issuer binding to configured `oidc_issuer`;
 - client secret is config/env-only in this MVP. Keep it in `.env` or
   gitignored `config.toml`, never in committed files or audit metadata;
 - audit events for OIDC login, first-time account provisioning, and role mapping
@@ -200,7 +215,12 @@ Enterprise auth must preserve the existing route-level authorization model:
 - external identities must map to local users before application data is
   accessed;
 - group claims may grant admin, but admin should be explicit and auditable;
+- SSO group mapping is the authority for SSO-linked users; do not allow local
+  admin toggles to silently override IdP/proxy role decisions;
 - never accept identity headers from arbitrary clients;
+- reject non-HTTPS OIDC issuer/discovery/authorization/token/JWKS endpoints,
+  except explicit localhost development endpoints, and bind discovery `issuer`
+  to configured `oidc_issuer` when present;
 - never store IdP client secrets, SAML private keys, tokens, or assertions in
   audit/governance metadata;
 - keep raw tokens out of logs;
@@ -231,7 +251,8 @@ oversights:
 - Persisting external identities (provider + `sub`) is a schema change: update
   [`SCHEMA.md`](SCHEMA.md) in the same change, per `AGENTS.md`.
 - Document new `/auth/*` routes in [`ROUTES.md`](ROUTES.md).
-- SSO buttons, login hints, and auth error copy go through the i18n catalog
+- Document admin/operator auth diagnostics routes in [`ROUTES.md`](ROUTES.md).
+- SSO buttons, login hints, diagnostics text, and auth error copy go through the i18n catalog
   (`app/i18n.py`, see [`I18N.md`](I18N.md)); never hardcode UI strings.
 
 ## Open questions for each customer

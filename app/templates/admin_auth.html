@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings">
+  <header class="settings-head">
+    <p class="eyebrow">{{ t("common.admin_console") }}</p>
+    <h1>{{ t("auth_admin.title") }}</h1>
+    <p class="muted">{{ t("auth_admin.intro") }}</p>
+  </header>
+
+  <section class="settings-section">
+    <h2>{{ t("auth_admin.modes") }}</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>{{ t("auth_admin.mode") }}</th>
+            <th>{{ t("common.status") }}</th>
+            <th>{{ t("common.description") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for mode in diagnostics.modes %}
+            <tr>
+              <td data-label="{{ t('auth_admin.mode') }}"><strong>{{ mode.label }}</strong></td>
+              <td data-label="{{ t('common.status') }}">
+                {% if mode.enabled %}
+                  <span class="tag tag--accent">{{ t("auth_admin.enabled") }}</span>
+                {% else %}
+                  <span class="tag">{{ t("auth_admin.disabled") }}</span>
+                {% endif %}
+              </td>
+              <td data-label="{{ t('common.description') }}">{{ mode.detail }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <h2>{{ t("auth_admin.health") }}</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>{{ t("auth_admin.check") }}</th>
+            <th>{{ t("auth_admin.result") }}</th>
+            <th>{{ t("auth_admin.detail") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for check in diagnostics.checks %}
+            <tr>
+              <td data-label="{{ t('auth_admin.check') }}"><strong>{{ check.label }}</strong></td>
+              <td data-label="{{ t('auth_admin.result') }}">
+                {% if check.ok %}
+                  <span class="tag tag--accent">{{ t("auth_admin.passed") }}</span>
+                {% else %}
+                  <span class="tag">{{ t("auth_admin.needs_action") }}</span>
+                {% endif %}
+              </td>
+              <td data-label="{{ t('auth_admin.detail') }}">{{ check.detail }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <h2>{{ t("auth_admin.summary") }}</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>{{ t("auth_admin.item") }}</th>
+            <th>{{ t("auth_admin.trusted_header") }}</th>
+            <th>{{ t("auth_admin.oidc") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td data-label="{{ t('auth_admin.item') }}">{{ t("auth_admin.provider") }}</td>
+            <td data-label="{{ t('auth_admin.trusted_header') }}">{{ diagnostics.trusted.provider }}</td>
+            <td data-label="{{ t('auth_admin.oidc') }}">{{ diagnostics.oidc.provider }}</td>
+          </tr>
+          <tr>
+            <td data-label="{{ t('auth_admin.item') }}">{{ t("auth_admin.subject_groups") }}</td>
+            <td data-label="{{ t('auth_admin.trusted_header') }}">{{ diagnostics.trusted.subject_header }} / {{ diagnostics.trusted.groups_header }}</td>
+            <td data-label="{{ t('auth_admin.oidc') }}">{{ diagnostics.oidc.email_claim }} / {{ diagnostics.oidc.groups_claim }}</td>
+          </tr>
+          <tr>
+            <td data-label="{{ t('auth_admin.item') }}">{{ t("auth_admin.auto_provision") }}</td>
+            <td data-label="{{ t('auth_admin.trusted_header') }}">{{ t("auth_admin.enabled") if diagnostics.trusted.auto_provision else t("auth_admin.disabled") }}</td>
+            <td data-label="{{ t('auth_admin.oidc') }}">{{ t("auth_admin.enabled") if diagnostics.oidc.auto_provision else t("auth_admin.disabled") }}</td>
+          </tr>
+          <tr>
+            <td data-label="{{ t('auth_admin.item') }}">{{ t("auth_admin.oidc_endpoint") }}</td>
+            <td data-label="{{ t('auth_admin.trusted_header') }}">{{ t("auth_admin.not_applicable") }}</td>
+            <td data-label="{{ t('auth_admin.oidc') }}">{{ diagnostics.oidc.discovery_url or diagnostics.oidc.issuer or t("auth_admin.not_configured") }}</td>
+          </tr>
+          <tr>
+            <td data-label="{{ t('auth_admin.item') }}">{{ t("auth_admin.oidc_callback") }}</td>
+            <td data-label="{{ t('auth_admin.trusted_header') }}">{{ t("auth_admin.not_applicable") }}</td>
+            <td data-label="{{ t('auth_admin.oidc') }}">{{ diagnostics.oidc.redirect_path }}</td>
+          </tr>
+          <tr>
+            <td data-label="{{ t('auth_admin.item') }}">{{ t("auth_admin.oidc_scopes_alg") }}</td>
+            <td data-label="{{ t('auth_admin.trusted_header') }}">{{ t("auth_admin.not_applicable") }}</td>
+            <td data-label="{{ t('auth_admin.oidc') }}">{{ diagnostics.oidc.scopes }} / {{ diagnostics.oidc.allowed_algorithms }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <h2>{{ t("auth_admin.notes") }}</h2>
+    <ul>
+      <li>{{ t("auth_admin.note_role") }}</li>
+      <li>{{ t("auth_admin.note_oidc") }}</li>
+      <li>{{ t("auth_admin.note_audit") }}</li>
+    </ul>
+  </section>
+
+  <div class="settings-foot">
+    <a href="/admin/audit" class="ghost">{{ t("auth_admin.view_audit") }}</a>
+    <a href="/admin/users" class="ghost">{{ t("auth_admin.manage_users") }}</a>
+  </div>
+</section>
+{% endblock %}

@@ -12,7 +12,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## Recommended next round
 
-1. **Enterprise authentication:** `I1a` trusted reverse-proxy header mode and `I1b` OIDC are implemented; answer customer-discovery questions for each deployment, then add `I1c` SAML only when a customer IdP requires it and `I1d` operator diagnostics/docs when deployments need them.
+1. **Enterprise authentication:** `I1a` trusted reverse-proxy header mode, `I1b` OIDC, and `I1d` operator diagnostics are implemented; answer customer-discovery questions for each deployment, then add `I1c` SAML only when a customer IdP requires it.
 2. **Answer-quality loop:** implement `E1e-2` answer/citation judging together with `E2` notebook domain hints and answer policy, then validate changes through Eval Workbench comparisons.
 3. **Admin LLM operations:** `O1` Phase 1 is done; next LLM-ops work is Phase 2 profile management and safe activation once needed.
 4. **Format foundation:** implement `A6a` ingestion diagnostics before adding more source formats.
@@ -44,7 +44,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] I1a — Customer discovery + trusted reverse-proxy header mode. **Done.** Deployment-disabled-by-default trusted header auth for customer-owned SSO gateways: configurable header names, proxy shared-secret check, external identity persistence (`provider + subject -> users.id`), local user auto-provisioning, group-to-role mapping at login, audit events, and local-password reset/change blocking for SSO-linked accounts. This is the smallest piece that satisfies "automatic Windows account" login in every topology, including on-prem-AD-only deployments.
   - [x] I1b — OIDC. **Done.** Configurable issuer/discovery, client credentials, callback, token validation (`iss`/`aud`/`exp`/`nbf`/`iat`/`nonce`, JWKS signature verification), local user linking/provisioning by provider + `sub`, group-to-role mapping, local-password guardrail reuse, and audit events without tokens/codes. Requires an OIDC-capable IdP (Entra ID, ADFS, Keycloak).
   - [ ] I1c — SAML service-provider support when a customer IdP requires it: metadata, ACS endpoint, signed assertion validation, attribute mapping, group-to-role mapping, and audit events. Python SAML libraries pull in native `xmlsec` dependencies (a real Docker-image cost) — keep this strictly customer-driven.
-  - [ ] I1d — Admin/operator documentation and diagnostics: setup checklist, current auth mode display, SSO health checks, and clear errors for missing claims or role mappings.
+  - [x] I1d — Admin/operator documentation and diagnostics. **Done.** `/admin/auth` shows current auth modes, static SSO configuration health checks, trusted-header/OIDC mapping summaries, and operator pointers to audit rejection reason codes. SSO-linked users now keep admin role authority with the IdP/proxy group mapping; local admin role toggles are blocked for external accounts.
 
 ---
 
