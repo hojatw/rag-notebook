@@ -12,6 +12,7 @@ Treat it as a POC, not a production service. Keep changes scoped and behavior-pr
 - Read `docs/ROUTES.md` when you need the full HTTP route reference.
 - Read `docs/DEVELOPMENT.md` for detailed setup, deployment, tuning, logging, verification, and repository layout.
 - Read `docs/ROADMAP.md` before changing product/admin surfaces, Eval Workbench scope, AI governance surfaces, source-format support, or new AI features.
+- Read `docs/AUTHENTICATION.md` before changing login, local accounts, SSO, AD/LDAP/OIDC/SAML integration, trusted proxy headers, sessions, or role mapping.
 - Read `docs/RETRIEVAL.md` before changing retrieval, chunking, ranking, reranking, evals, or vector-store behavior.
 - Engineering deep-dives and the prioritised backlogs live in `docs/`: `docs/PERFORMANCE.md` (performance/scalability), `docs/QUALITY.md` (retrieval/answer quality), `docs/SECURITY.md` (security policy + triaged audit findings).
 - Read `docs/SPREADSHEET_INGESTION.md` before implementing XLSX/CSV ingestion or changing spreadsheet chunking assumptions.

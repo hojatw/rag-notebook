@@ -4,7 +4,7 @@ Product-facing roadmap for the NotebookLM-style personal AI assistant: UX, admin
 
 Performance and retrieval-quality engineering stay in their own backlogs (`PERFORMANCE.md`, `QUALITY.md`). Security policy and dependency triage stay in `SECURITY.md`. This file tracks the product/admin capability surface and points to those deeper references when needed.
 
-**Current target-deployment constraint:** the known customer inference side is borrowed and fixed (Gemma 4 31B chat + multilingual-e5-large embeddings — **chat + embedding only**). Features needing only chat completions are cheap; new extraction paths (web, PPTX, spreadsheets, OCR) are app-side work; new model capabilities (vision, speech) must be verified against the active customer endpoint first. `O1` adds admin capability probes so this assumption can be tested per deployment before enabling vision-dependent work.
+**Current target-deployment constraint:** the known customer inference side is borrowed and fixed (Gemma 4 31B chat + multilingual-e5-large embeddings — **chat + embedding only unless the active chat endpoint passes the image-understanding probe**). Features needing only chat completions are cheap; new extraction paths (web, PPTX, spreadsheets, OCR) are app-side work; new model capabilities (vision, speech) must be verified against the active customer endpoint first. `O1` adds admin capability probes so this assumption can be tested per deployment before enabling vision-dependent work.
 
 Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
@@ -12,11 +12,39 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## Recommended next round
 
-1. **Answer-quality loop:** implement `E1e-2` answer/citation judging together with `E2` notebook domain hints and answer policy, then validate changes through Eval Workbench comparisons.
-2. **Admin LLM operations:** `O1` Phase 1 is done; next LLM-ops work is Phase 2 profile management and safe activation once needed.
-3. **Format foundation:** implement `A6a` ingestion diagnostics before adding more source formats.
-4. **Source-format MVP path:** after `A6a`, prioritize `A6c` Q&A-style spreadsheets, then `A6` Web URL with SSRF guards, then `A6b` PPTX text-first ingestion.
-5. **Customer-driven later work:** keep `A9`/`A10`/`A11` low priority unless a customer requirement or verified serving capability changes the economics.
+1. **Enterprise authentication:** answer the `I1` customer-discovery questions first (which IdP is authoritative? is it OIDC-capable?), then implement `I1a` trusted reverse-proxy header mode, then `I1b` OIDC; keep local break-glass admin.
+2. **Answer-quality loop:** implement `E1e-2` answer/citation judging together with `E2` notebook domain hints and answer policy, then validate changes through Eval Workbench comparisons.
+3. **Admin LLM operations:** `O1` Phase 1 is done; next LLM-ops work is Phase 2 profile management and safe activation once needed.
+4. **Format foundation:** implement `A6a` ingestion diagnostics before adding more source formats.
+5. **Source-format MVP path:** after `A6a`, prioritize `A6c` Q&A-style spreadsheets, then `A6` Web URL with SSRF guards, then `A6b` PPTX text-first ingestion.
+6. **Image/OCR path:** `A8` OCR and `A9` image search v1 depend on extraction diagnostics and capability checks; block image uploads unless `/settings` image understanding succeeds or a non-LLM OCR-only path is explicitly enabled.
+7. **Customer-driven later work:** keep `A10`/`A11` low priority unless a customer requirement or verified serving capability changes the economics.
+
+---
+
+## Enterprise authentication
+
+### High priority
+
+#### [ ] I1 · Enterprise SSO / AD integration
+- **Issue:** Customers may expect the app to integrate with corporate identity and, in Microsoft intranet environments, to support "automatic Windows account" login behavior. That behavior is typically Integrated Windows Authentication (Kerberos/SPNEGO, sometimes NTLM fallback) behind AD/Entra/ADFS infrastructure, but implementing raw Kerberos in the FastAPI app would make the product depend on deployment-specific SPNs, keytabs, DNS, browser policy, and domain-join details.
+- **Target model:** support standard enterprise SSO at the app boundary. OIDC is the primary path; SAML is the compatibility path; trusted reverse-proxy header mode lets a customer-owned gateway/IIS/Apache/Nginx/identity proxy perform Kerberos/IWA/SAML/OIDC authentication and pass only a verified identity to the app. Local login remains available for break-glass admin unless explicitly disabled per deployment.
+- **Authority:** detailed product direction, security rules, and customer discovery questions live in [`AUTHENTICATION.md`](AUTHENTICATION.md).
+- **Guardrails:**
+  - Do not treat AD integration as plain LDAP login; LDAP bind does not provide browser silent SSO.
+  - Never trust identity headers from arbitrary clients. Header auth is valid only behind a controlled reverse proxy that strips inbound identity headers and sets verified values, and needs a concrete app-side trust check (localhost/internal-network binding **plus** a proxy shared secret or mTLS), not a topology assumption alone.
+  - External identities must map to local users before data access so existing per-user/per-notebook authorization remains intact.
+  - Group-to-admin mapping must be explicit and auditable.
+  - Store the OIDC client secret with the existing `app/security.py` Fernet pattern (or env/`config.toml`-only at first); never in audit metadata. Rotating `NOTEBOOKLM_SECRET` invalidates DB-stored encrypted secrets.
+  - Disable or clearly flag `/admin/users` password reset for SSO-provisioned accounts — a reset password silently re-opens local login around IdP deprovisioning.
+  - Repo sync: external-identity persistence updates `SCHEMA.md`; new `/auth/*` routes go into `ROUTES.md`; login/SSO copy goes through the i18n catalog (`I18N.md`).
+  - Keep local break-glass admin available unless a deployment explicitly opts out.
+  - Document the MVP lifecycle limits (login-time-only group mapping, no server-side session revocation, no IdP logout) as known limitations in `AUTHENTICATION.md` — they are accepted POC trade-offs, not security promises.
+- **Phased:**
+  - [ ] I1a — Customer discovery + trusted reverse-proxy header mode. Answer the `AUTHENTICATION.md` discovery questions first (authoritative IdP, OIDC capability, who terminates Kerberos/IWA). Then ship deployment-disabled-by-default trusted header auth for customer-owned SSO gateways: configurable header names, proxy shared-secret check, local user linking/provisioning, group-to-role mapping, and audit events. This is the smallest piece that satisfies "automatic Windows account" login in every topology, including on-prem-AD-only deployments.
+  - [ ] I1b — OIDC. Configurable issuer/discovery, client credentials, callback, token validation (`iss`/`aud`/`exp`/`nonce`, JWKS rotation), local user linking/provisioning by provider + `sub`, group-to-role mapping, and audit events. Requires an OIDC-capable IdP (Entra ID, ADFS, Keycloak).
+  - [ ] I1c — SAML service-provider support when a customer IdP requires it: metadata, ACS endpoint, signed assertion validation, attribute mapping, group-to-role mapping, and audit events. Python SAML libraries pull in native `xmlsec` dependencies (a real Docker-image cost) — keep this strictly customer-driven.
+  - [ ] I1d — Admin/operator documentation and diagnostics: setup checklist, current auth mode display, SSO health checks, and clear errors for missing claims or role mappings.
 
 ---
 
@@ -134,6 +162,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [ ] E2 · Notebook domain hints and answer policy — high priority for answer quality
 - **Issue:** Some "inaccurate" answers are not fixed by retrieval-weight tuning alone. Domain-specific aliases, abbreviations, internal product names, and deployment-specific answer rules may need to be available at the notebook level so query rewrite can find the right evidence and final answers follow the customer's rules.
 - **Target model:** each notebook can carry bounded, structured **domain hints** (term/synonyms/definition/query expansion/answer note) plus a concise **answer policy**. Hints improve retrieval/query rewrite; policy controls final answer behavior. Neither should become an unbounded extra knowledge base.
+- **Default spreadsheet-aggregation policy (transition guard until `A6d`):** the baseline answer policy should state that spreadsheet sources support row lookup and semantic search but not reliable counting/summing/ranking — aggregate questions over sheet sources get an explicit caveat instead of a confidently computed number. Ships alongside `A6c` records support; per-notebook removable once `A6d` exists.
 - **Guardrails:**
   - Keep hints structured and size-limited; avoid one giant free-form prompt pasted into every LLM call.
   - Query expansion fields can influence rewrite/retrieval; answer policy fields can influence final answer wording. Do not mix the two blindly.
@@ -199,7 +228,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - Keep all profile management admin-only.
   - Never expose stored API keys back to the browser.
   - Record profile create/update/test/activate/delete actions in audit metadata without storing secrets, prompts, outputs, or full endpoint payloads.
-  - Treat multimodal probing as capability detection only; PPTX/image understanding still depends on A8/A9 roadmap items and customer need.
+  - Treat multimodal probing as capability detection only; the image-understanding probe does not enable image upload by itself. `A9` must explicitly gate upload/indexing on the latest successful probe result and show an admin-facing remediation path when the probe is missing or failed.
 
 ---
 
@@ -227,7 +256,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ### Tier 2 — new extraction paths (app-side, no inference change)
 
-**Recommended implementation order:** start with `A6a` diagnostics so every later format can explain extraction quality; then ship `A6c` Q&A-style spreadsheets; then add `A6` Web URL with SSRF protection; then `A6b` PPTX Phase 1 text-first ingestion. `A8` OCR and `A6b` Phase 2 visual extraction should follow only when the extraction diagnostics and model/OCR capability are ready. `A9` vision remains customer-driven.
+**Recommended implementation order:** start with `A6a` diagnostics so every later format can explain extraction quality; then ship `A6c` Q&A-style spreadsheets; then add `A6` Web URL with SSRF protection; then `A6b` PPTX Phase 1 text-first ingestion. `A8` OCR and `A9` image search v1 should follow only when extraction diagnostics and model/OCR capability are ready. `A6b` Phase 2 visual extraction can reuse the same image-caption/OCR path once proven.
 
 #### [ ] A6a · Ingestion diagnostics for source quality
 - **What:** show what the app actually extracted before/after indexing: extracted character count, section/page/table counts when available, chunk count, OCR/fallback flags, warnings, failure reason, and a small extracted-text preview. This should be visible from the source row / preview drawer and included in admin troubleshooting surfaces.
@@ -246,7 +275,18 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [ ] A6c · Spreadsheet sources (.xlsx / .csv)
 - Extract workbook/sheet metadata, detected header rows, bounded row groups, and compact table summaries into sheet/table-scoped sections. Chunk rows as structured records rather than flattening entire sheets into one blob; preserve sheet name, row range, and column names in chunk metadata/location.
 - **MVP priority:** implement Q&A-style sheets first (`question` + `answer`, optional category/tags/keywords) because they are naturally aligned with RAG and require no numeric recomputation. Treat each Q&A pair as the minimum semantic unit.
-- **MVP guardrail:** enforce row/column/file-size limits, skip or warn on formula-heavy/hidden/very wide sheets, and show a preview in ingestion diagnostics so users can see how tabular data was interpreted. Keep implementation details in [`SPREADSHEET_INGESTION.md`](SPREADSHEET_INGESTION.md).
+- **MVP scope:** Q&A detection only; every other sheet shape falls back to bounded generic-records chunking, stated in diagnostics. General records and numeric reports are the likely next formats (high enterprise demand) but ship as their own items — keep the sheet-type taxonomy in `SPREADSHEET_INGESTION.md` as the reference.
+- **MVP guardrail:** enforce row/column/file-size caps via a `[spreadsheet]` config group (`app/config.py` convention; chunk-shaping values require re-indexing). Skip hidden/very-hidden sheets by default and record them in diagnostics. Detect CSV encoding (BOM → UTF-8 → `charset-normalizer` fallback; Big5/CP950 expected in zh-TW corpora) and surface the decision plus replacement-character count. Warn on formula-heavy/very-wide sheets and on chunks exceeding the embedding-token window, and show a preview in ingestion diagnostics so users can see how tabular data was interpreted. Parser: `openpyxl` read-only + stdlib `csv` behind a single extraction helper (documented `python-calamine` swap-point). Full details in [`SPREADSHEET_INGESTION.md`](SPREADSHEET_INGESTION.md).
+- **Embedding-text shape (decided):** one trimmed-preamble text per chunk — semantic context (sheet/category/question/columns) in the embedded text, constant fields (workbook filename, row numbers, detection notes) in chunk metadata. Record chunks use token-aware adaptive row packing with identifier-repeating splits for over-budget rows, so e5's silent 512-token truncation cannot hide indexed-but-unsearchable rows. Details and escalation path in [`SPREADSHEET_INGESTION.md`](SPREADSHEET_INGESTION.md).
+
+#### [ ] A6d · Structured table-query tool for spreadsheet sources (customer-driven)
+- **What:** exact filtering, counting, sorting, aggregation, and joins over ingested spreadsheet data — the other half of the spreadsheet division of labor (see `SPREADSHEET_INGESTION.md` "Division of labor"). RAG records chunks (`A6c`) handle point lookups and semantic/free-text search; this tool handles the COUNT/SUM/rank/filter questions that top-k vector retrieval structurally cannot answer completely and LLM arithmetic cannot answer reliably.
+- **Storage:** normalize sheet rows into SQLite at ingest time (per-source rows keyed by source/sheet/row; `A6c` chunk/source metadata already records columns and row ranges). Reuses the existing DB — no new infrastructure.
+- **Query interface:** the LLM emits a constrained filter/aggregate spec (a small JSON DSL) that the app validates and executes; never interpolate model output into SQL strings.
+- **Interaction (recommended):** routed, not always-on. Deterministic pre-filter first (notebook has no table sources → pure RAG, zero added cost), then a one-shot route decision (`rag | table | both`) folded into the existing query-rewrite LLM call; `both` merges results at context assembly, not at ranking. Table-path failures (invalid spec, missing table, unexpected empty result) are detectable and fall back to RAG with an explicit caveat. Requires the chat model to pass the JSON-following diagnostic (O1 probe pattern).
+- **Presentation:** table results need their own citation shape (workbook · sheet · matched-row count) linking back to the source preview.
+- **Guardrails:** preserve per-user/per-notebook authorization on every query; cap result rows; audit query specs without logging cell contents; add a routing-accuracy eval type before trusting the router (the Eval Workbench currently measures retrieval only).
+- **Why customer-driven:** a big lift (structured storage, query DSL, routing, result UX, new eval type); the transition risk is mitigated by the `E2` default spreadsheet-aggregation policy.
 
 #### [x] A7 · Subtitle files as sources (.srt / .vtt)
 - **Done.** `_extract_subtitles` (`app/ingest.py`) strips cue indices, timestamp lines, the WebVTT header + NOTE/STYLE/REGION blocks, and inline VTT tags, and collapses rolling-caption repeats — leaving the spoken text as one `transcript` section that flows through the existing chunk/embed pipeline. `.srt`/`.vtt` added to `ALLOWED_EXTENSIONS` + the upload accept list. No new deps. Pairs naturally with A1 meeting minutes. Verified end-to-end (upload → indexed → clean transcript chunk).
@@ -254,10 +294,24 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [ ] A8 · OCR for scanned PDFs / images
 - `pytesseract` + tesseract in the Docker image (`chi_tra` model for Traditional Chinese). Decades-old scanned research reports are likely in the customer corpus — high practical value, no LLM dependency.
 
-### Tier 3 — low priority / customer-driven only
+#### [ ] A9 · Image search v1 (OCR + vision captions + text embedding)
+- **What:** accept image sources (`.png`, `.jpg`, `.jpeg`, `.webp` initially) and make them searchable through the existing text RAG stack. The first version does **not** require a true multimodal embedding model: it extracts OCR text when available, asks the active chat model for a concise visual caption / diagram description when image understanding is supported, embeds the combined text with the configured embedding model (e.g. e5), and returns the original image as the cited result.
+- **Capability gate:** image upload must be blocked unless the latest `/settings` chat diagnostics include a successful `image_understanding` probe for the active chat configuration, or the deployment explicitly enables an OCR-only image mode. If the probe is missing, skipped, stale, or failed, the upload form should reject image files with a clear message asking an admin to run the image-understanding diagnostic or disable image-source support. Do not silently accept images that would index as empty text.
+- **Indexing model:** store the original image under `data/uploads/` like other sources, generate a bounded preview/thumbnail for display, then create labeled text sections such as:
+  - `OCR text:` text detected by A8 or another configured OCR engine;
+  - `Visual description:` Gemma/vision-model caption of visible content, chart/diagram semantics, notable labels, and likely document role;
+  - `Image metadata:` filename, dimensions, MIME type, and safety/diagnostic warnings.
+- **Search behavior:** use the existing text embedding and retrieval path for `ocr_text + visual_caption`. This supports text-to-image search such as "找出登入流程圖", "哪張截圖提到向量資料庫", or "找含有某段文字的掃描圖". True image-to-image similarity and visual-style matching require a future multimodal embedding collection and are out of v1 scope.
+- **Presentation:** image sources should appear in the left Sources pane with a compact thumbnail/format badge and normal indexing status. The source preview drawer should show the image first, then extraction diagnostics and generated OCR/caption chunks. Citation clicks and search results should open the same preview drawer anchored to the matching image section; chat answers should cite the image by filename + section, not paste large images into the message stream.
+- **Guardrails:**
+  - Keep full image bytes out of audit/governance metadata; log ids, counts, dimensions, and diagnostic statuses only.
+  - Cap image file size, dimensions, generated thumbnail size, and caption/OCR text length.
+  - Treat vision captions as derived, fallible text; show extraction diagnostics so users can see what the model/OCR actually indexed.
+  - Preserve authorization: image files, thumbnails, previews, and extracted text must remain scoped to the owning user/notebook.
+  - Record upload rejection reasons when image capability is missing, but do not include user images or model captions in audit metadata by default.
+- **Future extension:** add a separate multimodal embedding backend/collection (e.g. Azure AI Vision, Google multimodal embeddings, CLIP/Jina/Nomic/self-hosted) only after v1 proves the product value. Do not mix e5 text vectors and image vectors in the same Chroma collection unless dimensions/model semantics are explicitly separated.
 
-#### [ ] A9 · Image understanding (vision QA)
-- **Low priority unless a customer explicitly needs it.** Blocked on whether the customer's Gemma 4 31B deployment accepts image input on `/v1/chat/completions`. If yes: image upload → vision description → description text joins RAG. If no: A8 OCR is the fallback.
+### Tier 3 — low priority / customer-driven only
 
 #### [ ] A10 · Audio transcription (meeting recordings)
 - **Low priority unless a customer explicitly needs it.** Needs a Whisper-class endpoint (customer serving has none). Local CPU whisper is slow. Mitigate with A7 (accept transcripts) until infrastructure exists.

@@ -178,6 +178,25 @@
 
 行內微提示(非訊息列)用 `<p class="hint muted small">`。
 
+### 3.11 Image sources and image-search results **[待建立]**
+
+圖片來源沿用 notebook workspace 的既有三欄模型,不要新增獨立圖片庫頁面。第一版 image search
+是「圖片被索引成 OCR/caption 文字,結果回指到原圖」,因此 UI 要同時呈現原圖與它被系統理解出的文字。
+
+- **Sources pane**:圖片列使用既有 source row + status pill,加一個小型 thumbnail/format badge。thumbnail
+  尺寸固定,避免圖片比例造成左欄 row 高度大幅跳動。若 capability gate 不通過,上傳前就阻擋,不要讓圖片以
+  failed source 混進列表。
+- **Source preview drawer**:圖片來源打開後先顯示 bounded image preview,接著顯示 extraction diagnostics
+  (檔名、尺寸、OCR/caption 狀態、警告),再列出可 citation 的文字 sections:OCR text、Visual description、
+  Image metadata。使用者要能看出搜尋命中的是哪一段 derived text。
+- **Citation behavior**:chat citation 點擊時仍開 source preview drawer,並高亮對應 OCR/caption section;
+  citation label 用「filename · image / OCR / caption」這種短標籤,不要把大圖直接塞進 chat message。
+- **Search results**:搜尋頁的圖片結果要顯示小 thumbnail、filename、命中 section 類型與 snippet。
+  點擊後進 notebook 並打開 preview drawer 到對應 section,與文字來源的 citation 行為一致。
+- **Empty/blocked states**:若 `/settings` image-understanding diagnostic 未通過,upload hint/錯誤訊息要明確說明
+  「目前模型未通過圖片理解測試,請管理員到 /settings 執行測試或改用 OCR-only 模式」。不要把這寫成一般
+  「不支援檔案格式」。
+
 ---
 
 ## 4. 互動行為標準(已半成形,以下為定版)

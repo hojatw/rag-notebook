@@ -78,6 +78,10 @@ provider usage reporting, JSON-following, and opt-in image understanding.
 Diagnostics store compact status metadata only, not raw prompts, model output,
 API keys, or raw provider payloads.
 
+Future image-source support is gated on these diagnostics: image uploads should
+stay blocked unless the active chat model passes the image-understanding probe
+or the deployment intentionally enables an OCR-only path.
+
 The settings page has **two independent cards** — a **Chat model** card and an
 **Embedding model** card — each with its own provider, base URL, API key, model,
 and **Test** button. They can point at completely different services (e.g. a
@@ -147,6 +151,9 @@ endpoint, not stored chunks.
   customer-facing product whitepaper in Traditional Chinese.
 - [`docs/RETRIEVAL.md`](docs/RETRIEVAL.md) - retrieval pipeline, ranking,
   reranking, eval workflow, and tuning knobs.
+- [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) - local login, enterprise
+  SSO direction, AD/Entra/OIDC/SAML options, trusted proxy header mode, and
+  auth security requirements.
 - [`docs/QUALITY.md`](docs/QUALITY.md) - retrieval and answer-quality backlog.
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) - performance and scalability
   backlog.
@@ -183,11 +190,22 @@ available:
 - UI copy is routed through a `zh-TW` message catalog (i18n foundation done,
   `ROADMAP.md` U15a); adding an `en` locale + admin/per-user language controls
   is U15b. See [`docs/I18N.md`](docs/I18N.md).
+- Enterprise authentication is now a high-priority customer requirement:
+  answer the customer identity-platform discovery questions first, then
+  implement trusted reverse-proxy header mode (`I1a`), then OIDC (`I1b`); keep
+  SAML as the customer-driven compatibility path and preserve local break-glass
+  admin. See [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) and
+  `ROADMAP.md` `I1`.
 - Admin LLM settings still use one global configuration. O1 Phase 1 diagnostics
   are done; multi-profile management and safe activation remain O1 Phase 2.
 - New source-format support should start with ingestion diagnostics, then
   Q&A-style spreadsheets, SSRF-safe Web URL ingestion, and PPTX text-first
   ingestion (`ROADMAP.md` A6a/A6c/A6/A6b).
+- Image search v1 is tracked as `ROADMAP.md` A9: use OCR + vision captions as
+  text, embed that derived text with the configured embedding model, and show
+  image thumbnails/previews as the cited source. Image uploads are gated by the
+  `/settings` image-understanding diagnostic unless OCR-only mode is explicitly
+  enabled.
 - Keyword search still uses SQLite `LIKE`; FTS5 + BM25 is tracked in
   `docs/QUALITY.md` / `docs/PERFORMANCE.md`.
 

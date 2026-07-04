@@ -19,6 +19,12 @@ Include reproduction steps and the affected version/commit. We aim to acknowledg
 - Never commit `.env`, real secrets, or runtime state under `data/` or `logs/`.
 - Do not use `NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1` for any network-exposed or production-like run; it is a local-development convenience only.
 - The demo accounts (`admin/admin123`, `user/user123`) are for local development. Change or remove them before exposing the app on a network.
+- Enterprise SSO / AD integration is tracked as high-priority roadmap item `I1`
+  and designed in [`AUTHENTICATION.md`](AUTHENTICATION.md). Delivery order:
+  trusted reverse-proxy header mode first (with a proxy shared-secret check,
+  not topology trust alone), then OIDC, with SAML as a customer-driven
+  follow-up. Do not implement browser silent SSO as raw LDAP login; LDAP bind
+  does not provide Integrated Windows Authentication.
 
 ## Audit trail
 
