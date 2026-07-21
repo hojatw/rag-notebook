@@ -154,6 +154,9 @@ endpoint, not stored chunks.
 - [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) - local login, enterprise
   SSO direction, AD/Entra/OIDC/SAML options, trusted proxy header mode, and
   auth security requirements.
+- [`docs/SSO_DEPLOYMENT.zh-TW.md`](docs/SSO_DEPLOYMENT.zh-TW.md) - operator guide
+  for deploying/testing enterprise SSO: reverse-proxy config examples and the
+  auth test plan.
 - [`docs/QUALITY.md`](docs/QUALITY.md) - retrieval and answer-quality backlog.
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) - performance and scalability
   backlog.

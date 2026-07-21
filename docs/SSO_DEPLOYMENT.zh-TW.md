@@ -112,7 +112,7 @@ oidc_allowed_algorithms = "RS256"        # 勿放寬到對稱演算法
 2. 反代**必須先 strip 掉**客戶端自帶的身份 header（如 `X-Forwarded-User`），再設自己的值。
 3. shared secret 只存在於「反代 → app」這一跳。
 
-> ⚠️ **本應用層目前只有 shared secret 這一道防線**（無來源 IP allowlist）。因此上述①②的部署正確性至關重要：secret 外洩或反代未 strip inbound header，等於任何能連到 app 的人都能冒充任意使用者（含 admin）。強化建議見 §5。
+> ⚠️ **本應用層預設只有 shared secret 一道**，可另設 `trusted_header_allowed_ips`（見 §3.2）作為第二道防線。即便如此，上述①②的部署正確性仍至關重要：secret 外洩、反代未 strip inbound header，或 allowlist 因啟用 uvicorn `--proxy-headers` 而被 `X-Forwarded-For` 繞過（此時須把 `--forwarded-allow-ips` 釘死為反代），都可能讓能連到 app 的請求冒充任意使用者（含 admin）。
 
 ### 3.2 應用設定（`config.toml` `[auth]` 範例）
 
@@ -128,6 +128,7 @@ trusted_header_name_header = "X-Forwarded-Name"
 trusted_header_groups_header = "X-Forwarded-Groups"  # 逗號/分號分隔
 trusted_header_admin_groups = "rag-admins"           # 【待確認】admin 群組名
 trusted_header_auto_provision = true
+trusted_header_allowed_ips = ""   # 【待確認】選填第二道防線：生產填反代來源 IP/CIDR（如 "10.0.0.0/8"）只信任反代；本機 curl 測試留空。比對 request.client.host（TCP 對端），非 X-Forwarded-For
 ```
 
 ### 3.3 反代設定範例（依環境擇一或組合）
@@ -267,9 +268,11 @@ curl -i -H "X-Forwarded-User: mallory" http://localhost:8000/auth/trusted-header
 - 稽核：`/admin/audit` 可見 `*_login_succeeded`／`*_user_provisioned`／`*_role_mapped`／`*_login_rejected`（含 reason code）。
 - 疑難排解：先看 `/admin/auth` 設定健檢，再對照稽核的 rejection reason。
 
-**建議強化（follow-up，非上線阻擋，對應 PR #70 的 trade-offs）**：
-1. 信任頭部模式加一道**來源 IP allowlist**（`trusted_proxy_ips`）作為 shared secret 之外的第二道防線。
-2. OIDC 導入 **PKCE**（Entra／Keycloak 皆支援）。
+**已實現的強化**：
+- 信任頭部**來源 IP allowlist**：設定 `trusted_header_allowed_ips`（IP/CIDR，見 §3.2）作為 shared secret 之外的第二道防線。
+
+**建議強化（follow-up，非上線阻擋）**：
+- OIDC 導入 **PKCE**（Entra／Keycloak 皆支援）。本應用是 confidential client（已有 state + nonce + client secret），PKCE 屬縱深防禦與 OAuth 2.1 對齊，非補漏洞。
 
 ---
 

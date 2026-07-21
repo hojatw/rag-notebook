@@ -123,6 +123,10 @@ Microsoft intranet topology.
   localhost / an internal container network so the proxy is the only network
   path, **and** require a configurable shared secret (or mTLS) that the proxy
   attaches to every request;
+- optionally pin an app-side source-IP allowlist (`trusted_header_allowed_ips`,
+  IP/CIDR) as defense-in-depth on top of the shared secret; it matches the TCP
+  peer (`request.client.host`), never a forgeable `X-Forwarded-For` (with
+  uvicorn `--proxy-headers`, pin `--forwarded-allow-ips` to the proxy);
 - reject direct client-supplied identity headers by requiring the proxy to strip
   inbound versions and set its own;
 - map groups to local admin/user roles;
@@ -143,6 +147,7 @@ trusted_header_groups_header = "X-Forwarded-Groups"
 trusted_header_admin_groups = ""
 trusted_header_auto_provision = true
 trusted_header_provider = "trusted_header"
+trusted_header_allowed_ips = ""   # optional proxy source-IP allowlist (IP/CIDR); empty = secret-only
 ```
 
 The proxy must strip inbound identity headers from clients, authenticate the
@@ -275,6 +280,8 @@ oversights:
   [`SCHEMA.md`](SCHEMA.md) in the same change, per `AGENTS.md`.
 - Document new `/auth/*` routes in [`ROUTES.md`](ROUTES.md).
 - Document admin/operator auth diagnostics routes in [`ROUTES.md`](ROUTES.md).
+- Operator deployment steps, reverse-proxy config examples, and the auth test
+  plan live in [`SSO_DEPLOYMENT.zh-TW.md`](SSO_DEPLOYMENT.zh-TW.md).
 - SSO buttons, login hints, diagnostics text, and auth error copy go through the i18n catalog
   (`app/i18n.py`, see [`I18N.md`](I18N.md)); never hardcode UI strings.
 
