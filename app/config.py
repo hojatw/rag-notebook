@@ -91,6 +91,7 @@ class AuthConfig:
     trusted_header_admin_groups: str = ""
     trusted_header_auto_provision: bool = True
     trusted_header_provider: str = "trusted_header"
+    trusted_header_allowed_ips: str = ""
     oidc_enabled: bool = False
     oidc_provider: str = "oidc"
     oidc_issuer: str = ""

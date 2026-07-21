@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -582,6 +583,36 @@ def _split_auth_list(value: str) -> list[str]:
     return [item.strip() for item in re.split(r"[,;\n]+", value or "") if item.strip()]
 
 
+def _ip_in_allowlist(client_host: str, allowed: str) -> bool:
+    """Return True if client_host is inside the comma/CIDR allowlist.
+
+    An empty allowlist means "no IP restriction" (secret-only mode). client_host
+    must be the TCP peer IP (``request.client.host``), never an X-Forwarded-For
+    value, which a client could forge. If the app runs uvicorn with
+    ``--proxy-headers``, client.host is derived from X-Forwarded-For, so
+    ``--forwarded-allow-ips`` must be pinned to the proxy for this check to hold.
+    """
+    entries = _split_auth_list(allowed)
+    if not entries:
+        return True
+    if not client_host:
+        return False
+    try:
+        client_addr = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    for entry in entries:
+        try:
+            if "/" in entry:
+                if client_addr in ipaddress.ip_network(entry, strict=False):
+                    return True
+            elif client_addr == ipaddress.ip_address(entry):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _subject_hash(subject: str) -> str:
     return hashlib.sha256(subject.encode("utf-8")).hexdigest()[:16]
 
@@ -821,6 +852,19 @@ def trusted_header_login(request: Request):
             "high",
         )
         raise HTTPException(status_code=503, detail=i18n.t("auth.trusted_header_not_configured"))
+
+    client_host = request.client.host if request.client else ""
+    if not _ip_in_allowlist(client_host, auth.trusted_header_allowed_ips):
+        record_audit_event(
+            request,
+            None,
+            "trusted_header_login_rejected",
+            "auth",
+            None,
+            {"provider": provider, "reason": "untrusted_source_ip"},
+            "high",
+        )
+        raise HTTPException(status_code=403, detail=i18n.t("auth.trusted_header_denied"))
 
     submitted_secret = request.headers.get(auth.trusted_header_secret_header, "")
     if not submitted_secret or not hmac.compare_digest(submitted_secret, auth.trusted_header_secret):

@@ -229,6 +229,46 @@ def test_trusted_header_auth_respects_auto_provision_disabled(monkeypatch, tmp_p
         assert "unknown-user" not in audit["metadata_json"]
 
 
+def test_ip_in_allowlist_matches_exact_and_cidr(monkeypatch, tmp_path):
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    allow = main._ip_in_allowlist
+    assert allow("10.0.0.5", "") is True                       # empty = no restriction
+    assert allow("10.0.0.5", "10.0.0.5") is True               # exact match
+    assert allow("10.0.0.5", "10.0.0.0/8") is True             # CIDR match
+    assert allow("192.168.1.1", "10.0.0.0/8, 192.168.0.0/16") is True
+    assert allow("172.16.0.1", "10.0.0.0/8") is False          # outside allowlist
+    assert allow("testclient", "10.0.0.0/8") is False          # non-IP peer host
+    assert allow("", "10.0.0.0/8") is False                    # missing peer host
+
+
+def test_trusted_header_auth_rejects_untrusted_source_ip(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ALLOWED_IPS", "10.0.0.0/8")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    # The TestClient peer host ("testclient") is not inside the allowlist, so the
+    # request is rejected before the (correct) shared secret is even compared.
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/auth/trusted-header",
+            headers={
+                "X-NotebookLM-Auth-Secret": "proxy-secret",
+                "X-Forwarded-User": "DOMAIN\\alice",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 403
+        with db.connect() as conn:
+            users = conn.execute("SELECT COUNT(*) FROM users WHERE username LIKE 'alice%'").fetchone()[0]
+            audit = conn.execute(
+                "SELECT action, metadata_json FROM audit_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert users == 0
+        assert audit["action"] == "trusted_header_login_rejected"
+        assert "untrusted_source_ip" in audit["metadata_json"]
+
+
 def test_trusted_header_auth_can_disable_local_login(monkeypatch, tmp_path):
     monkeypatch.setenv("NOTEBOOKLM_AUTH_LOCAL_LOGIN_ENABLED", "false")
     monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")

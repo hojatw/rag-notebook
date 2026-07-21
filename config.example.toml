@@ -68,6 +68,7 @@ trusted_header_groups_header = "X-Forwarded-Groups" # comma/semicolon-separated
 trusted_header_admin_groups = ""                    # e.g. "rag-admins,domain admins"
 trusted_header_auto_provision = true
 trusted_header_provider = "trusted_header"
+trusted_header_allowed_ips = ""   # optional proxy source-IP allowlist (IP/CIDR, comma-separated); empty = secret-only. Matches request.client.host (TCP peer), never X-Forwarded-For.
 oidc_enabled = false
 oidc_provider = "oidc"        # external_identities.provider value
 oidc_issuer = ""              # e.g. https://login.microsoftonline.com/<tenant-id>/v2.0
