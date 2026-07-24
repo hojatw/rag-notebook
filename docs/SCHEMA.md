@@ -121,7 +121,7 @@ High-volume AI governance telemetry for LLM and embedding calls (G1a/G1b). This 
 | `source_id` | INTEGER → `sources(id)` SET NULL | source associated with ingest/source-summary/tool calls, when known |
 | `eval_run_id` | INTEGER → `eval_runs(id)` SET NULL | eval run associated with retrieval calls, when known |
 | `eval_set_id` | INTEGER → `eval_sets(id)` SET NULL | eval set associated with authoring/run calls, when known |
-| `call_type` | TEXT NOT NULL | e.g. `answer`, `answer_stream`, `query_rewrite`, `embedding_query`, `embedding_passage`, `rerank`, `source_summary`, `briefing`, `compare`, `meeting_minutes`, `starter_questions`, `followups`, `eval_authoring`, `artifact_*`, `translate_summary` |
+| `call_type` | TEXT NOT NULL | e.g. `answer`, `answer_stream`, `query_rewrite`, `embedding_query`, `embedding_passage`, `rerank`, `source_summary`, `briefing`, `compare`, `meeting_minutes`, `starter_questions`, `followups`, `eval_authoring`, `eval_answer`, `eval_judge`, `artifact_*`, `translate_summary` |
 | `provider` / `model` | TEXT NOT NULL DEFAULT `''` | provider and chat/embedding model or deployment |
 | `status` | TEXT NOT NULL DEFAULT `'succeeded'` | `succeeded` or `failed` |
 | `latency_ms` | REAL NOT NULL DEFAULT 0 | end-to-end provider call latency |
