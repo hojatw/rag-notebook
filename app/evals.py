@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from . import i18n
 from .db import connect, dumps, load_llm_settings, loads
 from .governance import record_ai_safety_events
-from .llm import generate_eval_candidates
+from .llm import generate_answer, generate_eval_candidates, judge_answer
 from .main import _json_download, record_audit_event, render, require_admin
 from .retrieval import (
     ACTIVE_RETRIEVAL_PARAMS,
@@ -267,6 +267,160 @@ def run_metrics_from_results(
     }
 
 
+def _not_applicable_judge() -> dict[str, Any]:
+    """Judge payload for items that were never LLM-judged (abstained or generate error).
+
+    The three LLM dimensions are marked ``not_applicable`` with null scores; only the
+    deterministic abstain block (attached by the caller) carries a real signal.
+    """
+    return {
+        "answer_quality": {"label": "not_applicable", "score": None, "rationale": ""},
+        "groundedness": {"score": None, "unsupported_claims": [], "rationale": ""},
+        "citation_correctness": {"score": None, "wrong_citations": [], "rationale": ""},
+        "judge_ok": None,
+        "judge_model": "",
+    }
+
+
+def substring_hit_rate(answer_text: str, expected_substrings: list[str]) -> float | None:
+    """Deterministic answer-quality anchor: fraction of expected substrings present
+    verbatim in the generated answer. None when the item defines no substrings, so
+    metrics can skip it rather than treat an unanchored item as a 0.0."""
+    substrings = [snippet for snippet in (expected_substrings or []) if snippet]
+    if not substrings:
+        return None
+    hits = sum(1 for snippet in substrings if snippet in (answer_text or ""))
+    return round(hits / len(substrings), 4)
+
+
+async def judge_eval_item(
+    question: str,
+    item: dict,
+    retrieved: list[dict],
+    top_score: float,
+    threshold: float,
+    settings: dict,
+    usage_context: dict[str, Any],
+) -> dict[str, Any]:
+    """E1e-2: deterministically decide abstain, then optionally generate + judge one answer.
+
+    Returns ``{answer_text, answer_outcome, judge}``. ``abstain_correctness`` is always
+    computed (deterministic and the most trustworthy dimension); the three LLM dimensions
+    stay ``not_applicable`` on abstain, and any generate/judge failure surfaces as
+    ``answer_outcome='error'`` without losing the abstain signal or failing the whole run.
+    The judge output is a reference signal, not ground truth (G1c posture).
+    """
+    item_type = item.get("item_type") or "answerable"
+    expected_abstain = item_type == "unanswerable"
+    # Mirror ask()'s abstain decision, but against the run's frozen threshold snapshot
+    # (not the live applied threshold) so the run stays internally consistent.
+    did_abstain = (not retrieved) or (top_score < threshold)
+    abstain = {
+        "did_abstain": did_abstain,
+        "expected_abstain": expected_abstain,
+        "correct": did_abstain == expected_abstain,
+    }
+    if did_abstain:
+        judge = _not_applicable_judge()
+        judge["abstain"] = abstain
+        judge["substring_hit_rate"] = None
+        return {"answer_text": i18n.t("chat.abstain"), "answer_outcome": "abstained", "judge": judge}
+    try:
+        answer_text = await generate_answer(question, retrieved, settings, usage_context=usage_context)
+        hit_rate = substring_hit_rate(answer_text, item.get("expected_substrings") or [])
+        judge = await judge_answer(
+            question=question,
+            generated_answer=answer_text,
+            expected_answer=item.get("expected_answer") or "",
+            expected_substrings=item.get("expected_substrings") or [],
+            item_type=item_type,
+            retrieved_chunks=retrieved,
+            settings=settings,
+            usage_context=usage_context,
+        )
+    except Exception as exc:
+        # Generation failed (judge_answer swallows its own errors into judge_ok=False).
+        # Keep the deterministic abstain signal; this item is an error, the run continues.
+        logger.exception("eval_judge_item_failed item_id=%s", item.get("id"))
+        judge = _not_applicable_judge()
+        judge["abstain"] = abstain
+        judge["substring_hit_rate"] = None
+        judge["error"] = str(exc)[:300]
+        return {"answer_text": "", "answer_outcome": "error", "judge": judge}
+    judge["abstain"] = abstain
+    judge["substring_hit_rate"] = hit_rate
+    return {"answer_text": answer_text, "answer_outcome": "answered", "judge": judge}
+
+
+def judge_metrics_from_results(results: list[dict]) -> dict[str, Any]:
+    """Aggregate E1e-2 answer-quality signals from per-item judge payloads.
+
+    Kept under ``metrics_json.judge`` and never mixed into Recall/MRR. Only items that
+    were judged (answer_outcome answered/abstained/error with a judge payload) contribute.
+    Scored LLM dimensions come only from ``answered`` items whose judge parsed
+    (``judge_ok``); abstain correctness is deterministic and counts every judged item.
+    Reference signal for human review, not ground truth.
+    """
+    judged = [r for r in results if r.get("answer_outcome") in {"answered", "abstained", "error"} and r.get("judge")]
+    answered = [r for r in judged if r.get("answer_outcome") == "answered"]
+    scorable = [r for r in answered if (r.get("judge") or {}).get("judge_ok")]
+    labels = {"correct": 0, "partial": 0, "incorrect": 0}
+    groundedness_scores: list[float] = []
+    citation_scores: list[float] = []
+    substring_rates: list[float] = []
+    for r in scorable:
+        judge = r["judge"]
+        label = (judge.get("answer_quality") or {}).get("label")
+        if label in labels:
+            labels[label] += 1
+        groundedness_scores.append(float((judge.get("groundedness") or {}).get("score") or 0.0))
+        citation_scores.append(float((judge.get("citation_correctness") or {}).get("score") or 0.0))
+        rate = judge.get("substring_hit_rate")
+        if rate is not None:
+            substring_rates.append(float(rate))
+    # Abstain correctness is deterministic, so every judged item (incl. generate errors)
+    # carries it; split so a reviewer sees false refusals on answerable items separately
+    # from correct refusals on unanswerable ones.
+    with_abstain = [r for r in judged if (r.get("judge") or {}).get("abstain")]
+    unanswerable = [r for r in with_abstain if r["judge"]["abstain"]["expected_abstain"]]
+    answerable = [r for r in with_abstain if not r["judge"]["abstain"]["expected_abstain"]]
+    correct_refusals = sum(1 for r in unanswerable if r["judge"]["abstain"]["did_abstain"])
+    false_refusals = sum(1 for r in answerable if r["judge"]["abstain"]["did_abstain"])
+    abstain_correct = sum(1 for r in with_abstain if r["judge"]["abstain"]["correct"])
+
+    def _avg(values: list[float]) -> float:
+        return round(sum(values) / len(values), 4) if values else 0.0
+
+    return {
+        "judged": len(judged),
+        "answered": len(answered),
+        "abstained": sum(1 for r in judged if r.get("answer_outcome") == "abstained"),
+        "errors": sum(1 for r in judged if r.get("answer_outcome") == "error"),
+        "judge_ok": len(scorable),
+        "judge_failed": len(answered) - len(scorable),
+        "answer_quality": {
+            "correct": labels["correct"],
+            "partial": labels["partial"],
+            "incorrect": labels["incorrect"],
+            "correct_rate": round(labels["correct"] / len(scorable), 4) if scorable else 0.0,
+        },
+        "groundedness_avg": _avg(groundedness_scores),
+        "citation_correct_rate": _avg(citation_scores),
+        "substring_hit_rate_avg": _avg(substring_rates),
+        "abstain": {
+            "evaluated": len(with_abstain),
+            "correct": abstain_correct,
+            "correct_rate": round(abstain_correct / len(with_abstain), 4) if with_abstain else 0.0,
+            "unanswerable_total": len(unanswerable),
+            "unanswerable_correct_refusal": correct_refusals,
+            "unanswerable_correct_refusal_rate": round(correct_refusals / len(unanswerable), 4) if unanswerable else 0.0,
+            "answerable_total": len(answerable),
+            "answerable_false_refusal": false_refusals,
+            "answerable_false_refusal_rate": round(false_refusals / len(answerable), 4) if answerable else 0.0,
+        },
+    }
+
+
 async def run_eval_job(run_id: int) -> None:
     """Background E1b retrieval-only eval runner."""
     try:
@@ -274,6 +428,9 @@ async def run_eval_job(run_id: int) -> None:
             run = conn.execute("SELECT * FROM eval_runs WHERE id = ?", (run_id,)).fetchone()
             if run is None:
                 return
+            # E1e-2: only score answer quality when this run opted in at creation time
+            # (default off → generate/judge calls are never issued, full regression).
+            judge_enabled = bool(run["judge_enabled"])
             # Isolated per-run override: the run uses its frozen profile snapshot,
             # not the live applied profile, so candidate vs baseline comparisons
             # are meaningful without mutating real chat retrieval.
@@ -335,6 +492,13 @@ async def run_eval_job(run_id: int) -> None:
         results: list[dict] = []
         for index, item in enumerate(items, start=1):
             question = item["question"]
+            usage_context = {
+                "user_id": eval_set["target_user_id"],
+                "notebook_id": eval_set["notebook_id"],
+                "eval_run_id": run_id,
+                "eval_set_id": eval_set["id"],
+            }
+            retrieve_step = f"檢索第 {index} / {len(items)} 題"
             with connect() as conn:
                 conn.execute(
                     """
@@ -342,7 +506,7 @@ async def run_eval_job(run_id: int) -> None:
                     SET progress_current = ?, current_step = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    (index - 1, f"檢索第 {index} / {len(items)} 題", run_id),
+                    (index - 1, retrieve_step, run_id),
                 )
             started = time.perf_counter()
             try:
@@ -355,12 +519,7 @@ async def run_eval_job(run_id: int) -> None:
                     eval_set["target_user_id"],
                     source_ids,
                     params=run_params,
-                    usage_context={
-                        "user_id": eval_set["target_user_id"],
-                        "notebook_id": eval_set["notebook_id"],
-                        "eval_run_id": run_id,
-                        "eval_set_id": eval_set["id"],
-                    },
+                    usage_context=usage_context,
                 )
                 latency_ms = round((time.perf_counter() - started) * 1000, 1)
                 top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -382,6 +541,9 @@ async def run_eval_job(run_id: int) -> None:
                     "latency_ms": latency_ms,
                     "retrieved_json": dumps(compact_retrieved_chunks(retrieved)),
                     "error": "",
+                    "answer_text": "",
+                    "answer_outcome": "",
+                    "judge_json": "{}",
                 }
             except Exception as exc:
                 logger.exception("eval_item_failed run_id=%s item_id=%s", run_id, item["id"])
@@ -393,14 +555,45 @@ async def run_eval_job(run_id: int) -> None:
                     "latency_ms": round((time.perf_counter() - started) * 1000, 1),
                     "retrieved_json": "[]",
                     "error": str(exc)[:300],
+                    "answer_text": "",
+                    "answer_outcome": "",
+                    "judge_json": "{}",
                 }
+            # E1e-2: score answer quality only on runs that opted in and only when
+            # retrieval itself succeeded. judge_eval_item never raises and never fails
+            # the run; a per-item generate/judge failure lands as answer_outcome='error'.
+            if judge_enabled and result["status"] != "error":
+                with connect() as conn:
+                    conn.execute(
+                        """
+                        UPDATE eval_runs
+                        SET current_step = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (f"生成並評分第 {index} / {len(items)} 題", run_id),
+                    )
+                judged = await judge_eval_item(
+                    question,
+                    item,
+                    retrieved,
+                    result["top_score"],
+                    float(run_params["low_confidence_threshold"]),
+                    settings,
+                    usage_context,
+                )
+                result["answer_text"] = judged["answer_text"]
+                result["answer_outcome"] = judged["answer_outcome"]
+                result["judge_json"] = dumps(judged["judge"])
+                # In-memory only, for judge_metrics_from_results; not a stored column.
+                result["judge"] = judged["judge"]
             results.append(result)
             with connect() as conn:
                 conn.execute(
                     """
                     INSERT INTO eval_results
-                    (run_id, eval_item_id, status, hit_rank, top_score, latency_ms, retrieved_json, error)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (run_id, eval_item_id, status, hit_rank, top_score, latency_ms, retrieved_json, error,
+                     judge_json, answer_text, answer_outcome)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -411,6 +604,9 @@ async def run_eval_job(run_id: int) -> None:
                         result["latency_ms"],
                         result["retrieved_json"],
                         result["error"],
+                        result["judge_json"],
+                        result["answer_text"],
+                        result["answer_outcome"],
                     ),
                 )
                 conn.execute(
@@ -426,6 +622,10 @@ async def run_eval_job(run_id: int) -> None:
             threshold=float(run_params["low_confidence_threshold"]),
             final_chunk_count=int(run_params["final_chunk_count"]),
         )
+        # E1e-2: answer-quality metrics live in a nested `judge` key, deliberately kept
+        # out of the retrieval Recall/MRR layer. Only present when the run judged answers.
+        if judge_enabled:
+            metrics["judge"] = judge_metrics_from_results(results)
         with connect() as conn:
             conn.execute(
                 """
@@ -1218,7 +1418,11 @@ def admin_start_eval_run(
     background_tasks: BackgroundTasks,
     user: Annotated[dict, Depends(require_admin)],
     profile_id: int | None = Form(None),
+    judge_enabled: str | None = Form(None),
 ):
+    # E1e-2: opt-in answer-quality judging (~2× LLM cost). Absent/unchecked → retrieval
+    # only, so the default run is unchanged. Checkbox form values arrive as "on"/"1".
+    judge_flag = 1 if (judge_enabled or "").strip().lower() in {"1", "on", "true", "yes"} else 0
     with connect() as conn:
         load_eval_set(conn, eval_set_id)
         profile = ensure_default_retrieval_profile(conn, user["id"])
@@ -1238,14 +1442,18 @@ def admin_start_eval_run(
         cursor = conn.execute(
             """
             INSERT INTO eval_runs
-            (eval_set_id, profile_id, created_by, status, progress_total, profile_snapshot_json, current_step)
-            VALUES (?, ?, ?, 'queued', ?, ?, '等待背景執行')
+            (eval_set_id, profile_id, created_by, status, progress_total, profile_snapshot_json,
+             judge_enabled, current_step)
+            VALUES (?, ?, ?, 'queued', ?, ?, ?, '等待背景執行')
             """,
-            (eval_set_id, profile["id"], user["id"], approved_count, profile["params_json"]),
+            (eval_set_id, profile["id"], user["id"], approved_count, profile["params_json"], judge_flag),
         )
         run_id = cursor.lastrowid
     background_tasks.add_task(run_eval_job, run_id)
-    logger.info("eval_run_queued admin_user_id=%s eval_set_id=%s run_id=%s", user["id"], eval_set_id, run_id)
+    logger.info(
+        "eval_run_queued admin_user_id=%s eval_set_id=%s run_id=%s judge_enabled=%s",
+        user["id"], eval_set_id, run_id, judge_flag,
+    )
     return RedirectResponse(f"/admin/evals/runs/{run_id}", status_code=303)
 
 
