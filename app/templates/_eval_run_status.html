@@ -31,6 +31,38 @@
       <span class="muted small">retrieval only</span>
     </div>
   </div>
+  {% if run.metrics and run.metrics.judge %}
+    {% set j = run.metrics.judge %}
+    <div class="eval-judge-block">
+      <div class="section-title-row">
+        <h3>{{ t('evalr.judge_heading') }}</h3>
+        <span class="muted small">{{ j.judge_ok }} {{ t('evalr.judge_scored_suffix') }}{% if j.judge_failed %} · {{ j.judge_failed }} {{ t('evalr.judge_failed_suffix') }}{% endif %}</span>
+      </div>
+      <p class="hint muted small">{{ t('evalr.judge_disclaimer') }}</p>
+      <div class="index-stat-grid">
+        <div class="index-stat">
+          <span class="index-stat-label">{{ t('evalr.judge_answer_quality') }}</span>
+          <span class="index-stat-value">{{ j.answer_quality.correct_rate }}</span>
+          <span class="muted small">{{ t('evalr.judge_correct') }} {{ j.answer_quality.correct }} · {{ t('evalr.judge_partial') }} {{ j.answer_quality.partial }} · {{ t('evalr.judge_incorrect') }} {{ j.answer_quality.incorrect }}</span>
+        </div>
+        <div class="index-stat">
+          <span class="index-stat-label">{{ t('evalr.judge_groundedness') }}</span>
+          <span class="index-stat-value">{{ j.groundedness_avg }}</span>
+          <span class="muted small">{{ t('evalr.judge_substring') }} {{ j.substring_hit_rate_avg }}</span>
+        </div>
+        <div class="index-stat">
+          <span class="index-stat-label">{{ t('evalr.judge_citation') }}</span>
+          <span class="index-stat-value">{{ j.citation_correct_rate }}</span>
+          <span class="muted small">{{ t('evalr.judge_answered') }} {{ j.answered }} · {{ t('evalr.judge_abstained') }} {{ j.abstained }}</span>
+        </div>
+        <div class="index-stat">
+          <span class="index-stat-label">{{ t('evalr.judge_abstain') }}</span>
+          <span class="index-stat-value">{{ j.abstain.correct_rate }}</span>
+          <span class="muted small">{{ t('evalr.judge_unanswerable_refusal') }} {{ j.abstain.unanswerable_correct_refusal }}/{{ j.abstain.unanswerable_total }} · {{ t('evalr.judge_answerable_false_refusal') }} {{ j.abstain.answerable_false_refusal }}/{{ j.abstain.answerable_total }}</span>
+        </div>
+      </div>
+    </div>
+  {% endif %}
   {% if run.error %}
     <div class="alert">{{ run.error }}</div>
   {% endif %}

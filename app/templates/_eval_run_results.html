@@ -47,6 +47,39 @@
               </div>
             </div>
           </details>
+          {% if result.judge and result.answer_outcome %}
+            {% set jr = result.judge %}
+            <div class="eval-result-judge">
+              <div class="eval-judge-head">
+                <span class="status {{ 'indexed' if result.answer_outcome == 'answered' else 'processing' if result.answer_outcome == 'abstained' else 'failed' }}">{{ eval_answer_outcome_labels.get(result.answer_outcome, result.answer_outcome) }}</span>
+                <span class="eval-judge-title muted small">{{ t('evalr.judge_item_heading') }}</span>
+              </div>
+              {% if result.answer_outcome == 'answered' and jr.judge_ok %}
+                <ul class="eval-judge-dims muted small">
+                  <li><strong>{{ t('evalr.judge_answer_quality') }}</strong>: {{ t('evalr.judge_' ~ jr.answer_quality.label) }} ({{ jr.answer_quality.score }}) — {{ jr.answer_quality.rationale }}</li>
+                  <li><strong>{{ t('evalr.judge_groundedness') }}</strong>: {{ jr.groundedness.score }} — {{ jr.groundedness.rationale }}</li>
+                  <li><strong>{{ t('evalr.judge_citation') }}</strong>: {{ jr.citation_correctness.score }} — {{ jr.citation_correctness.rationale }}</li>
+                  <li><strong>{{ t('evalr.judge_substring') }}</strong>: {{ jr.substring_hit_rate if jr.substring_hit_rate is not none else "—" }}</li>
+                </ul>
+                {% if jr.groundedness.unsupported_claims %}
+                  <p class="muted small"><strong>{{ t('evalr.judge_unsupported') }}</strong>: {{ jr.groundedness.unsupported_claims | join(" / ") }}</p>
+                {% endif %}
+                {% if jr.citation_correctness.wrong_citations %}
+                  <p class="muted small"><strong>{{ t('evalr.judge_wrong_citations') }}</strong>: {{ jr.citation_correctness.wrong_citations | join(", ") }}</p>
+                {% endif %}
+              {% elif result.answer_outcome == 'answered' and not jr.judge_ok %}
+                <p class="muted small">{{ t('evalr.judge_parse_failed') }}</p>
+              {% else %}
+                <p class="muted small">{{ t('evalr.judge_not_applicable') }}</p>
+              {% endif %}
+              {% if result.answer_text %}
+                <details class="eval-judge-answer">
+                  <summary class="muted small">{{ t('evalr.judge_generated_answer') }}</summary>
+                  <p class="muted small eval-snippet">{{ result.answer_text }}</p>
+                </details>
+              {% endif %}
+            </div>
+          {% endif %}
         </li>
       {% endfor %}
     </ul>

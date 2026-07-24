@@ -182,6 +182,8 @@ templates.env.globals["audit_sensitivity_labels"] = i18n.SENSITIVITY_LABELS
 templates.env.globals["run_status_labels"] = i18n.RUN_STATUS_LABELS
 # Localised display for per-question eval result status (raw value kept).
 templates.env.globals["eval_result_status_labels"] = i18n.EVAL_RESULT_STATUS_LABELS
+# E1e-2: localised display for per-question answer outcome (raw value kept).
+templates.env.globals["eval_answer_outcome_labels"] = i18n.EVAL_ANSWER_OUTCOME_LABELS
 
 
 def csrf_token_for_request(request: Request) -> str:

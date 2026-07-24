@@ -222,6 +222,31 @@ MESSAGES: dict[str, dict[str, str]] = {
         "evalr.detail_answer": "參考答案",
         "evalr.empty_items_title": "尚未新增題目",
         "evalr.empty_items_body": "請從上方三種方式建立題目；只有核准的題目會進入執行。",
+        # --- E1e-2 answer-quality judging -----------------------------------
+        "evalr.judge_toggle_label": "同時評測答案品質",
+        "evalr.judge_toggle_hint": "每題會多一次生成 + 一次 LLM 評分（約 2× LLM 成本）；預設關閉。",
+        "evalr.judge_heading": "答案品質",
+        "evalr.judge_disclaimer": "以下為 LLM 評審的參考信號，非絕對真相；請搭配人工抽查判讀。",
+        "evalr.judge_answer_quality": "答案品質",
+        "evalr.judge_groundedness": "有依據程度",
+        "evalr.judge_citation": "引用正確率",
+        "evalr.judge_abstain": "拒答正確率",
+        "evalr.judge_substring": "關鍵字命中率",
+        "evalr.judge_correct": "正確",
+        "evalr.judge_partial": "部分",
+        "evalr.judge_incorrect": "錯誤",
+        "evalr.judge_answered": "已作答",
+        "evalr.judge_abstained": "已拒答",
+        "evalr.judge_scored_suffix": "題已評分",
+        "evalr.judge_failed_suffix": "題評分失敗",
+        "evalr.judge_unanswerable_refusal": "不可回答題正確拒答",
+        "evalr.judge_answerable_false_refusal": "可回答題誤拒",
+        "evalr.judge_item_heading": "答案品質評分",
+        "evalr.judge_generated_answer": "生成答案",
+        "evalr.judge_unsupported": "無依據宣稱",
+        "evalr.judge_wrong_citations": "錯誤引用",
+        "evalr.judge_not_applicable": "此題未生成答案（拒答或錯誤），三維評分不適用。",
+        "evalr.judge_parse_failed": "評審輸出無法解析（judge_ok=false），此題不計入聚合分數。",
         # --- Chat empty-state + answer flow (Phase 1a) -----------------------
         "chat.empty_ask_title": "問任何關於你來源文件的問題",
         "chat.empty_ask_body": "在下方輸入問題，回答會附上引用的來源段落。",
@@ -436,6 +461,13 @@ EVAL_RESULT_STATUS_LABELS: dict[str, str] = {
     "error": "錯誤",
     "unscored": "未評分",
     "pending": "處理中",
+}
+
+# E1e-2 per-question answer outcome (raw value stored; display localised).
+EVAL_ANSWER_OUTCOME_LABELS: dict[str, str] = {
+    "answered": "已作答",
+    "abstained": "已拒答",
+    "error": "評分失敗",
 }
 
 

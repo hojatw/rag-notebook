@@ -55,6 +55,34 @@
     <p class="hint muted small">延遲與低信心率以「越低越好」判斷方向，其餘越高越好。</p>
   </section>
 
+  {% if judge_compared %}
+    <section class="settings-section">
+      <h2>{{ t('evalr.judge_heading') }}</h2>
+      <p class="hint muted small">{{ t('evalr.judge_disclaimer') }}</p>
+      <div class="table-wrap">
+        <table class="diff-table">
+          <thead>
+            <tr><th>{{ t('evalr.judge_answer_quality') }}</th><th>Baseline</th><th>Candidate</th><th>Δ</th></tr>
+          </thead>
+          <tbody>
+            {% for row in judge_metric_diff %}
+              <tr>
+                <td data-label="指標">{{ row.label }}</td>
+                <td data-label="Baseline">{{ row.base }}</td>
+                <td data-label="Candidate">{{ row.candidate }}</td>
+                <td data-label="Δ" class="diff-{{ row.direction }}">
+                  {% if row.direction == 'better' %}▲{% elif row.direction == 'worse' %}▼{% else %}＝{% endif %}
+                  {{ '%+g' | format(row.delta) }}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="hint muted small">{{ t('evalr.judge_answerable_false_refusal') }}以「越低越好」判斷方向，其餘越高越好。</p>
+    </section>
+  {% endif %}
+
   <section class="settings-section">
     <h2>逐題差異</h2>
     <div class="table-wrap">

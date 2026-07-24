@@ -2750,3 +2750,95 @@ def test_hx_request_error_returns_fragment(monkeypatch, tmp_path):
         # Fragment only — no full document chrome.
         assert "<!doctype html>" not in resp.text.lower()
         assert 'class="app-footer"' not in resp.text
+
+
+def _seed_eval_notebook(db):
+    """Minimal notebook + indexed source + eval set owned by admin. Returns ids."""
+    db.init_db()  # schema + default admin, since we seed before any request runs the lifespan
+    with db.connect() as conn:
+        admin_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+        notebook_id = conn.execute(
+            "INSERT INTO notebooks (user_id, title) VALUES (?, 'NB')", (admin_id,)
+        ).lastrowid
+        source_id = conn.execute(
+            "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status) "
+            "VALUES (?, ?, 'f.txt', '/tmp/f.txt', 'indexed')",
+            (admin_id, notebook_id),
+        ).lastrowid
+        set_id = conn.execute(
+            "INSERT INTO eval_sets (name, target_user_id, notebook_id, created_by) VALUES ('S', ?, ?, ?)",
+            (admin_id, notebook_id, admin_id),
+        ).lastrowid
+    return admin_id, notebook_id, source_id, set_id
+
+
+def test_eval_set_run_form_offers_judge_checkbox(monkeypatch, tmp_path):
+    """E1e-2: the run form exposes an opt-in answer-quality checkbox and its cost hint."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    _admin, _nb, _src, set_id = _seed_eval_notebook(db)
+
+    client = TestClient(main.app)
+    _login(client)
+    resp = client.get(f"/admin/evals/sets/{set_id}")
+
+    assert resp.status_code == 200
+    assert 'name="judge_enabled"' in resp.text
+    assert "同時評測答案品質" in resp.text
+    assert "2× LLM" in resp.text  # cost hint
+
+
+def test_eval_run_page_shows_answer_quality_layer_when_judged(monkeypatch, tmp_path):
+    """A judged run renders the separate answer-quality block + per-item judge detail,
+    labelled as a reference signal — and never mixes it into Recall/MRR chrome."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    admin_id, _nb, source_id, set_id = _seed_eval_notebook(db)
+    metrics = {
+        "total": 1, "recall_at_k": 1.0, "mrr": 1.0, "hits": 1, "scored": 1,
+        "avg_latency_ms": 5, "final_chunk_count": 8,
+        "judge": {
+            "answered": 1, "abstained": 0, "judge_ok": 1, "judge_failed": 0,
+            "answer_quality": {"correct": 1, "partial": 0, "incorrect": 0, "correct_rate": 1.0},
+            "groundedness_avg": 1.0, "citation_correct_rate": 1.0, "substring_hit_rate_avg": 1.0,
+            "abstain": {
+                "correct_rate": 1.0, "unanswerable_total": 0, "unanswerable_correct_refusal": 0,
+                "answerable_total": 1, "answerable_false_refusal": 0,
+            },
+        },
+    }
+    judge = {
+        "answer_quality": {"label": "correct", "score": 1.0, "rationale": "matches reference"},
+        "groundedness": {"score": 1.0, "unsupported_claims": [], "rationale": "grounded"},
+        "citation_correctness": {"score": 1.0, "wrong_citations": [], "rationale": "correct"},
+        "judge_ok": True, "judge_model": "m", "substring_hit_rate": 1.0,
+        "abstain": {"did_abstain": False, "expected_abstain": False, "correct": True},
+    }
+    with db.connect() as conn:
+        item_id = conn.execute(
+            "INSERT INTO eval_items (eval_set_id, question, expected_source_id, expected_substrings_json, "
+            "item_type, expected_answer, approved) VALUES (?, 'qa', ?, '[\"alpha\"]', 'answerable', 'alpha', 1)",
+            (set_id, source_id),
+        ).lastrowid
+        run_id = conn.execute(
+            "INSERT INTO eval_runs (eval_set_id, created_by, status, progress_total, progress_current, "
+            "profile_snapshot_json, judge_enabled, metrics_json) "
+            "VALUES (?, ?, 'succeeded', 1, 1, '{}', 1, ?)",
+            (set_id, admin_id, json.dumps(metrics)),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO eval_results (run_id, eval_item_id, status, hit_rank, top_score, latency_ms, "
+            "retrieved_json, answer_text, answer_outcome, judge_json) "
+            "VALUES (?, ?, 'hit', 1, 0.9, 5, '[]', 'alpha is the answer [1]', 'answered', ?)",
+            (run_id, item_id, json.dumps(judge)),
+        )
+
+    client = TestClient(main.app)
+    _login(client)
+    resp = client.get(f"/admin/evals/runs/{run_id}")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "答案品質" in body            # judge section heading
+    assert "參考信號" in body            # reference-signal disclaimer
+    assert "答案品質評分" in body         # per-item judge heading
+    assert "matches reference" in body    # judge rationale surfaced inline
+    assert "已作答" in body               # answer outcome label

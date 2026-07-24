@@ -693,6 +693,9 @@ def eval_run_context(run_id: int) -> dict[str, Any]:
         result["expected_substrings"] = loads(result.get("expected_substrings_json") or "[]")
         result["expected_chunk_snippet"] = " ".join((result.get("expected_chunk_text") or "").split())[:220]
         result["diagnosis"] = eval_result_diagnosis(result)
+        # E1e-2: decode the per-item judge payload for the run-detail template.
+        # Empty dict on retrieval-only runs, so templates can guard on `result.judge.judge_ok`.
+        result["judge"] = loads(result.get("judge_json") or "{}")
     return {"run": run_dict, "results": results}
 
 
@@ -1764,6 +1767,43 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
             "delta": delta, "direction": direction,
         })
 
+    # E1e-2: answer-quality diff, only when BOTH runs judged answers — otherwise the
+    # judge numbers are absent on one side and any comparison would be misleading.
+    judge_compared = bool(base_run.get("judge_enabled")) and bool(candidate_run.get("judge_enabled"))
+    judge_metric_diff = []
+    if judge_compared:
+        base_judge = base_metrics.get("judge") or {}
+        cand_judge = cand_metrics.get("judge") or {}
+
+        def _judge_value(judge_metrics: dict, path: tuple[str, ...]) -> float:
+            node: Any = judge_metrics
+            for key in path:
+                node = (node or {}).get(key)
+            return float(node or 0.0)
+
+        judge_specs = [
+            (("answer_quality", "correct_rate"), i18n.t("evalr.judge_answer_quality"), True),
+            (("groundedness_avg",), i18n.t("evalr.judge_groundedness"), True),
+            (("citation_correct_rate",), i18n.t("evalr.judge_citation"), True),
+            (("abstain", "correct_rate"), i18n.t("evalr.judge_abstain"), True),
+            (("abstain", "answerable_false_refusal_rate"), i18n.t("evalr.judge_answerable_false_refusal"), False),
+            (("substring_hit_rate_avg",), i18n.t("evalr.judge_substring"), True),
+        ]
+        for path, label, higher_better in judge_specs:
+            bval = _judge_value(base_judge, path)
+            cval = _judge_value(cand_judge, path)
+            delta = round(cval - bval, 4)
+            if delta == 0:
+                direction = "same"
+            elif (delta > 0) == higher_better:
+                direction = "better"
+            else:
+                direction = "worse"
+            judge_metric_diff.append({
+                "label": label, "base": bval, "candidate": cval,
+                "delta": delta, "direction": direction,
+            })
+
     # Per-question delta keyed by eval_item_id.
     base_by_item = {r["eval_item_id"]: r for r in base["results"]}
     cand_by_item = {r["eval_item_id"]: r for r in candidate["results"]}
@@ -1798,6 +1838,8 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
         "candidate_run": candidate_run,
         "param_diff": param_diff,
         "metric_diff": metric_diff,
+        "judge_compared": judge_compared,
+        "judge_metric_diff": judge_metric_diff,
         "question_diff": question_diff,
         "improved": sum(1 for q in question_diff if q["trend"] == "improved"),
         "regressed": sum(1 for q in question_diff if q["trend"] == "regressed"),
