@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 import app.llm as llm
-from app.llm import build_chat_request, build_embedding_request, chat_settings, close_http_client, compare_sources, embedding_settings, generate_briefing, get_http_client, parse_eval_candidates, parse_json_strings, parse_rerank_scores, summarize_source
+from app.llm import build_chat_request, build_embedding_request, chat_settings, close_http_client, compare_sources, embedding_settings, generate_briefing, get_http_client, parse_answer_judge, parse_eval_candidates, parse_json_strings, parse_rerank_scores, summarize_source
 
 
 def test_openai_compatible_request_shapes():
@@ -246,6 +246,52 @@ def test_parse_eval_candidates_bounds_model_output():
     assert candidates[0]["chunk_id"] == 4
     assert candidates[0]["expected_substrings"] == ["alpha evidence"]
     assert candidates[1]["item_type"] == "answerable"
+
+
+def test_parse_answer_judge_normalizes_valid_output():
+    """E1e-2: judge parser accepts fenced JSON and clamps/normalizes each dimension."""
+    result = parse_answer_judge(
+        """```json
+        {
+          "answer_quality": {"label": "PARTIAL", "score": 1.7, "rationale": "  mostly right  "},
+          "groundedness": {"score": -0.2, "unsupported_claims": [" claim one ", "", "claim one"], "rationale": "one gap"},
+          "citation_correctness": {"score": 0.5, "wrong_citations": ["2", 3, "x"], "rationale": "marker 2 wrong"}
+        }
+        ```"""
+    )
+
+    assert result["judge_ok"] is True
+    assert result["answer_quality"]["label"] == "partial"
+    assert result["answer_quality"]["score"] == 1.0  # clamped into [0, 1]
+    assert result["answer_quality"]["rationale"] == "mostly right"
+    assert result["groundedness"]["score"] == 0.0  # negative clamped
+    # Whitespace collapsed; duplicates preserved (dedup is not this layer's job) but empties dropped.
+    assert result["groundedness"]["unsupported_claims"] == ["claim one", "claim one"]
+    assert result["citation_correctness"]["wrong_citations"] == [2, 3]  # non-numeric skipped
+
+
+def test_parse_answer_judge_flags_bad_json():
+    """Malformed model output must yield judge_ok=False with a neutral, stable shape."""
+    result = parse_answer_judge("sorry, I cannot output JSON")
+
+    assert result["judge_ok"] is False
+    assert result["answer_quality"] == {"label": "", "score": 0.0, "rationale": ""}
+    assert result["groundedness"]["unsupported_claims"] == []
+    assert result["citation_correctness"]["wrong_citations"] == []
+
+
+def test_parse_answer_judge_rejects_missing_dimension_or_bad_label():
+    """A dropped dimension or an out-of-vocabulary label counts as a parse failure."""
+    missing = parse_answer_judge(
+        '{"answer_quality": {"label": "correct", "score": 1.0}, "groundedness": {"score": 1.0}}'
+    )
+    bad_label = parse_answer_judge(
+        '{"answer_quality": {"label": "great"}, "groundedness": {"score": 1.0}, '
+        '"citation_correctness": {"score": 1.0}}'
+    )
+
+    assert missing["judge_ok"] is False  # citation_correctness absent
+    assert bad_label["judge_ok"] is False  # "great" is not a valid label
 
 
 def test_shared_http_client_is_reused():

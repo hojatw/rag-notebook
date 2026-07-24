@@ -65,6 +65,25 @@ Rules:
 - Keep each question under 140 characters.
 - Use Traditional Chinese questions unless the requested item type is cross_lingual or the excerpts are clearly non-Chinese and the instruction asks otherwise."""
 
+ANSWER_JUDGE_PROMPT = """You are a strict grader for a source-grounded RAG eval workbench (E1e-2).
+You grade a generated answer against a reference answer and the exact retrieved excerpts the answer was allowed to use.
+Your judgement is a REFERENCE SIGNAL that a human reviews; it is never final ground truth.
+
+Judge ONLY from the provided excerpts and reference answer. Do NOT use outside knowledge. A claim that the excerpts do not support is unsupported even if you believe it is true.
+
+Return only a single JSON object with this exact shape:
+{
+  "answer_quality": {"label": "correct | partial | incorrect", "score": 0.0, "rationale": "one sentence"},
+  "groundedness": {"score": 0.0, "unsupported_claims": ["a claim in the answer not supported by the excerpts"], "rationale": "one sentence"},
+  "citation_correctness": {"score": 0.0, "wrong_citations": [2], "rationale": "one sentence"}
+}
+
+Rules:
+- answer_quality.label: "correct" when the answer matches the reference answer's key facts, "partial" when some are right and some are missing or wrong, "incorrect" when it contradicts or misses the reference. score is 0.0-1.0 and must agree with the label.
+- groundedness: put every factual claim in the answer that the excerpts do NOT support into unsupported_claims. score is the fraction of the answer's claims that ARE supported (1.0 = fully grounded, empty unsupported_claims).
+- citation_correctness: each [N] marker in the answer must point to an excerpt that actually supports the sentence it is attached to. List the numbers of any wrong or unsupported markers in wrong_citations. score is the fraction of markers that are correct; use 1.0 when the answer has no markers.
+- Every score is a number between 0.0 and 1.0. Keep each rationale to one short sentence. Output JSON only: no prose, no code fences."""
+
 FOLLOWUP_QUESTIONS_PROMPT = """You suggest follow-up questions after an assistant answered a user inside a source-grounded RAG app.
 Read the source excerpts, the user's question, and the assistant's answer. Propose 3 short, distinct follow-up questions the user would plausibly ask next.
 Each question must stand alone (no pronouns) and be answerable from the same source documents.
@@ -1168,6 +1187,62 @@ async def generate_eval_candidates(
     return cleaned
 
 
+async def judge_answer(
+    *,
+    question: str,
+    generated_answer: str,
+    expected_answer: str,
+    expected_substrings: list[str],
+    item_type: str,
+    retrieved_chunks: list[dict[str, Any]],
+    settings: dict[str, Any],
+    usage_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Grade a generated answer against its reference and retrieved excerpts (E1e-2, route A).
+
+    Returns the structured judge signal for the three LLM-scored dimensions
+    (answer_quality / groundedness / citation_correctness). abstain_correctness and
+    substring_hit_rate are computed deterministically by the caller, not here. On any
+    LLM or parse failure the result carries ``judge_ok=False`` with empty dimensions so a
+    single bad item never fails the whole run. The result is a reference signal, not
+    ground truth (G1c posture).
+    """
+    if not settings.get("chat_model"):
+        logger.info("answer_judge_skipped reason=no_chat_settings")
+        return _empty_judge_result()
+    # Excerpt numbering must match the [N] markers generate_answer emits (see answer_prompt).
+    context = "\n\n".join(
+        f"[{index}] {chunk.get('filename', '')} - {chunk.get('location', '')}\n{chunk.get('text', '')}"
+        for index, chunk in enumerate(retrieved_chunks, start=1)
+    )
+    substrings = list(expected_substrings or [])
+    user_prompt = (
+        f"item_type: {item_type}\n\n"
+        f"Question:\n{question}\n\n"
+        f"Reference answer:\n{expected_answer or '(none provided)'}\n\n"
+        f"Expected evidence substrings:\n{substrings or '(none)'}\n\n"
+        f"Retrieved excerpts (cited as [N]):\n{context or '(none)'}\n\n"
+        f"Generated answer to grade:\n{generated_answer}\n\n"
+        "Return the JSON object now."
+    )
+    try:
+        content = await chat_completion(
+            settings,
+            user_prompt,
+            ANSWER_JUDGE_PROMPT,
+            temperature=0.0,
+            call_type="eval_judge",
+            usage_context=usage_context,
+        )
+        result = parse_answer_judge(content)
+    except Exception:
+        logger.exception("answer_judge_failed question_chars=%s", len(question))
+        return _empty_judge_result()
+    result["judge_model"] = settings.get("chat_model") or ""
+    logger.info("answer_judge_completed judge_ok=%s", result.get("judge_ok"))
+    return result
+
+
 async def suggest_followup_questions(
     question: str,
     answer: str,
@@ -1897,6 +1972,101 @@ def parse_eval_candidates(content: str) -> list[dict[str, Any]]:
             "rationale": " ".join(str(item.get("rationale") or "").split())[:300],
         })
     return candidates
+
+
+def _empty_judge_result(judge_ok: bool = False) -> dict[str, Any]:
+    """Neutral judge payload used for parse/LLM failures and as a shape template."""
+    return {
+        "answer_quality": {"label": "", "score": 0.0, "rationale": ""},
+        "groundedness": {"score": 0.0, "unsupported_claims": [], "rationale": ""},
+        "citation_correctness": {"score": 0.0, "wrong_citations": [], "rationale": ""},
+        "judge_ok": judge_ok,
+        "judge_model": "",
+    }
+
+
+def parse_answer_judge(content: str) -> dict[str, Any]:
+    """Parse the structured answer-judge object (E1e-2, route A).
+
+    Returns a dict with a stable shape (the three scored dimensions plus ``judge_ok``).
+    ``judge_ok`` is False on any malformed, non-object, or incomplete output — a missing
+    dimension or an invalid answer_quality label counts as a failed parse — so the caller
+    can flag the item and keep the run going. ``substring_hit_rate`` is a deterministic
+    anchor computed by the caller, not by the judge, so it is intentionally absent here.
+    """
+    result = _empty_judge_result()
+    try:
+        parsed = json.loads(extract_json(content))
+    except (ValueError, TypeError):
+        return result
+    if not isinstance(parsed, dict):
+        return result
+    answer_quality = parsed.get("answer_quality")
+    groundedness = parsed.get("groundedness")
+    citation = parsed.get("citation_correctness")
+    if not (isinstance(answer_quality, dict) and isinstance(groundedness, dict) and isinstance(citation, dict)):
+        return result
+    label = str(answer_quality.get("label") or "").strip().lower()
+    if label not in {"correct", "partial", "incorrect"}:
+        return result
+    result["answer_quality"] = {
+        "label": label,
+        "score": _clamp_unit(answer_quality.get("score")),
+        "rationale": _short_text(answer_quality.get("rationale")),
+    }
+    result["groundedness"] = {
+        "score": _clamp_unit(groundedness.get("score")),
+        "unsupported_claims": _string_list(groundedness.get("unsupported_claims")),
+        "rationale": _short_text(groundedness.get("rationale")),
+    }
+    result["citation_correctness"] = {
+        "score": _clamp_unit(citation.get("score")),
+        "wrong_citations": _int_list(citation.get("wrong_citations")),
+        "rationale": _short_text(citation.get("rationale")),
+    }
+    result["judge_ok"] = True
+    return result
+
+
+def _clamp_unit(value: Any) -> float:
+    """Coerce a model-emitted score into the [0.0, 1.0] range; junk becomes 0.0."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if parsed != parsed:  # NaN guard
+        return 0.0
+    return max(0.0, min(1.0, parsed))
+
+
+def _short_text(value: Any) -> str:
+    """Collapse whitespace and bound a one-sentence rationale."""
+    return " ".join(str(value or "").split())[:300]
+
+
+def _string_list(value: Any) -> list[str]:
+    """Bounded list of non-empty strings (e.g. unsupported_claims)."""
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text = " ".join(str(item).split())[:300]
+        if text:
+            out.append(text)
+    return out[:20]
+
+
+def _int_list(value: Any) -> list[int]:
+    """Bounded list of ints (e.g. wrong citation markers), skipping non-numeric entries."""
+    if not isinstance(value, list):
+        return []
+    out: list[int] = []
+    for item in value:
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return out[:20]
 
 
 def optional_int(value: Any) -> int | None:
