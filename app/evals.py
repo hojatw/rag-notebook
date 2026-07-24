@@ -326,7 +326,9 @@ async def judge_eval_item(
         judge["substring_hit_rate"] = None
         return {"answer_text": i18n.t("chat.abstain"), "answer_outcome": "abstained", "judge": judge}
     try:
-        answer_text = await generate_answer(question, retrieved, settings, usage_context=usage_context)
+        answer_text = await generate_answer(
+            question, retrieved, settings, call_type="eval_answer", usage_context=usage_context,
+        )
         hit_rate = substring_hit_rate(answer_text, item.get("expected_substrings") or [])
         judge = await judge_answer(
             question=question,
@@ -784,6 +786,11 @@ def full_run_export_payload(context: dict[str, Any]) -> dict[str, Any]:
                 "snippet": item["expected_chunk_snippet"],
             },
             "retrieved": item.get("retrieved") or [],
+            # E1e-2: judge rationale, generated answer, and unsupported-claim text are
+            # internal-only — they live in the full report, never the sanitized one.
+            "answer_outcome": item.get("answer_outcome") or "",
+            "answer_text": item.get("answer_text") or "",
+            "judge": item.get("judge") or {},
         }
         for item in context["results"]
     ]
@@ -1550,6 +1557,8 @@ def admin_export_eval_run_full(
             "contains_questions": True,
             "contains_expected_evidence": True,
             "contains_retrieved_snippets": True,
+            # E1e-2: a judged run's full export also carries generated answers + judge rationale.
+            "contains_generated_answers": bool(context["run"].get("judge_enabled")),
         },
         "high",
     )

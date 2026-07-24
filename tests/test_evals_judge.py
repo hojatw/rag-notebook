@@ -281,3 +281,30 @@ def test_run_eval_job_without_judge_is_full_regression(monkeypatch, tmp_path):
         assert result["judge_json"] == "{}"
         assert result["answer_text"] == ""
         assert result["answer_outcome"] == ""
+
+
+def test_full_export_carries_judge_detail_sanitized_only_aggregates(monkeypatch, tmp_path):
+    """E1e-2 export layering: judge rationale + generated answer live only in the full
+    internal report; the sanitized report keeps aggregate judge numbers but no per-item
+    answer/rationale text."""
+    evals, db = _fresh_modules(monkeypatch, tmp_path)
+    run_id, source_id, answerable_id, _ = _seed_run(db, judge_flag=1)
+    _patch_llm(monkeypatch, evals, source_id, {"generate": 0, "judge": 0})
+    asyncio.run(evals.run_eval_job(run_id))
+
+    context = evals.eval_run_context(run_id)
+    sanitized = evals.sanitized_run_export_payload(context)
+    full = evals.full_run_export_payload(context)
+
+    # Aggregate judge numbers ride along in metrics — safe to share.
+    assert sanitized["run"]["metrics"]["judge"]["answered"] == 1
+    # ...but no per-item answer text or judge payload in the sanitized results.
+    for item in sanitized["results"]:
+        assert "answer_text" not in item
+        assert "judge" not in item
+
+    full_by_id = {item["eval_item_id"]: item for item in full["results"]}
+    answered = full_by_id[answerable_id]
+    assert answered["answer_outcome"] == "answered"
+    assert answered["answer_text"] == "alpha is the answer [1]."
+    assert answered["judge"]["judge_ok"] is True

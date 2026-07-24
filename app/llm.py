@@ -945,9 +945,14 @@ async def generate_answer(
     chunks: list[dict[str, Any]],
     settings: dict[str, Any],
     *,
+    call_type: str = "answer",
     usage_context: dict[str, Any] | None = None,
 ) -> str:
-    """Ask the configured chat model to answer from retrieved chunks only."""
+    """Ask the configured chat model to answer from retrieved chunks only.
+
+    ``call_type`` defaults to ``answer`` (live chat); the eval workbench passes
+    ``eval_answer`` so E1e-2 answer generation is separable in usage telemetry (G1a).
+    """
     if not settings.get("chat_model"):
         raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
 
@@ -956,7 +961,7 @@ async def generate_answer(
         settings,
         answer_prompt(question, chunks),
         SYSTEM_PROMPT,
-        call_type="answer",
+        call_type=call_type,
         usage_context=usage_context,
     )
 

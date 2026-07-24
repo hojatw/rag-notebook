@@ -280,6 +280,33 @@ def test_parse_answer_judge_flags_bad_json():
     assert result["citation_correctness"]["wrong_citations"] == []
 
 
+def test_eval_generation_and_judge_use_distinct_call_types(monkeypatch):
+    """E1e-2 telemetry (G1a): eval answer generation records call_type=eval_answer and
+    the judge records eval_judge, so their LLM usage is separable from live chat."""
+    seen = []
+
+    async def fake_chat_completion(settings, user_prompt, system_prompt, temperature=None, *, call_type="chat_completion", usage_context=None):
+        seen.append(call_type)
+        # Return valid judge JSON so parse_answer_judge succeeds for the judge path.
+        return (
+            '{"answer_quality": {"label": "correct", "score": 1.0, "rationale": "ok"},'
+            ' "groundedness": {"score": 1.0, "unsupported_claims": [], "rationale": "ok"},'
+            ' "citation_correctness": {"score": 1.0, "wrong_citations": [], "rationale": "ok"}}'
+        )
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat_completion)
+    settings = {"chat_model": "m"}
+    chunks = [{"filename": "f", "location": "l", "text": "t"}]
+
+    asyncio.run(llm.generate_answer("q", chunks, settings, call_type="eval_answer"))
+    asyncio.run(llm.judge_answer(
+        question="q", generated_answer="a [1]", expected_answer="a", expected_substrings=[],
+        item_type="answerable", retrieved_chunks=chunks, settings=settings,
+    ))
+
+    assert seen == ["eval_answer", "eval_judge"]
+
+
 def test_parse_answer_judge_rejects_missing_dimension_or_bad_label():
     """A dropped dimension or an out-of-vocabulary label counts as a parse failure."""
     missing = parse_answer_judge(
