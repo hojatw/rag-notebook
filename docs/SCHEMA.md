@@ -326,13 +326,14 @@ Background retrieval-only eval run. Progress fields drive the admin UI while the
 | `progress_current` / `progress_total` | INTEGER DEFAULT 0 | item progress |
 | `current_step` | TEXT DEFAULT `''` | visible progress message |
 | `profile_snapshot_json` | TEXT DEFAULT `'{}'` | immutable parameter snapshot used for this run |
-| `metrics_json` | TEXT DEFAULT `'{}'` | aggregate metrics |
+| `metrics_json` | TEXT DEFAULT `'{}'` | aggregate metrics; E1e-2 judge metrics live under the nested `judge` key, kept separate from retrieval Recall/MRR |
+| `judge_enabled` | INTEGER DEFAULT 0 | E1e-2: 1 when this run also generated answers and ran the LLM answer-quality judge (~2× LLM cost). Default off → retrieval-only |
 | `error` | TEXT DEFAULT `''` | failure summary |
 | `started_at` / `finished_at` | TEXT | nullable |
 | `created_at` / `updated_at` | TEXT | |
 
 ## `eval_results`
-Per-question retrieval result for one eval run.
+Per-question retrieval result for one eval run. When the run has `judge_enabled = 1`, the answer-quality columns are also populated; they stay empty (defaults) on retrieval-only runs.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -345,6 +346,9 @@ Per-question retrieval result for one eval run.
 | `latency_ms` | REAL DEFAULT 0 | retrieval latency for this item |
 | `retrieved_json` | TEXT DEFAULT `'[]'` | compact retrieved chunk summary |
 | `error` | TEXT DEFAULT `''` | per-item failure |
+| `judge_json` | TEXT DEFAULT `'{}'` | E1e-2: structured judge output (four dims + rationales + `judge_ok`). `{}` on retrieval-only runs. Reference signal, not ground truth |
+| `answer_text` | TEXT DEFAULT `''` | E1e-2: generated answer for this item (or canned refusal on abstain). Surfaced only in full internal exports, never sanitized ones |
+| `answer_outcome` | TEXT DEFAULT `''` | E1e-2: `answered`, `abstained`, or `error`; empty on retrieval-only runs |
 | `created_at` | TEXT | |
 
 ## `audit_events`
