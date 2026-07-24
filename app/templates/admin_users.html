@@ -48,6 +48,9 @@
               <td data-label="User">
                 <strong>{{ u.username }}</strong>
                 <small class="muted">id #{{ u.id }}{% if u.id == user.id %} · 你{% endif %}</small>
+                {% if u.external_identity_count %}
+                  <span class="tag">{{ t("auth.sso_account") }}</span>
+                {% endif %}
               </td>
               <td data-label="Role">
                 {% if u.is_admin %}
@@ -58,6 +61,9 @@
               </td>
               <td data-label="Created">{{ u.created_at[:10] }}</td>
               <td data-label="Actions" class="actions">
+                {% if u.external_identity_count %}
+                  <span class="muted small">{{ t("auth.sso_password_managed") }}</span>
+                {% else %}
                 <details class="reset-details">
                   <summary class="ghost small">重設密碼</summary>
                   <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="reset-form" data-loading-form>
@@ -66,12 +72,17 @@
                     <button type="submit" class="secondary small" data-loading-text="...">設定</button>
                   </form>
                 </details>
-                {% if u.id != user.id %}
+                {% endif %}
+                {% if u.external_identity_count %}
+                  <span class="muted small">{{ t("auth.sso_role_managed") }}</span>
+                {% elif u.id != user.id %}
                   <form method="post" action="/admin/users/{{ u.id }}/toggle-admin"
                         data-confirm="{% if u.is_admin %}降級{% else %}升級{% endif %} {{ u.username }}？">
                     {{ csrf_input() }}
                     <button type="submit" class="ghost small">{% if u.is_admin %}降為一般{% else %}設為管理員{% endif %}</button>
                   </form>
+                {% endif %}
+                {% if u.id != user.id %}
                   <form method="post" action="/admin/users/{{ u.id }}/delete"
                         data-confirm="刪除使用者 {{ u.username }} 與其所有筆記本、來源、對話與筆記？此操作無法復原。">
                     {{ csrf_input() }}

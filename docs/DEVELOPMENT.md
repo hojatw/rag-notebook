@@ -46,6 +46,12 @@ services. They share the same `./data` bind mount.
   that UID, or set `user:` in `docker-compose.yml`.
 - Use a stable, strong `NOTEBOOKLM_SECRET`. Changing it invalidates encrypted
   API keys and requires re-entering them at `/settings`.
+- For customer SSO deployments, keep the app container on an internal network
+  behind a reverse proxy or SSO gateway. The fronting service should own public
+  ingress, TLS keys/certificates, and any enterprise auth integration; the app
+  should receive only verified trusted-header or OIDC traffic. See
+  [`AUTHENTICATION.md`](AUTHENTICATION.md) for Linux/container reverse-proxy
+  topology notes.
 - **Stamp the build so bug reports map to a commit.** The semantic version
   lives in the repo-root `VERSION` file; the commit is read at runtime. For
   Docker, pass the commit at build time so it survives into the image (the

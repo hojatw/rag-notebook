@@ -26,6 +26,7 @@ users ─┬─< notebooks ─┬─< sources ─┬─< chunks
        │              ├─< notes
        │              └─1 briefing_locks               (PK notebook_id)
        ├─< sources / chunks / conversations / messages / notes   (user_id on every row, per-user scoping)
+       └─< external_identities
 llm_settings : single row (id = 1), global
 
 eval_sets ─< eval_items
@@ -50,6 +51,26 @@ Login accounts. Seeded with `admin` / `user` on first init.
 | `password_hash` | TEXT NOT NULL | PBKDF2-SHA256 via `app/security.py` |
 | `is_admin` | INTEGER NOT NULL DEFAULT 0 | 1 = admin (can access `/settings`, `/admin/*`) |
 | `created_at` | TEXT | |
+
+## `external_identities`
+Enterprise-auth identity links (I1a trusted-header mode, I1b OIDC, future SAML).
+Application data still authorizes through the linked local `users.id`; this
+table maps a provider's stable external subject to that local user.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `user_id` | INTEGER NOT NULL → `users(id)` CASCADE | local account used by sessions and authorization |
+| `provider` | TEXT NOT NULL | e.g. `trusted_header`, `oidc`; future SAML provider id |
+| `subject` | TEXT NOT NULL | stable external subject from the trusted proxy / IdP |
+| `email` | TEXT NOT NULL DEFAULT `''` | optional display/contact claim |
+| `display_name` | TEXT NOT NULL DEFAULT `''` | optional display claim |
+| `groups_json` | TEXT NOT NULL DEFAULT `'[]'` | last login's bounded group list for diagnostics/role mapping review |
+| `last_login_at` | TEXT NOT NULL DEFAULT `''` | timestamp of last external-auth login |
+| `created_at` / `updated_at` | TEXT | |
+
+Constraints/indexes: `UNIQUE(provider, subject)`,
+`idx_external_identities_user`.
 
 ## `llm_settings`
 Global LLM/embedding configuration. **Exactly one row** (`CHECK (id = 1)`).

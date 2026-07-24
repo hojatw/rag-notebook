@@ -1,5 +1,7 @@
 import importlib
 import json
+import time
+from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient as FastAPITestClient
 
@@ -35,6 +37,7 @@ def _fresh_app(monkeypatch, tmp_path):
     # circular import mid-initialisation (ImportError). Loading app.main first
     # resolves the whole graph; the later imports just grab cached modules.
     import app.main as main
+    import app.config as app_config
     import app.security as security
     import app.db as db
     import app.vector_store as vector_store
@@ -46,7 +49,7 @@ def _fresh_app(monkeypatch, tmp_path):
 
     # Reload in dependency order; main last so its bottom-of-file router includes
     # pick up the freshly reloaded app.admin / app.evals / app.settings modules.
-    for module in (security, db, vector_store, ingest, retrieval, admin, evals, app_settings, main):
+    for module in (app_config, security, db, vector_store, ingest, retrieval, admin, evals, app_settings, main):
         importlib.reload(module)
     vector_store.reset_client()
     return main, db
@@ -59,6 +62,36 @@ def _login(client: TestClient):
         follow_redirects=False,
     )
     assert response.status_code == 303
+
+
+def _oidc_metadata():
+    return {
+        "issuer": "https://idp.example.test",
+        "authorization_endpoint": "https://idp.example.test/authorize",
+        "token_endpoint": "https://idp.example.test/token",
+        "jwks_uri": "https://idp.example.test/jwks",
+    }
+
+
+def _oidc_id_token(key, *, nonce: str, subject: str = "oidc-subject", groups=None, issuer: str = "https://idp.example.test", audience: str = "oidc-client") -> str:
+    from joserfc import jwt
+
+    now = int(time.time())
+    return jwt.encode(
+        {"alg": "RS256", "kid": "oidc-test-key"},
+        {
+            "iss": issuer,
+            "aud": audience,
+            "sub": subject,
+            "nonce": nonce,
+            "exp": now + 600,
+            "iat": now,
+            "email": "oidc@example.com",
+            "name": "OIDC User",
+            "groups": groups or ["staff"],
+        },
+        key,
+    )
 
 
 def test_csrf_token_required_for_login_post(monkeypatch, tmp_path):
@@ -83,6 +116,528 @@ def test_csrf_token_required_for_login_post(monkeypatch, tmp_path):
             follow_redirects=False,
         )
         assert accepted.status_code == 303
+
+
+def test_trusted_header_auth_is_disabled_by_default(monkeypatch, tmp_path):
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        response = client.get("/auth/trusted-header", follow_redirects=False)
+        assert response.status_code == 404
+
+
+def test_trusted_header_auth_rejects_missing_shared_secret(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/auth/trusted-header",
+            headers={"X-Forwarded-User": "DOMAIN\\alice"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 403
+        with db.connect() as conn:
+            users = conn.execute("SELECT COUNT(*) FROM users WHERE username LIKE 'alice%'").fetchone()[0]
+            audit = conn.execute(
+                "SELECT action, metadata_json FROM audit_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert users == 0
+        assert audit["action"] == "trusted_header_login_rejected"
+        assert "shared_secret_mismatch" in audit["metadata_json"]
+
+
+def test_trusted_header_auth_provisions_user_maps_admin_and_audits(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ADMIN_GROUPS", "rag-admins")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    headers = {
+        "X-NotebookLM-Auth-Secret": "proxy-secret",
+        "X-Forwarded-User": "DOMAIN\\jane",
+        "X-Forwarded-Email": "jane@example.com",
+        "X-Forwarded-Name": "Jane Doe",
+        "X-Forwarded-Groups": "staff, rag-admins",
+    }
+    with TestClient(main.app) as client:
+        response = client.get("/auth/trusted-header", headers=headers, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/notebooks"
+
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'jane@example.com'").fetchone()
+            identity = conn.execute(
+                "SELECT * FROM external_identities WHERE provider = 'trusted_header' AND subject = ?",
+                ("DOMAIN\\jane",),
+            ).fetchone()
+            actions = [
+                row["action"]
+                for row in conn.execute("SELECT action FROM audit_events ORDER BY id").fetchall()
+            ]
+            stored_audit = "\n".join(
+                row["metadata_json"]
+                for row in conn.execute("SELECT metadata_json FROM audit_events ORDER BY id").fetchall()
+            )
+
+        assert user is not None
+        assert user["is_admin"] == 1
+        assert identity is not None
+        assert identity["user_id"] == user["id"]
+        assert json.loads(identity["groups_json"]) == ["staff", "rag-admins"]
+        assert actions == [
+            "trusted_header_user_provisioned",
+            "trusted_header_login_succeeded",
+        ]
+        assert "DOMAIN\\jane" not in stored_audit
+        assert "subject_hash" in stored_audit
+
+        second = client.get("/auth/trusted-header", headers=headers, follow_redirects=False)
+        assert second.status_code == 303
+        with db.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM external_identities WHERE subject = ?",
+                ("DOMAIN\\jane",),
+            ).fetchone()[0] == 1
+
+
+def test_trusted_header_auth_respects_auto_provision_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_AUTO_PROVISION", "false")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/auth/trusted-header",
+            headers={
+                "X-NotebookLM-Auth-Secret": "proxy-secret",
+                "X-Forwarded-User": "unknown-user",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 403
+        with db.connect() as conn:
+            users = conn.execute("SELECT COUNT(*) FROM users WHERE username = 'unknown-user'").fetchone()[0]
+            audit = conn.execute(
+                "SELECT action, metadata_json FROM audit_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert users == 0
+        assert audit["action"] == "trusted_header_login_rejected"
+        assert "unknown_external_identity" in audit["metadata_json"]
+        assert "unknown-user" not in audit["metadata_json"]
+
+
+def test_ip_in_allowlist_matches_exact_and_cidr(monkeypatch, tmp_path):
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    allow = main._ip_in_allowlist
+    assert allow("10.0.0.5", "") is True                       # empty = no restriction
+    assert allow("10.0.0.5", "10.0.0.5") is True               # exact match
+    assert allow("10.0.0.5", "10.0.0.0/8") is True             # CIDR match
+    assert allow("192.168.1.1", "10.0.0.0/8, 192.168.0.0/16") is True
+    assert allow("172.16.0.1", "10.0.0.0/8") is False          # outside allowlist
+    assert allow("testclient", "10.0.0.0/8") is False          # non-IP peer host
+    assert allow("", "10.0.0.0/8") is False                    # missing peer host
+
+
+def test_trusted_header_auth_rejects_untrusted_source_ip(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ALLOWED_IPS", "10.0.0.0/8")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    # The TestClient peer host ("testclient") is not inside the allowlist, so the
+    # request is rejected before the (correct) shared secret is even compared.
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/auth/trusted-header",
+            headers={
+                "X-NotebookLM-Auth-Secret": "proxy-secret",
+                "X-Forwarded-User": "DOMAIN\\alice",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 403
+        with db.connect() as conn:
+            users = conn.execute("SELECT COUNT(*) FROM users WHERE username LIKE 'alice%'").fetchone()[0]
+            audit = conn.execute(
+                "SELECT action, metadata_json FROM audit_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert users == 0
+        assert audit["action"] == "trusted_header_login_rejected"
+        assert "untrusted_source_ip" in audit["metadata_json"]
+
+
+def test_trusted_header_auth_can_disable_local_login(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_LOCAL_LOGIN_ENABLED", "false")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        page = client.get("/login")
+        assert page.status_code == 200
+        assert "企業登入" in page.text
+        assert 'name="username"' not in page.text
+
+        response = client.post(
+            "/login",
+            data={"username": "admin", "password": "admin123"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 403
+        assert "本機帳號登入已停用" in response.text
+
+
+def test_sso_linked_users_cannot_set_local_passwords(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ADMIN_GROUPS", "rag-admins")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    headers = {
+        "X-NotebookLM-Auth-Secret": "proxy-secret",
+        "X-Forwarded-User": "sso-admin",
+        "X-Forwarded-Groups": "rag-admins",
+    }
+    with TestClient(main.app) as client:
+        response = client.get("/auth/trusted-header", headers=headers, follow_redirects=False)
+        assert response.status_code == 303
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'sso-admin'").fetchone()["id"]
+
+        account = client.get("/account")
+        assert account.status_code == 200
+        assert "不能設定本機密碼" in account.text
+        assert 'action="/account/password"' not in account.text
+
+        own_reset = client.post(
+            "/account/password",
+            data={
+                "current_password": "anything",
+                "new_password": "new-password",
+                "confirm_password": "new-password",
+            },
+        )
+        assert own_reset.status_code == 400
+        assert "不能變更本機密碼" in own_reset.text
+
+        admin_reset = client.post(
+            f"/admin/users/{user_id}/reset-password",
+            data={"new_password": "new-password"},
+            follow_redirects=False,
+        )
+        assert admin_reset.status_code == 400
+
+
+def test_sso_linked_users_cannot_have_local_admin_role_toggled(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/auth/trusted-header",
+            headers={
+                "X-NotebookLM-Auth-Secret": "proxy-secret",
+                "X-Forwarded-User": "sso-user",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        client.post("/logout", follow_redirects=False)
+        _login(client)
+
+        with db.connect() as conn:
+            target_id = conn.execute("SELECT id FROM users WHERE username = 'sso-user'").fetchone()["id"]
+
+        page = client.get("/admin/users")
+        assert page.status_code == 200
+        assert f'action="/admin/users/{target_id}/toggle-admin"' not in page.text
+        assert "管理員角色由企業群組映射管理" in page.text
+
+        toggled = client.post(f"/admin/users/{target_id}/toggle-admin", follow_redirects=False)
+        assert toggled.status_code == 400
+        assert "管理員角色由企業群組映射管理" in toggled.text
+
+
+def test_external_auth_auto_provision_recovers_from_identity_race(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    db.init_db()
+
+    def insert_racing_identity(conn, subject, email, display_name):
+        user_id = conn.execute(
+            "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, 0)",
+            ("race-winner", main.hash_password("placeholder")),
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO external_identities
+            (user_id, provider, subject, email, display_name, groups_json)
+            VALUES (?, 'trusted_header', ?, '', '', '[]')
+            """,
+            (user_id, subject),
+        )
+        return "race-loser"
+
+    monkeypatch.setattr(main, "_unique_external_username", insert_racing_identity)
+
+    signed_in = main._external_auth_login(
+        None,
+        provider="trusted_header",
+        subject="race-subject",
+        email="race@example.com",
+        display_name="Race User",
+        groups=["rag-admins"],
+        admin_groups=["rag-admins"],
+        auto_provision=True,
+        audit_prefix="trusted_header",
+        unknown_user_message="unknown",
+    )
+
+    assert signed_in["username"] == "race-winner"
+    assert signed_in["is_admin"] == 1
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM users WHERE username = 'race-loser'").fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM external_identities WHERE provider = 'trusted_header' AND subject = 'race-subject'"
+        ).fetchone()[0] == 1
+        identity = conn.execute(
+            "SELECT email, display_name, groups_json FROM external_identities WHERE subject = 'race-subject'"
+        ).fetchone()
+        actions = [row["action"] for row in conn.execute("SELECT action FROM audit_events ORDER BY id").fetchall()]
+    assert identity["email"] == "race@example.com"
+    assert identity["display_name"] == "Race User"
+    assert json.loads(identity["groups_json"]) == ["rag-admins"]
+    assert actions == ["trusted_header_role_mapped", "trusted_header_login_succeeded"]
+
+
+def test_oidc_login_redirect_sets_signed_state_cookie(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ISSUER", "https://idp.example.test")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_ID", "oidc-client")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_SECRET", "oidc-secret")
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "_oidc_discover", lambda auth: _oidc_metadata())
+
+    with TestClient(main.app) as client:
+        page = client.get("/login")
+        assert page.status_code == 200
+        assert "OIDC 登入" in page.text
+
+        response = client.get("/auth/oidc/login", follow_redirects=False)
+        assert response.status_code == 303
+        location = response.headers["location"]
+        parsed = urlparse(location)
+        params = parse_qs(parsed.query)
+        assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "https://idp.example.test/authorize"
+        assert params["client_id"] == ["oidc-client"]
+        assert params["response_type"] == ["code"]
+        assert params["scope"] == ["openid profile email"]
+        assert params["redirect_uri"] == ["http://testserver/auth/oidc/callback"]
+        assert params.get("state", [""])[0]
+        assert params.get("nonce", [""])[0]
+        assert client.cookies.get(main.OIDC_STATE_COOKIE_NAME)
+
+
+def test_oidc_state_rejects_expired_or_future_iat(monkeypatch, tmp_path):
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    now = int(time.time())
+
+    fresh = main._sign_oidc_state({"state": "s", "nonce": "n", "iat": now})
+    expired = main._sign_oidc_state({
+        "state": "s",
+        "nonce": "n",
+        "iat": now - main.OIDC_STATE_COOKIE_MAX_AGE - 1,
+    })
+    future = main._sign_oidc_state({"state": "s", "nonce": "n", "iat": now + 61})
+    missing_iat = main._sign_oidc_state({"state": "s", "nonce": "n"})
+
+    assert main._unsign_oidc_state(fresh)["state"] == "s"
+    assert main._unsign_oidc_state(expired) is None
+    assert main._unsign_oidc_state(future) is None
+    assert main._unsign_oidc_state(missing_iat) is None
+
+
+def test_oidc_discovery_requires_https_and_matching_issuer(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ISSUER", "https://idp.example.test")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_ID", "oidc-client")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_SECRET", "oidc-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_DISCOVERY_URL", "http://idp.example.test/.well-known/openid-configuration")
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        insecure = client.get("/auth/oidc/login", follow_redirects=False)
+        assert insecure.status_code == 502
+
+    monkeypatch.delenv("NOTEBOOKLM_AUTH_OIDC_DISCOVERY_URL", raising=False)
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    bad_metadata = {
+        "issuer": "https://evil.example.test",
+        "authorization_endpoint": "https://idp.example.test/authorize",
+        "token_endpoint": "https://idp.example.test/token",
+        "jwks_uri": "https://idp.example.test/jwks",
+    }
+    monkeypatch.setattr(main, "_oidc_fetch_json", lambda url, **kwargs: bad_metadata)
+    with TestClient(main.app) as client:
+        mismatch = client.get("/auth/oidc/login", follow_redirects=False)
+        assert mismatch.status_code == 502
+
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    insecure_endpoint = {
+        "issuer": "https://idp.example.test",
+        "authorization_endpoint": "https://idp.example.test/authorize",
+        "token_endpoint": "http://idp.example.test/token",
+        "jwks_uri": "https://idp.example.test/jwks",
+    }
+    monkeypatch.setattr(main, "_oidc_fetch_json", lambda url, **kwargs: insecure_endpoint)
+    with TestClient(main.app) as client:
+        rejected = client.get("/auth/oidc/login", follow_redirects=False)
+        assert rejected.status_code == 502
+
+
+def test_oidc_callback_provisions_user_maps_admin_and_audits(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ISSUER", "https://idp.example.test")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_ID", "oidc-client")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_SECRET", "oidc-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ADMIN_GROUPS", "rag-admins")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    from joserfc import jwk
+
+    key = jwk.generate_key("RSA", 2048, {"kid": "oidc-test-key", "alg": "RS256", "use": "sig"})
+    metadata = _oidc_metadata()
+    monkeypatch.setattr(main, "_oidc_discover", lambda auth: metadata)
+
+    with TestClient(main.app) as client:
+        start = client.get("/auth/oidc/login", follow_redirects=False)
+        assert start.status_code == 303
+        params = parse_qs(urlparse(start.headers["location"]).query)
+        state = params["state"][0]
+        nonce = params["nonce"][0]
+        id_token = _oidc_id_token(key, nonce=nonce, subject="subject-123", groups=["staff", "rag-admins"])
+        monkeypatch.setattr(main, "_oidc_exchange_code", lambda auth, token_endpoint, code, redirect_uri: {"id_token": id_token})
+        monkeypatch.setattr(main, "_oidc_fetch_json", lambda url, **kwargs: {"keys": [key.as_dict(private=False)]})
+
+        callback = client.get(f"/auth/oidc/callback?code=abc&state={state}", follow_redirects=False)
+        assert callback.status_code == 303
+        assert callback.headers["location"] == "/notebooks"
+
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'oidc@example.com'").fetchone()
+            identity = conn.execute(
+                "SELECT * FROM external_identities WHERE provider = 'oidc' AND subject = 'subject-123'"
+            ).fetchone()
+            actions = [
+                row["action"]
+                for row in conn.execute("SELECT action FROM audit_events ORDER BY id").fetchall()
+            ]
+            audit_metadata = "\n".join(
+                row["metadata_json"]
+                for row in conn.execute("SELECT metadata_json FROM audit_events ORDER BY id").fetchall()
+            )
+
+        assert user is not None
+        assert user["is_admin"] == 1
+        assert identity is not None
+        assert identity["user_id"] == user["id"]
+        assert json.loads(identity["groups_json"]) == ["staff", "rag-admins"]
+        assert actions == ["oidc_user_provisioned", "oidc_login_succeeded"]
+        assert "subject-123" not in audit_metadata
+        assert "id_token" not in audit_metadata
+        assert "subject_hash" in audit_metadata
+
+
+def test_oidc_callback_rejects_state_and_nonce_mismatch(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ISSUER", "https://idp.example.test")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_ID", "oidc-client")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_SECRET", "oidc-secret")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "_oidc_discover", lambda auth: _oidc_metadata())
+
+    with TestClient(main.app) as client:
+        start = client.get("/auth/oidc/login", follow_redirects=False)
+        assert start.status_code == 303
+        state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+
+        bad_state = client.get("/auth/oidc/callback?code=abc&state=wrong", follow_redirects=False)
+        assert bad_state.status_code == 400
+        assert "OIDC 登入失敗" in bad_state.text
+
+        start = client.get("/auth/oidc/login", follow_redirects=False)
+        assert start.status_code == 303
+        state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+
+        from joserfc import jwk
+
+        key = jwk.generate_key("RSA", 2048, {"kid": "oidc-test-key", "alg": "RS256", "use": "sig"})
+        id_token = _oidc_id_token(key, nonce="wrong-nonce")
+        monkeypatch.setattr(main, "_oidc_exchange_code", lambda auth, token_endpoint, code, redirect_uri: {"id_token": id_token})
+        monkeypatch.setattr(main, "_oidc_fetch_json", lambda url, **kwargs: {"keys": [key.as_dict(private=False)]})
+
+        bad_nonce = client.get(f"/auth/oidc/callback?code=abc&state={state}", follow_redirects=False)
+        assert bad_nonce.status_code == 400
+        with db.connect() as conn:
+            actions = [row["action"] for row in conn.execute("SELECT action FROM audit_events ORDER BY id").fetchall()]
+        assert actions == ["oidc_login_rejected", "oidc_login_rejected"]
+
+
+def test_oidc_auto_provision_can_be_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ISSUER", "https://idp.example.test")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_ID", "oidc-client")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_SECRET", "oidc-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_AUTO_PROVISION", "false")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "_oidc_discover", lambda auth: _oidc_metadata())
+
+    from joserfc import jwk
+
+    key = jwk.generate_key("RSA", 2048, {"kid": "oidc-test-key", "alg": "RS256", "use": "sig"})
+
+    with TestClient(main.app) as client:
+        start = client.get("/auth/oidc/login", follow_redirects=False)
+        params = parse_qs(urlparse(start.headers["location"]).query)
+        id_token = _oidc_id_token(key, nonce=params["nonce"][0], subject="not-provisioned")
+        monkeypatch.setattr(main, "_oidc_exchange_code", lambda auth, token_endpoint, code, redirect_uri: {"id_token": id_token})
+        monkeypatch.setattr(main, "_oidc_fetch_json", lambda url, **kwargs: {"keys": [key.as_dict(private=False)]})
+
+        callback = client.get(f"/auth/oidc/callback?code=abc&state={params['state'][0]}", follow_redirects=False)
+        assert callback.status_code == 403
+        with db.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM external_identities WHERE subject = 'not-provisioned'"
+            ).fetchone()[0] == 0
+            audit = conn.execute(
+                "SELECT action, metadata_json FROM audit_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert audit["action"] == "oidc_login_rejected"
+        assert "unknown_external_identity" in audit["metadata_json"]
+        assert "not-provisioned" not in audit["metadata_json"]
+
+
+def test_admin_auth_diagnostics_page_shows_modes_and_checks(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_TRUSTED_HEADER_SECRET", "proxy-secret")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ENABLED", "true")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_ISSUER", "https://idp.example.test")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_ID", "oidc-client")
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_OIDC_CLIENT_SECRET", "oidc-secret")
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        page = client.get("/admin/auth")
+        assert page.status_code == 200
+        assert "認證狀態" in page.text
+        assert "本機帳號" in page.text
+        assert "Trusted header" in page.text
+        assert "OIDC" in page.text
+        assert "OIDC endpoint 使用 HTTPS" in page.text
+        assert "trusted_header_login_rejected" in page.text
 
 
 def test_notebook_forms_render_preset_emoji_picker(monkeypatch, tmp_path):

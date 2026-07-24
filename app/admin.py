@@ -9,10 +9,13 @@ unchanged.
 import json
 import logging
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from . import i18n
+from .config import config
 from .db import connect, loads
 from .main import record_audit_event, render, require_admin
 from .security import hash_password
@@ -22,6 +25,142 @@ from .vector_store import index_status as vector_index_status
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _admin_user_rows(conn) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT u.id,
+               u.username,
+               u.is_admin,
+               u.created_at,
+               COUNT(ei.id) AS external_identity_count,
+               GROUP_CONCAT(DISTINCT ei.provider) AS external_providers
+          FROM users u
+          LEFT JOIN external_identities ei ON ei.user_id = u.id
+         GROUP BY u.id, u.username, u.is_admin, u.created_at
+         ORDER BY u.id ASC
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _auth_status(label: str, ok: bool, detail: str) -> dict[str, Any]:
+    return {"label": label, "ok": ok, "detail": detail}
+
+
+def _is_local_auth_host(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme == "http" and (parsed.hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
+
+
+def _secure_url_ok(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme == "https" or _is_local_auth_host(url)
+
+
+def _auth_diagnostics() -> dict[str, Any]:
+    auth = config.auth
+    tr = i18n.t
+    local_enabled = bool(auth.local_login_enabled)
+    trusted_enabled = bool(auth.trusted_header_enabled)
+    oidc_enabled = bool(auth.oidc_enabled)
+    discovery_url = (auth.oidc_discovery_url or "").strip()
+    issuer = (auth.oidc_issuer or "").strip().rstrip("/")
+    effective_discovery_url = discovery_url or (f"{issuer}/.well-known/openid-configuration" if issuer else "")
+    oidc_endpoint_urls = [url for url in [effective_discovery_url, issuer] if url]
+    oidc_urls_secure = all(_secure_url_ok(url) for url in oidc_endpoint_urls) if oidc_endpoint_urls else False
+    oidc_scopes = {scope.strip().lower() for scope in (auth.oidc_scopes or "").split() if scope.strip()}
+    token_method_ok = (auth.oidc_token_auth_method or "").strip().lower() in {"client_secret_basic", "client_secret_post"}
+
+    checks = [
+        _auth_status(
+            tr("auth_diag.login_methods"),
+            local_enabled or trusted_enabled or oidc_enabled,
+            tr("auth_diag.login_methods_ok") if local_enabled or trusted_enabled or oidc_enabled else tr("auth_diag.login_methods_bad"),
+        ),
+        _auth_status(
+            tr("auth_diag.trusted_secret"),
+            (not trusted_enabled) or bool(auth.trusted_header_secret),
+            tr("auth_diag.trusted_secret_ok") if trusted_enabled and auth.trusted_header_secret else tr("auth_diag.trusted_secret_bad"),
+        ),
+        _auth_status(
+            tr("auth_diag.trusted_subject"),
+            (not trusted_enabled) or bool((auth.trusted_header_user_header or "").strip()),
+            tr("auth_diag.trusted_subject_detail", header=(auth.trusted_header_user_header or "").strip() or tr("auth_diag.not_set")),
+        ),
+        _auth_status(
+            tr("auth_diag.trusted_admin_groups"),
+            (not trusted_enabled) or bool((auth.trusted_header_admin_groups or "").strip()),
+            tr("auth_diag.admin_groups_ok") if auth.trusted_header_admin_groups else tr("auth_diag.trusted_admin_groups_bad"),
+        ),
+        _auth_status(
+            tr("auth_diag.oidc_issuer"),
+            (not oidc_enabled) or bool(effective_discovery_url),
+            effective_discovery_url or tr("auth_diag.oidc_issuer_bad"),
+        ),
+        _auth_status(
+            tr("auth_diag.oidc_transport"),
+            (not oidc_enabled) or oidc_urls_secure,
+            tr("auth_diag.oidc_transport_ok") if oidc_urls_secure else tr("auth_diag.oidc_transport_bad"),
+        ),
+        _auth_status(
+            tr("auth_diag.oidc_credentials"),
+            (not oidc_enabled) or (bool(auth.oidc_client_id) and bool(auth.oidc_client_secret)),
+            tr("auth_diag.oidc_credentials_ok") if auth.oidc_client_id and auth.oidc_client_secret else tr("auth_diag.oidc_credentials_bad"),
+        ),
+        _auth_status(
+            tr("auth_diag.oidc_scopes"),
+            (not oidc_enabled) or ("openid" in oidc_scopes),
+            auth.oidc_scopes or tr("auth_diag.not_set"),
+        ),
+        _auth_status(
+            tr("auth_diag.oidc_token_method"),
+            (not oidc_enabled) or token_method_ok,
+            auth.oidc_token_auth_method or tr("auth_diag.not_set"),
+        ),
+        _auth_status(
+            tr("auth_diag.oidc_admin_groups"),
+            (not oidc_enabled) or bool((auth.oidc_admin_groups or "").strip()),
+            tr("auth_diag.admin_groups_ok") if auth.oidc_admin_groups else tr("auth_diag.oidc_admin_groups_bad"),
+        ),
+    ]
+
+    modes = [
+        {"label": tr("auth_diag.mode_local"), "enabled": local_enabled, "detail": tr("auth_diag.mode_local_detail")},
+        {
+            "label": tr("auth_diag.mode_trusted"),
+            "enabled": trusted_enabled,
+            "detail": tr("auth_diag.mode_trusted_detail"),
+        },
+        {
+            "label": tr("auth_diag.mode_oidc"),
+            "enabled": oidc_enabled,
+            "detail": tr("auth_diag.mode_oidc_detail"),
+        },
+    ]
+    return {
+        "modes": modes,
+        "checks": checks,
+        "trusted": {
+            "provider": auth.trusted_header_provider,
+            "subject_header": auth.trusted_header_user_header,
+            "groups_header": auth.trusted_header_groups_header,
+            "auto_provision": bool(auth.trusted_header_auto_provision),
+        },
+        "oidc": {
+            "provider": auth.oidc_provider,
+            "issuer": auth.oidc_issuer,
+            "discovery_url": auth.oidc_discovery_url,
+            "redirect_path": auth.oidc_redirect_path,
+            "scopes": auth.oidc_scopes,
+            "email_claim": auth.oidc_email_claim,
+            "name_claim": auth.oidc_name_claim,
+            "groups_claim": auth.oidc_groups_claim,
+            "auto_provision": bool(auth.oidc_auto_provision),
+            "allowed_algorithms": auth.oidc_allowed_algorithms,
+        },
+    }
 
 
 @router.get("/admin/index", response_class=HTMLResponse)
@@ -159,13 +298,14 @@ def admin_audit(
 def admin_users(request: Request, user: Annotated[dict, Depends(require_admin)]):
     """List all user accounts (admin only)."""
     with connect() as conn:
-        rows = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT id, username, is_admin, created_at FROM users ORDER BY id ASC"
-            ).fetchall()
-        ]
+        rows = _admin_user_rows(conn)
     return render(request, "admin_users.html", {"user": user, "users": rows, "error": "", "saved": False})
+
+
+@router.get("/admin/auth", response_class=HTMLResponse)
+def admin_auth(request: Request, user: Annotated[dict, Depends(require_admin)]):
+    """Show current authentication modes and static SSO configuration checks."""
+    return render(request, "admin_auth.html", {"user": user, "diagnostics": _auth_diagnostics()})
 
 
 @router.post("/admin/users/new")
@@ -195,7 +335,7 @@ def admin_create_user(
         except Exception as exc:
             error = f"建立使用者失敗：{exc}"
     with connect() as conn:
-        rows = [dict(r) for r in conn.execute("SELECT id, username, is_admin, created_at FROM users ORDER BY id ASC").fetchall()]
+        rows = _admin_user_rows(conn)
     if error:
         return render(request, "admin_users.html", {"user": user, "users": rows, "error": error, "saved": False}, 400)
     record_audit_event(
@@ -222,9 +362,20 @@ def admin_reset_password(
     if len(new_password) < 6:
         raise HTTPException(status_code=400, detail="密碼至少需要 6 個字元。")
     with connect() as conn:
-        target = conn.execute("SELECT username FROM users WHERE id = ?", (target_id,)).fetchone()
+        target = conn.execute(
+            """
+            SELECT u.username, COUNT(ei.id) AS external_identity_count
+              FROM users u
+              LEFT JOIN external_identities ei ON ei.user_id = u.id
+             WHERE u.id = ?
+             GROUP BY u.id, u.username
+            """,
+            (target_id,),
+        ).fetchone()
         if target is None:
             raise HTTPException(status_code=404, detail="User not found")
+        if target["external_identity_count"]:
+            raise HTTPException(status_code=400, detail=i18n.t("auth.password_reset_sso_blocked"))
         result = conn.execute(
             "UPDATE users SET password_hash = ? WHERE id = ?",
             (hash_password(new_password), target_id),
@@ -254,9 +405,20 @@ def admin_toggle_admin(
     if target_id == user["id"]:
         raise HTTPException(status_code=400, detail="You cannot change your own admin flag.")
     with connect() as conn:
-        target = conn.execute("SELECT username, is_admin FROM users WHERE id = ?", (target_id,)).fetchone()
+        target = conn.execute(
+            """
+            SELECT u.username, u.is_admin, COUNT(ei.id) AS external_identity_count
+              FROM users u
+              LEFT JOIN external_identities ei ON ei.user_id = u.id
+             WHERE u.id = ?
+             GROUP BY u.id, u.username, u.is_admin
+            """,
+            (target_id,),
+        ).fetchone()
         if target is None:
             raise HTTPException(status_code=404, detail="User not found")
+        if target["external_identity_count"]:
+            raise HTTPException(status_code=400, detail=i18n.t("auth.sso_role_managed"))
         new_flag = 0 if target["is_admin"] else 1
         if new_flag == 0:
             other_admins = conn.execute(
@@ -311,4 +473,3 @@ def admin_delete_user(
     )
     logger.info("user_deleted admin_user_id=%s target_user_id=%s", user["id"], target_id)
     return RedirectResponse("/admin/users", status_code=303)
-

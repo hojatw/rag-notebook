@@ -79,6 +79,37 @@ class UIConfig:
 
 
 @dataclasses.dataclass
+class AuthConfig:
+    local_login_enabled: bool = True
+    trusted_header_enabled: bool = False
+    trusted_header_secret: str = ""
+    trusted_header_secret_header: str = "X-NotebookLM-Auth-Secret"
+    trusted_header_user_header: str = "X-Forwarded-User"
+    trusted_header_email_header: str = "X-Forwarded-Email"
+    trusted_header_name_header: str = "X-Forwarded-Name"
+    trusted_header_groups_header: str = "X-Forwarded-Groups"
+    trusted_header_admin_groups: str = ""
+    trusted_header_auto_provision: bool = True
+    trusted_header_provider: str = "trusted_header"
+    trusted_header_allowed_ips: str = ""
+    oidc_enabled: bool = False
+    oidc_provider: str = "oidc"
+    oidc_issuer: str = ""
+    oidc_discovery_url: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_scopes: str = "openid profile email"
+    oidc_redirect_path: str = "/auth/oidc/callback"
+    oidc_token_auth_method: str = "client_secret_basic"
+    oidc_email_claim: str = "email"
+    oidc_name_claim: str = "name"
+    oidc_groups_claim: str = "groups"
+    oidc_admin_groups: str = ""
+    oidc_auto_provision: bool = True
+    oidc_allowed_algorithms: str = "RS256"
+
+
+@dataclasses.dataclass
 class AppConfig:
     retrieval: RetrievalConfig = dataclasses.field(default_factory=RetrievalConfig)
     chunking: ChunkingConfig = dataclasses.field(default_factory=ChunkingConfig)
@@ -87,6 +118,7 @@ class AppConfig:
     jobs: JobsConfig = dataclasses.field(default_factory=JobsConfig)
     runtime: RuntimeConfig = dataclasses.field(default_factory=RuntimeConfig)
     ui: UIConfig = dataclasses.field(default_factory=UIConfig)
+    auth: AuthConfig = dataclasses.field(default_factory=AuthConfig)
 
 
 def _coerce(raw: Any, field_type: type) -> Any:
@@ -139,6 +171,7 @@ def load_config() -> AppConfig:
         jobs=_load_group(JobsConfig, "jobs", toml_data),
         runtime=_load_group(RuntimeConfig, "runtime", toml_data),
         ui=_load_group(UIConfig, "ui", toml_data),
+        auth=_load_group(AuthConfig, "auth", toml_data),
     )
 
 

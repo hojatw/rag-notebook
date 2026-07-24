@@ -54,3 +54,33 @@ briefing_ttl_hours = 24
 # --- UI / i18n ---------------------------------------------------------------
 [ui]
 language = "zh-TW"            # default UI locale; the i18n catalog falls back to this
+
+# --- Authentication / enterprise SSO ----------------------------------------
+[auth]
+local_login_enabled = true
+trusted_header_enabled = false
+trusted_header_secret = ""    # required when trusted_header_enabled = true
+trusted_header_secret_header = "X-NotebookLM-Auth-Secret"
+trusted_header_user_header = "X-Forwarded-User"      # stable external subject
+trusted_header_email_header = "X-Forwarded-Email"
+trusted_header_name_header = "X-Forwarded-Name"
+trusted_header_groups_header = "X-Forwarded-Groups" # comma/semicolon-separated
+trusted_header_admin_groups = ""                    # e.g. "rag-admins,domain admins"
+trusted_header_auto_provision = true
+trusted_header_provider = "trusted_header"
+trusted_header_allowed_ips = ""   # optional proxy source-IP allowlist (IP/CIDR, comma-separated); empty = secret-only. Matches request.client.host (TCP peer), never X-Forwarded-For.
+oidc_enabled = false
+oidc_provider = "oidc"        # external_identities.provider value
+oidc_issuer = ""              # e.g. https://login.microsoftonline.com/<tenant-id>/v2.0
+oidc_discovery_url = ""       # optional; defaults to <issuer>/.well-known/openid-configuration
+oidc_client_id = ""
+oidc_client_secret = ""       # keep in .env/config.toml only; never commit real secrets
+oidc_scopes = "openid profile email"
+oidc_redirect_path = "/auth/oidc/callback"
+oidc_token_auth_method = "client_secret_basic" # or client_secret_post
+oidc_email_claim = "email"
+oidc_name_claim = "name"
+oidc_groups_claim = "groups"
+oidc_admin_groups = ""
+oidc_auto_provision = true
+oidc_allowed_algorithms = "RS256"

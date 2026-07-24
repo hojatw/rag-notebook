@@ -3,25 +3,41 @@
 <section class="auth-panel">
   <div class="auth-hero">
     <span class="auth-mark">R</span>
-    <h1>登入 RAG Notebook</h1>
-    <p class="muted">NotebookLM 風格的個人工作區 — 與你自己的文件進行有根據的對話。</p>
+    <h1>{{ t("auth.title") }}</h1>
+    <p class="muted">{{ t("auth.intro") }}</p>
   </div>
   {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+  {% if trusted_header_enabled %}
+  <form method="get" action="/auth/trusted-header" class="stack">
+    <button type="submit">{{ t("auth.enterprise_login") }}</button>
+    <p class="hint muted small">{{ t("auth.enterprise_login_hint") }}</p>
+  </form>
+  {% endif %}
+  {% if oidc_enabled %}
+  <form method="get" action="/auth/oidc/login" class="stack">
+    <button type="submit" class="secondary">{{ t("auth.oidc_login") }}</button>
+    <p class="hint muted small">{{ t("auth.oidc_login_hint") }}</p>
+  </form>
+  {% endif %}
+  {% if local_login_enabled %}
   <form method="post" action="/login" class="stack" data-loading-form>
     {{ csrf_input() }}
     <label>
-      帳號
+      {{ t("auth.username") }}
       <input name="username" autocomplete="username" autofocus required>
     </label>
     <label>
-      密碼
+      {{ t("auth.password") }}
       <input name="password" type="password" autocomplete="current-password" required>
     </label>
-    <button type="submit" data-loading-text="登入中...">登入</button>
+    <button type="submit" data-loading-text="{{ t("auth.login_loading") }}">{{ t("auth.login") }}</button>
   </form>
+  {% elif not trusted_header_enabled and not oidc_enabled %}
+  <div class="support-note">{{ t("auth.no_login_methods") }}</div>
+  {% endif %}
   {% if demo_hint %}
   <p class="auth-hint muted small">
-    示範帳號： <code>admin / admin123</code> &middot; <code>user / user123</code>
+    {{ t("auth.demo_accounts") }} <code>admin / admin123</code> &middot; <code>user / user123</code>
   </p>
   {% endif %}
 </section>

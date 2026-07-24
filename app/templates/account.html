@@ -8,6 +8,12 @@
   </header>
   {% if saved %}<div class="notice">密碼已更新。</div>{% endif %}
   {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+  {% if external_identity_count %}
+  <div class="support-note">{{ t("auth.sso_password_managed") }}</div>
+  <div class="settings-foot">
+    <a href="/notebooks" class="ghost">返回筆記本</a>
+  </div>
+  {% else %}
   <form method="post" action="/account/password" class="settings-grid" data-loading-form>
     {{ csrf_input() }}
     <section class="settings-section">
@@ -29,5 +35,6 @@
       <a href="/notebooks" class="ghost">返回筆記本</a>
     </div>
   </form>
+  {% endif %}
 </section>
 {% endblock %}

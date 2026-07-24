@@ -1,9 +1,13 @@
 import asyncio
+import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
+import secrets
 import shutil
+import sqlite3
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -12,15 +16,18 @@ import time
 import uuid
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from itsdangerous import BadSignature, URLSafeSerializer
 from jinja2 import pass_context
 from markupsafe import Markup, escape
+from joserfc import jwk, jwt
+from joserfc.errors import JoseError
 
 from .config import config
 from .db import UPLOAD_DIR, connect, dumps, init_db, load_llm_settings, loads
@@ -74,6 +81,9 @@ CSRF_FORM_FIELD = "csrf_token"
 CSRF_HEADER_NAME = "x-csrf-token"
 CSRF_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 CSRF_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+OIDC_STATE_COOKIE_NAME = "oidc_state"
+OIDC_STATE_COOKIE_MAX_AGE = 10 * 60
+OIDC_HTTP_TIMEOUT = 10.0
 
 
 def configure_logging() -> None:
@@ -558,6 +568,240 @@ def global_search(
     )
 
 
+def _login_template_context(error: str = "", status: str = "") -> dict[str, Any]:
+    return {
+        "error": error,
+        "status": status,
+        "demo_hint": SECRET == INSECURE_DEV_SECRET and config.auth.local_login_enabled,
+        "local_login_enabled": config.auth.local_login_enabled,
+        "trusted_header_enabled": config.auth.trusted_header_enabled,
+        "oidc_enabled": config.auth.oidc_enabled,
+    }
+
+
+def _split_auth_list(value: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[,;\n]+", value or "") if item.strip()]
+
+
+def _ip_in_allowlist(client_host: str, allowed: str) -> bool:
+    """Return True if client_host is inside the comma/CIDR allowlist.
+
+    An empty allowlist means "no IP restriction" (secret-only mode). client_host
+    must be the TCP peer IP (``request.client.host``), never an X-Forwarded-For
+    value, which a client could forge. If the app runs uvicorn with
+    ``--proxy-headers``, client.host is derived from X-Forwarded-For, so
+    ``--forwarded-allow-ips`` must be pinned to the proxy for this check to hold.
+    """
+    entries = _split_auth_list(allowed)
+    if not entries:
+        return True
+    if not client_host:
+        return False
+    try:
+        client_addr = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    for entry in entries:
+        try:
+            if "/" in entry:
+                if client_addr in ipaddress.ip_network(entry, strict=False):
+                    return True
+            elif client_addr == ipaddress.ip_address(entry):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _subject_hash(subject: str) -> str:
+    return hashlib.sha256(subject.encode("utf-8")).hexdigest()[:16]
+
+
+def _unique_external_username(conn, subject: str, email: str, display_name: str) -> str:
+    raw = (email or display_name or subject or "sso-user").strip()
+    if "\\" in raw:
+        raw = raw.rsplit("\\", 1)[-1]
+    candidate = re.sub(r"[^a-zA-Z0-9_.@-]+", "-", raw.lower()).strip("._-")
+    if not candidate:
+        candidate = "sso-user"
+    candidate = candidate[:48]
+    username = candidate
+    suffix = 2
+    while conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+        tail = f"-{suffix}"
+        username = f"{candidate[:64 - len(tail)]}{tail}"
+        suffix += 1
+    return username
+
+
+def _external_auth_metadata(
+    provider: str,
+    subject: str,
+    groups: list[str],
+    matched_admin_groups: list[str],
+    reason: str = "",
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "provider": provider,
+        "subject_hash": _subject_hash(subject),
+        "group_count": len(groups),
+        "matched_admin_groups": matched_admin_groups,
+    }
+    if reason:
+        metadata["reason"] = reason
+    return metadata
+
+
+def _set_session_cookie(request: Request, response: Response, user_id: int) -> None:
+    response.set_cookie(
+        "session",
+        sign_user_id(user_id, SECRET),
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
+
+
+def _external_auth_login(
+    request: Request,
+    *,
+    provider: str,
+    subject: str,
+    email: str,
+    display_name: str,
+    groups: list[str],
+    admin_groups: list[str],
+    auto_provision: bool,
+    audit_prefix: str,
+    unknown_user_message: str,
+) -> dict[str, Any]:
+    """Link/provision an external identity and return the local user row."""
+    admin_group_set = {item.lower() for item in admin_groups}
+    matched_admin_groups = sorted({group for group in groups if group.lower() in admin_group_set})
+    mapped_is_admin = bool(matched_admin_groups)
+    groups_json = dumps(groups[:200])
+
+    created_user = False
+    role_changed = False
+    old_is_admin = False
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT ei.id AS identity_id, u.*
+              FROM external_identities ei
+              JOIN users u ON u.id = ei.user_id
+             WHERE ei.provider = ? AND ei.subject = ?
+            """,
+            (provider, subject),
+        ).fetchone()
+        if row is None:
+            if not auto_provision:
+                record_audit_event(
+                    request,
+                    None,
+                    f"{audit_prefix}_login_rejected",
+                    "auth",
+                    None,
+                    _external_auth_metadata(
+                        provider, subject, groups, matched_admin_groups, "unknown_external_identity"
+                    ),
+                    "high",
+                )
+                raise HTTPException(status_code=403, detail=unknown_user_message)
+            username = _unique_external_username(conn, subject, email, display_name)
+            conn.execute("SAVEPOINT external_auth_provision")
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
+                    (username, hash_password(f"sso:{uuid.uuid4().hex}"), int(mapped_is_admin)),
+                )
+                user_id = cursor.lastrowid
+                conn.execute(
+                    """
+                    INSERT INTO external_identities
+                    (user_id, provider, subject, email, display_name, groups_json, last_login_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    (user_id, provider, subject, email[:254], display_name[:200], groups_json),
+                )
+                conn.execute("RELEASE SAVEPOINT external_auth_provision")
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+                created_user = True
+            except sqlite3.IntegrityError:
+                conn.execute("ROLLBACK TO SAVEPOINT external_auth_provision")
+                conn.execute("RELEASE SAVEPOINT external_auth_provision")
+                row = conn.execute(
+                    """
+                    SELECT ei.id AS identity_id, u.*
+                      FROM external_identities ei
+                      JOIN users u ON u.id = ei.user_id
+                     WHERE ei.provider = ? AND ei.subject = ?
+                    """,
+                    (provider, subject),
+                ).fetchone()
+                if row is None:
+                    raise
+        if row is not None and not created_user:
+            old_is_admin = bool(row["is_admin"])
+            conn.execute(
+                """
+                UPDATE external_identities
+                   SET email = ?,
+                       display_name = ?,
+                       groups_json = ?,
+                       last_login_at = CURRENT_TIMESTAMP,
+                       updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?
+                """,
+                (email[:254], display_name[:200], groups_json, row["identity_id"]),
+            )
+            if old_is_admin != mapped_is_admin:
+                conn.execute("UPDATE users SET is_admin = ? WHERE id = ?", (int(mapped_is_admin), row["id"]))
+                role_changed = True
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+
+    signed_in_user = dict(row)
+    base_metadata = _external_auth_metadata(provider, subject, groups, matched_admin_groups)
+    if created_user:
+        record_audit_event(
+            request,
+            signed_in_user,
+            f"{audit_prefix}_user_provisioned",
+            "user",
+            signed_in_user["id"],
+            {**base_metadata, "username": signed_in_user["username"], "is_admin": bool(signed_in_user["is_admin"])},
+            "high",
+        )
+    if role_changed:
+        record_audit_event(
+            request,
+            signed_in_user,
+            f"{audit_prefix}_role_mapped",
+            "user",
+            signed_in_user["id"],
+            {**base_metadata, "old_is_admin": old_is_admin, "new_is_admin": bool(signed_in_user["is_admin"])},
+            "high",
+        )
+    record_audit_event(
+        request,
+        signed_in_user,
+        f"{audit_prefix}_login_succeeded",
+        "user",
+        signed_in_user["id"],
+        {**base_metadata, "created_user": created_user, "is_admin": bool(signed_in_user["is_admin"])},
+        "normal",
+    )
+    return signed_in_user
+
+
+def _external_identity_count(user_id: int) -> int:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM external_identities WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_form(request: Request):
     """Render the login form.
@@ -565,20 +809,429 @@ def login_form(request: Request):
     The demo-account hint is shown only when running with the insecure dev
     secret, so a real (network-exposed) deployment never prints credentials.
     """
-    return render(request, "login.html", {"error": "", "demo_hint": SECRET == INSECURE_DEV_SECRET})
+    return render(request, "login.html", _login_template_context())
 
 
 @app.post("/login")
 def login(request: Request, username: str = Form(...), password: str = Form(...)):
     """Authenticate a username and password and issue a session cookie."""
+    if not config.auth.local_login_enabled:
+        logger.warning("local_login_disabled username=%s", username)
+        return render(
+            request,
+            "login.html",
+            _login_template_context(i18n.t("auth.local_login_disabled")),
+            403,
+        )
     with connect() as conn:
         user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
     if not user or not verify_password(password, user["password_hash"]):
         logger.warning("login_failed username=%s", username)
-        return render(request, "login.html", {"error": "帳號或密碼錯誤。"}, 400)
+        return render(request, "login.html", _login_template_context(i18n.t("auth.login_failed")), 400)
     redirect = RedirectResponse("/notebooks", status_code=303)
-    redirect.set_cookie("session", sign_user_id(user["id"], SECRET), httponly=True, samesite="lax")
+    _set_session_cookie(request, redirect, user["id"])
     logger.info("login_succeeded user_id=%s username=%s", user["id"], username)
+    return redirect
+
+
+@app.get("/auth/trusted-header")
+def trusted_header_login(request: Request):
+    """Sign in a user whose identity was verified by a trusted reverse proxy."""
+    auth = config.auth
+    provider = (auth.trusted_header_provider or "trusted_header").strip() or "trusted_header"
+    if not auth.trusted_header_enabled:
+        raise HTTPException(status_code=404)
+    if not auth.trusted_header_secret:
+        record_audit_event(
+            request,
+            None,
+            "trusted_header_login_rejected",
+            "auth",
+            None,
+            {"provider": provider, "reason": "missing_shared_secret"},
+            "high",
+        )
+        raise HTTPException(status_code=503, detail=i18n.t("auth.trusted_header_not_configured"))
+
+    client_host = request.client.host if request.client else ""
+    if not _ip_in_allowlist(client_host, auth.trusted_header_allowed_ips):
+        record_audit_event(
+            request,
+            None,
+            "trusted_header_login_rejected",
+            "auth",
+            None,
+            {"provider": provider, "reason": "untrusted_source_ip"},
+            "high",
+        )
+        raise HTTPException(status_code=403, detail=i18n.t("auth.trusted_header_denied"))
+
+    submitted_secret = request.headers.get(auth.trusted_header_secret_header, "")
+    if not submitted_secret or not hmac.compare_digest(submitted_secret, auth.trusted_header_secret):
+        record_audit_event(
+            request,
+            None,
+            "trusted_header_login_rejected",
+            "auth",
+            None,
+            {"provider": provider, "reason": "shared_secret_mismatch"},
+            "high",
+        )
+        raise HTTPException(status_code=403, detail=i18n.t("auth.trusted_header_denied"))
+
+    subject = (request.headers.get(auth.trusted_header_user_header, "") or "").strip()
+    if not subject:
+        record_audit_event(
+            request,
+            None,
+            "trusted_header_login_rejected",
+            "auth",
+            None,
+            {"provider": provider, "reason": "missing_subject"},
+            "high",
+        )
+        raise HTTPException(status_code=400, detail=i18n.t("auth.trusted_header_missing_subject"))
+
+    email = (request.headers.get(auth.trusted_header_email_header, "") or "").strip()[:254]
+    display_name = (request.headers.get(auth.trusted_header_name_header, "") or "").strip()[:200]
+    groups = _split_auth_list(request.headers.get(auth.trusted_header_groups_header, ""))
+    signed_in_user = _external_auth_login(
+        request,
+        provider=provider,
+        subject=subject,
+        email=email,
+        display_name=display_name,
+        groups=groups,
+        admin_groups=_split_auth_list(auth.trusted_header_admin_groups),
+        auto_provision=auth.trusted_header_auto_provision,
+        audit_prefix="trusted_header",
+        unknown_user_message=i18n.t("auth.trusted_header_unknown_user"),
+    )
+    redirect = RedirectResponse("/notebooks", status_code=303)
+    _set_session_cookie(request, redirect, signed_in_user["id"])
+    logger.info(
+        "trusted_header_login_succeeded user_id=%s username=%s provider=%s",
+        signed_in_user["id"],
+        signed_in_user["username"],
+        provider,
+    )
+    return redirect
+
+
+def _oidc_state_serializer() -> URLSafeSerializer:
+    return URLSafeSerializer(SECRET, salt="notebooklm-rag-poc.oidc-state")
+
+
+def _sign_oidc_state(value: dict[str, Any]) -> str:
+    return _oidc_state_serializer().dumps(value)
+
+
+def _unsign_oidc_state(value: str | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    try:
+        data = _oidc_state_serializer().loads(value)
+    except (BadSignature, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    issued_at = data.get("iat")
+    now = int(time.time())
+    if not isinstance(issued_at, int):
+        return None
+    if issued_at < now - OIDC_STATE_COOKIE_MAX_AGE or issued_at > now + 60:
+        return None
+    return data
+
+
+def _oidc_discovery_url(auth) -> str:
+    if auth.oidc_discovery_url:
+        return auth.oidc_discovery_url
+    issuer = (auth.oidc_issuer or "").rstrip("/")
+    return f"{issuer}/.well-known/openid-configuration" if issuer else ""
+
+
+def _is_local_oidc_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    return hostname.lower() in {"localhost", "127.0.0.1", "::1"}
+
+
+def _require_secure_oidc_url(url: str, label: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and _is_local_oidc_host(parsed.hostname):
+        return
+    raise ValueError(f"{label} must use HTTPS")
+
+
+def _normalize_oidc_issuer(value: str) -> str:
+    return (value or "").rstrip("/")
+
+
+def _oidc_redirect_uri(request: Request) -> str:
+    path = config.auth.oidc_redirect_path or "/auth/oidc/callback"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"{str(request.base_url).rstrip('/')}{path}"
+
+
+def _oidc_required_config_missing(auth) -> str:
+    if not auth.oidc_issuer and not auth.oidc_discovery_url:
+        return "missing_issuer"
+    if not auth.oidc_client_id:
+        return "missing_client_id"
+    if not auth.oidc_client_secret:
+        return "missing_client_secret"
+    return ""
+
+
+def _oidc_fetch_json(url: str, *, method: str = "GET", data: dict[str, str] | None = None, auth=None) -> dict[str, Any]:
+    if method == "POST":
+        response = httpx.post(url, data=data, auth=auth, timeout=OIDC_HTTP_TIMEOUT)
+    else:
+        response = httpx.get(url, timeout=OIDC_HTTP_TIMEOUT)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("OIDC endpoint returned non-object JSON")
+    return payload
+
+
+def _oidc_discover(auth) -> dict[str, Any]:
+    url = _oidc_discovery_url(auth)
+    if not url:
+        raise ValueError("missing discovery URL")
+    _require_secure_oidc_url(url, "OIDC discovery URL")
+    metadata = _oidc_fetch_json(url)
+    required = ("authorization_endpoint", "token_endpoint", "jwks_uri")
+    missing = [key for key in required if not metadata.get(key)]
+    if missing:
+        raise ValueError(f"OIDC discovery missing {','.join(missing)}")
+    issuer = _normalize_oidc_issuer(str(metadata.get("issuer") or ""))
+    if not issuer:
+        raise ValueError("OIDC discovery missing issuer")
+    _require_secure_oidc_url(issuer, "OIDC issuer")
+    configured_issuer = _normalize_oidc_issuer(auth.oidc_issuer)
+    if configured_issuer and issuer != configured_issuer:
+        raise ValueError("OIDC discovery issuer mismatch")
+    for endpoint in required:
+        _require_secure_oidc_url(str(metadata[endpoint]), f"OIDC {endpoint}")
+    return metadata
+
+
+def _oidc_authorization_url(auth, metadata: dict[str, Any], state: str, nonce: str, redirect_uri: str) -> str:
+    params = {
+        "response_type": "code",
+        "client_id": auth.oidc_client_id,
+        "redirect_uri": redirect_uri,
+        "scope": auth.oidc_scopes or "openid profile email",
+        "state": state,
+        "nonce": nonce,
+    }
+    return f"{metadata['authorization_endpoint']}?{urlencode(params)}"
+
+
+def _oidc_exchange_code(auth, token_endpoint: str, code: str, redirect_uri: str) -> dict[str, Any]:
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }
+    method = (auth.oidc_token_auth_method or "client_secret_basic").strip().lower()
+    request_auth = None
+    if method == "client_secret_post":
+        data["client_id"] = auth.oidc_client_id
+        data["client_secret"] = auth.oidc_client_secret
+    elif method == "client_secret_basic":
+        request_auth = httpx.BasicAuth(auth.oidc_client_id, auth.oidc_client_secret)
+    else:
+        raise ValueError("unsupported token auth method")
+    token = _oidc_fetch_json(token_endpoint, method="POST", data=data, auth=request_auth)
+    if not token.get("id_token"):
+        raise ValueError("OIDC token response missing id_token")
+    return token
+
+
+def _oidc_claim_text(claims: dict[str, Any], claim_name: str) -> str:
+    value = claims.get(claim_name or "")
+    return value if isinstance(value, str) else ""
+
+
+def _oidc_claim_groups(claims: dict[str, Any], claim_name: str) -> list[str]:
+    value = claims.get(claim_name or "")
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return _split_auth_list(value)
+    return []
+
+
+def _compact_oidc_reason(reason: str) -> str:
+    compact = re.sub(r"[^a-zA-Z0-9:_-]+", "_", reason or "unknown").strip("_")
+    return compact[:120] or "unknown"
+
+
+def _oidc_validate_id_token(
+    id_token: str,
+    jwks_payload: dict[str, Any],
+    *,
+    expected_issuer: str,
+    client_id: str,
+    nonce: str,
+    allowed_algorithms: list[str],
+) -> dict[str, Any]:
+    key_set = jwk.KeySet.import_key_set(jwks_payload)
+    token = jwt.decode(id_token, key_set, algorithms=allowed_algorithms)
+    claims = dict(token.claims)
+    header = dict(token.header)
+    now = int(time.time())
+    leeway = 60
+
+    if header.get("alg") not in allowed_algorithms:
+        raise ValueError("unsupported token algorithm")
+    if claims.get("iss") != expected_issuer:
+        raise ValueError("issuer mismatch")
+    audience = claims.get("aud")
+    if isinstance(audience, str):
+        audience_ok = audience == client_id
+    elif isinstance(audience, list):
+        audience_ok = client_id in audience
+        if audience_ok and len(audience) > 1 and claims.get("azp") not in {"", None, client_id}:
+            raise ValueError("authorized party mismatch")
+    else:
+        audience_ok = False
+    if not audience_ok:
+        raise ValueError("audience mismatch")
+    if not claims.get("sub"):
+        raise ValueError("missing subject")
+    if claims.get("nonce") != nonce:
+        raise ValueError("nonce mismatch")
+    exp = claims.get("exp")
+    if not isinstance(exp, int) or exp < now - leeway:
+        raise ValueError("token expired")
+    nbf = claims.get("nbf")
+    if isinstance(nbf, int) and nbf > now + leeway:
+        raise ValueError("token not yet valid")
+    iat = claims.get("iat")
+    if isinstance(iat, int) and iat > now + leeway:
+        raise ValueError("token issued in the future")
+    return claims
+
+
+def _oidc_reject(request: Request, reason: str, status_code: int = 400) -> HTMLResponse:
+    provider = (config.auth.oidc_provider or "oidc").strip() or "oidc"
+    record_audit_event(
+        request,
+        None,
+        "oidc_login_rejected",
+        "auth",
+        None,
+        {"provider": provider, "reason": _compact_oidc_reason(reason)},
+        "high",
+    )
+    response = render(
+        request,
+        "login.html",
+        _login_template_context(i18n.t("auth.oidc_login_failed")),
+        status_code,
+    )
+    response.delete_cookie(OIDC_STATE_COOKIE_NAME)
+    return response
+
+
+@app.get("/auth/oidc/login")
+def oidc_login(request: Request):
+    """Start an OIDC Authorization Code login."""
+    auth = config.auth
+    if not auth.oidc_enabled:
+        raise HTTPException(status_code=404)
+    missing = _oidc_required_config_missing(auth)
+    if missing:
+        return _oidc_reject(request, missing, 503)
+    try:
+        metadata = _oidc_discover(auth)
+    except Exception as exc:
+        logger.warning("oidc_discovery_failed error_class=%s", exc.__class__.__name__)
+        return _oidc_reject(request, "discovery_failed", 502)
+
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    redirect_uri = _oidc_redirect_uri(request)
+    authorization_url = _oidc_authorization_url(auth, metadata, state, nonce, redirect_uri)
+    response = RedirectResponse(authorization_url, status_code=303)
+    response.set_cookie(
+        OIDC_STATE_COOKIE_NAME,
+        _sign_oidc_state({"state": state, "nonce": nonce, "iat": int(time.time())}),
+        max_age=OIDC_STATE_COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
+    return response
+
+
+@app.get("/auth/oidc/callback")
+def oidc_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+):
+    """Complete an OIDC Authorization Code login."""
+    auth = config.auth
+    if not auth.oidc_enabled:
+        raise HTTPException(status_code=404)
+    provider = (auth.oidc_provider or "oidc").strip() or "oidc"
+    if error:
+        return _oidc_reject(request, f"provider_error:{error}", 400)
+
+    signed_state = _unsign_oidc_state(request.cookies.get(OIDC_STATE_COOKIE_NAME))
+    if not signed_state:
+        return _oidc_reject(request, "missing_state_cookie", 400)
+    if not state or not hmac.compare_digest(str(signed_state.get("state") or ""), state):
+        return _oidc_reject(request, "state_mismatch", 400)
+    if not code:
+        return _oidc_reject(request, "missing_code", 400)
+
+    try:
+        metadata = _oidc_discover(auth)
+        token = _oidc_exchange_code(auth, metadata["token_endpoint"], code, _oidc_redirect_uri(request))
+        jwks_payload = _oidc_fetch_json(metadata["jwks_uri"])
+        expected_issuer = str(metadata.get("issuer") or auth.oidc_issuer)
+        claims = _oidc_validate_id_token(
+            token["id_token"],
+            jwks_payload,
+            expected_issuer=expected_issuer,
+            client_id=auth.oidc_client_id,
+            nonce=str(signed_state.get("nonce") or ""),
+            allowed_algorithms=_split_auth_list(auth.oidc_allowed_algorithms) or ["RS256"],
+        )
+    except (httpx.HTTPError, JoseError, ValueError, KeyError, TypeError) as exc:
+        logger.warning("oidc_callback_failed error_class=%s", exc.__class__.__name__)
+        return _oidc_reject(request, f"callback_failed:{exc.__class__.__name__}", 400)
+
+    subject = str(claims.get("sub") or "").strip()
+    email = _oidc_claim_text(claims, auth.oidc_email_claim)[:254]
+    display_name = _oidc_claim_text(claims, auth.oidc_name_claim)[:200]
+    groups = _oidc_claim_groups(claims, auth.oidc_groups_claim)
+    signed_in_user = _external_auth_login(
+        request,
+        provider=provider,
+        subject=subject,
+        email=email,
+        display_name=display_name,
+        groups=groups,
+        admin_groups=_split_auth_list(auth.oidc_admin_groups),
+        auto_provision=auth.oidc_auto_provision,
+        audit_prefix="oidc",
+        unknown_user_message=i18n.t("auth.oidc_unknown_user"),
+    )
+    redirect = RedirectResponse("/notebooks", status_code=303)
+    _set_session_cookie(request, redirect, signed_in_user["id"])
+    redirect.delete_cookie(OIDC_STATE_COOKIE_NAME)
+    logger.info("oidc_login_succeeded user_id=%s username=%s provider=%s", signed_in_user["id"], signed_in_user["username"], provider)
     return redirect
 
 
@@ -2846,7 +3499,16 @@ async def translate_source_summary(
 @app.get("/account", response_class=HTMLResponse)
 def account_page(request: Request, user: Annotated[dict, Depends(require_login)]):
     """Render the per-user account page (currently: change own password)."""
-    return render(request, "account.html", {"user": user, "saved": False, "error": ""})
+    return render(
+        request,
+        "account.html",
+        {
+            "user": user,
+            "saved": False,
+            "error": "",
+            "external_identity_count": _external_identity_count(user["id"]),
+        },
+    )
 
 
 @app.post("/account/password")
@@ -2860,19 +3522,34 @@ def change_own_password(
     """Allow a signed-in user to change their own password."""
     error = ""
     with connect() as conn:
+        external_count = conn.execute(
+            "SELECT COUNT(*) FROM external_identities WHERE user_id = ?",
+            (user["id"],),
+        ).fetchone()[0]
         row = conn.execute("SELECT password_hash FROM users WHERE id = ?", (user["id"],)).fetchone()
-    if row is None or not verify_password(current_password, row["password_hash"]):
+    if external_count:
+        error = i18n.t("auth.password_change_sso_blocked")
+    elif row is None or not verify_password(current_password, row["password_hash"]):
         error = "目前密碼不正確。"
     elif len(new_password) < 6:
         error = "新密碼至少需要 6 個字元。"
     elif new_password != confirm_password:
         error = "新密碼與確認密碼不一致。"
     if error:
-        return render(request, "account.html", {"user": user, "saved": False, "error": error}, 400)
+        return render(
+            request,
+            "account.html",
+            {"user": user, "saved": False, "error": error, "external_identity_count": external_count},
+            400,
+        )
     with connect() as conn:
         conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), user["id"]))
     logger.info("password_changed user_id=%s", user["id"])
-    return render(request, "account.html", {"user": user, "saved": True, "error": ""})
+    return render(
+        request,
+        "account.html",
+        {"user": user, "saved": True, "error": "", "external_identity_count": 0},
+    )
 
 
 # Mounted last so the shared helpers above (render, require_admin,

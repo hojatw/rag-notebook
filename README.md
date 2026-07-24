@@ -154,6 +154,9 @@ endpoint, not stored chunks.
 - [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) - local login, enterprise
   SSO direction, AD/Entra/OIDC/SAML options, trusted proxy header mode, and
   auth security requirements.
+- [`docs/SSO_DEPLOYMENT.zh-TW.md`](docs/SSO_DEPLOYMENT.zh-TW.md) - operator guide
+  for deploying/testing enterprise SSO: reverse-proxy config examples and the
+  auth test plan.
 - [`docs/QUALITY.md`](docs/QUALITY.md) - retrieval and answer-quality backlog.
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) - performance and scalability
   backlog.
@@ -190,12 +193,13 @@ available:
 - UI copy is routed through a `zh-TW` message catalog (i18n foundation done,
   `ROADMAP.md` U15a); adding an `en` locale + admin/per-user language controls
   is U15b. See [`docs/I18N.md`](docs/I18N.md).
-- Enterprise authentication is now a high-priority customer requirement:
-  answer the customer identity-platform discovery questions first, then
-  implement trusted reverse-proxy header mode (`I1a`), then OIDC (`I1b`); keep
-  SAML as the customer-driven compatibility path and preserve local break-glass
-  admin. See [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) and
-  `ROADMAP.md` `I1`.
+- Enterprise authentication is now a high-priority customer requirement.
+  Trusted reverse-proxy header mode (`I1a`), OIDC (`I1b`), and the `/admin/auth`
+  operator diagnostics page (`I1d`) are implemented and disabled by default
+  through `[auth]` config where applicable; SAML remains the customer-driven
+  compatibility path. Preserve local break-glass admin unless a deployment
+  explicitly opts out. See
+  [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) and `ROADMAP.md` `I1`.
 - Admin LLM settings still use one global configuration. O1 Phase 1 diagnostics
   are done; multi-profile management and safe activation remain O1 Phase 2.
 - New source-format support should start with ingestion diagnostics, then

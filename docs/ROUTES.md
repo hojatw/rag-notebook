@@ -8,6 +8,9 @@ GET  /                                                    redirect to /notebooks
 GET  /healthz                                             liveness + build info {status, version, commit} (no auth)
 GET  /login                                               sign-in page
 POST /login                                               authenticate
+GET  /auth/trusted-header                                 trusted reverse-proxy SSO callback/login bridge
+GET  /auth/oidc/login                                     start OIDC Authorization Code login
+GET  /auth/oidc/callback                                  complete OIDC login, validate ID token, issue local session
 POST /logout                                              clear session
 
 GET  /notebooks                                           notebook grid
@@ -58,6 +61,7 @@ POST /admin/users/new                                     create user
 POST /admin/users/{uid}/reset-password                    set a new password
 POST /admin/users/{uid}/toggle-admin                      promote / demote
 POST /admin/users/{uid}/delete                            cascade-delete a user
+GET  /admin/auth                                          auth mode display + SSO configuration diagnostics
 
 GET  /admin/index                                         Chroma index health page (admin only)
 POST /admin/index/rebuild                                 full re-upsert of every SQLite chunk
