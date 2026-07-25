@@ -72,6 +72,15 @@
         {% endfor %}
       </div>
     {% endif %}
+    {% if source.diagnostics.details and source.diagnostics.details.slides %}
+      <p class="muted small">
+        {{ t('diag.slides') }}：{{ t('diag.slide_stats',
+             slides=source.diagnostics.details.slides,
+             tables=source.diagnostics.details.tables,
+             notes=source.diagnostics.details.notes,
+             images=source.diagnostics.details.images) }}
+      </p>
+    {% endif %}
     {% if source.diagnostics.details and source.diagnostics.details.encoding %}
       <p class="muted small">
         {{ t('diag.csv_encoding') }}：{{ source.diagnostics.details.encoding.encoding }}

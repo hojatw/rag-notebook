@@ -13,7 +13,7 @@ from .vector_store import upsert_chunks
 
 ALLOWED_EXTENSIONS = {
     ".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm", ".srt", ".vtt",
-    ".xlsx", ".csv",
+    ".xlsx", ".csv", ".pptx",
 }
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,10 @@ def extract_sections(path: Path) -> ExtractionResult:
     elif suffix in {".xlsx", ".csv"}:
         # Spreadsheets return fully-formed chunks (see _extract_spreadsheet).
         return _extract_spreadsheet(path)
+    elif suffix == ".pptx":
+        # Slide sections flow through the normal chunker (short slides pack
+        # together rather than becoming one tiny vector each).
+        return _extract_pptx(path)
     else:
         sections = [("document", path.read_text(encoding="utf-8", errors="ignore"))]
         extractor = "plain_text"
@@ -536,6 +540,105 @@ _HORIZONTAL_WS_RE = re.compile(r"[ \t\r\f\v]+")
 LATIN_TARGET_CHARS = config.chunking.latin_target_chars
 CJK_TARGET_CHARS = config.chunking.cjk_target_chars
 DEFAULT_OVERLAP_SENTENCES = config.chunking.overlap_sentences
+
+
+def _iter_pptx_shapes(shapes):
+    """Yield shapes depth-first, descending into groups.
+
+    Grouped shapes are the PPTX equivalent of the nested-table bug we hit in
+    DOCX: their text is invisible to a flat `slide.shapes` walk, so a deck whose
+    author grouped its bullet boxes would index as an empty slide.
+    """
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    for shape in shapes:
+        if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
+            yield from _iter_pptx_shapes(shape.shapes)
+        else:
+            yield shape
+
+
+def _extract_pptx(path: Path) -> ExtractionResult:
+    """Extract a .pptx deck as slide-scoped sections (A6b Phase 1, text-first).
+
+    Emits `slide N` (title + body), `slide N table K`, and `slide N notes` so a
+    citation points at a specific slide. Images/diagrams are **not** read — that
+    needs OCR (`A8`) or a vision model (`A9`); slides that carry only visual
+    content are reported through diagnostics instead of silently indexing as
+    empty, which is the whole point of shipping Phase 1 before either exists.
+    """
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    presentation = Presentation(str(path))
+    sections: list[tuple[str, str]] = []
+    details: dict[str, Any] = {
+        "slides": 0,
+        "slides_without_text": 0,
+        "tables": 0,
+        "notes": 0,
+        "images": 0,
+    }
+    notes_list: list[str] = []
+
+    for index, slide in enumerate(presentation.slides, start=1):
+        details["slides"] += 1
+        title_shape = slide.shapes.title
+        lines: list[str] = []
+        table_sections: list[tuple[str, str]] = []
+        table_number = 0
+        has_visual = False
+        for shape in _iter_pptx_shapes(slide.shapes):
+            if getattr(shape, "has_table", False):
+                table_number += 1
+                details["tables"] += 1
+                rows = [[cell.text for cell in row.cells] for row in shape.table.rows]
+                rendered = _render_pdf_table(rows)
+                if rendered:
+                    # Held back so each slide reads body -> tables -> notes;
+                    # PPTX shape order does not follow visual reading order.
+                    table_sections.append((f"slide {index} table {table_number}", rendered))
+                continue
+            if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.PICTURE:
+                details["images"] += 1
+                has_visual = True
+                continue
+            if not getattr(shape, "has_text_frame", False):
+                # Charts, media, SmartArt — visual content Phase 1 cannot read.
+                has_visual = True
+                continue
+            text = shape.text_frame.text.strip()
+            if not text:
+                continue
+            if title_shape is not None and shape is title_shape:
+                lines.insert(0, text)
+            else:
+                lines.append(text)
+
+        body = "\n".join(lines).strip()
+        if body:
+            sections.append((f"slide {index}", body))
+        sections.extend(table_sections)
+        if not body and not table_sections and has_visual:
+            # A slide with visuals but no readable text: the exact case a user
+            # would otherwise blame on retrieval.
+            details["slides_without_text"] += 1
+
+        if getattr(slide, "has_notes_slide", False):
+            note_text = (slide.notes_slide.notes_text_frame.text or "").strip()
+            if note_text:
+                details["notes"] += 1
+                sections.append((f"slide {index} notes", note_text))
+
+    if details["slides_without_text"]:
+        notes_list.append("pptx_visual_only_slides")
+    logger.info(
+        "extract_completed path=%s sections=%s extractor=pptx slides=%s",
+        path.name, len(sections), details["slides"],
+    )
+    return ExtractionResult(
+        sections=sections, extractor="pptx", notes=notes_list, details=details
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1093,6 +1196,11 @@ def _section_kind(location: str) -> str:
         return "footer"
     if "footnote" in label or "endnote" in label:
         return "footnote"
+    if label.endswith(" notes"):
+        # A6b: speaker notes are presenter cues, a different register from the
+        # slide itself — keep them out of the same chunk so a citation says
+        # which one an answer came from.
+        return "slide_notes"
     if "text box" in label:
         return "text_box"
     if "transcript" in label:
@@ -1288,6 +1396,8 @@ def collect_ingest_diagnostics(
             payload["sheets"] = ", ".join(extraction.details.get("truncated_sheets", []))
         elif note == "spreadsheet_uncached_formulas":
             payload["count"] = extraction.details.get("uncached_formulas", 0)
+        elif note == "pptx_visual_only_slides":
+            payload["count"] = extraction.details.get("slides_without_text", 0)
         elif note == "csv_encoding_fallback":
             encoding = extraction.details.get("encoding", {})
             payload["encoding"] = encoding.get("encoding", "?")

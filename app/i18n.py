@@ -105,6 +105,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.extractor_html": "HTML",
         "diag.extractor_subtitles": "字幕檔",
         "diag.extractor_xlsx": "Excel 活頁簿",
+        "diag.extractor_pptx": "PowerPoint 簡報",
         "diag.extractor_csv": "CSV",
         "diag.extractor_plain_text": "純文字",
         # Section kinds (mirrors _section_kind in app/ingest.py)
@@ -115,11 +116,16 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.kind_footnote": "註腳",
         "diag.kind_text_box": "文字方塊",
         "diag.kind_transcript": "逐字稿",
+        "diag.kind_slide_notes": "投影片備忘稿",
         # Warnings — each states the consequence, not just the fact.
         "diag.warn_low_text": "幾乎沒有讀到文字（{chars} 字元）。這通常代表檔案是掃描影像或以圖片呈現內容，目前無法檢索；需要 OCR 才能處理。",
         "diag.warn_pdf_structure_fallback": "這份 PDF 無法解析段落與表格結構，已退回逐頁純文字。引用位置只會精確到頁，表格內容可能變得難以閱讀。",
         "diag.warn_chunk_over_token_budget": "有 {count} 個分塊可能超過 embedding 模型的輸入上限（約 {budget} tokens），超出的尾端會被靜默截斷而檢索不到。此為估算值，非實際量測。",
         "diag.warn_empty_sections": "有 {count} 個分段是空白的，已略過。",
+        # A6b PPTX
+        "diag.warn_pptx_visual_only_slides": "有 {count} 張投影片只有圖片、圖表或 SmartArt，沒有可讀取的文字，因此沒有被索引。目前的簡報支援只讀文字；圖像內容需要 OCR 或影像理解能力才能處理。",
+        "diag.slides": "投影片",
+        "diag.slide_stats": "{slides} 張 · 表格 {tables} · 備忘稿 {notes} · 圖片 {images}",
         # A6c spreadsheet warnings
         "diag.warn_spreadsheet_generic_records": "沒有偵測到問答（Q&A）欄位，因此整份試算表以「一般資料列」方式切塊。語意搜尋仍可用，但精確的篩選、計數與加總不在目前支援範圍。",
         "diag.warn_spreadsheet_hidden_sheets_skipped": "已略過隱藏的工作表：{sheets}。隱藏表通常是暫存或過期資料，預設不索引。",
@@ -515,7 +521,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "js.provider_hint_openai": "請填入相容 /v1 的 base URL；模型欄位填模型名稱。",
         "js.provider_hint_azure": "請填入 Azure 資源端點；模型欄位填部署（deployment）名稱。",
         # upload formats hint (template-side, Phase 1c)
-        "upload.formats": "PDF · TXT · Markdown · DOCX · HTML · 字幕(SRT/VTT) · 試算表(XLSX/CSV) · 一次最多 {count} 個",
+        "upload.formats": "PDF · TXT · Markdown · DOCX · HTML · 簡報(PPTX) · 字幕(SRT/VTT) · 試算表(XLSX/CSV) · 一次最多 {count} 個",
     },
 }
 
