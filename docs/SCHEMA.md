@@ -346,7 +346,7 @@ Per-question retrieval result for one eval run. When the run has `judge_enabled 
 | `latency_ms` | REAL DEFAULT 0 | retrieval latency for this item |
 | `retrieved_json` | TEXT DEFAULT `'[]'` | compact retrieved chunk summary |
 | `error` | TEXT DEFAULT `''` | per-item failure |
-| `judge_json` | TEXT DEFAULT `'{}'` | E1e-2: structured judge output (four dims + rationales + `judge_ok`). `{}` on retrieval-only runs. Reference signal, not ground truth |
+| `judge_json` | TEXT DEFAULT `'{}'` | E1e-2: structured judge output (four dims + rationales + `judge_ok`). `{}` on retrieval-only runs. Reference signal, not ground truth. The nested `abstain` object is **deterministic, not LLM-produced**: `did_abstain` is the authoritative "the system refused" flag (metrics read it) and equals `retrieval_gated` OR `refused_at_generation` — the score gate and the model declining in its own answer, recorded separately so a reviewer can tell which layer caught it. Runs created before 2026-07-25 only recorded the score gate and therefore under-report refusals |
 | `answer_text` | TEXT DEFAULT `''` | E1e-2: generated answer for this item (or canned refusal on abstain). Surfaced only in full internal exports, never sanitized ones |
 | `answer_outcome` | TEXT DEFAULT `''` | E1e-2: `answered`, `abstained`, or `error`; empty on retrieval-only runs |
 | `created_at` | TEXT | |

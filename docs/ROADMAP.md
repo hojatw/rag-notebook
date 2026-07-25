@@ -172,6 +172,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [ ] E2a — Schema + notebook admin/editor UI for domain hints and answer policy.
   - [ ] E2b — Feed domain hints into query rewrite / retrieval expansion with explicit limits.
   - [ ] E2c — Feed answer policy into final answer prompting without treating it as source evidence.
+    - **Carried in from E1e-2 (deliberately deferred, 2026-07-25):** replace the literal refusal sentence in `SYSTEM_PROMPT` with a **structural refusal marker** the app renders as localized copy (`i18n.t("chat.abstain")`), in both the streaming and non-streaming answer paths.
+      - **Why it belongs here:** answer policy is specified to influence *final answer wording* (see Guardrails above). Once per-notebook policy can reword or wrap a refusal, E1e-2's current exact-sentence detection (`REFUSAL_MARKERS` in `app/llm.py`) degrades to under-reporting. A structural marker is orthogonal to style rules and survives that.
+      - **Why it was not done in E1e-2:** it changes the live chat answer path (streaming must buffer the first ~16 chars to decide before emitting, and the marker must never reach the user or the stored message) — disproportionate blast radius for a measurement fix, and it would be reworked by E2c anyway.
+      - **It also fixes a live bug:** a Traditional Chinese question currently gets an **English** refusal, because the model copies the literal English sentence in `SYSTEM_PROMPT` line 4 over the "reply in the user's language" rule one line above. The score-gated path is already localized, so the two refusal paths are inconsistent today.
+      - **Restart condition / guard:** `tests/test_llm.py::test_refusal_markers_stay_pinned_to_system_prompt` fails the moment the prompt's refusal wording changes, forcing detection and prompt to be updated together. Do this work when starting E2c, or sooner if a customer reports the English-refusal bug.
   - [ ] E2d — Eval Workbench comparison path for "with hints" vs "without hints" runs.
   - [ ] E2e — Export/audit boundaries for hint/policy changes and exports.
 - **Quality reference:** see `QUALITY.md` Q1-5.
