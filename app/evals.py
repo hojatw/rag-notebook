@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from . import i18n
 from .db import connect, dumps, load_llm_settings, loads
 from .governance import record_ai_safety_events
-from .llm import generate_answer, generate_eval_candidates, judge_answer
+from .llm import REFUSAL_MARKERS, generate_answer, generate_eval_candidates, judge_answer
 from .main import _json_download, record_audit_event, render, require_admin
 from .retrieval import (
     ACTIVE_RETRIEVAL_PARAMS,
@@ -282,6 +282,22 @@ def _not_applicable_judge() -> dict[str, Any]:
     }
 
 
+def answer_is_refusal(answer_text: str) -> bool:
+    """Deterministically detect a generation-stage refusal in a generated answer.
+
+    ``ask()`` refuses on two independent paths and the eval must count both:
+    ① the retrieval-score gate (``top_score < threshold``), and ② the model itself
+    declining per ``SYSTEM_PROMPT``. Path ② is what catches an *on-topic* question whose
+    specific fact is simply absent — those still retrieve high-scoring chunks, so no
+    threshold can gate them. Matching is done against the wording SYSTEM_PROMPT pins
+    (`REFUSAL_MARKERS`), so this stays deterministic rather than asking the judge.
+    """
+    normalized = " ".join((answer_text or "").split()).casefold()
+    if not normalized:
+        return False
+    return any(marker.casefold() in normalized for marker in REFUSAL_MARKERS)
+
+
 def substring_hit_rate(answer_text: str, expected_substrings: list[str]) -> float | None:
     """Deterministic answer-quality anchor: fraction of expected substrings present
     verbatim in the generated answer. None when the item defines no substrings, so
@@ -314,15 +330,27 @@ async def judge_eval_item(
     expected_abstain = item_type == "unanswerable"
     # Mirror ask()'s abstain decision, but against the run's frozen threshold snapshot
     # (not the live applied threshold) so the run stays internally consistent.
-    did_abstain = (not retrieved) or (top_score < threshold)
-    abstain = {
-        "did_abstain": did_abstain,
-        "expected_abstain": expected_abstain,
-        "correct": did_abstain == expected_abstain,
-    }
-    if did_abstain:
+    retrieval_gated = (not retrieved) or (top_score < threshold)
+
+    def _abstain_block(refused_at_generation: bool) -> dict[str, Any]:
+        """System-level refusal = score gate OR the model declining in its own answer.
+
+        `did_abstain` stays the authoritative "the system refused" flag the metrics read;
+        the two sub-signals are recorded separately so a reviewer can tell which layer
+        caught it (that distinction is what threshold tuning decisions hang on).
+        """
+        system_refused = retrieval_gated or refused_at_generation
+        return {
+            "did_abstain": system_refused,
+            "retrieval_gated": retrieval_gated,
+            "refused_at_generation": refused_at_generation,
+            "expected_abstain": expected_abstain,
+            "correct": system_refused == expected_abstain,
+        }
+
+    if retrieval_gated:
         judge = _not_applicable_judge()
-        judge["abstain"] = abstain
+        judge["abstain"] = _abstain_block(False)
         judge["substring_hit_rate"] = None
         return {"answer_text": i18n.t("chat.abstain"), "answer_outcome": "abstained", "judge": judge}
     try:
@@ -345,11 +373,12 @@ async def judge_eval_item(
         # Keep the deterministic abstain signal; this item is an error, the run continues.
         logger.exception("eval_judge_item_failed item_id=%s", item.get("id"))
         judge = _not_applicable_judge()
-        judge["abstain"] = abstain
+        # No answer was produced, so path ② cannot have fired.
+        judge["abstain"] = _abstain_block(False)
         judge["substring_hit_rate"] = None
         judge["error"] = str(exc)[:300]
         return {"answer_text": "", "answer_outcome": "error", "judge": judge}
-    judge["abstain"] = abstain
+    judge["abstain"] = _abstain_block(answer_is_refusal(answer_text))
     judge["substring_hit_rate"] = hit_rate
     return {"answer_text": answer_text, "answer_outcome": "answered", "judge": judge}
 

@@ -77,7 +77,13 @@ def test_judge_eval_item_abstains_and_skips_generation(monkeypatch, tmp_path):
 
     assert out["answer_outcome"] == "abstained"
     assert calls == {"generate": 0, "judge": 0}
-    assert out["judge"]["abstain"] == {"did_abstain": True, "expected_abstain": True, "correct": True}
+    assert out["judge"]["abstain"] == {
+        "did_abstain": True,
+        "retrieval_gated": True,
+        "refused_at_generation": False,
+        "expected_abstain": True,
+        "correct": True,
+    }
     assert out["judge"]["answer_quality"]["label"] == "not_applicable"
     assert out["judge"]["substring_hit_rate"] is None
 
@@ -101,7 +107,78 @@ def test_judge_eval_item_generates_and_judges_answerable(monkeypatch, tmp_path):
     assert out["answer_outcome"] == "answered"
     assert out["judge"]["judge_ok"] is True
     assert out["judge"]["substring_hit_rate"] == 1.0
-    assert out["judge"]["abstain"] == {"did_abstain": False, "expected_abstain": False, "correct": True}
+    assert out["judge"]["abstain"] == {
+        "did_abstain": False,
+        "retrieval_gated": False,
+        "refused_at_generation": False,
+        "expected_abstain": False,
+        "correct": True,
+    }
+
+
+def test_answer_is_refusal_matches_pinned_wording(monkeypatch, tmp_path):
+    """Deterministic detection of the refusal SYSTEM_PROMPT pins, tolerant of surrounding
+    prose/whitespace/case but never firing on a real answer."""
+    evals, _ = _fresh_modules(monkeypatch, tmp_path)
+
+    assert evals.answer_is_refusal("I cannot determine that from the selected sources.") is True
+    # tolerant of case, collapsed whitespace, and trailing prose
+    assert evals.answer_is_refusal("  I Cannot Determine That From The\n Selected Sources. Sorry.") is True
+    assert evals.answer_is_refusal("The API version is 2024-02 [1].") is False
+    assert evals.answer_is_refusal("") is False
+
+
+def test_judge_eval_item_counts_generation_stage_refusal(monkeypatch, tmp_path):
+    """The abstain metric must count a model-side refusal, not just the score gate.
+
+    Regression guard for the real finding: an on-topic question whose specific fact is
+    absent still retrieves high-scoring chunks (no threshold can gate it), so only the
+    model refuses. Previously that counted as a *failed* abstain.
+    """
+    evals, _ = _fresh_modules(monkeypatch, tmp_path)
+
+    async def fake_generate(question, chunks, settings, **kwargs):
+        return "I cannot determine that from the selected sources."
+
+    async def fake_judge(**kwargs):
+        return _answered_judge()
+
+    monkeypatch.setattr(evals, "generate_answer", fake_generate)
+    monkeypatch.setattr(evals, "judge_answer", fake_judge)
+
+    item = {"id": 9, "item_type": "unanswerable", "expected_substrings": [], "expected_answer": ""}
+    # top_score 0.86 is far above threshold — the score gate cannot catch this one.
+    retrieved = [{"filename": "f", "location": "l", "text": "on-topic but silent", "score": 0.86}]
+    out = asyncio.run(evals.judge_eval_item("q?", item, retrieved, 0.86, 0.3, {"chat_model": "m"}, {}))
+
+    abstain = out["judge"]["abstain"]
+    assert abstain["retrieval_gated"] is False       # score gate did NOT fire
+    assert abstain["refused_at_generation"] is True  # the model refused instead
+    assert abstain["did_abstain"] is True            # system-level refusal = ① or ②
+    assert abstain["correct"] is True                # unanswerable + refused = correct
+
+
+def test_judge_metrics_count_generation_stage_refusal_as_correct(monkeypatch, tmp_path):
+    """End of the chain: a generation-stage refusal lands in the aggregate abstain stats."""
+    evals, _ = _fresh_modules(monkeypatch, tmp_path)
+    results = [
+        {"answer_outcome": "answered", "judge": {
+            "answer_quality": {"label": "correct"}, "groundedness": {"score": 1.0},
+            "citation_correctness": {"score": 1.0}, "substring_hit_rate": None, "judge_ok": True,
+            "abstain": {"did_abstain": True, "retrieval_gated": False, "refused_at_generation": True,
+                        "expected_abstain": True, "correct": True}}},
+        {"answer_outcome": "abstained", "judge": {
+            **evals._not_applicable_judge(), "substring_hit_rate": None,
+            "abstain": {"did_abstain": True, "retrieval_gated": True, "refused_at_generation": False,
+                        "expected_abstain": True, "correct": True}}},
+    ]
+
+    metrics = evals.judge_metrics_from_results(results)
+
+    assert metrics["abstain"]["unanswerable_total"] == 2
+    assert metrics["abstain"]["unanswerable_correct_refusal"] == 2
+    assert metrics["abstain"]["unanswerable_correct_refusal_rate"] == 1.0
+    assert metrics["abstain"]["correct_rate"] == 1.0
 
 
 def test_judge_eval_item_generate_failure_is_isolated(monkeypatch, tmp_path):

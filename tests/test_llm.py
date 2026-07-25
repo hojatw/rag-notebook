@@ -280,6 +280,21 @@ def test_parse_answer_judge_flags_bad_json():
     assert result["citation_correctness"]["wrong_citations"] == []
 
 
+def test_refusal_markers_stay_pinned_to_system_prompt():
+    """E1e-2 guard: eval refusal detection matches wording that SYSTEM_PROMPT pins.
+
+    The coupling is deliberate — the eval must detect the *same* refusal the production
+    answer path produces. This test makes changing the prompt's refusal wording fail
+    loudly instead of silently breaking abstain measurement.
+    """
+    assert llm.REFUSAL_MARKERS, "at least one refusal marker must be defined"
+    for marker in llm.REFUSAL_MARKERS:
+        assert marker.casefold() in llm.SYSTEM_PROMPT.casefold(), (
+            f"refusal marker {marker!r} no longer appears in SYSTEM_PROMPT — update "
+            "REFUSAL_MARKERS together with the prompt, or eval abstain metrics will under-report"
+        )
+
+
 def test_eval_generation_and_judge_use_distinct_call_types(monkeypatch):
     """E1e-2 telemetry (G1a): eval answer generation records call_type=eval_answer and
     the judge records eval_judge, so their LLM usage is separable from live chat."""

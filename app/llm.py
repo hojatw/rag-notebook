@@ -18,6 +18,20 @@ Reply in the same language as the user's question (Traditional Chinese question 
 If the excerpts do not contain enough information, say: "I cannot determine that from the selected sources."
 Keep the answer concise and include bracket citations like [1], [2] for the excerpts you used."""
 
+# E1e-2: the exact refusal wording SYSTEM_PROMPT pins above. The eval workbench uses
+# it to detect a *generation-stage* refusal deterministically — the second refusal path
+# that the retrieval-score gate cannot see (an on-topic question whose specific fact is
+# absent still scores high, so only the model itself can refuse it).
+#
+# ⚠️ Coupled to SYSTEM_PROMPT by design. `tests/test_llm.py` pins the invariant that every
+# marker below still appears in SYSTEM_PROMPT, so changing the prompt's refusal wording
+# fails loudly instead of silently breaking eval measurement.
+#
+# Known limit: if the model paraphrases or translates the sentence, detection misses and
+# the metric *under*-reports refusals (never over-reports). A structural refusal marker
+# that survives per-notebook answer-policy rewording is deferred to E2 — see ROADMAP E2c.
+REFUSAL_MARKERS: tuple[str, ...] = ("cannot determine that from the selected sources",)
+
 QUERY_REWRITE_PROMPT = """You create retrieval queries for a source-grounded RAG system.
 Do not answer the user. Rewrite the user's question into 1 to 4 concise search queries.
 Resolve pronouns from the conversation context when possible.
