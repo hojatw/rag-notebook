@@ -137,8 +137,10 @@ endpoint, not stored chunks.
 - **Governance backend:** compact LLM usage and safety-event telemetry without
   copying prompts, source text, retrieved snippets, model output, or API keys
   into governance metadata.
-- **Supported source formats:** PDF, TXT, Markdown, DOCX, HTML, and subtitles
-  (`.srt` / `.vtt`).
+- **Supported source formats:** PDF, TXT, Markdown, DOCX, HTML, subtitles
+  (`.srt` / `.vtt`), and spreadsheets (`.xlsx` / `.csv` — Q&A sheets detected,
+  other shapes ingested as bounded record chunks; see
+  [docs/SPREADSHEET_INGESTION.md](docs/SPREADSHEET_INGESTION.md)).
 - **Persistence:** SQLite metadata, local uploads, and Chroma vectors under
   `data/`; rotating logs under `logs/`.
 
