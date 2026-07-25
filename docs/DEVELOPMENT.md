@@ -88,8 +88,10 @@ NOTEBOOKLM_RETRIEVAL_VECTOR_WEIGHT=0.6 .venv/bin/python -m tests.eval_retrieval
 ```
 
 Copy [`config.example.toml`](../config.example.toml) to `config.toml` for local
-or deployment-specific overrides. Changing `[chunking]` requires re-indexing
-existing sources.
+or deployment-specific overrides. Changing `[chunking]` — or the chunk-shaping
+values in `[spreadsheet]` (`rows_per_chunk_max`, `embed_token_budget`) — requires
+re-indexing existing sources. `[diagnostics]` thresholds only affect what the
+source preview *displays*, so they never require a re-index.
 
 ## Logging
 
@@ -151,7 +153,8 @@ app/admin.py           Admin console router (/admin/index*, /admin/audit, /admin
 app/settings.py        Admin LLM settings router (/settings, connection diagnostics).
 app/config.py          Centralized tunables (defaults <- config.toml <- env vars).
 app/db.py              SQLite schema, default-notebook migration, load_llm_settings.
-app/ingest.py          Text extraction, chunking, vector upsert.
+app/ingest.py          Text extraction (PDF/DOCX/HTML/subtitles/PPTX/XLSX/CSV), chunking,
+                       vector upsert, per-source summary, A6a ingestion diagnostics.
 app/jobs.py            DB-backed ingest queue (ingest_jobs): enqueue + atomic claim + retry.
 app/worker.py          Ingest worker loop (standalone or inline).
 app/llm.py             LLM/embedding HTTP, query rewrite, rerank, starter questions.

@@ -40,6 +40,18 @@ Audit metadata is intentionally compact: store action identifiers, target ids, f
 
 No currently known application-level hardening item is intentionally deferred here. Keep treating the app as a POC and re-audit before any untrusted-network exposure.
 
+### Attack surface note: uploaded-file parsers (A6b / A6c, 2026-07-25)
+
+Ingestion now parses `.pptx` (`python-pptx`, which pulls in **Pillow**) and `.xlsx` (`openpyxl`) in addition to PDF/DOCX/HTML. Every one of these parses a **user-supplied file**, so a malicious upload is the realistic attack vector, and Pillow in particular has a steady stream of image-decoding CVEs.
+
+Current mitigations are structural rather than sandboxing:
+
+- Uploads are authenticated — a user must already have an account, so this is not an anonymous-internet surface.
+- Parsing runs in the ingest worker, not the request path; `[spreadsheet].max_file_bytes` / `max_rows` / `max_cols` bound spreadsheet work, and a parser exception fails that one source (`status='failed'` with `failed_stage`) rather than the process.
+- Phase 1 PPTX **never decodes image bytes** — images are counted, not opened — so Pillow is currently a transitive dependency that ingest does not actually exercise. That changes the day `A8`/`A9` add OCR or vision, which is when this note needs revisiting.
+
+**Keep these parsers patched** (they are the highest-value dependency updates in this project), and re-evaluate isolation if the app is ever exposed to untrusted uploaders.
+
 (Resolved: CSRF protection on unsafe routes, streaming responses, LLM/embedding HTTP retry/backoff, and worker-backed ingest — a DB-backed queue (`app/jobs.py`) with a dedicated/inline worker — are now implemented. See `docs/PERFORMANCE.md`.)
 
 ## Triaged dependency-audit findings
