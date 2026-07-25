@@ -46,15 +46,6 @@ def _answered_judge():
 # --- deterministic helpers -------------------------------------------------
 
 
-def test_substring_hit_rate_counts_verbatim_hits(monkeypatch, tmp_path):
-    evals, _ = _fresh_modules(monkeypatch, tmp_path)
-
-    assert evals.substring_hit_rate("alpha and beta appear here", ["alpha", "beta", "gamma"]) == round(2 / 3, 4)
-    assert evals.substring_hit_rate("nothing matches", ["zzz"]) == 0.0
-    # No anchors defined → None so metrics can skip rather than score a 0.0.
-    assert evals.substring_hit_rate("anything", []) is None
-
-
 def test_judge_eval_item_abstains_and_skips_generation(monkeypatch, tmp_path):
     """Unanswerable item with no retrieval must abstain deterministically and never
     call the LLM — that saves a call and mirrors real ask() behaviour."""
@@ -85,7 +76,6 @@ def test_judge_eval_item_abstains_and_skips_generation(monkeypatch, tmp_path):
         "correct": True,
     }
     assert out["judge"]["answer_quality"]["label"] == "not_applicable"
-    assert out["judge"]["substring_hit_rate"] is None
 
 
 def test_judge_eval_item_generates_and_judges_answerable(monkeypatch, tmp_path):
@@ -106,7 +96,6 @@ def test_judge_eval_item_generates_and_judges_answerable(monkeypatch, tmp_path):
 
     assert out["answer_outcome"] == "answered"
     assert out["judge"]["judge_ok"] is True
-    assert out["judge"]["substring_hit_rate"] == 1.0
     assert out["judge"]["abstain"] == {
         "did_abstain": False,
         "retrieval_gated": False,
@@ -164,11 +153,11 @@ def test_judge_metrics_count_generation_stage_refusal_as_correct(monkeypatch, tm
     results = [
         {"answer_outcome": "answered", "judge": {
             "answer_quality": {"label": "correct"}, "groundedness": {"score": 1.0},
-            "citation_correctness": {"score": 1.0}, "substring_hit_rate": None, "judge_ok": True,
+            "citation_correctness": {"score": 1.0}, "judge_ok": True,
             "abstain": {"did_abstain": True, "retrieval_gated": False, "refused_at_generation": True,
                         "expected_abstain": True, "correct": True}}},
         {"answer_outcome": "abstained", "judge": {
-            **evals._not_applicable_judge(), "substring_hit_rate": None,
+            **evals._not_applicable_judge(),
             "abstain": {"did_abstain": True, "retrieval_gated": True, "refused_at_generation": False,
                         "expected_abstain": True, "correct": True}}},
     ]
@@ -207,17 +196,17 @@ def test_judge_metrics_splits_abstain_and_quality(monkeypatch, tmp_path):
     results = [
         {"answer_outcome": "answered", "judge": {
             "answer_quality": {"label": "correct"}, "groundedness": {"score": 1.0},
-            "citation_correctness": {"score": 1.0}, "substring_hit_rate": 1.0, "judge_ok": True,
+            "citation_correctness": {"score": 1.0}, "judge_ok": True,
             "abstain": {"did_abstain": False, "expected_abstain": False, "correct": True}}},
         {"answer_outcome": "answered", "judge": {
             "answer_quality": {"label": "incorrect"}, "groundedness": {"score": 0.0},
-            "citation_correctness": {"score": 0.5}, "substring_hit_rate": 0.0, "judge_ok": True,
+            "citation_correctness": {"score": 0.5}, "judge_ok": True,
             "abstain": {"did_abstain": False, "expected_abstain": False, "correct": True}}},
         {"answer_outcome": "abstained", "judge": {
-            **na, "substring_hit_rate": None,
+            **na,
             "abstain": {"did_abstain": True, "expected_abstain": True, "correct": True}}},
         {"answer_outcome": "abstained", "judge": {
-            **na, "substring_hit_rate": None,
+            **na,
             "abstain": {"did_abstain": True, "expected_abstain": False, "correct": False}}},
         # Retrieval-only item without a judge payload must be ignored entirely.
         {"answer_outcome": "", "status": "hit"},
@@ -229,7 +218,6 @@ def test_judge_metrics_splits_abstain_and_quality(monkeypatch, tmp_path):
     assert metrics["answer_quality"] == {"correct": 1, "partial": 0, "incorrect": 1, "correct_rate": 0.5}
     assert metrics["groundedness_avg"] == 0.5
     assert metrics["citation_correct_rate"] == 0.75
-    assert metrics["substring_hit_rate_avg"] == 0.5
     abstain = metrics["abstain"]
     assert abstain["unanswerable_total"] == 1
     assert abstain["unanswerable_correct_refusal"] == 1

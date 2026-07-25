@@ -315,7 +315,7 @@ def test_eval_generation_and_judge_use_distinct_call_types(monkeypatch):
 
     asyncio.run(llm.generate_answer("q", chunks, settings, call_type="eval_answer"))
     asyncio.run(llm.judge_answer(
-        question="q", generated_answer="a [1]", expected_answer="a", expected_substrings=[],
+        question="q", generated_answer="a [1]", expected_answer="a",
         item_type="answerable", retrieved_chunks=chunks, settings=settings,
     ))
 

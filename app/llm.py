@@ -1211,7 +1211,6 @@ async def judge_answer(
     question: str,
     generated_answer: str,
     expected_answer: str,
-    expected_substrings: list[str],
     item_type: str,
     retrieved_chunks: list[dict[str, Any]],
     settings: dict[str, Any],
@@ -1220,11 +1219,15 @@ async def judge_answer(
     """Grade a generated answer against its reference and retrieved excerpts (E1e-2, route A).
 
     Returns the structured judge signal for the three LLM-scored dimensions
-    (answer_quality / groundedness / citation_correctness). abstain_correctness and
-    substring_hit_rate are computed deterministically by the caller, not here. On any
-    LLM or parse failure the result carries ``judge_ok=False`` with empty dimensions so a
-    single bad item never fails the whole run. The result is a reference signal, not
-    ground truth (G1c posture).
+    (answer_quality / groundedness / citation_correctness). abstain_correctness is computed
+    deterministically by the caller, not here. On any LLM or parse failure the result
+    carries ``judge_ok=False`` with empty dimensions so a single bad item never fails the
+    whole run. The result is a reference signal, not ground truth (G1c posture).
+
+    ``expected_substrings`` is deliberately NOT passed in: those anchor *retrieval*
+    evidence (matched against chunk text by ``eval_item_hit_rank``) and are populated with
+    things like document headers, so showing them here as "expected evidence" misleads the
+    judge about what the answer should contain.
     """
     if not settings.get("chat_model"):
         logger.info("answer_judge_skipped reason=no_chat_settings")
@@ -1234,12 +1237,10 @@ async def judge_answer(
         f"[{index}] {chunk.get('filename', '')} - {chunk.get('location', '')}\n{chunk.get('text', '')}"
         for index, chunk in enumerate(retrieved_chunks, start=1)
     )
-    substrings = list(expected_substrings or [])
     user_prompt = (
         f"item_type: {item_type}\n\n"
         f"Question:\n{question}\n\n"
         f"Reference answer:\n{expected_answer or '(none provided)'}\n\n"
-        f"Expected evidence substrings:\n{substrings or '(none)'}\n\n"
         f"Retrieved excerpts (cited as [N]):\n{context or '(none)'}\n\n"
         f"Generated answer to grade:\n{generated_answer}\n\n"
         "Return the JSON object now."
@@ -2010,8 +2011,7 @@ def parse_answer_judge(content: str) -> dict[str, Any]:
     Returns a dict with a stable shape (the three scored dimensions plus ``judge_ok``).
     ``judge_ok`` is False on any malformed, non-object, or incomplete output — a missing
     dimension or an invalid answer_quality label counts as a failed parse — so the caller
-    can flag the item and keep the run going. ``substring_hit_rate`` is a deterministic
-    anchor computed by the caller, not by the judge, so it is intentionally absent here.
+    can flag the item and keep the run going.
     """
     result = _empty_judge_result()
     try:

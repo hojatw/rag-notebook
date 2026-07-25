@@ -59,7 +59,6 @@
                   <li><strong>{{ t('evalr.judge_answer_quality') }}</strong>: {{ t('evalr.judge_' ~ jr.answer_quality.label) }} ({{ jr.answer_quality.score }}) — {{ jr.answer_quality.rationale }}</li>
                   <li><strong>{{ t('evalr.judge_groundedness') }}</strong>: {{ jr.groundedness.score }} — {{ jr.groundedness.rationale }}</li>
                   <li><strong>{{ t('evalr.judge_citation') }}</strong>: {{ jr.citation_correctness.score }} — {{ jr.citation_correctness.rationale }}</li>
-                  <li><strong>{{ t('evalr.judge_substring') }}</strong>: {{ jr.substring_hit_rate if jr.substring_hit_rate is not none else "—" }}</li>
                 </ul>
                 {% if jr.groundedness.unsupported_claims %}
                   <p class="muted small"><strong>{{ t('evalr.judge_unsupported') }}</strong>: {{ jr.groundedness.unsupported_claims | join(" / ") }}</p>

@@ -298,15 +298,16 @@ def answer_is_refusal(answer_text: str) -> bool:
     return any(marker.casefold() in normalized for marker in REFUSAL_MARKERS)
 
 
-def substring_hit_rate(answer_text: str, expected_substrings: list[str]) -> float | None:
-    """Deterministic answer-quality anchor: fraction of expected substrings present
-    verbatim in the generated answer. None when the item defines no substrings, so
-    metrics can skip it rather than treat an unanchored item as a 0.0."""
-    substrings = [snippet for snippet in (expected_substrings or []) if snippet]
-    if not substrings:
-        return None
-    hits = sum(1 for snippet in substrings if snippet in (answer_text or ""))
-    return round(hits / len(substrings), 4)
+# NOTE (E1e-2, removed 2026-07-25): there used to be a `substring_hit_rate` here that
+# scored how many `expected_substrings` appeared verbatim in the generated answer, as a
+# deterministic anchor for answer_quality. It was withdrawn because that field is an
+# *evidence* anchor, not an answer anchor: `eval_item_hit_rank` matches it against chunk
+# text to prove the right passage was retrieved, and items are populated with things like
+# document headers. A correct summarising answer never repeats them, so the metric read
+# ~0.28 while every answer was in fact fine — a false signal, and it also fed document
+# headers into the judge prompt as "expected evidence". Retrieval-side coverage is already
+# measured by `eval_item_hit_rank`. A real answer-side anchor needs its own field
+# (`expected_answer_substrings`); see QUALITY.md before reintroducing one.
 
 
 async def judge_eval_item(
@@ -351,18 +352,15 @@ async def judge_eval_item(
     if retrieval_gated:
         judge = _not_applicable_judge()
         judge["abstain"] = _abstain_block(False)
-        judge["substring_hit_rate"] = None
         return {"answer_text": i18n.t("chat.abstain"), "answer_outcome": "abstained", "judge": judge}
     try:
         answer_text = await generate_answer(
             question, retrieved, settings, call_type="eval_answer", usage_context=usage_context,
         )
-        hit_rate = substring_hit_rate(answer_text, item.get("expected_substrings") or [])
         judge = await judge_answer(
             question=question,
             generated_answer=answer_text,
             expected_answer=item.get("expected_answer") or "",
-            expected_substrings=item.get("expected_substrings") or [],
             item_type=item_type,
             retrieved_chunks=retrieved,
             settings=settings,
@@ -375,11 +373,9 @@ async def judge_eval_item(
         judge = _not_applicable_judge()
         # No answer was produced, so path ② cannot have fired.
         judge["abstain"] = _abstain_block(False)
-        judge["substring_hit_rate"] = None
         judge["error"] = str(exc)[:300]
         return {"answer_text": "", "answer_outcome": "error", "judge": judge}
     judge["abstain"] = _abstain_block(answer_is_refusal(answer_text))
-    judge["substring_hit_rate"] = hit_rate
     return {"answer_text": answer_text, "answer_outcome": "answered", "judge": judge}
 
 
@@ -398,7 +394,6 @@ def judge_metrics_from_results(results: list[dict]) -> dict[str, Any]:
     labels = {"correct": 0, "partial": 0, "incorrect": 0}
     groundedness_scores: list[float] = []
     citation_scores: list[float] = []
-    substring_rates: list[float] = []
     for r in scorable:
         judge = r["judge"]
         label = (judge.get("answer_quality") or {}).get("label")
@@ -406,9 +401,6 @@ def judge_metrics_from_results(results: list[dict]) -> dict[str, Any]:
             labels[label] += 1
         groundedness_scores.append(float((judge.get("groundedness") or {}).get("score") or 0.0))
         citation_scores.append(float((judge.get("citation_correctness") or {}).get("score") or 0.0))
-        rate = judge.get("substring_hit_rate")
-        if rate is not None:
-            substring_rates.append(float(rate))
     # Abstain correctness is deterministic, so every judged item (incl. generate errors)
     # carries it; split so a reviewer sees false refusals on answerable items separately
     # from correct refusals on unanswerable ones.
@@ -437,7 +429,6 @@ def judge_metrics_from_results(results: list[dict]) -> dict[str, Any]:
         },
         "groundedness_avg": _avg(groundedness_scores),
         "citation_correct_rate": _avg(citation_scores),
-        "substring_hit_rate_avg": _avg(substring_rates),
         "abstain": {
             "evaluated": len(with_abstain),
             "correct": abstain_correct,
@@ -1825,7 +1816,6 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
             (("citation_correct_rate",), i18n.t("evalr.judge_citation"), True),
             (("abstain", "correct_rate"), i18n.t("evalr.judge_abstain"), True),
             (("abstain", "answerable_false_refusal_rate"), i18n.t("evalr.judge_answerable_false_refusal"), False),
-            (("substring_hit_rate_avg",), i18n.t("evalr.judge_substring"), True),
         ]
         for path, label, higher_better in judge_specs:
             bval = _judge_value(base_judge, path)

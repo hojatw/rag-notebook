@@ -231,7 +231,6 @@ MESSAGES: dict[str, dict[str, str]] = {
         "evalr.judge_groundedness": "有依據程度",
         "evalr.judge_citation": "引用正確率",
         "evalr.judge_abstain": "拒答正確率",
-        "evalr.judge_substring": "關鍵字命中率",
         "evalr.judge_correct": "正確",
         "evalr.judge_partial": "部分",
         "evalr.judge_incorrect": "錯誤",

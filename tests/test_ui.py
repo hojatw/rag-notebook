@@ -2798,7 +2798,7 @@ def test_eval_run_page_shows_answer_quality_layer_when_judged(monkeypatch, tmp_p
         "judge": {
             "answered": 1, "abstained": 0, "judge_ok": 1, "judge_failed": 0,
             "answer_quality": {"correct": 1, "partial": 0, "incorrect": 0, "correct_rate": 1.0},
-            "groundedness_avg": 1.0, "citation_correct_rate": 1.0, "substring_hit_rate_avg": 1.0,
+            "groundedness_avg": 1.0, "citation_correct_rate": 1.0,
             "abstain": {
                 "correct_rate": 1.0, "unanswerable_total": 0, "unanswerable_correct_refusal": 0,
                 "answerable_total": 1, "answerable_false_refusal": 0,
@@ -2809,7 +2809,7 @@ def test_eval_run_page_shows_answer_quality_layer_when_judged(monkeypatch, tmp_p
         "answer_quality": {"label": "correct", "score": 1.0, "rationale": "matches reference"},
         "groundedness": {"score": 1.0, "unsupported_claims": [], "rationale": "grounded"},
         "citation_correctness": {"score": 1.0, "wrong_citations": [], "rationale": "correct"},
-        "judge_ok": True, "judge_model": "m", "substring_hit_rate": 1.0,
+        "judge_ok": True, "judge_model": "m",
         "abstain": {"did_abstain": False, "expected_abstain": False, "correct": True},
     }
     with db.connect() as conn:
