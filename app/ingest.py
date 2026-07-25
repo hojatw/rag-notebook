@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import re
 from pathlib import Path
@@ -23,7 +24,24 @@ def supported(filename: str) -> bool:
     return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
 
-def extract_sections(path: Path) -> list[tuple[str, str]]:
+@dataclasses.dataclass
+class ExtractionResult:
+    """Extracted sections plus what the extractor noticed on the way (A6a).
+
+    ``extractor`` and ``notes`` capture things only the extractor itself can
+    know — most importantly *which* code path produced the sections, since a
+    PDF that fell back to plain pypdf loses tables and paragraph structure and
+    therefore yields coarser citations. Diagnostics that can be measured from
+    the sections afterwards (counts, char totals) are **not** carried here;
+    they are derived in `collect_ingest_diagnostics` so there is one place that
+    computes them.
+    """
+    sections: list[tuple[str, str]]
+    extractor: str
+    notes: list[str] = dataclasses.field(default_factory=list)
+
+
+def extract_sections(path: Path) -> ExtractionResult:
     """Extract text sections from a supported source file.
 
     Dispatches per suffix to a helper. Each helper returns a list of
@@ -33,18 +51,34 @@ def extract_sections(path: Path) -> list[tuple[str, str]]:
     """
     suffix = path.suffix.lower()
     logger.info("extract_started path=%s suffix=%s", path.name, suffix)
+    notes: list[str] = []
     if suffix == ".pdf":
-        sections = _extract_pdf(path)
+        # Structured first; note the degradation explicitly when falling back,
+        # because "why are this file's citations only page-level?" is otherwise
+        # invisible to the user.
+        sections = _extract_pdf_with_pdfplumber(path)
+        if sections:
+            extractor = "pdf_pdfplumber"
+        else:
+            sections = _extract_pdf_with_pypdf(path)
+            extractor = "pdf_pypdf"
+            notes.append("pdf_structure_fallback")
     elif suffix == ".docx":
         sections = _extract_docx(path)
+        extractor = "docx"
     elif suffix in {".html", ".htm"}:
         sections = _extract_html(path)
+        extractor = "html"
     elif suffix in {".srt", ".vtt"}:
         sections = _extract_subtitles(path)
+        extractor = "subtitles"
     else:
         sections = [("document", path.read_text(encoding="utf-8", errors="ignore"))]
-    logger.info("extract_completed path=%s sections=%s", path.name, len(sections))
-    return sections
+        extractor = "plain_text"
+    logger.info(
+        "extract_completed path=%s sections=%s extractor=%s", path.name, len(sections), extractor
+    )
+    return ExtractionResult(sections=sections, extractor=extractor, notes=notes)
 
 
 def _extract_subtitles(path: Path) -> list[tuple[str, str]]:
@@ -83,19 +117,13 @@ def _extract_subtitles(path: Path) -> list[tuple[str, str]]:
     return [("transcript", transcript)] if transcript else []
 
 
-def _extract_pdf(path: Path) -> list[tuple[str, str]]:
-    """Extract PDF paragraphs + tables in page reading order.
+def _extract_pdf_with_pypdf(path: Path) -> list[tuple[str, str]]:
+    """Plain page-level PDF text — the fallback when pdfplumber can't help.
 
-    Preferred path uses pdfplumber so paragraphs and tables can be emitted as
-    interleaved blocks (``page N paragraph K`` / ``page N table M``). If
-    pdfplumber is unavailable or fails for a document, falls back to plain
-    pypdf text extraction.
+    Loses tables and paragraph blocks, so citations degrade to ``page N``.
+    `extract_sections` records this as the ``pdf_structure_fallback`` note.
     """
     from pypdf import PdfReader
-
-    structured_sections = _extract_pdf_with_pdfplumber(path)
-    if structured_sections:
-        return structured_sections
 
     reader = PdfReader(str(path))
     return [
@@ -712,6 +740,71 @@ def chunk_text(
     return [body for _, body in chunk_sections([("", text)], target_chars, overlap_sentences)]
 
 
+def estimate_embedding_tokens(text: str) -> int:
+    """Rough token count for the embedding input window (A6a).
+
+    An **estimate, not a measurement**: counting real tokens would mean shipping
+    the model's tokenizer. CJK-heavy text is charged ~1 token/char (conservative
+    — e5 rarely does better) and Latin text ~4 chars/token, reusing the same
+    `is_mostly_cjk` split the chunker already relies on. Used only to warn that
+    a chunk *may* be truncated, never to change chunking. Ground truth lives in
+    `tests/inspect_e5_chunk_tokens.py` (QUALITY.md Q0-5).
+    """
+    d = config.diagnostics
+    per_token = d.cjk_chars_per_token if is_mostly_cjk(text) else d.latin_chars_per_token
+    return int(len(text) / per_token) if per_token > 0 else 0
+
+
+def collect_ingest_diagnostics(
+    extraction: "ExtractionResult",
+    records: list[tuple[str, str]],
+) -> dict[str, Any]:
+    """Summarise what an ingest actually produced, for the source preview (A6a).
+
+    Everything here is derived from data the pipeline already had; the point is
+    to persist it instead of throwing it away, so a user can tell "extraction
+    produced nothing useful" apart from "retrieval/answering went wrong".
+    """
+    d = config.diagnostics
+    section_texts = [text for _, text in extraction.sections]
+    chars = sum(len(text) for text in section_texts)
+    kinds: dict[str, int] = {}
+    for location, _text in extraction.sections:
+        kind = _section_kind(location)
+        kinds[kind] = kinds.get(kind, 0) + 1
+    empty_sections = sum(1 for text in section_texts if not text.strip())
+    over_budget = [
+        text for _, text in records if estimate_embedding_tokens(text) > d.embedding_token_budget
+    ]
+
+    warnings: list[dict[str, Any]] = []
+    if chars < d.low_text_chars:
+        # The scanned-PDF / image-only signal. Deliberately reported even when
+        # indexing "succeeded", because that is exactly the silent-failure case.
+        warnings.append({"code": "low_text", "chars": chars, "threshold": d.low_text_chars})
+    if "pdf_structure_fallback" in extraction.notes:
+        warnings.append({"code": "pdf_structure_fallback"})
+    if over_budget:
+        warnings.append({
+            "code": "chunk_over_token_budget",
+            "count": len(over_budget),
+            "budget": d.embedding_token_budget,
+        })
+    if empty_sections:
+        warnings.append({"code": "empty_sections", "count": empty_sections})
+
+    preview = "\n\n".join(text.strip() for text in section_texts if text.strip())[: d.preview_chars]
+    return {
+        "extractor": extraction.extractor,
+        "chars": chars,
+        "sections": len(extraction.sections),
+        "chunks": len(records),
+        "section_kinds": kinds,
+        "warnings": warnings,
+        "preview": preview,
+    }
+
+
 def get_settings() -> dict[str, Any]:
     """Load the single global LLM settings row with the API key decrypted."""
     with connect() as conn:
@@ -756,13 +849,23 @@ async def process_source(source_id: int) -> None:
         if source is None:
             logger.warning("ingest_source_missing source_id=%s", source_id)
             return
-        conn.execute("UPDATE sources SET status = 'processing', error = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (source_id,))
+        # Diagnostics describe the *current* ingest only, so clear the previous
+        # run's alongside its chunks — a reindex must not show stale warnings.
+        conn.execute(
+            "UPDATE sources SET status = 'processing', error = '', diagnostics_json = '{}', "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (source_id,),
+        )
         conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
     try:
         delete_source_vectors(source_id, source["user_id"])
     except Exception:
         logger.exception("vector_source_delete_failed source_id=%s", source_id)
 
+    # Which phase we are in, so a failure can say whether extraction produced
+    # nothing or the embedding endpoint was down (A6a "failure reason").
+    stage = "extract"
+    diagnostics: dict[str, Any] = {}
     try:
         logger.info(
             "ingest_started source_id=%s user_id=%s filename=%s",
@@ -770,27 +873,37 @@ async def process_source(source_id: int) -> None:
             source["user_id"],
             source["filename"],
         )
-        sections = extract_sections(Path(source["stored_path"]))
+        extraction = extract_sections(Path(source["stored_path"]))
+        sections = extraction.sections
+        stage = "chunk"
         # Pack sentences across sections up to the chunk target so formats that
         # emit many small sections (PDF per-paragraph blocks) produce the same
         # well-sized chunks as single-section formats (TXT/MD) rather than
         # hundreds of tiny fragments.
         records: list[tuple[str, str]] = chunk_sections(sections)
+        # Collected before the empty-records check so a source that extracted
+        # nothing still gets diagnostics — that is the case users most need to
+        # see, and it is the only window into a failed source.
+        diagnostics = collect_ingest_diagnostics(extraction, records)
         if not records:
             raise ValueError("No extractable text found.")
 
         logger.info(
-            "ingest_chunked source_id=%s sections=%s chunks=%s",
+            "ingest_chunked source_id=%s sections=%s chunks=%s extractor=%s warnings=%s",
             source_id,
             len(sections),
             len(records),
+            diagnostics["extractor"],
+            len(diagnostics["warnings"]),
         )
+        stage = "embed"
         embeddings = await embed_texts(
             [text for _, text in records],
             get_settings(),
             role="passage",
             usage_context={"user_id": source["user_id"], "notebook_id": source["notebook_id"], "source_id": source_id},
         )
+        stage = "store"
         with connect() as conn:
             chunk_rows = [
                 (source["user_id"], source_id, index, location, text, dumps(embedding))
@@ -813,8 +926,9 @@ async def process_source(source_id: int) -> None:
                 (source_id,),
             ).fetchall()
             conn.execute(
-                "UPDATE sources SET status = 'indexed', error = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (source_id,),
+                "UPDATE sources SET status = 'indexed', error = '', diagnostics_json = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (dumps(diagnostics), source_id),
             )
         upsert_chunks(
             [
@@ -836,13 +950,17 @@ async def process_source(source_id: int) -> None:
         # summarization failure leaves the source fully usable for retrieval.
         await _generate_source_summary(source_id)
     except Exception as exc:
+        # Keep whatever was learned before the failure: which stage broke, and
+        # (when extraction got that far) what it managed to pull out. Without
+        # this a failed source shows an error string and nothing else.
+        failed_diagnostics = {**diagnostics, "failed_stage": stage}
         with connect() as conn:
             conn.execute(
                 """
                 UPDATE sources
-                SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP
+                SET status = 'failed', error = ?, diagnostics_json = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (str(exc)[:500], source_id),
+                (str(exc)[:500], dumps(failed_diagnostics), source_id),
             )
-        logger.exception("ingest_failed source_id=%s", source_id)
+        logger.exception("ingest_failed source_id=%s stage=%s", source_id, stage)

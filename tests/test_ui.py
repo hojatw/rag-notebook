@@ -3007,3 +3007,76 @@ def test_note_export_carries_the_type_label(monkeypatch, tmp_path):
 
         assert export.status_code == 200
         assert "時間軸 ·" in export.text
+
+
+def test_source_preview_shows_ingestion_diagnostics(monkeypatch, tmp_path):
+    """A6a: the preview drawer explains what was extracted, with consequences."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        diagnostics = {
+            "extractor": "pdf_pypdf",
+            "chars": 12,
+            "sections": 3,
+            "chunks": 0,
+            "section_kinds": {"body": 2, "table": 1},
+            "warnings": [
+                {"code": "low_text", "chars": 12, "threshold": 200},
+                {"code": "pdf_structure_fallback"},
+            ],
+            "preview": "只有這幾個字",
+        }
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, diagnostics_json) "
+                "VALUES (?, ?, 'scan.pdf', '/tmp/scan.pdf', 'indexed', ?)",
+                (user_id, nb_id, json.dumps(diagnostics)),
+            ).lastrowid
+
+        preview = client.get(f"/notebooks/{nb_id}/sources/{source_id}/preview")
+
+        assert preview.status_code == 200
+        assert "萃取診斷" in preview.text
+        assert "PDF（僅整頁文字）" in preview.text     # extractor path, localised
+        assert "掃描影像" in preview.text              # low_text warning explains the cause
+        assert "只有這幾個字" in preview.text          # extracted-text preview
+        assert "表格" in preview.text                  # section-kind breakdown
+
+
+def test_failed_source_row_is_openable_and_flags_warnings(monkeypatch, tmp_path):
+    """A failed source must be inspectable — its diagnostics are the only clue."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, error, diagnostics_json) "
+                "VALUES (?, ?, 'broken.pdf', '/tmp/broken.pdf', 'failed', '解析失敗', ?)",
+                (user_id, nb_id, json.dumps({
+                    "extractor": "pdf_pypdf",
+                    "chars": 0,
+                    "sections": 0,
+                    "chunks": 0,
+                    "section_kinds": {},
+                    "warnings": [{"code": "low_text", "chars": 0, "threshold": 200}],
+                    "preview": "",
+                    "failed_stage": "extract",
+                })),
+            ).lastrowid
+
+        row = client.get(f"/notebooks/{nb_id}/sources/{source_id}/_partial")
+
+        assert row.status_code == 200
+        assert "點擊查看萃取診斷" in row.text        # not disabled any more
+        assert "source-warn" in row.text            # warning marker on the row
+
+        preview = client.get(f"/notebooks/{nb_id}/sources/{source_id}/preview")
+        assert preview.status_code == 200
+        assert "讀取檔案內容" in preview.text        # which stage broke
+        assert "沒有萃取到任何文字" in preview.text

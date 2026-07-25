@@ -4142,6 +4142,105 @@ legend {
 
 /* ---------------------------------------------------------------- preview summary */
 
+/* A6a ingestion diagnostics panel in the source preview drawer. */
+.preview-diagnostics {
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.preview-diagnostics > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted-strong);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.preview-diagnostics > summary::before {
+  content: "▸";
+  color: var(--accent);
+  transition: transform 140ms var(--ease);
+}
+
+.preview-diagnostics[open] > summary::before { transform: rotate(90deg); }
+
+.preview-diagnostics > *:not(summary) { margin-top: var(--sp-3); }
+
+.diag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.diag-grid dt {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.diag-grid dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.diag-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+}
+
+.diag-preview-head {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.diag-preview {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-soft);
+}
+
+/* Warning marker on a source row — the only hint that the drawer has
+   something worth opening. */
+.source-warn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-pill);
+  background: var(--warn-soft);
+  color: var(--warn);
+  border: 1px solid var(--warn-line);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
 .preview-summary {
   background: var(--surface-soft);
   border: 1px solid var(--line);

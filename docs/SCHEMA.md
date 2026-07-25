@@ -193,6 +193,7 @@ An uploaded document. `notebook_id` is nullable for legacy rows (backfilled by t
 | `status` | TEXT NOT NULL DEFAULT `'uploaded'` | `uploaded` → `processing` → `indexed` \| `failed` |
 | `error` | TEXT DEFAULT `''` | failure message (truncated) |
 | `summary` / `summary_at` | TEXT DEFAULT `''` | per-source TL;DR generated after indexing |
+| `diagnostics_json` | TEXT NOT NULL DEFAULT `'{}'` | A6a ingestion diagnostics: `extractor`, `chars`, `sections`, `chunks`, `section_kinds`, `warnings[]`, bounded `preview`, and `failed_stage` on failure. Written by `process_source` (`app/ingest.py`) and **replaced** on every re-ingest. Same scope as the source itself — the text preview must not be copied into audit/governance rows |
 | `created_at` / `updated_at` | TEXT | |
 
 ## `chunks`

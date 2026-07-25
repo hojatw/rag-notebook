@@ -1375,6 +1375,21 @@ def _cached_briefing(notebook: dict) -> str:
     return ""
 
 
+def source_with_diagnostics(row) -> dict:
+    """Attach the parsed A6a ingestion diagnostics to a source row.
+
+    Templates get a plain dict (never a JSON string), and a blob written by an
+    older/partial ingest degrades to `{}` rather than breaking the page.
+    """
+    data = dict(row)
+    try:
+        parsed = loads(data.get("diagnostics_json") or "{}")
+    except (TypeError, ValueError):
+        parsed = {}
+    data["diagnostics"] = parsed if isinstance(parsed, dict) else {}
+    return data
+
+
 def get_notebook(conn, notebook_id: int, user_id: int) -> dict:
     """Fetch a notebook owned by the user, raising 404 otherwise."""
     row = conn.execute(
@@ -1520,6 +1535,7 @@ def notebook_view(
             "SELECT * FROM sources WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC",
             (notebook_id, user["id"]), SOURCES_LIMIT,
         )
+        sources = [source_with_diagnostics(row) for row in sources]
         conversations, conversations_truncated = fetch_capped(
             conn,
             """
@@ -1812,7 +1828,10 @@ def source_partial(
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="找不到來源")
-    response = render(request, "_source_item.html", {"notebook": notebook, "source": dict(row)})
+    response = render(
+        request, "_source_item.html",
+        {"notebook": notebook, "source": source_with_diagnostics(row)},
+    )
     # Keep fast source-row synchronization separate from Studio refreshes.
     # Processing polls are frequent; if the Studio sections also listen to
     # them they re-render every 2s during embedding, even when no useful
@@ -1861,7 +1880,7 @@ def source_preview(
     return render(
         request,
         "_source_preview.html",
-        {"notebook": notebook, "source": dict(source_row), "chunks": chunks},
+        {"notebook": notebook, "source": source_with_diagnostics(source_row), "chunks": chunks},
     )
 
 

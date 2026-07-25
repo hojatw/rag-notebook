@@ -47,6 +47,20 @@ class ChunkingConfig:  # changing these requires re-indexing
 
 
 @dataclasses.dataclass
+class DiagnosticsConfig:
+    """A6a ingestion diagnostics — thresholds for the per-source warnings.
+
+    These only decide when a warning is *shown*; none of them changes what is
+    extracted, chunked, or embedded, so tuning them never requires re-indexing.
+    """
+    low_text_chars: int = 200           # below this extracted total -> "almost no text" warning
+    preview_chars: int = 500            # stored extracted-text preview length
+    embedding_token_budget: int = 512   # model input window used for the over-budget warning
+    cjk_chars_per_token: float = 1.0    # CJK-heavy text estimate (conservative: 1 token/char)
+    latin_chars_per_token: float = 4.0  # Latin text estimate (the usual ~4 chars/token)
+
+
+@dataclasses.dataclass
 class EmbeddingConfig:
     batch_size: int = 64                # texts per embedding request (settings can override)
     max_concurrency: int = 4            # in-flight embedding batches (settings can override)
@@ -113,6 +127,7 @@ class AuthConfig:
 class AppConfig:
     retrieval: RetrievalConfig = dataclasses.field(default_factory=RetrievalConfig)
     chunking: ChunkingConfig = dataclasses.field(default_factory=ChunkingConfig)
+    diagnostics: DiagnosticsConfig = dataclasses.field(default_factory=DiagnosticsConfig)
     embedding: EmbeddingConfig = dataclasses.field(default_factory=EmbeddingConfig)
     llm_retry: LLMRetryConfig = dataclasses.field(default_factory=LLMRetryConfig)
     jobs: JobsConfig = dataclasses.field(default_factory=JobsConfig)
@@ -166,6 +181,7 @@ def load_config() -> AppConfig:
     return AppConfig(
         retrieval=_load_group(RetrievalConfig, "retrieval", toml_data),
         chunking=_load_group(ChunkingConfig, "chunking", toml_data),
+        diagnostics=_load_group(DiagnosticsConfig, "diagnostics", toml_data),
         embedding=_load_group(EmbeddingConfig, "embedding", toml_data),
         llm_retry=_load_group(LLMRetryConfig, "llm_retry", toml_data),
         jobs=_load_group(JobsConfig, "jobs", toml_data),

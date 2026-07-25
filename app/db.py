@@ -438,6 +438,12 @@ def init_db() -> None:
         # layer (see THEME_CHOICES in app/main.py) rather than a CHECK constraint,
         # so adding a theme later stays a code-only change.
         _ensure_column(conn, "users", "theme", "TEXT NOT NULL DEFAULT 'system'")
+        # A6a: what the extractor actually produced for this source — counts,
+        # the extractor path taken, warnings, and a bounded text preview. One
+        # JSON blob (same pattern as llm_settings.diagnostics_json from O1a) so
+        # new formats can add signals without a migration each time. Rewritten
+        # on every (re)ingest, never appended to.
+        _ensure_column(conn, "sources", "diagnostics_json", "TEXT NOT NULL DEFAULT '{}'")
         # U16 Phase 2: what produced an outputs-shelf entry ('pinned', 'note', or
         # a Studio tool kind — allowlist NOTE_KINDS in app/main.py). Drives the
         # type badge and the shelf filter. '' means "not yet classified" and is
