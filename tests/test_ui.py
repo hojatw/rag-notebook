@@ -2530,14 +2530,20 @@ def test_artifact_renders_with_save_button_no_autosave(monkeypatch, tmp_path):
                 "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
                 (db.encrypt_for_storage("sk-test"),),
             )
-        _seed_indexed_source(db, user["id"], notebook_id, "a.pdf", summary="一份關於主題的摘要。")
+        source_id = _seed_indexed_source(db, user["id"], notebook_id, "a.pdf", summary="一份關於主題的摘要。")
 
-        resp = client.post(f"/notebooks/{notebook_id}/artifacts/study_guide")
+        # The panel now posts the picked sources (all checked by default).
+        resp = client.post(
+            f"/notebooks/{notebook_id}/artifacts/study_guide",
+            data={"source_ids": [str(source_id)]},
+        )
         assert resp.status_code == 200
         assert "核心概念" in resp.text
         # Manual save: a save button is offered, nothing auto-saved.
         assert "存成筆記" in resp.text
-        assert 'name="title" value="學習指南 — A4測試"' in resp.text
+        # A single-source run names the file (more precise than the notebook
+        # title, and it makes repeat runs tell themselves apart in the shelf).
+        assert 'name="title" value="學習指南 — a.pdf"' in resp.text
         assert resp.headers.get("HX-Trigger") is None
         with db.connect() as conn:
             assert conn.execute(
@@ -3080,3 +3086,94 @@ def test_failed_source_row_is_openable_and_flags_warnings(monkeypatch, tmp_path)
         assert preview.status_code == 200
         assert "讀取檔案內容" in preview.text        # which stage broke
         assert "沒有萃取到任何文字" in preview.text
+
+
+def test_artifact_tools_honour_the_source_picker(monkeypatch, tmp_path):
+    """A4 tools used the whole notebook with no way to narrow them; now the
+    panel picks sources and the route respects the selection."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            ids = {}
+            for name, summary in (("表格.xlsx", "異常現象與處理方法"), ("簡報.pptx", "EAP 導入專案時程")):
+                ids[name] = conn.execute(
+                    "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, summary) "
+                    "VALUES (?, ?, ?, '/tmp/x', 'indexed', ?)",
+                    (user_id, nb_id, name, summary),
+                ).lastrowid
+
+        panel = client.get(f"/notebooks/{nb_id}/tools/faq")
+        assert panel.status_code == 200
+        # Every indexed source is offered and pre-checked (previous default).
+        assert panel.text.count('name="source_ids"') == 2
+        assert panel.text.count("checked") == 2
+        assert "表格.xlsx" in panel.text and "簡報.pptx" in panel.text
+
+        captured = {}
+
+        async def fake_generate_artifact(kind, summaries, settings, **kwargs):
+            captured["filenames"] = [s["filename"] for s in summaries]
+            return "# 產出"
+
+        monkeypatch.setattr(main, "generate_artifact", fake_generate_artifact)
+        with db.connect() as conn:
+            conn.execute("UPDATE llm_settings SET chat_model = 'x' WHERE id = 1")
+
+        result = client.post(
+            f"/notebooks/{nb_id}/artifacts/faq",
+            data={"source_ids": [str(ids["簡報.pptx"])]},
+        )
+
+        assert result.status_code == 200
+        # The deselected spreadsheet must not reach the prompt.
+        assert captured["filenames"] == ["簡報.pptx"]
+        # A single-source run names the file, so two runs are distinguishable.
+        assert 'value="常見問答 — 簡報.pptx"' in result.text
+
+
+def test_artifact_tools_reject_an_empty_selection(monkeypatch, tmp_path):
+    """Deselecting everything must be an error, never a silent whole-notebook run."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, summary) "
+                "VALUES (?, ?, 'a.pdf', '/tmp/a', 'indexed', '摘要')",
+                (user_id, nb_id),
+            )
+
+        response = client.post(f"/notebooks/{nb_id}/artifacts/faq", data={})
+
+        assert response.status_code == 400
+        assert "請至少選擇一個來源" in response.text
+
+
+def test_shelf_shows_the_time_so_same_day_entries_differ(monkeypatch, tmp_path):
+    """Two runs of one tool on one day looked identical when only a date showed."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            for stamp in ("2026-07-25 14:35:16", "2026-07-25 14:35:54"):
+                conn.execute(
+                    "INSERT INTO notes (notebook_id, user_id, title, content, kind, created_at) "
+                    "VALUES (?, ?, '常見問答 — NB', 'x', 'faq', ?)",
+                    (nb_id, user_id, stamp),
+                )
+
+        shelf = client.get(f"/notebooks/{nb_id}/_notes")
+
+        assert shelf.status_code == 200
+        assert "07-25 14:35" in shelf.text
+        assert 'title="2026-07-25 14:35:54"' in shelf.text   # full stamp on hover

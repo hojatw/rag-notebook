@@ -1979,11 +1979,17 @@ async def notebook_suggestions(
 def _fetch_source_summaries(conn, notebook_id: int, user_id: int, source_ids: list[int] | None = None) -> list[dict]:
     """Return [{id, filename, summary}] for indexed sources in this notebook.
 
-    When ``source_ids`` is given, restricts to those ids (intersection with
-    the notebook's indexed sources). For sources whose ``summary`` is empty,
-    falls back to a 400-char snippet from the first chunk so briefing and
-    comparison can still cover the source meaningfully.
+    ``source_ids=None`` means "every indexed source in the notebook"; an
+    **empty list means an empty selection** and returns nothing. The distinction
+    matters: treating `[]` as "all" would silently widen a tool's scope to
+    sources the user deliberately deselected.
+
+    For sources whose ``summary`` is empty, falls back to a 400-char snippet
+    from the first chunk so briefing and comparison can still cover the source
+    meaningfully.
     """
+    if source_ids is not None and not source_ids:
+        return []
     params: list = [notebook_id, user_id]
     where = "notebook_id = ? AND user_id = ? AND status = 'indexed'"
     if source_ids:
@@ -3440,27 +3446,58 @@ async def notebook_artifact(
     notebook_id: int,
     kind: str,
     user: Annotated[dict, Depends(require_login)],
+    source_ids: list[int] = Form(default=[]),
 ):
-    """Generate an A4 artifact (study guide / FAQ / timeline) from the notebook's
-    source summaries. The result is shown in the modal; the user decides whether
-    to save it to the outputs shelf (no auto-save)."""
+    """Generate an A4 artifact (study guide / FAQ / timeline) from the selected
+    sources' summaries. The result is shown in the modal; the user decides
+    whether to save it to the outputs shelf (no auto-save).
+
+    Sources are chosen in the tool panel, like compare/minutes/translate. The
+    left-pane checkboxes scope **chat** only, so a tool that silently used the
+    whole notebook could not be narrowed at all.
+    """
     if kind not in ARTIFACT_PROMPTS:
         raise HTTPException(status_code=404, detail="未知的產出類型")
     label = ARTIFACT_LABELS.get(kind, kind)
+    # Checkboxes only submit when checked, so an empty list is the user having
+    # deselected everything — an error, not an invitation to use the whole
+    # notebook. The panel ships with all sources checked.
+    selected_ids = [sid for sid in source_ids if isinstance(sid, int)]
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
-        summaries = _fetch_source_summaries(conn, notebook_id, user["id"])
+        summaries = _fetch_source_summaries(conn, notebook_id, user["id"], selected_ids)
+        indexed_total = conn.execute(
+            "SELECT COUNT(*) AS n FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed'",
+            (notebook_id, user["id"]),
+        ).fetchone()["n"]
         settings = load_llm_settings(conn) or {}
 
+    # What the saved note is named after. Two runs of the same tool used to
+    # produce two identically-titled shelf entries ("常見問答 — <notebook>"),
+    # which reads as "saving gave me the old content"; naming the scope lets
+    # them tell themselves apart.
+    if len(summaries) == 1:
+        scope_label = summaries[0]["filename"]
+    elif summaries and len(summaries) == indexed_total:
+        scope_label = notebook["title"]
+    else:
+        scope_label = i18n.t("note.scope_multi", count=len(summaries))
     # `kind` is already allowlisted by the ARTIFACT_PROMPTS check above and every
     # member is in NOTE_KINDS, so it doubles as the shelf entry's type badge.
     base_ctx = {
         "notebook_id": notebook_id,
         "label": label,
         "notebook_title": notebook["title"],
+        "scope_label": scope_label,
         "artifact": "",
         "kind": kind,
     }
+    if not selected_ids:
+        return render(
+            request, "_artifact_result.html",
+            {**base_ctx, "error": i18n.t("flow.artifact_need_source")},
+            status_code=400,
+        )
     if not summaries:
         return render(
             request, "_artifact_result.html",

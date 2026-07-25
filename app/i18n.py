@@ -155,6 +155,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "note.kind_faq": "常見問答",
         "note.kind_timeline": "時間軸",
         "note.kind_translate": "翻譯摘要",
+        "note.scope_multi": "{count} 個來源",
         "note.filter_all": "全部",
         "note.filter_label": "依類型篩選產出",
         # --- Account page · appearance (U11 dark mode) ------------------------
@@ -379,6 +380,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "tool.study_guide_blurb": "從所有已索引來源的摘要生成學習指南（核心概念、重點、自我測驗、名詞解釋）。",
         "tool.faq_blurb": "從所有已索引來源生成常見問答（FAQ）。",
         "tool.timeline_blurb": "從來源中抽取事件與里程碑，整理成時間軸。",
+        "tool.artifact_sources_label": "選擇要納入的來源",
         "tool.generate": "生成{label}",
         "tool.generating": "生成中…",
         # --- Markdown export headings (Phase 1a) -----------------------------
@@ -427,6 +429,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "flow.minutes_no_llm": "請先在系統設定完成 LLM 設定。",
         "flow.minutes_empty": "模型未能產生會議記錄，請再試一次。",
         "flow.artifact_need_index": "先完成來源索引，才能生成。",
+        "flow.artifact_need_source": "請至少選擇一個來源。",
         "flow.artifact_no_llm": "請先完成 LLM 設定，才能生成。",
         "flow.artifact_empty": "模型未回傳內容，請再試一次。",
         "flow.translate_no_source": "找不到已索引、且有摘要可翻譯的來源。",

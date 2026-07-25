@@ -54,7 +54,11 @@
               {# The badge costs horizontal room in a narrow pane, so keep the
                  full title reachable on hover rather than only on expand. #}
               <span class="note-summary-title" title="{{ note.title }}">{{ note.title or (note.content[:60] ~ ('…' if note.content|length > 60 else '')) }}</span>
-              <small class="muted note-summary-date">{{ note.created_at[:10] }}</small>
+              {# Date alone made two runs of the same tool on the same day
+                 indistinguishable in the collapsed list — which read as
+                 "saving gave me the old content". Minutes are enough to tell
+                 them apart; the full stamp is on hover. #}
+              <small class="muted note-summary-date" title="{{ note.created_at }}">{{ note.created_at[5:16] }}</small>
             </summary>
             <div class="note-body">
               {# Read view #}
