@@ -1,0 +1,28 @@
+# 自動產生 Release notes 的分類規則。
+#
+# 生效時機：在 GitHub Release 頁按「Generate release notes」，
+# 或執行 `gh release create <tag> --generate-notes`。
+# GitHub 會列出自上一個 tag 以來合併的 PR，並依下列規則分類。
+#
+# 注意：分類只能依 PR 的 **label** 或 **作者** 比對，不能依標題文字。
+# 想讓 PR 落在正確分類，就在 PR 上掛對應 label。
+#
+# 自動產生的內容只涵蓋「發生了什麼」；「升級時要注意什麼」請手寫進
+# CHANGELOG.md，那才是維運者真正需要的部分。
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+  categories:
+    # 依序比對，PR 落入第一個命中的分類，所以 catch-all 必須放最後。
+    - title: 依賴更新
+      labels:
+        - dependencies
+
+    - title: 文件
+      labels:
+        - documentation
+
+    - title: 功能與變更
+      labels:
+        - "*" # catch-all：其餘所有 PR
