@@ -136,7 +136,7 @@
 
 > **判斷規則(很好記)**:這個 pill 會隨時間改變嗎?會 → `.status`(有點);不會、只是分類 → `.tag`(無點)。
 > 「有點 = 生命週期」「無點 = 分類」是兩軌的視覺差異,顏色因此不再被當成狀態誤讀。
-> 已套用:`admin_users` 角色、`_eval_items_section` 題型 + 來源 origin 改 `.tag`(approved/draft 仍是 `.status`)。
+> 已套用:`admin_users` 角色、`_eval_items_section` 題型 + 來源 origin 改 `.tag`(approved/draft 仍是 `.status`)、產出置物架的類型徽章與類型篩選 chip(`.note-kind` / `.note-filter`,U16 Phase 2 — 類型不隨時間改變,所以是 `.tag` 軌;選取態用 `.is-active`)。
 
 ### 3.6 按鈕階層(五級)
 | 角色 | 寫法 | 何時用 |
