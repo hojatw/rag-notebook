@@ -353,6 +353,7 @@ async def judge_eval_item(
         judge = _not_applicable_judge()
         judge["abstain"] = _abstain_block(False)
         return {"answer_text": i18n.t("chat.abstain"), "answer_outcome": "abstained", "judge": judge}
+    expected_answer = item.get("expected_answer") or ""
     try:
         answer_text = await generate_answer(
             question, retrieved, settings, call_type="eval_answer", usage_context=usage_context,
@@ -360,12 +361,19 @@ async def judge_eval_item(
         judge = await judge_answer(
             question=question,
             generated_answer=answer_text,
-            expected_answer=item.get("expected_answer") or "",
+            expected_answer=expected_answer,
             item_type=item_type,
             retrieved_chunks=retrieved,
             settings=settings,
             usage_context=usage_context,
         )
+        # Route A grades answer_quality *by comparison with the reference answer*. With no
+        # reference the judge has nothing to compare against and will still emit a label —
+        # manufacturing a signal from nothing. Discard it rather than pool it into
+        # correct_rate. groundedness/citation stay valid: they only need the chunks.
+        judge["has_reference_answer"] = bool(expected_answer.strip())
+        if not judge["has_reference_answer"]:
+            judge["answer_quality"] = {"label": "not_applicable", "score": None, "rationale": ""}
     except Exception as exc:
         # Generation failed (judge_answer swallows its own errors into judge_ok=False).
         # Keep the deterministic abstain signal; this item is an error, the run continues.
@@ -387,6 +395,12 @@ def judge_metrics_from_results(results: list[dict]) -> dict[str, Any]:
     Scored LLM dimensions come only from ``answered`` items whose judge parsed
     (``judge_ok``); abstain correctness is deterministic and counts every judged item.
     Reference signal for human review, not ground truth.
+
+    ``answer_quality`` is aggregated over a **narrower** population than groundedness and
+    citation: only items carrying a reference answer can be graded comparatively, so
+    `correct_rate` is a rate over `answer_quality.scored`, not over every answered item.
+    Items without a reference are counted in `answer_quality.not_applicable` instead of
+    inflating the rate (QUALITY.md Q1-6).
     """
     judged = [r for r in results if r.get("answer_outcome") in {"answered", "abstained", "error"} and r.get("judge")]
     answered = [r for r in judged if r.get("answer_outcome") == "answered"]
@@ -394,11 +408,13 @@ def judge_metrics_from_results(results: list[dict]) -> dict[str, Any]:
     labels = {"correct": 0, "partial": 0, "incorrect": 0}
     groundedness_scores: list[float] = []
     citation_scores: list[float] = []
+    quality_scored = 0
     for r in scorable:
         judge = r["judge"]
         label = (judge.get("answer_quality") or {}).get("label")
         if label in labels:
             labels[label] += 1
+            quality_scored += 1
         groundedness_scores.append(float((judge.get("groundedness") or {}).get("score") or 0.0))
         citation_scores.append(float((judge.get("citation_correctness") or {}).get("score") or 0.0))
     # Abstain correctness is deterministic, so every judged item (incl. generate errors)
@@ -425,7 +441,10 @@ def judge_metrics_from_results(results: list[dict]) -> dict[str, Any]:
             "correct": labels["correct"],
             "partial": labels["partial"],
             "incorrect": labels["incorrect"],
-            "correct_rate": round(labels["correct"] / len(scorable), 4) if scorable else 0.0,
+            # Rate over items that actually had a reference answer — never over all answered.
+            "correct_rate": round(labels["correct"] / quality_scored, 4) if quality_scored else 0.0,
+            "scored": quality_scored,
+            "not_applicable": len(scorable) - quality_scored,
         },
         "groundedness_avg": _avg(groundedness_scores),
         "citation_correct_rate": _avg(citation_scores),

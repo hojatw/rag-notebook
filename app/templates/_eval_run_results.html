@@ -56,7 +56,11 @@
               </div>
               {% if result.answer_outcome == 'answered' and jr.judge_ok %}
                 <ul class="eval-judge-dims muted small">
-                  <li><strong>{{ t('evalr.judge_answer_quality') }}</strong>: {{ t('evalr.judge_' ~ jr.answer_quality.label) }} ({{ jr.answer_quality.score }}) — {{ jr.answer_quality.rationale }}</li>
+                  {% if jr.answer_quality.label == 'not_applicable' %}
+                    <li><strong>{{ t('evalr.judge_answer_quality') }}</strong>: {{ t('evalr.judge_no_reference') }}</li>
+                  {% else %}
+                    <li><strong>{{ t('evalr.judge_answer_quality') }}</strong>: {{ t('evalr.judge_' ~ jr.answer_quality.label) }} ({{ jr.answer_quality.score }}) — {{ jr.answer_quality.rationale }}</li>
+                  {% endif %}
                   <li><strong>{{ t('evalr.judge_groundedness') }}</strong>: {{ jr.groundedness.score }} — {{ jr.groundedness.rationale }}</li>
                   <li><strong>{{ t('evalr.judge_citation') }}</strong>: {{ jr.citation_correctness.score }} — {{ jr.citation_correctness.rationale }}</li>
                 </ul>

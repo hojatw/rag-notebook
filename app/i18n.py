@@ -240,6 +240,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "evalr.judge_failed_suffix": "題評分失敗",
         "evalr.judge_unanswerable_refusal": "不可回答題正確拒答",
         "evalr.judge_answerable_false_refusal": "可回答題誤拒",
+        "evalr.judge_no_reference": "不計分（此題無參考答案）",
+        "evalr.judge_na_suffix": "題無參考答案不計分",
         "evalr.judge_item_heading": "答案品質評分",
         "evalr.judge_generated_answer": "生成答案",
         "evalr.judge_unsupported": "無依據宣稱",

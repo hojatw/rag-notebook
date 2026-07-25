@@ -42,8 +42,11 @@
       <div class="index-stat-grid">
         <div class="index-stat">
           <span class="index-stat-label">{{ t('evalr.judge_answer_quality') }}</span>
-          <span class="index-stat-value">{{ j.answer_quality.correct_rate }}</span>
-          <span class="muted small">{{ t('evalr.judge_correct') }} {{ j.answer_quality.correct }} · {{ t('evalr.judge_partial') }} {{ j.answer_quality.partial }} · {{ t('evalr.judge_incorrect') }} {{ j.answer_quality.incorrect }}</span>
+          <span class="index-stat-value">{% if j.answer_quality.scored %}{{ j.answer_quality.correct_rate }}{% else %}—{% endif %}</span>
+          <span class="muted small">
+            {{ t('evalr.judge_correct') }} {{ j.answer_quality.correct }} · {{ t('evalr.judge_partial') }} {{ j.answer_quality.partial }} · {{ t('evalr.judge_incorrect') }} {{ j.answer_quality.incorrect }}
+            {% if j.answer_quality.not_applicable %}<br>{{ j.answer_quality.not_applicable }} {{ t('evalr.judge_na_suffix') }}{% endif %}
+          </span>
         </div>
         <div class="index-stat">
           <span class="index-stat-label">{{ t('evalr.judge_groundedness') }}</span>

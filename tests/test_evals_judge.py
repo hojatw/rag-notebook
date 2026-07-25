@@ -105,6 +105,67 @@ def test_judge_eval_item_generates_and_judges_answerable(monkeypatch, tmp_path):
     }
 
 
+def test_answer_quality_not_scored_without_a_reference_answer(monkeypatch, tmp_path):
+    """Route A grades answer_quality by comparison. With no reference answer the judge
+    still emits a label — discard it rather than manufacture a signal (QUALITY.md Q1-6).
+    groundedness/citation must survive, since they only need the retrieved chunks.
+    """
+    evals, _ = _fresh_modules(monkeypatch, tmp_path)
+
+    async def fake_generate(question, chunks, settings, **kwargs):
+        return "some grounded answer [1]."
+
+    async def fake_judge(**kwargs):
+        return _answered_judge()  # judge insists on "correct"
+
+    monkeypatch.setattr(evals, "generate_answer", fake_generate)
+    monkeypatch.setattr(evals, "judge_answer", fake_judge)
+
+    retrieved = [{"filename": "f", "location": "l", "text": "t", "score": 0.9}]
+    no_ref = {"id": 4, "item_type": "answerable", "expected_substrings": [], "expected_answer": ""}
+    with_ref = {"id": 5, "item_type": "answerable", "expected_substrings": [], "expected_answer": "alpha"}
+
+    out_no_ref = asyncio.run(evals.judge_eval_item("q?", no_ref, retrieved, 0.9, 0.3, {"chat_model": "m"}, {}))
+    out_with_ref = asyncio.run(evals.judge_eval_item("q?", with_ref, retrieved, 0.9, 0.3, {"chat_model": "m"}, {}))
+
+    assert out_no_ref["judge"]["has_reference_answer"] is False
+    assert out_no_ref["judge"]["answer_quality"]["label"] == "not_applicable"
+    # the other two dimensions are unaffected — they never needed a reference
+    assert out_no_ref["judge"]["groundedness"]["score"] == 1.0
+    assert out_no_ref["judge"]["citation_correctness"]["score"] == 1.0
+
+    assert out_with_ref["judge"]["has_reference_answer"] is True
+    assert out_with_ref["judge"]["answer_quality"]["label"] == "correct"
+
+
+def test_judge_metrics_exclude_unreferenced_items_from_quality_rate(monkeypatch, tmp_path):
+    """correct_rate is a rate over items that *could* be graded, not over all answered."""
+    evals, _ = _fresh_modules(monkeypatch, tmp_path)
+    abstain_ok = {"did_abstain": False, "retrieval_gated": False, "refused_at_generation": False,
+                  "expected_abstain": False, "correct": True}
+    results = [
+        {"answer_outcome": "answered", "judge": {
+            "answer_quality": {"label": "correct"}, "groundedness": {"score": 1.0},
+            "citation_correctness": {"score": 1.0}, "judge_ok": True,
+            "has_reference_answer": True, "abstain": abstain_ok}},
+        # three unreferenced items the judge would have rubber-stamped
+        *[{"answer_outcome": "answered", "judge": {
+            "answer_quality": {"label": "not_applicable"}, "groundedness": {"score": 0.5},
+            "citation_correctness": {"score": 1.0}, "judge_ok": True,
+            "has_reference_answer": False, "abstain": abstain_ok}} for _ in range(3)],
+    ]
+
+    metrics = evals.judge_metrics_from_results(results)
+
+    quality = metrics["answer_quality"]
+    assert quality["scored"] == 1
+    assert quality["not_applicable"] == 3
+    assert quality["correct"] == 1
+    assert quality["correct_rate"] == 1.0  # 1/1, NOT 1/4 and not inflated to 4/4
+    # groundedness still averages over all four answered items
+    assert metrics["groundedness_avg"] == round((1.0 + 0.5 * 3) / 4, 4)
+
+
 def test_answer_is_refusal_matches_pinned_wording(monkeypatch, tmp_path):
     """Deterministic detection of the refusal SYSTEM_PROMPT pins, tolerant of surrounding
     prose/whitespace/case but never firing on a real answer."""
@@ -215,7 +276,10 @@ def test_judge_metrics_splits_abstain_and_quality(monkeypatch, tmp_path):
     metrics = evals.judge_metrics_from_results(results)
 
     assert metrics["answered"] == 2
-    assert metrics["answer_quality"] == {"correct": 1, "partial": 0, "incorrect": 1, "correct_rate": 0.5}
+    assert metrics["answer_quality"] == {
+        "correct": 1, "partial": 0, "incorrect": 1, "correct_rate": 0.5,
+        "scored": 2, "not_applicable": 0,
+    }
     assert metrics["groundedness_avg"] == 0.5
     assert metrics["citation_correct_rate"] == 0.75
     abstain = metrics["abstain"]
