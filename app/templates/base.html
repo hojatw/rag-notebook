@@ -1,10 +1,26 @@
+{# U11: per-user theme (users.theme). 'light'/'dark' are rendered server-side so
+   they work without JS; 'system' leaves data-theme off (CSS defaults to light)
+   and the head script below resolves it against the OS preference. #}
+{% set theme_pref = (user.theme if user else None) or 'system' %}
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="zh-Hant" data-theme-pref="{{ theme_pref }}"{% if theme_pref in ('light', 'dark') %} data-theme="{{ theme_pref }}"{% endif %}>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="{{ csrf_token }}">
     <title>{{ title or "NotebookLM RAG POC" }}</title>
+    {# Inline + synchronous on purpose: resolves 'system' before first paint so
+       there is no light-then-dark flash. Also follows live OS changes. #}
+    <script>
+      (function () {
+        var root = document.documentElement;
+        if (root.getAttribute("data-theme-pref") !== "system") return;
+        var mq = window.matchMedia("(prefers-color-scheme: dark)");
+        var apply = function () { root.setAttribute("data-theme", mq.matches ? "dark" : "light"); };
+        apply();
+        mq.addEventListener("change", apply);
+      })();
+    </script>
     {# i18n (Phase 0): expose client-side strings before the deferred app.js runs. #}
     <script>window.I18N = {{ i18n_js() | tojson }};</script>
     <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">

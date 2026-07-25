@@ -37,6 +37,11 @@
   --accent-strong: #4543c4;
   --accent-soft: #ecebfd;
   --accent-deep: #2e2da3;
+  --accent-2: #7c5fe5;              /* gradient partner (brand mark, auth mark) */
+  --accent-soft-2: #e6e3fb;         /* gradient partner for --accent-soft */
+  --accent-wash: #f4f3fe;           /* palest accent wash (vertical gradients) */
+  --on-accent: #ffffff;             /* text/icon colour on an accent fill */
+  --on-danger: #ffffff;             /* text/icon colour on a danger fill */
 
   /* status */
   --danger: #c0463f;
@@ -72,9 +77,87 @@
   --shadow-lg: 0 18px 44px rgba(31, 27, 46, 0.10), 0 4px 12px rgba(31, 27, 46, 0.05);
   --shadow-focus: 0 0 0 3px rgba(91, 92, 224, 0.18);
 
+  /* component surfaces that used to be hardcoded (U11 made them themeable) */
+  --glass: rgba(255, 255, 255, 0.78);   /* sticky topbar behind backdrop-filter */
+  --scrim: rgba(29, 28, 34, 0.45);      /* modal backdrop */
+  --placeholder: #a3a2ad;               /* input/textarea placeholder */
+  --chip-neutral-bg: #eef0f2;           /* neutral status chip */
+  --chip-neutral-text: #42464d;
+  --code-bg: #1d1c22;                   /* markdown code block (inverted in light) */
+  --code-text: #f0eef9;
+
   /* motion */
   --ease: cubic-bezier(.2,.7,.2,1);
   --shadow: var(--shadow-md); /* legacy alias */
+}
+
+/* -----------------------------------------------------------------------
+   U11 · Dark theme — token overrides only.
+   Applied when <html data-theme="dark">. The stored per-user preference is
+   'system' | 'light' | 'dark' (users.theme); 'system' is resolved to a
+   concrete value in base.html's inline script, so this file needs exactly
+   one dark block and component rules never branch on theme.
+   Contrast: --muted holds >= 6.5:1 on --bg and --surface; the accent is
+   lightened for dark surfaces, which is why --on-accent flips to near-black.
+   ----------------------------------------------------------------------- */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #14131a;
+  --bg-grain: rgba(255, 255, 255, 0.02);
+  --surface: #1c1b24;
+  --surface-soft: #191822;
+  --surface-tint: #24223a;
+  --surface-raised: #232230;
+
+  /* text */
+  --text: #f0eef7;
+  --text-soft: #ddd9e8;
+  --muted: #a09eae;
+  --muted-strong: #c3c0d0;
+
+  /* lines */
+  --line: #2c2a37;
+  --line-strong: #3b3849;
+  --line-accent: #4a4576;
+
+  /* accent — lightened so it reads on dark surfaces */
+  --accent: #8b8cf0;
+  --accent-strong: #a3a4f7;
+  --accent-soft: #262546;
+  --accent-deep: #c9c9ff;
+  --accent-2: #9b7ef0;
+  --accent-soft-2: #2f2c55;
+  --accent-wash: #201f38;
+  --on-accent: #14131a;
+  --on-danger: #1a0f0e;
+
+  /* status — muted fills, brightened foregrounds */
+  --danger: #f08b83;
+  --danger-soft: #3a2221;
+  --danger-line: #5e3733;
+  --ok: #6ecf9b;
+  --ok-soft: #17301f;
+  --ok-line: #2c5740;
+  --warn: #e3b768;
+  --warn-soft: #332714;
+  --warn-line: #5c4622;
+
+  /* shadows — deeper and more opaque; light shadows vanish on dark */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.40), 0 1px 1px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.46), 0 1px 3px rgba(0, 0, 0, 0.32);
+  --shadow-lg: 0 18px 44px rgba(0, 0, 0, 0.58), 0 4px 12px rgba(0, 0, 0, 0.38);
+  --shadow-focus: 0 0 0 3px rgba(139, 140, 240, 0.34);
+
+  /* component surfaces */
+  --glass: rgba(20, 19, 26, 0.72);
+  --scrim: rgba(0, 0, 0, 0.60);
+  --placeholder: #7c7a8a;
+  --chip-neutral-bg: #2a2935;
+  --chip-neutral-text: #cdcad8;
+  --code-bg: #0f0e14;
+  --code-text: #e9e6f5;
 }
 
 * { box-sizing: border-box; }
@@ -146,7 +229,7 @@ a:hover { color: var(--accent-deep); }
   padding: 8px 12px;
   border-radius: var(--r-md);
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-weight: 700;
   text-decoration: none;
   box-shadow: var(--shadow-lg);
@@ -154,7 +237,7 @@ a:hover { color: var(--accent-deep); }
 
 .skip-link:focus {
   transform: translateY(0);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 /* ---------------------------------------------------------------- topbar */
@@ -166,7 +249,7 @@ a:hover { color: var(--accent-deep); }
   gap: var(--sp-5);
   padding: var(--sp-3) var(--sp-6);
   border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.78);
+  background: var(--glass);
   backdrop-filter: saturate(140%) blur(12px);
   -webkit-backdrop-filter: saturate(140%) blur(12px);
   position: sticky;
@@ -189,8 +272,8 @@ a:hover { color: var(--accent-deep); }
   width: 36px;
   height: 36px;
   border-radius: var(--r-md);
-  background: linear-gradient(135deg, var(--accent) 0%, #7c5fe5 100%);
-  color: #fff;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+  color: var(--on-accent);
   font-weight: 800;
   font-size: 16px;
   letter-spacing: 0.5px;
@@ -286,7 +369,7 @@ a.user-chip.active {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), #7c5fe5);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
 }
 
 .pill {
@@ -370,7 +453,7 @@ button {
   border: 1px solid transparent;
   border-radius: var(--r-md);
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   padding: 9px 16px;
   cursor: pointer;
   font-weight: 600;
@@ -524,7 +607,7 @@ form.is-submitting button[type="submit"].is-loading-submit.icon-only-loading::be
 
 .danger:hover {
   background: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
   border-color: var(--danger);
   box-shadow: 0 4px 12px rgba(192, 70, 63, 0.28);
 }
@@ -571,7 +654,7 @@ select {
 
 input::placeholder,
 textarea::placeholder {
-  color: #a3a2ad;
+  color: var(--placeholder);
 }
 
 input:hover,
@@ -611,6 +694,13 @@ select {
   background-repeat: no-repeat;
   background-position: right 12px center;
   padding-right: 34px;
+}
+
+/* The chevron is a data URI, so its stroke can't read a CSS variable — the one
+   place dark mode needs a second copy instead of a token override. Stroke is
+   the dark --muted so the glyph keeps >= 3:1 against the input surface. */
+[data-theme="dark"] select {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M3 4.5l3 3 3-3' stroke='%23a09eae' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
 }
 
 label {
@@ -720,8 +810,8 @@ label {
   display: grid;
   place-items: center;
   border-radius: var(--r-lg);
-  background: linear-gradient(135deg, var(--accent) 0%, #7c5fe5 100%);
-  color: #fff;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+  color: var(--on-accent);
   font-weight: 800;
   font-size: 26px;
   letter-spacing: 1px;
@@ -1314,7 +1404,7 @@ li code {
 .modal-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(29, 28, 34, 0.45);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
 }
 
@@ -1606,8 +1696,8 @@ tbody tr:hover {
   min-height: 24px;
   padding: 3px 10px 3px 8px;
   border-radius: var(--r-pill);
-  background: #eef0f2;
-  color: #42464d;
+  background: var(--chip-neutral-bg);
+  color: var(--chip-neutral-text);
   font-size: 12px;
   font-weight: 600;
   border: 1px solid transparent;
@@ -1792,7 +1882,7 @@ td.empty {
 
 .message.user {
   justify-self: end;
-  background: linear-gradient(180deg, var(--accent-soft) 0%, #f4f3fe 100%);
+  background: linear-gradient(180deg, var(--accent-soft) 0%, var(--accent-wash) 100%);
   border-color: var(--line-accent);
 }
 
@@ -2170,6 +2260,58 @@ legend {
   line-height: 1.45;
 }
 
+/* The account page stacks two independent forms (appearance + password); the
+   per-section border alone doesn't separate them. Scoped to this page so the
+   other .settings pages keep their current spacing. */
+.account-settings > form + form,
+.account-settings > form + section { margin-top: var(--sp-5); }
+
+/* U11 account theme picker — same card treatment as .diagnostic-checkbox. */
+.theme-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-2);
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-inline-size: 0;   /* let the grid shrink inside a fieldset */
+}
+
+.theme-option {
+  display: flex;
+  grid-template-columns: none;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+  cursor: pointer;
+}
+
+.theme-option:hover { border-color: var(--line-strong); }
+
+.theme-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.theme-option:has(input:focus-visible) { box-shadow: var(--shadow-focus); }
+
+.theme-option input {
+  width: auto;
+  margin-top: 3px;
+}
+
+.theme-option small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-weight: 500;
+  line-height: 1.45;
+}
+
 .diagnostic-grid {
   display: grid;
   gap: var(--sp-3);
@@ -2329,7 +2471,7 @@ legend {
   display: grid;
   place-items: center;
   font-size: 30px;
-  background: linear-gradient(135deg, var(--accent-soft) 0%, #e6e3fb 100%);
+  background: linear-gradient(135deg, var(--accent-soft) 0%, var(--accent-soft-2) 100%);
   border-radius: var(--r-md);
   border: 1px solid var(--line-accent);
   margin-bottom: 4px;
@@ -2698,7 +2840,7 @@ legend {
   height: 44px;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, var(--accent-soft) 0%, #e6e3fb 100%);
+  background: linear-gradient(135deg, var(--accent-soft) 0%, var(--accent-soft-2) 100%);
   border: 1px solid var(--line-accent);
   border-radius: var(--r-md);
   flex: none;
@@ -3020,7 +3162,7 @@ legend {
 .emoji-choice.is-selected {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
@@ -3366,8 +3508,8 @@ legend {
 }
 
 .markdown-body pre {
-  background: #1d1c22;
-  color: #f0eef9;
+  background: var(--code-bg);
+  color: var(--code-text);
   border-radius: var(--r-md);
   padding: 12px 14px;
   overflow-x: auto;
@@ -3434,7 +3576,7 @@ legend {
 
 .cite-link:hover {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   border-color: var(--accent);
   text-decoration: none;
 }

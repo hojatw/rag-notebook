@@ -50,6 +50,7 @@ Login accounts. Seeded with `admin` / `user` on first init.
 | `username` | TEXT NOT NULL **UNIQUE** | |
 | `password_hash` | TEXT NOT NULL | PBKDF2-SHA256 via `app/security.py` |
 | `is_admin` | INTEGER NOT NULL DEFAULT 0 | 1 = admin (can access `/settings`, `/admin/*`) |
+| `theme` | TEXT NOT NULL DEFAULT `'system'` | U11 colour theme: `system` \| `light` \| `dark`. Allowlist enforced at the route layer (`THEME_CHOICES` in `app/main.py`), not by a CHECK constraint. Rendered as `<html data-theme>`; `system` is resolved client-side against `prefers-color-scheme` |
 | `created_at` | TEXT | |
 
 ## `external_identities`

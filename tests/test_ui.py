@@ -2842,3 +2842,55 @@ def test_eval_run_page_shows_answer_quality_layer_when_judged(monkeypatch, tmp_p
     assert "答案品質評分" in body         # per-item judge heading
     assert "matches reference" in body    # judge rationale surfaced inline
     assert "已作答" in body               # answer outcome label
+
+
+def test_theme_defaults_to_system_and_leaves_data_theme_unset(monkeypatch, tmp_path):
+    """U11: a fresh account follows the OS preference, resolved client-side."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        page = client.get("/notebooks")
+
+        assert page.status_code == 200
+        assert 'data-theme-pref="system"' in page.text
+        # No server-rendered data-theme: base.html's inline script resolves it
+        # against prefers-color-scheme, so CSS defaults to the light tokens.
+        assert "data-theme=" not in page.text
+
+
+def test_theme_choice_persists_and_renders_server_side(monkeypatch, tmp_path):
+    """An explicit choice is stored per user and rendered without JS."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        saved = client.post("/account/theme", data={"theme": "dark"})
+
+        assert saved.status_code == 200
+        assert "外觀設定已更新" in saved.text
+        assert 'data-theme="dark"' in saved.text
+        with db.connect() as conn:
+            row = conn.execute("SELECT theme FROM users WHERE username = 'admin'").fetchone()
+        assert row["theme"] == "dark"
+
+        # Survives a new request, and the radio reflects the stored choice.
+        page = client.get("/account")
+        assert 'data-theme="dark"' in page.text
+        assert 'value="dark" checked' in page.text
+        assert 'value="system" checked' not in page.text
+
+
+def test_theme_rejects_values_outside_the_allowlist(monkeypatch, tmp_path):
+    """Only THEME_CHOICES may be written to users.theme."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        response = client.post("/account/theme", data={"theme": "neon"})
+
+        assert response.status_code == 400
+        assert "不支援的外觀選項" in response.text
+        with db.connect() as conn:
+            row = conn.execute("SELECT theme FROM users WHERE username = 'admin'").fetchone()
+        assert row["theme"] == "system"

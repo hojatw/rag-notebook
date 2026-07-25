@@ -433,6 +433,11 @@ def init_db() -> None:
         # settings row. Stores only status/capability metadata, never prompts,
         # model outputs, API keys, or raw provider payloads.
         _ensure_column(conn, "llm_settings", "diagnostics_json", "TEXT NOT NULL DEFAULT '{}'")
+        # U11: per-user colour theme — 'system' (follow the OS preference),
+        # 'light', or 'dark'. Kept as a plain TEXT allowlist checked at the route
+        # layer (see THEME_CHOICES in app/main.py) rather than a CHECK constraint,
+        # so adding a theme later stays a code-only change.
+        _ensure_column(conn, "users", "theme", "TEXT NOT NULL DEFAULT 'system'")
         # Notebook foreign keys are nullable so existing rows can be migrated in place.
         # Phase 2 routes will populate these on insert; the migration below backfills legacy rows.
         _ensure_column(conn, "sources", "notebook_id", "INTEGER REFERENCES notebooks(id) ON DELETE CASCADE")

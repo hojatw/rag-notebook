@@ -3498,18 +3498,53 @@ async def translate_source_summary(
     )
 
 
+# U11: allowed values for `users.theme`. 'system' defers to the OS preference
+# (resolved client-side in base.html); the other two are explicit overrides
+# rendered server-side so they survive a JS-less client.
+THEME_CHOICES = ("system", "light", "dark")
+
+
+def _account_context(user: dict, **overrides) -> dict:
+    """Shared context for the account page so every render carries all flags."""
+    return {
+        "user": user,
+        "saved": False,
+        "theme_saved": False,
+        "error": "",
+        "external_identity_count": _external_identity_count(user["id"]),
+        "theme_choices": THEME_CHOICES,
+        **overrides,
+    }
+
+
 @app.get("/account", response_class=HTMLResponse)
 def account_page(request: Request, user: Annotated[dict, Depends(require_login)]):
-    """Render the per-user account page (currently: change own password)."""
+    """Render the per-user account page (change own password, pick a theme)."""
+    return render(request, "account.html", _account_context(user))
+
+
+@app.post("/account/theme")
+def change_own_theme(
+    request: Request,
+    user: Annotated[dict, Depends(require_login)],
+    theme: str = Form(...),
+):
+    """Persist the signed-in user's colour theme (U11)."""
+    if theme not in THEME_CHOICES:
+        return render(
+            request,
+            "account.html",
+            _account_context(user, error=i18n.t("account.theme_invalid")),
+            400,
+        )
+    with connect() as conn:
+        conn.execute("UPDATE users SET theme = ? WHERE id = ?", (theme, user["id"]))
+    logger.info("theme_changed user_id=%s theme=%s", user["id"], theme)
+    # Re-render with the updated user so base.html applies the new theme at once.
     return render(
         request,
         "account.html",
-        {
-            "user": user,
-            "saved": False,
-            "error": "",
-            "external_identity_count": _external_identity_count(user["id"]),
-        },
+        _account_context({**user, "theme": theme}, theme_saved=True),
     )
 
 
@@ -3541,17 +3576,13 @@ def change_own_password(
         return render(
             request,
             "account.html",
-            {"user": user, "saved": False, "error": error, "external_identity_count": external_count},
+            _account_context(user, error=error, external_identity_count=external_count),
             400,
         )
     with connect() as conn:
         conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), user["id"]))
     logger.info("password_changed user_id=%s", user["id"])
-    return render(
-        request,
-        "account.html",
-        {"user": user, "saved": True, "error": "", "external_identity_count": 0},
-    )
+    return render(request, "account.html", _account_context(user, saved=True))
 
 
 # Mounted last so the shared helpers above (render, require_admin,
