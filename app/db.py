@@ -461,6 +461,15 @@ def init_db() -> None:
         _ensure_column(conn, "eval_items", "item_type", "TEXT NOT NULL DEFAULT 'answerable'")
         _ensure_column(conn, "eval_items", "expected_answer", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "eval_items", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        # E1e-2: optional answer-quality judging. `judge_enabled` gates the extra
+        # generate+judge LLM calls per run (default off → full regression to
+        # retrieval-only behavior). Per-result judge output is stored separately
+        # from retrieval metrics so the two never mix. answer_text is only ever
+        # surfaced in full internal exports (never sanitized ones).
+        _ensure_column(conn, "eval_runs", "judge_enabled", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "eval_results", "judge_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(conn, "eval_results", "answer_text", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "eval_results", "answer_outcome", "TEXT NOT NULL DEFAULT ''")
         if conn.execute("SELECT COUNT(*) FROM retrieval_profiles WHERE is_default = 1").fetchone()[0] == 0:
             conn.execute(
                 "UPDATE retrieval_profiles SET is_default = 1 "

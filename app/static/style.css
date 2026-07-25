@@ -4534,6 +4534,28 @@ details[open] > .audit-summary::before {
   .eval-result-evidence-body { grid-template-columns: 1fr; }
 }
 
+/* E1e-2 answer-quality judging (reference signal, kept visually separate from
+   retrieval metrics). */
+.run-judge-label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.run-judge-hint { flex-basis: 100%; margin: var(--sp-2) 0 0; }
+.eval-judge-block {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: 1px dashed var(--border);
+}
+.eval-judge-block h3 { margin: 0; font-size: 15px; }
+.eval-result-judge {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+.eval-judge-head { display: flex; align-items: baseline; gap: var(--sp-3); }
+.eval-judge-dims { margin: var(--sp-2) 0 0; padding-left: 1.1em; }
+.eval-judge-dims li { margin: 0 0 2px; }
+.eval-judge-answer { margin-top: var(--sp-2); }
+.eval-judge-answer summary { cursor: pointer; }
+
 @media (max-width: 1180px) {
   .eval-authoring-grid {
     grid-template-columns: 1fr;

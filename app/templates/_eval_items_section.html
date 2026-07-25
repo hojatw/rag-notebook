@@ -16,9 +16,14 @@
           </select>
         </label>
       {% endif %}
+      <label class="run-judge-label" title="{{ t('evalr.judge_toggle_hint') }}">
+        <input type="checkbox" name="judge_enabled" value="1">
+        {{ t('evalr.judge_toggle_label') }}
+      </label>
       <button type="submit" {% if approved_count == 0 %}disabled{% endif %} data-loading-text="{{ t('evalr.run_starting') }}">{{ t('evalr.run_btn') }}</button>
     </form>
   </div>
+  <p class="hint muted small run-judge-hint">{{ t('evalr.judge_toggle_hint') }}</p>
   {% if eval_notice %}<div class="notice">{{ eval_notice }}</div>{% endif %}
   {% if eval_error %}<div class="alert">{{ eval_error }}</div>{% endif %}
   {% if items %}

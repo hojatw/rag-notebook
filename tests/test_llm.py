@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 import app.llm as llm
-from app.llm import build_chat_request, build_embedding_request, chat_settings, close_http_client, compare_sources, embedding_settings, generate_briefing, get_http_client, parse_eval_candidates, parse_json_strings, parse_rerank_scores, summarize_source
+from app.llm import build_chat_request, build_embedding_request, chat_settings, close_http_client, compare_sources, embedding_settings, generate_briefing, get_http_client, parse_answer_judge, parse_eval_candidates, parse_json_strings, parse_rerank_scores, summarize_source
 
 
 def test_openai_compatible_request_shapes():
@@ -246,6 +246,94 @@ def test_parse_eval_candidates_bounds_model_output():
     assert candidates[0]["chunk_id"] == 4
     assert candidates[0]["expected_substrings"] == ["alpha evidence"]
     assert candidates[1]["item_type"] == "answerable"
+
+
+def test_parse_answer_judge_normalizes_valid_output():
+    """E1e-2: judge parser accepts fenced JSON and clamps/normalizes each dimension."""
+    result = parse_answer_judge(
+        """```json
+        {
+          "answer_quality": {"label": "PARTIAL", "score": 1.7, "rationale": "  mostly right  "},
+          "groundedness": {"score": -0.2, "unsupported_claims": [" claim one ", "", "claim one"], "rationale": "one gap"},
+          "citation_correctness": {"score": 0.5, "wrong_citations": ["2", 3, "x"], "rationale": "marker 2 wrong"}
+        }
+        ```"""
+    )
+
+    assert result["judge_ok"] is True
+    assert result["answer_quality"]["label"] == "partial"
+    assert result["answer_quality"]["score"] == 1.0  # clamped into [0, 1]
+    assert result["answer_quality"]["rationale"] == "mostly right"
+    assert result["groundedness"]["score"] == 0.0  # negative clamped
+    # Whitespace collapsed; duplicates preserved (dedup is not this layer's job) but empties dropped.
+    assert result["groundedness"]["unsupported_claims"] == ["claim one", "claim one"]
+    assert result["citation_correctness"]["wrong_citations"] == [2, 3]  # non-numeric skipped
+
+
+def test_parse_answer_judge_flags_bad_json():
+    """Malformed model output must yield judge_ok=False with a neutral, stable shape."""
+    result = parse_answer_judge("sorry, I cannot output JSON")
+
+    assert result["judge_ok"] is False
+    assert result["answer_quality"] == {"label": "", "score": 0.0, "rationale": ""}
+    assert result["groundedness"]["unsupported_claims"] == []
+    assert result["citation_correctness"]["wrong_citations"] == []
+
+
+def test_refusal_markers_stay_pinned_to_system_prompt():
+    """E1e-2 guard: eval refusal detection matches wording that SYSTEM_PROMPT pins.
+
+    The coupling is deliberate — the eval must detect the *same* refusal the production
+    answer path produces. This test makes changing the prompt's refusal wording fail
+    loudly instead of silently breaking abstain measurement.
+    """
+    assert llm.REFUSAL_MARKERS, "at least one refusal marker must be defined"
+    for marker in llm.REFUSAL_MARKERS:
+        assert marker.casefold() in llm.SYSTEM_PROMPT.casefold(), (
+            f"refusal marker {marker!r} no longer appears in SYSTEM_PROMPT — update "
+            "REFUSAL_MARKERS together with the prompt, or eval abstain metrics will under-report"
+        )
+
+
+def test_eval_generation_and_judge_use_distinct_call_types(monkeypatch):
+    """E1e-2 telemetry (G1a): eval answer generation records call_type=eval_answer and
+    the judge records eval_judge, so their LLM usage is separable from live chat."""
+    seen = []
+
+    async def fake_chat_completion(settings, user_prompt, system_prompt, temperature=None, *, call_type="chat_completion", usage_context=None):
+        seen.append(call_type)
+        # Return valid judge JSON so parse_answer_judge succeeds for the judge path.
+        return (
+            '{"answer_quality": {"label": "correct", "score": 1.0, "rationale": "ok"},'
+            ' "groundedness": {"score": 1.0, "unsupported_claims": [], "rationale": "ok"},'
+            ' "citation_correctness": {"score": 1.0, "wrong_citations": [], "rationale": "ok"}}'
+        )
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat_completion)
+    settings = {"chat_model": "m"}
+    chunks = [{"filename": "f", "location": "l", "text": "t"}]
+
+    asyncio.run(llm.generate_answer("q", chunks, settings, call_type="eval_answer"))
+    asyncio.run(llm.judge_answer(
+        question="q", generated_answer="a [1]", expected_answer="a",
+        item_type="answerable", retrieved_chunks=chunks, settings=settings,
+    ))
+
+    assert seen == ["eval_answer", "eval_judge"]
+
+
+def test_parse_answer_judge_rejects_missing_dimension_or_bad_label():
+    """A dropped dimension or an out-of-vocabulary label counts as a parse failure."""
+    missing = parse_answer_judge(
+        '{"answer_quality": {"label": "correct", "score": 1.0}, "groundedness": {"score": 1.0}}'
+    )
+    bad_label = parse_answer_judge(
+        '{"answer_quality": {"label": "great"}, "groundedness": {"score": 1.0}, '
+        '"citation_correctness": {"score": 1.0}}'
+    )
+
+    assert missing["judge_ok"] is False  # citation_correctness absent
+    assert bad_label["judge_ok"] is False  # "great" is not a valid label
 
 
 def test_shared_http_client_is_reused():
