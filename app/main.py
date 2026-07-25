@@ -185,6 +185,29 @@ templates.env.globals["eval_result_status_labels"] = i18n.EVAL_RESULT_STATUS_LAB
 # E1e-2: localised display for per-question answer outcome (raw value kept).
 templates.env.globals["eval_answer_outcome_labels"] = i18n.EVAL_ANSWER_OUTCOME_LABELS
 
+# U16 Phase 2 — outputs-shelf entry types, in the order the shelf's filter row
+# shows them. 'pinned' comes from the chat pin action and 'note' is a plain
+# saved/edited entry; the rest map 1:1 to the Studio tool that produced the
+# entry, so a new tool = one more member here plus its `note.kind_*` label.
+# Persisted in `notes.kind` (see app/db.py) and validated on write.
+NOTE_KINDS = (
+    "pinned",
+    "note",
+    "compare",
+    "minutes",
+    "study_guide",
+    "faq",
+    "timeline",
+    "translate",
+)
+# Kinds a save-to-shelf request may set. Pinning has its own route, so a client
+# cannot forge a "pinned" badge on an arbitrary saved artifact.
+SAVABLE_NOTE_KINDS = tuple(k for k in NOTE_KINDS if k != "pinned")
+# Exposed as a global (like the other label/order maps above) so every render
+# site of _notes_section.html gets the canonical order without threading it
+# through five call sites.
+templates.env.globals["note_kind_order"] = NOTE_KINDS
+
 
 def csrf_token_for_request(request: Request) -> str:
     """Return the signed CSRF token for this request, creating one if needed."""
@@ -1352,6 +1375,21 @@ def _cached_briefing(notebook: dict) -> str:
     return ""
 
 
+def source_with_diagnostics(row) -> dict:
+    """Attach the parsed A6a ingestion diagnostics to a source row.
+
+    Templates get a plain dict (never a JSON string), and a blob written by an
+    older/partial ingest degrades to `{}` rather than breaking the page.
+    """
+    data = dict(row)
+    try:
+        parsed = loads(data.get("diagnostics_json") or "{}")
+    except (TypeError, ValueError):
+        parsed = {}
+    data["diagnostics"] = parsed if isinstance(parsed, dict) else {}
+    return data
+
+
 def get_notebook(conn, notebook_id: int, user_id: int) -> dict:
     """Fetch a notebook owned by the user, raising 404 otherwise."""
     row = conn.execute(
@@ -1497,6 +1535,7 @@ def notebook_view(
             "SELECT * FROM sources WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC",
             (notebook_id, user["id"]), SOURCES_LIMIT,
         )
+        sources = [source_with_diagnostics(row) for row in sources]
         conversations, conversations_truncated = fetch_capped(
             conn,
             """
@@ -1789,7 +1828,10 @@ def source_partial(
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="找不到來源")
-    response = render(request, "_source_item.html", {"notebook": notebook, "source": dict(row)})
+    response = render(
+        request, "_source_item.html",
+        {"notebook": notebook, "source": source_with_diagnostics(row)},
+    )
     # Keep fast source-row synchronization separate from Studio refreshes.
     # Processing polls are frequent; if the Studio sections also listen to
     # them they re-render every 2s during embedding, even when no useful
@@ -1838,7 +1880,7 @@ def source_preview(
     return render(
         request,
         "_source_preview.html",
-        {"notebook": notebook, "source": dict(source_row), "chunks": chunks},
+        {"notebook": notebook, "source": source_with_diagnostics(source_row), "chunks": chunks},
     )
 
 
@@ -1937,11 +1979,17 @@ async def notebook_suggestions(
 def _fetch_source_summaries(conn, notebook_id: int, user_id: int, source_ids: list[int] | None = None) -> list[dict]:
     """Return [{id, filename, summary}] for indexed sources in this notebook.
 
-    When ``source_ids`` is given, restricts to those ids (intersection with
-    the notebook's indexed sources). For sources whose ``summary`` is empty,
-    falls back to a 400-char snippet from the first chunk so briefing and
-    comparison can still cover the source meaningfully.
+    ``source_ids=None`` means "every indexed source in the notebook"; an
+    **empty list means an empty selection** and returns nothing. The distinction
+    matters: treating `[]` as "all" would silently widen a tool's scope to
+    sources the user deliberately deselected.
+
+    For sources whose ``summary`` is empty, falls back to a 400-char snippet
+    from the first chunk so briefing and comparison can still cover the source
+    meaningfully.
     """
+    if source_ids is not None and not source_ids:
+        return []
     params: list = [notebook_id, user_id]
     where = "notebook_id = ? AND user_id = ? AND status = 'indexed'"
     if source_ids:
@@ -2200,17 +2248,23 @@ def add_note(
     user: Annotated[dict, Depends(require_login)],
     title: str = Form(""),
     content: str = Form(...),
+    kind: str = Form("note"),
 ):
-    """Create a raw note (no source message). Used by Save-to-notes on comparison results."""
+    """Create a raw note (no source message). Used by Save-to-shelf on tool results."""
     cleaned_content = (content or "").strip()
     if not cleaned_content:
         raise HTTPException(status_code=400, detail="筆記內容不可為空。")
     cleaned_title = " ".join((title or "").split())[:80] or "已儲存筆記"
+    # The kind only ever comes from our own templates, so an unknown value means
+    # a bug rather than user input: keep the note, log it, badge it generically.
+    cleaned_kind = kind if kind in SAVABLE_NOTE_KINDS else "note"
+    if cleaned_kind != kind:
+        logger.warning("note_kind_rejected user_id=%s notebook_id=%s kind=%r", user["id"], notebook_id, kind)
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
         cursor = conn.execute(
-            "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, ?, ?)",
-            (notebook_id, user["id"], cleaned_title, cleaned_content),
+            "INSERT INTO notes (notebook_id, user_id, title, content, kind) VALUES (?, ?, ?, ?, ?)",
+            (notebook_id, user["id"], cleaned_title, cleaned_content, cleaned_kind),
         )
         note_id = cursor.lastrowid
         touch_notebook(conn, notebook_id)
@@ -2224,7 +2278,7 @@ def add_note(
         "note_added",
         "note",
         note_id,
-        {"notebook_id": notebook_id, "title": cleaned_title, "content_chars": len(cleaned_content)},
+        {"notebook_id": notebook_id, "title": cleaned_title, "content_chars": len(cleaned_content), "kind": cleaned_kind},
         "normal",
     )
     logger.info("note_added user_id=%s notebook_id=%s chars=%s", user["id"], notebook_id, len(cleaned_content))
@@ -2273,7 +2327,8 @@ def pin_note(
             raw_title = (prompting["content"] if prompting else None) or message["title"] or "Pinned note"
             title = " ".join(raw_title.split())[:80]
             cursor = conn.execute(
-                "INSERT INTO notes (notebook_id, user_id, title, content, source_message_id) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO notes (notebook_id, user_id, title, content, source_message_id, kind) "
+                "VALUES (?, ?, ?, ?, ?, 'pinned')",
                 (notebook_id, user["id"], title, message["content"], message_id),
             )
             note_id = cursor.lastrowid
@@ -3051,7 +3106,10 @@ def export_notes(
     lines = [f"# {notebook['title']} — {i18n.t('export.notes_suffix')}", ""]
     for note in notes:
         title = note["title"] or note["content"][:40]
-        lines += [f"## {title}", "", note["content"], "", f"_{note['created_at']}_", "", "---", ""]
+        # U16 Phase 2: carry the type badge into the export so a downloaded
+        # shelf still says what produced each entry.
+        kind_label = i18n.t("note.kind_" + (note["kind"] or "note"))
+        lines += [f"## {title}", "", note["content"], "", f"_{kind_label} · {note['created_at']}_", "", "---", ""]
     record_audit_event(
         request,
         user,
@@ -3082,7 +3140,8 @@ def export_note(
         if note is None:
             raise HTTPException(status_code=404, detail="找不到筆記")
     title = note["title"] or note["content"][:40] or i18n.t("export.notes_suffix")
-    lines = [f"# {title}", "", note["content"], "", f"_{note['created_at']}_", ""]
+    kind_label = i18n.t("note.kind_" + (note["kind"] or "note"))
+    lines = [f"# {title}", "", note["content"], "", f"_{kind_label} · {note['created_at']}_", ""]
     record_audit_event(
         request,
         user,
@@ -3387,19 +3446,58 @@ async def notebook_artifact(
     notebook_id: int,
     kind: str,
     user: Annotated[dict, Depends(require_login)],
+    source_ids: list[int] = Form(default=[]),
 ):
-    """Generate an A4 artifact (study guide / FAQ / timeline) from the notebook's
-    source summaries. The result is shown in the modal; the user decides whether
-    to save it to the outputs shelf (no auto-save)."""
+    """Generate an A4 artifact (study guide / FAQ / timeline) from the selected
+    sources' summaries. The result is shown in the modal; the user decides
+    whether to save it to the outputs shelf (no auto-save).
+
+    Sources are chosen in the tool panel, like compare/minutes/translate. The
+    left-pane checkboxes scope **chat** only, so a tool that silently used the
+    whole notebook could not be narrowed at all.
+    """
     if kind not in ARTIFACT_PROMPTS:
         raise HTTPException(status_code=404, detail="未知的產出類型")
     label = ARTIFACT_LABELS.get(kind, kind)
+    # Checkboxes only submit when checked, so an empty list is the user having
+    # deselected everything — an error, not an invitation to use the whole
+    # notebook. The panel ships with all sources checked.
+    selected_ids = [sid for sid in source_ids if isinstance(sid, int)]
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
-        summaries = _fetch_source_summaries(conn, notebook_id, user["id"])
+        summaries = _fetch_source_summaries(conn, notebook_id, user["id"], selected_ids)
+        indexed_total = conn.execute(
+            "SELECT COUNT(*) AS n FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed'",
+            (notebook_id, user["id"]),
+        ).fetchone()["n"]
         settings = load_llm_settings(conn) or {}
 
-    base_ctx = {"notebook_id": notebook_id, "label": label, "notebook_title": notebook["title"], "artifact": ""}
+    # What the saved note is named after. Two runs of the same tool used to
+    # produce two identically-titled shelf entries ("常見問答 — <notebook>"),
+    # which reads as "saving gave me the old content"; naming the scope lets
+    # them tell themselves apart.
+    if len(summaries) == 1:
+        scope_label = summaries[0]["filename"]
+    elif summaries and len(summaries) == indexed_total:
+        scope_label = notebook["title"]
+    else:
+        scope_label = i18n.t("note.scope_multi", count=len(summaries))
+    # `kind` is already allowlisted by the ARTIFACT_PROMPTS check above and every
+    # member is in NOTE_KINDS, so it doubles as the shelf entry's type badge.
+    base_ctx = {
+        "notebook_id": notebook_id,
+        "label": label,
+        "notebook_title": notebook["title"],
+        "scope_label": scope_label,
+        "artifact": "",
+        "kind": kind,
+    }
+    if not selected_ids:
+        return render(
+            request, "_artifact_result.html",
+            {**base_ctx, "error": i18n.t("flow.artifact_need_source")},
+            status_code=400,
+        )
     if not summaries:
         return render(
             request, "_artifact_result.html",
@@ -3498,18 +3596,53 @@ async def translate_source_summary(
     )
 
 
+# U11: allowed values for `users.theme`. 'system' defers to the OS preference
+# (resolved client-side in base.html); the other two are explicit overrides
+# rendered server-side so they survive a JS-less client.
+THEME_CHOICES = ("system", "light", "dark")
+
+
+def _account_context(user: dict, **overrides) -> dict:
+    """Shared context for the account page so every render carries all flags."""
+    return {
+        "user": user,
+        "saved": False,
+        "theme_saved": False,
+        "error": "",
+        "external_identity_count": _external_identity_count(user["id"]),
+        "theme_choices": THEME_CHOICES,
+        **overrides,
+    }
+
+
 @app.get("/account", response_class=HTMLResponse)
 def account_page(request: Request, user: Annotated[dict, Depends(require_login)]):
-    """Render the per-user account page (currently: change own password)."""
+    """Render the per-user account page (change own password, pick a theme)."""
+    return render(request, "account.html", _account_context(user))
+
+
+@app.post("/account/theme")
+def change_own_theme(
+    request: Request,
+    user: Annotated[dict, Depends(require_login)],
+    theme: str = Form(...),
+):
+    """Persist the signed-in user's colour theme (U11)."""
+    if theme not in THEME_CHOICES:
+        return render(
+            request,
+            "account.html",
+            _account_context(user, error=i18n.t("account.theme_invalid")),
+            400,
+        )
+    with connect() as conn:
+        conn.execute("UPDATE users SET theme = ? WHERE id = ?", (theme, user["id"]))
+    logger.info("theme_changed user_id=%s theme=%s", user["id"], theme)
+    # Re-render with the updated user so base.html applies the new theme at once.
     return render(
         request,
         "account.html",
-        {
-            "user": user,
-            "saved": False,
-            "error": "",
-            "external_identity_count": _external_identity_count(user["id"]),
-        },
+        _account_context({**user, "theme": theme}, theme_saved=True),
     )
 
 
@@ -3541,17 +3674,13 @@ def change_own_password(
         return render(
             request,
             "account.html",
-            {"user": user, "saved": False, "error": error, "external_identity_count": external_count},
+            _account_context(user, error=error, external_identity_count=external_count),
             400,
         )
     with connect() as conn:
         conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), user["id"]))
     logger.info("password_changed user_id=%s", user["id"])
-    return render(
-        request,
-        "account.html",
-        {"user": user, "saved": True, "error": "", "external_identity_count": 0},
-    )
+    return render(request, "account.html", _account_context(user, saved=True))
 
 
 # Mounted last so the shared helpers above (render, require_admin,

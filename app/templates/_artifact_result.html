@@ -5,7 +5,7 @@
   <p class="compare-error">{{ error }}</p>
 {% elif artifact %}
   <div class="markdown-body" data-markdown>{{ artifact }}</div>
-  {% with note_title = label ~ " — " ~ notebook_title, note_content = artifact %}
+  {% with note_title = label ~ " — " ~ (scope_label or notebook_title), note_content = artifact, note_kind = kind %}
     {% include "_save_note_button.html" %}
   {% endwith %}
 {% endif %}

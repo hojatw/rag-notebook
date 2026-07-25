@@ -21,11 +21,20 @@
 | 陰影 | `--shadow-sm/md/lg`、`--shadow-focus` | 卡片 md、抽屜 lg、focus ring |
 | 文字 | `--text/--text-soft/--muted/--muted-strong` | |
 | 線條 | `--line/--line-strong/--line-accent` | |
-| 強調 | `--accent/-strong/-soft/-deep` | 主色(靛紫) |
+| 強調 | `--accent/-strong/-soft/-deep`、`--accent-2`、`--accent-soft-2`、`--accent-wash` | 主色(靛紫);後三者是漸層/淡底的搭配色 |
+| 反白前景 | `--on-accent` / `--on-danger` | 疊在 accent / danger 填色上的文字色 |
 | 語意色 | `--ok* / --warn* / --danger*`(各 base/soft/line) | 成功/警告/危險 |
+| 元件表面 | `--glass`(頂欄)、`--scrim`(遮罩)、`--placeholder`、`--chip-neutral-bg/-text`、`--code-bg/-text` | U11 從寫死值收斂而來 |
 | Motion | `--ease`、過場 140ms | 已全域套在 `a/button/input...` |
 
 **規則**:任何新 CSS 的顏色、間距、圓角、陰影都必須引用上表變數,不得寫死數值。
+
+### 1.1 深色模式(U11)
+
+- **主題只存在於 token 層**。`[data-theme="dark"]` 區塊(`style.css`,緊接 `:root` 之後)只覆寫變數值;**元件規則永遠不得依主題分支**。想加新顏色時,先加 token 並在深色區塊給對應值,不要在元件裡寫 `[data-theme="dark"] .foo { color: ... }`。
+- **唯一的例外**是 `select` 的下拉箭頭:它是 data URI SVG,stroke 無法讀 CSS 變數,所以深色另存一份。新增任何 data-URI 圖形時要記得同樣處理。
+- **偏好來源**:`users.theme`(`system` | `light` | `dark`),在 `/account` 設定。`light`/`dark` 由伺服器直接渲染成 `<html data-theme>`,**無 JS 也有效**;`system` 不輸出 `data-theme`,由 `base.html` head 內的同步 inline script 依 `prefers-color-scheme` 解析(避免換頁閃白),並持續跟隨系統切換。
+- **對比要求**:正文 ≥ 4.5:1、大字與圖形 ≥ 3:1,兩個主題都要滿足。深色的 `--accent` 會調亮,所以 `--on-accent` 反轉為近黑——**填色按鈕的文字一律用 `var(--on-accent)`,不要寫 `#fff`**。
 
 ---
 
@@ -127,7 +136,7 @@
 
 > **判斷規則(很好記)**:這個 pill 會隨時間改變嗎?會 → `.status`(有點);不會、只是分類 → `.tag`(無點)。
 > 「有點 = 生命週期」「無點 = 分類」是兩軌的視覺差異,顏色因此不再被當成狀態誤讀。
-> 已套用:`admin_users` 角色、`_eval_items_section` 題型 + 來源 origin 改 `.tag`(approved/draft 仍是 `.status`)。
+> 已套用:`admin_users` 角色、`_eval_items_section` 題型 + 來源 origin 改 `.tag`(approved/draft 仍是 `.status`)、產出置物架的類型徽章與類型篩選 chip(`.note-kind` / `.note-filter`,U16 Phase 2 — 類型不隨時間改變,所以是 `.tag` 軌;選取態用 `.is-active`)。
 
 ### 3.6 按鈕階層(五級)
 | 角色 | 寫法 | 何時用 |

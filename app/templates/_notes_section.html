@@ -1,11 +1,18 @@
-{# Notes section in the studio pane. Returned inline, as an HTMX swap target
-   after pin / delete operations, and re-fetched on the notes-changed event
-   (fired e.g. when meeting minutes are saved). Each note is a collapsible
-   <details> so the studio pane stays compact when many notes exist. #}
+{# Outputs shelf (U16 Phase 2) in the studio pane. Returned inline, as an HTMX
+   swap target after pin / delete operations, and re-fetched on the notes-changed
+   event (fired e.g. when meeting minutes are saved). Each entry is a collapsible
+   <details> carrying a type badge (notes.kind) so pinned answers and the various
+   generated artifacts are distinguishable at a glance.
+
+   The type filter is client-side only (Alpine): the shelf is one notebook's
+   worth of rows, already in the DOM, so filtering must not cost a round-trip.
+   It is x-cloak'd — without JS every entry stays visible instead of leaving
+   dead buttons behind. #}
 <section class="studio-section studio-notes" id="studio-notes"
          hx-get="/notebooks/{{ notebook.id }}/_notes"
          hx-trigger="notes-changed from:body"
-         hx-swap="outerHTML">
+         hx-swap="outerHTML"
+         x-data="{ filter: 'all' }">
   <h3>
     產出與筆記
     <span class="pane-count">{{ notes|length }}</span>
@@ -15,13 +22,43 @@
     {% endif %}
   </h3>
   {% if notes %}
+    {# Only the kinds actually present, in the canonical NOTE_KINDS order. A
+       single kind needs no filter row — it would just restate the heading. #}
+    {% set present_kinds = note_kind_order | select("in", notes | map(attribute="kind") | list) | list %}
+    {% if present_kinds | length > 1 %}
+      <div class="note-filters" role="group" aria-label="{{ t('note.filter_label') }}" x-cloak>
+        <button type="button" class="tag note-filter"
+                :class="{ 'is-active': filter === 'all' }"
+                :aria-pressed="filter === 'all'"
+                @click="filter = 'all'">
+          {{ t('note.filter_all') }}<span class="note-filter-count">{{ notes|length }}</span>
+        </button>
+        {% for kind in present_kinds %}
+          <button type="button" class="tag note-filter"
+                  :class="{ 'is-active': filter === '{{ kind }}' }"
+                  :aria-pressed="filter === '{{ kind }}'"
+                  @click="filter = '{{ kind }}'">
+            {{ t('note.kind_' ~ kind) }}<span class="note-filter-count">{{ notes | selectattr("kind", "equalto", kind) | list | length }}</span>
+          </button>
+        {% endfor %}
+      </div>
+    {% endif %}
     <ul class="note-list">
       {% for note in notes %}
-        <li class="note-item" x-data="{ editing: false }">
+        {% set kind = note.kind or 'note' %}
+        <li class="note-item" x-data="{ editing: false }"
+            x-show="filter === 'all' || filter === '{{ kind }}'">
           <details>
             <summary>
-              <span class="note-summary-title">{{ note.title or (note.content[:60] ~ ('…' if note.content|length > 60 else '')) }}</span>
-              <small class="muted note-summary-date">{{ note.created_at[:10] }}</small>
+              <span class="tag note-kind">{{ t('note.kind_' ~ kind) }}</span>
+              {# The badge costs horizontal room in a narrow pane, so keep the
+                 full title reachable on hover rather than only on expand. #}
+              <span class="note-summary-title" title="{{ note.title }}">{{ note.title or (note.content[:60] ~ ('…' if note.content|length > 60 else '')) }}</span>
+              {# Date alone made two runs of the same tool on the same day
+                 indistinguishable in the collapsed list — which read as
+                 "saving gave me the old content". Minutes are enough to tell
+                 them apart; the full stamp is on hover. #}
+              <small class="muted note-summary-date" title="{{ note.created_at }}">{{ note.created_at[5:16] }}</small>
             </summary>
             <div class="note-body">
               {# Read view #}

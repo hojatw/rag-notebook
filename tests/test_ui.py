@@ -2530,14 +2530,20 @@ def test_artifact_renders_with_save_button_no_autosave(monkeypatch, tmp_path):
                 "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
                 (db.encrypt_for_storage("sk-test"),),
             )
-        _seed_indexed_source(db, user["id"], notebook_id, "a.pdf", summary="一份關於主題的摘要。")
+        source_id = _seed_indexed_source(db, user["id"], notebook_id, "a.pdf", summary="一份關於主題的摘要。")
 
-        resp = client.post(f"/notebooks/{notebook_id}/artifacts/study_guide")
+        # The panel now posts the picked sources (all checked by default).
+        resp = client.post(
+            f"/notebooks/{notebook_id}/artifacts/study_guide",
+            data={"source_ids": [str(source_id)]},
+        )
         assert resp.status_code == 200
         assert "核心概念" in resp.text
         # Manual save: a save button is offered, nothing auto-saved.
         assert "存成筆記" in resp.text
-        assert 'name="title" value="學習指南 — A4測試"' in resp.text
+        # A single-source run names the file (more precise than the notebook
+        # title, and it makes repeat runs tell themselves apart in the shelf).
+        assert 'name="title" value="學習指南 — a.pdf"' in resp.text
         assert resp.headers.get("HX-Trigger") is None
         with db.connect() as conn:
             assert conn.execute(
@@ -2842,3 +2848,332 @@ def test_eval_run_page_shows_answer_quality_layer_when_judged(monkeypatch, tmp_p
     assert "答案品質評分" in body         # per-item judge heading
     assert "matches reference" in body    # judge rationale surfaced inline
     assert "已作答" in body               # answer outcome label
+
+
+def test_theme_defaults_to_system_and_leaves_data_theme_unset(monkeypatch, tmp_path):
+    """U11: a fresh account follows the OS preference, resolved client-side."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        page = client.get("/notebooks")
+
+        assert page.status_code == 200
+        assert 'data-theme-pref="system"' in page.text
+        # No server-rendered data-theme: base.html's inline script resolves it
+        # against prefers-color-scheme, so CSS defaults to the light tokens.
+        assert "data-theme=" not in page.text
+
+
+def test_theme_choice_persists_and_renders_server_side(monkeypatch, tmp_path):
+    """An explicit choice is stored per user and rendered without JS."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        saved = client.post("/account/theme", data={"theme": "dark"})
+
+        assert saved.status_code == 200
+        assert "外觀設定已更新" in saved.text
+        assert 'data-theme="dark"' in saved.text
+        with db.connect() as conn:
+            row = conn.execute("SELECT theme FROM users WHERE username = 'admin'").fetchone()
+        assert row["theme"] == "dark"
+
+        # Survives a new request, and the radio reflects the stored choice.
+        page = client.get("/account")
+        assert 'data-theme="dark"' in page.text
+        assert 'value="dark" checked' in page.text
+        assert 'value="system" checked' not in page.text
+
+
+def test_theme_rejects_values_outside_the_allowlist(monkeypatch, tmp_path):
+    """Only THEME_CHOICES may be written to users.theme."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        response = client.post("/account/theme", data={"theme": "neon"})
+
+        assert response.status_code == 400
+        assert "不支援的外觀選項" in response.text
+        with db.connect() as conn:
+            row = conn.execute("SELECT theme FROM users WHERE username = 'admin'").fetchone()
+        assert row["theme"] == "system"
+
+
+def _make_notebook(db, username="admin"):
+    """Create a notebook (plus a conversation + assistant message) for shelf tests."""
+    with db.connect() as conn:
+        user_id = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()["id"]
+        nb_id = conn.execute(
+            "INSERT INTO notebooks (user_id, title) VALUES (?, '產出架測試')", (user_id,)
+        ).lastrowid
+        conv_id = conn.execute(
+            "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, '對話')",
+            (user_id, nb_id),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'user', '問題')",
+            (conv_id, user_id),
+        )
+        msg_id = conn.execute(
+            "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'assistant', '回答')",
+            (conv_id, user_id),
+        ).lastrowid
+    return nb_id, msg_id
+
+
+def test_outputs_shelf_records_and_badges_the_entry_type(monkeypatch, tmp_path):
+    """U16 Phase 2: a saved tool result keeps the kind that produced it."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+
+        shelf = client.post(
+            f"/notebooks/{nb_id}/notes/add",
+            data={"title": "學習指南 — 產出架測試", "content": "# 重點", "kind": "study_guide"},
+        )
+
+        assert shelf.status_code == 200
+        with db.connect() as conn:
+            row = conn.execute("SELECT kind FROM notes WHERE notebook_id = ?", (nb_id,)).fetchone()
+        assert row["kind"] == "study_guide"
+        assert "學習指南" in shelf.text          # type badge rendered on the entry
+        # A single kind needs no filter row.
+        assert "note-filters" not in shelf.text
+
+
+def test_outputs_shelf_filter_appears_once_two_kinds_exist(monkeypatch, tmp_path):
+    """The client-side type filter shows up only when it has something to do."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, msg_id = _make_notebook(db)
+
+        client.post(
+            f"/notebooks/{nb_id}/notes/add",
+            data={"title": "來源比較：a vs b", "content": "比較", "kind": "compare"},
+        )
+        shelf = client.post(f"/notebooks/{nb_id}/notes/pin", data={"message_id": str(msg_id)})
+
+        assert shelf.status_code == 200
+        assert "note-filters" in shelf.text
+        assert "釘選回答" in shelf.text
+        assert "來源比較" in shelf.text
+        with db.connect() as conn:
+            kinds = sorted(r["kind"] for r in conn.execute(
+                "SELECT kind FROM notes WHERE notebook_id = ?", (nb_id,)
+            ))
+        assert kinds == ["compare", "pinned"]
+
+
+def test_outputs_shelf_rejects_forged_or_unknown_kinds(monkeypatch, tmp_path):
+    """Only SAVABLE_NOTE_KINDS may be set through save-to-shelf.
+
+    'pinned' is excluded on purpose: pinning has its own route, so a saved
+    artifact cannot claim to be a pinned chat answer.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+
+        for sent in ("pinned", "not_a_kind"):
+            response = client.post(
+                f"/notebooks/{nb_id}/notes/add",
+                data={"title": f"t-{sent}", "content": "c", "kind": sent},
+            )
+            assert response.status_code == 200
+
+        with db.connect() as conn:
+            kinds = [r["kind"] for r in conn.execute(
+                "SELECT kind FROM notes WHERE notebook_id = ? ORDER BY id", (nb_id,)
+            )]
+        assert kinds == ["note", "note"]
+
+
+def test_note_export_carries_the_type_label(monkeypatch, tmp_path):
+    """A downloaded shelf still says what produced each entry."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        client.post(
+            f"/notebooks/{nb_id}/notes/add",
+            data={"title": "時間軸 — 產出架測試", "content": "1999 年…", "kind": "timeline"},
+        )
+
+        export = client.get(f"/notebooks/{nb_id}/notes/export")
+
+        assert export.status_code == 200
+        assert "時間軸 ·" in export.text
+
+
+def test_source_preview_shows_ingestion_diagnostics(monkeypatch, tmp_path):
+    """A6a: the preview drawer explains what was extracted, with consequences."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        diagnostics = {
+            "extractor": "pdf_pypdf",
+            "chars": 12,
+            "sections": 3,
+            "chunks": 0,
+            "section_kinds": {"body": 2, "table": 1},
+            "warnings": [
+                {"code": "low_text", "chars": 12, "threshold": 200},
+                {"code": "pdf_structure_fallback"},
+            ],
+            "preview": "只有這幾個字",
+        }
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, diagnostics_json) "
+                "VALUES (?, ?, 'scan.pdf', '/tmp/scan.pdf', 'indexed', ?)",
+                (user_id, nb_id, json.dumps(diagnostics)),
+            ).lastrowid
+
+        preview = client.get(f"/notebooks/{nb_id}/sources/{source_id}/preview")
+
+        assert preview.status_code == 200
+        assert "萃取診斷" in preview.text
+        assert "PDF（僅整頁文字）" in preview.text     # extractor path, localised
+        assert "掃描影像" in preview.text              # low_text warning explains the cause
+        assert "只有這幾個字" in preview.text          # extracted-text preview
+        assert "表格" in preview.text                  # section-kind breakdown
+
+
+def test_failed_source_row_is_openable_and_flags_warnings(monkeypatch, tmp_path):
+    """A failed source must be inspectable — its diagnostics are the only clue."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, error, diagnostics_json) "
+                "VALUES (?, ?, 'broken.pdf', '/tmp/broken.pdf', 'failed', '解析失敗', ?)",
+                (user_id, nb_id, json.dumps({
+                    "extractor": "pdf_pypdf",
+                    "chars": 0,
+                    "sections": 0,
+                    "chunks": 0,
+                    "section_kinds": {},
+                    "warnings": [{"code": "low_text", "chars": 0, "threshold": 200}],
+                    "preview": "",
+                    "failed_stage": "extract",
+                })),
+            ).lastrowid
+
+        row = client.get(f"/notebooks/{nb_id}/sources/{source_id}/_partial")
+
+        assert row.status_code == 200
+        assert "點擊查看萃取診斷" in row.text        # not disabled any more
+        assert "source-warn" in row.text            # warning marker on the row
+
+        preview = client.get(f"/notebooks/{nb_id}/sources/{source_id}/preview")
+        assert preview.status_code == 200
+        assert "讀取檔案內容" in preview.text        # which stage broke
+        assert "沒有萃取到任何文字" in preview.text
+
+
+def test_artifact_tools_honour_the_source_picker(monkeypatch, tmp_path):
+    """A4 tools used the whole notebook with no way to narrow them; now the
+    panel picks sources and the route respects the selection."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            ids = {}
+            for name, summary in (("表格.xlsx", "異常現象與處理方法"), ("簡報.pptx", "EAP 導入專案時程")):
+                ids[name] = conn.execute(
+                    "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, summary) "
+                    "VALUES (?, ?, ?, '/tmp/x', 'indexed', ?)",
+                    (user_id, nb_id, name, summary),
+                ).lastrowid
+
+        panel = client.get(f"/notebooks/{nb_id}/tools/faq")
+        assert panel.status_code == 200
+        # Every indexed source is offered and pre-checked (previous default).
+        assert panel.text.count('name="source_ids"') == 2
+        assert panel.text.count("checked") == 2
+        assert "表格.xlsx" in panel.text and "簡報.pptx" in panel.text
+
+        captured = {}
+
+        async def fake_generate_artifact(kind, summaries, settings, **kwargs):
+            captured["filenames"] = [s["filename"] for s in summaries]
+            return "# 產出"
+
+        monkeypatch.setattr(main, "generate_artifact", fake_generate_artifact)
+        with db.connect() as conn:
+            conn.execute("UPDATE llm_settings SET chat_model = 'x' WHERE id = 1")
+
+        result = client.post(
+            f"/notebooks/{nb_id}/artifacts/faq",
+            data={"source_ids": [str(ids["簡報.pptx"])]},
+        )
+
+        assert result.status_code == 200
+        # The deselected spreadsheet must not reach the prompt.
+        assert captured["filenames"] == ["簡報.pptx"]
+        # A single-source run names the file, so two runs are distinguishable.
+        assert 'value="常見問答 — 簡報.pptx"' in result.text
+
+
+def test_artifact_tools_reject_an_empty_selection(monkeypatch, tmp_path):
+    """Deselecting everything must be an error, never a silent whole-notebook run."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, summary) "
+                "VALUES (?, ?, 'a.pdf', '/tmp/a', 'indexed', '摘要')",
+                (user_id, nb_id),
+            )
+
+        response = client.post(f"/notebooks/{nb_id}/artifacts/faq", data={})
+
+        assert response.status_code == 400
+        assert "請至少選擇一個來源" in response.text
+
+
+def test_shelf_shows_the_time_so_same_day_entries_differ(monkeypatch, tmp_path):
+    """Two runs of one tool on one day looked identical when only a date showed."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            for stamp in ("2026-07-25 14:35:16", "2026-07-25 14:35:54"):
+                conn.execute(
+                    "INSERT INTO notes (notebook_id, user_id, title, content, kind, created_at) "
+                    "VALUES (?, ?, '常見問答 — NB', 'x', 'faq', ?)",
+                    (nb_id, user_id, stamp),
+                )
+
+        shelf = client.get(f"/notebooks/{nb_id}/_notes")
+
+        assert shelf.status_code == 200
+        assert "07-25 14:35" in shelf.text
+        assert 'title="2026-07-25 14:35:54"' in shelf.text   # full stamp on hover

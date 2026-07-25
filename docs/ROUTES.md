@@ -53,8 +53,9 @@ GET  /notebooks/{id}/_notes                               HTMX swap: notes secti
 GET  /notebooks/{id}/notes/export                         download all notes as Markdown
 GET  /notebooks/{id}/notes/{note_id}/export               download one note as Markdown
 
-GET  /account                                             change own password
+GET  /account                                             account settings (theme + change own password)
 POST /account/password                                    save new password
+POST /account/theme                                       save own colour theme (system | light | dark)
 
 GET  /admin/users                                         user list (admin only)
 POST /admin/users/new                                     create user

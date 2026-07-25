@@ -1,8 +1,20 @@
 # Spreadsheet ingestion design notes
 
-Reference notes for future `.xlsx` / `.csv` support. The product backlog item lives in
+Design reference for `.xlsx` / `.csv` support. The product backlog item lives in
 [`ROADMAP.md`](ROADMAP.md) as `A6c`; this file captures chunking and extraction rules
 that are too detailed for the roadmap.
+
+> **Status (2026-07-25): the MVP described here is implemented.** Code lives in
+> `app/ingest.py` (`_extract_spreadsheet` and the `_read_xlsx_sheets` /
+> `_read_csv_sheet` access helpers), tunables in `[spreadsheet]`
+> (`app/config.py`), tests in `tests/test_spreadsheet.py`. What shipped: Q&A
+> detection (incl. headerless two-column), generic-record fallback with
+> token-aware row packing and identifier-repeating splits, hidden-sheet
+> skipping, row/column/file caps, CSV encoding + delimiter detection, and the
+> `A6a` diagnostics integration. What did **not** ship, by design: detection
+> rules for records/metrics/other sheet types beyond the generic fallback (the
+> taxonomy below stays a reference, not a queue), and the table-query tool
+> (`A6d`). Sections below describing those remain forward-looking.
 
 ## Product direction
 
@@ -283,7 +295,9 @@ users. No MVP override — revisit only if a customer asks.
 Tunables live in `app/config.py` as a `[spreadsheet]` group (defaults ←
 `config.toml` ← `NOTEBOOKLM_SPREADSHEET_<FIELD>`), per repo convention:
 
-- `max_file_bytes`, `max_rows`, `max_cols` — hard ingest caps;
+- `max_rows`, `max_cols` — hard per-sheet ingest caps (the whole-file size cap
+  is `[runtime].max_source_bytes`, shared with `.pptx`/`.csv` because all three
+  are parsed eagerly);
 - `rows_per_chunk_min` / `rows_per_chunk_max` — record-chunk grouping bounds;
 - `embed_token_budget` — estimated-token cap per chunk for the adaptive row
   packing (see "Token budgeting for record chunks");

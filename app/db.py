@@ -433,6 +433,23 @@ def init_db() -> None:
         # settings row. Stores only status/capability metadata, never prompts,
         # model outputs, API keys, or raw provider payloads.
         _ensure_column(conn, "llm_settings", "diagnostics_json", "TEXT NOT NULL DEFAULT '{}'")
+        # U11: per-user colour theme — 'system' (follow the OS preference),
+        # 'light', or 'dark'. Kept as a plain TEXT allowlist checked at the route
+        # layer (see THEME_CHOICES in app/main.py) rather than a CHECK constraint,
+        # so adding a theme later stays a code-only change.
+        _ensure_column(conn, "users", "theme", "TEXT NOT NULL DEFAULT 'system'")
+        # A6a: what the extractor actually produced for this source — counts,
+        # the extractor path taken, warnings, and a bounded text preview. One
+        # JSON blob (same pattern as llm_settings.diagnostics_json from O1a) so
+        # new formats can add signals without a migration each time. Rewritten
+        # on every (re)ingest, never appended to.
+        _ensure_column(conn, "sources", "diagnostics_json", "TEXT NOT NULL DEFAULT '{}'")
+        # U16 Phase 2: what produced an outputs-shelf entry ('pinned', 'note', or
+        # a Studio tool kind — allowlist NOTE_KINDS in app/main.py). Drives the
+        # type badge and the shelf filter. '' means "not yet classified" and is
+        # consumed by the one-time backfill below.
+        _ensure_column(conn, "notes", "kind", "TEXT NOT NULL DEFAULT ''")
+        _backfill_note_kinds(conn)
         # Notebook foreign keys are nullable so existing rows can be migrated in place.
         # Phase 2 routes will populate these on insert; the migration below backfills legacy rows.
         _ensure_column(conn, "sources", "notebook_id", "INTEGER REFERENCES notebooks(id) ON DELETE CASCADE")
@@ -550,6 +567,43 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+
+
+# Title prefixes the Studio generators used before `notes.kind` existed, mapped
+# to the kind they imply. These literals are **historical and frozen**: they are
+# a fingerprint of rows already on disk, not display copy, so they must not be
+# swapped for the i18n labels (which may change, and in two cases already differ
+# — the shelf entry said "會議整理"/"摘要翻譯" while the tool tile says
+# "會議記錄"/"翻譯摘要"). Best-effort by design: a miss just means a row keeps
+# the generic 'note' badge, never wrong data.
+_LEGACY_NOTE_TITLE_PREFIXES = (
+    ("來源比較：", "compare"),
+    ("會議整理 — ", "minutes"),
+    ("摘要翻譯（", "translate"),
+    ("學習指南 — ", "study_guide"),
+    ("常見問答 — ", "faq"),
+    ("時間軸 — ", "timeline"),
+)
+
+
+def _backfill_note_kinds(conn: sqlite3.Connection) -> None:
+    """Classify pre-U16-Phase-2 notes once (rows still carrying kind = '').
+
+    Idempotent: every statement is scoped to ``kind = ''`` and the final sweep
+    leaves no empty values behind, so later startups are no-ops.
+    """
+    # Exact: a note with a source message is a pinned chat answer.
+    conn.execute(
+        "UPDATE notes SET kind = 'pinned' WHERE kind = '' AND source_message_id IS NOT NULL"
+    )
+    # Best-effort: recover the generator from the title it wrote.
+    for prefix, kind in _LEGACY_NOTE_TITLE_PREFIXES:
+        conn.execute(
+            "UPDATE notes SET kind = ? WHERE kind = '' AND title LIKE ?",
+            (kind, prefix + "%"),
+        )
+    # Everything else is a plain saved note.
+    conn.execute("UPDATE notes SET kind = 'note' WHERE kind = ''")
 
 
 def _ensure_user(conn: sqlite3.Connection, username: str, password: str, is_admin: bool) -> None:

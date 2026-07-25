@@ -1,6 +1,9 @@
-{# Reusable "save to notes" control for Studio tool results (compare / minutes /
-   A4 artifacts). Generators no longer auto-save — the user decides what lands
-   in the outputs shelf. Expects: notebook_id, note_title, note_content.
+{# Reusable "save to shelf" control for Studio tool results (compare / minutes /
+   A4 artifacts / translate). Generators no longer auto-save — the user decides
+   what lands in the outputs shelf.
+   Expects: notebook_id, note_title, note_content, note_kind (U16 Phase 2 — the
+   producing tool, so the shelf can badge and filter the entry; falls back to a
+   generic note if a caller forgets it).
    Targets #studio-notes (outputs shelf) and shows a one-shot saved state so the
    same result can't be double-saved. #}
 <form class="save-note-form"
@@ -12,6 +15,7 @@
   {{ csrf_input() }}
   <input type="hidden" name="title" value="{{ note_title }}">
   <input type="hidden" name="content" value="{{ note_content }}">
+  <input type="hidden" name="kind" value="{{ note_kind | default('note', true) }}">
   <button type="submit" class="ghost small"
           :disabled="saved"
           :class="{ 'pinned': saved }"

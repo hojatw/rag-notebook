@@ -10,5 +10,17 @@ joserfc==1.7.2
 pypdf==6.14.2
 pdfplumber==0.11.10
 python-docx==1.2.0
+openpyxl==3.1.5
+# A6b PPTX. Pulls Pillow + XlsxWriter transitively (python-pptx needs them to
+# write image/chart parts); Phase 1 only reads text, images stay unread until A8/A9.
+python-pptx==1.0.2
+# Transitive via python-pptx, pinned explicitly because it is the CVE-heaviest
+# dependency here: 12.2.0 (what python-pptx resolves to) carries 8 known image-
+# decoding advisories, all fixed in 12.3.0. Ingest never decodes image bytes
+# today, but pinning keeps the audit clean — revisit when A8/A9 add OCR/vision.
+Pillow==12.3.0
+# Pinned explicitly (A6c): it was already present transitively, but ingest now
+# imports it for CSV encoding detection (Big5/CP950 is common in zh-TW exports).
+charset-normalizer==3.4.7
 beautifulsoup4==4.15.0
 chromadb==1.5.9

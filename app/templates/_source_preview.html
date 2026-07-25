@@ -16,8 +16,95 @@
 </header>
 
 {% if source.error %}
-  <div class="alert">{{ source.error }}</div>
+  <div class="alert">
+    {{ source.error }}
+    {% if source.diagnostics.failed_stage %}
+      <span class="muted small">（{{ t('diag.failed_stage') }}：{{ t('diag.stage_' ~ source.diagnostics.failed_stage) }}）</span>
+    {% endif %}
+  </div>
 {% endif %}
+
+{# A6a ingestion diagnostics. Collapsed by default so normal reading is
+   undisturbed, but auto-opened when something needs attention — a source that
+   indexed "successfully" with no usable text is exactly the case a user would
+   otherwise never look for. #}
+<details class="preview-diagnostics"{% if source.diagnostics.warnings or source.status == 'failed' %} open{% endif %}>
+  <summary>
+    {{ t('diag.title') }}
+    {% if source.diagnostics.warnings %}
+      <span class="tag tag--warn">{{ source.diagnostics.warnings | length }}</span>
+    {% endif %}
+  </summary>
+  {% if source.diagnostics %}
+    <p class="muted small">{{ t('diag.hint') }}</p>
+    {% for warning in source.diagnostics.warnings %}
+      <div class="warn">{{ t('diag.warn_' ~ warning.code, **warning) }}</div>
+    {% endfor %}
+    <dl class="diag-grid">
+      <div><dt>{{ t('diag.chars') }}</dt><dd>{{ source.diagnostics.chars }}</dd></div>
+      <div><dt>{{ t('diag.sections') }}</dt><dd>{{ source.diagnostics.sections }}</dd></div>
+      <div><dt>{{ t('diag.chunks') }}</dt><dd>{{ source.diagnostics.chunks }}</dd></div>
+      <div>
+        <dt>{{ t('diag.extractor') }}</dt>
+        <dd>{{ t('diag.extractor_' ~ source.diagnostics.extractor) }}</dd>
+      </div>
+    </dl>
+    {# A6c: per-sheet interpretation. Users need to know whether the app read a
+       sheet as Q&A or fell back to generic records — that changes what they can
+       reasonably ask. #}
+    {% if source.diagnostics.details and source.diagnostics.details.sheets %}
+      <div class="diag-sheets">
+        <span class="muted small">{{ t('diag.sheets') }}</span>
+        {% for sheet in source.diagnostics.details.sheets %}
+          <div class="diag-sheet">
+            <span class="diag-sheet-name">{{ sheet.sheet }}</span>
+            <span class="tag">{{ t('diag.sheet_type_' ~ sheet.type) }}</span>
+            {% if sheet.header %}
+              <span class="muted small">{{ t('diag.sheet_header_' ~ sheet.header) }}</span>
+            {% endif %}
+            {% if sheet.qa_columns %}
+              <span class="muted small">· {{ t('diag.sheet_qa_auto') }}</span>
+            {% endif %}
+            {% if sheet.rows is defined %}
+              <span class="muted small">· {{ t('diag.sheet_meta', rows=sheet.rows, columns=sheet.columns or 0, chunks=sheet.chunks) }}</span>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+    {% if source.diagnostics.details and source.diagnostics.details.slides %}
+      <p class="muted small">
+        {{ t('diag.slides') }}：{{ t('diag.slide_stats',
+             slides=source.diagnostics.details.slides,
+             tables=source.diagnostics.details.tables,
+             notes=source.diagnostics.details.notes,
+             images=source.diagnostics.details.images) }}
+      </p>
+    {% endif %}
+    {% if source.diagnostics.details and source.diagnostics.details.encoding %}
+      <p class="muted small">
+        {{ t('diag.csv_encoding') }}：{{ source.diagnostics.details.encoding.encoding }}
+        · {{ t('diag.csv_delimiter') }}：<code>{{ source.diagnostics.details.delimiter }}</code>
+      </p>
+    {% endif %}
+    {% if source.diagnostics.section_kinds %}
+      <p class="diag-kinds">
+        <span class="muted small">{{ t('diag.section_kinds') }}</span>
+        {% for kind, count in source.diagnostics.section_kinds.items() %}
+          <span class="tag">{{ t('diag.kind_' ~ kind) }} {{ count }}</span>
+        {% endfor %}
+      </p>
+    {% endif %}
+    <h4 class="diag-preview-head">{{ t('diag.preview') }}</h4>
+    {% if source.diagnostics.preview %}
+      <pre class="diag-preview">{{ source.diagnostics.preview }}</pre>
+    {% else %}
+      <p class="muted small">{{ t('diag.preview_empty') }}</p>
+    {% endif %}
+  {% else %}
+    <p class="muted small">{{ t('diag.none') }}</p>
+  {% endif %}
+</details>
 
 {% if source.summary %}
   <section class="preview-summary">

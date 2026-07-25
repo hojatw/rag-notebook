@@ -521,3 +521,155 @@ def test_concurrent_init_db_does_not_race_on_migrations(monkeypatch, tmp_path):
     with db.connect() as conn:
         notebook_cols = [r["name"] for r in conn.execute("PRAGMA table_info(notebooks)")]
     assert "followups_enabled" in notebook_cols
+
+
+def test_note_kind_backfill_classifies_legacy_rows(fresh_modules):
+    """U16 Phase 2: rows written before notes.kind existed get classified once.
+
+    Pinned answers are exact (source_message_id); tool outputs are recovered
+    best-effort from the title prefix those generators used at the time.
+    """
+    db = fresh_modules.db
+    with db.connect() as conn:
+        user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+        nb_id = conn.execute(
+            "INSERT INTO notebooks (user_id, title) VALUES (?, 'NB')", (user_id,)
+        ).lastrowid
+        conv_id = conn.execute(
+            "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, 'C')",
+            (user_id, nb_id),
+        ).lastrowid
+        msg_id = conn.execute(
+            "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'assistant', 'A')",
+            (conv_id, user_id),
+        ).lastrowid
+        # Simulate pre-migration rows: kind blanked out, as the column default
+        # left them before _backfill_note_kinds ran.
+        rows = [
+            ("釘選的問題", None),
+            ("來源比較：a.pdf vs b.pdf", None),
+            ("會議整理 — 逐字稿.txt", None),
+            ("摘要翻譯（English） — a.pdf", None),
+            ("學習指南 — NB", None),
+            ("常見問答 — NB", None),
+            ("時間軸 — NB", None),
+            ("我自己寫的東西", None),
+        ]
+        for title, _ in rows:
+            conn.execute(
+                "INSERT INTO notes (notebook_id, user_id, title, content, kind) VALUES (?, ?, ?, 'x', '')",
+                (nb_id, user_id, title),
+            )
+        conn.execute(
+            "UPDATE notes SET source_message_id = ? WHERE title = '釘選的問題'", (msg_id,)
+        )
+
+    fresh_modules.db.init_db()
+
+    with db.connect() as conn:
+        kinds = {r["title"]: r["kind"] for r in conn.execute("SELECT title, kind FROM notes")}
+    assert kinds["釘選的問題"] == "pinned"
+    assert kinds["來源比較：a.pdf vs b.pdf"] == "compare"
+    assert kinds["會議整理 — 逐字稿.txt"] == "minutes"
+    assert kinds["摘要翻譯（English） — a.pdf"] == "translate"
+    assert kinds["學習指南 — NB"] == "study_guide"
+    assert kinds["常見問答 — NB"] == "faq"
+    assert kinds["時間軸 — NB"] == "timeline"
+    # Unrecognised titles stay generic rather than being guessed at.
+    assert kinds["我自己寫的東西"] == "note"
+    # Idempotent: a second init_db must not reclassify anything.
+    fresh_modules.db.init_db()
+    with db.connect() as conn:
+        again = {r["title"]: r["kind"] for r in conn.execute("SELECT title, kind FROM notes")}
+    assert again == kinds
+
+
+def test_ingest_diagnostics_summarise_what_was_extracted(fresh_modules, tmp_path):
+    """A6a: counts, section kinds and the extractor path are derived from the
+    same data the pipeline already produced."""
+    ingest = fresh_modules.ingest
+
+    extraction = ingest.ExtractionResult(
+        sections=[
+            ("page 1 paragraph 1", "第一段內容。" * 20),
+            ("page 1 table 1", "Table:\nA | B"),
+            ("header", "   "),
+        ],
+        extractor="pdf_pdfplumber",
+    )
+    records = [("page 1 paragraph 1", "第一段內容。" * 20), ("page 1 table 1", "Table:\nA | B")]
+
+    diag = ingest.collect_ingest_diagnostics(extraction, records)
+
+    assert diag["extractor"] == "pdf_pdfplumber"
+    assert diag["sections"] == 3
+    assert diag["chunks"] == 2
+    assert diag["section_kinds"] == {"body": 1, "table": 1, "header": 1}
+    assert diag["preview"].startswith("第一段內容")
+    # The blank header section is reported, not silently ignored.
+    codes = {w["code"] for w in diag["warnings"]}
+    assert "empty_sections" in codes
+
+
+def test_ingest_diagnostics_flag_scanned_and_fallback_and_oversized(fresh_modules):
+    """The three warnings that change what a user should do next."""
+    ingest = fresh_modules.ingest
+
+    scanned = ingest.collect_ingest_diagnostics(
+        ingest.ExtractionResult(
+            sections=[("page 1", "   ")],
+            extractor="pdf_pypdf",
+            notes=["pdf_structure_fallback"],
+        ),
+        [],
+    )
+    codes = {w["code"] for w in scanned["warnings"]}
+    assert "low_text" in codes                  # image-only / scanned PDF signal
+    assert "pdf_structure_fallback" in codes    # citations degrade to page level
+
+    # A CJK chunk far past the 512-token budget is estimated at ~1 token/char.
+    oversized_text = "測" * 900
+    oversized = ingest.collect_ingest_diagnostics(
+        ingest.ExtractionResult(sections=[("document", oversized_text)], extractor="plain_text"),
+        [("document", oversized_text)],
+    )
+    over = next(w for w in oversized["warnings"] if w["code"] == "chunk_over_token_budget")
+    assert over["count"] == 1
+    assert over["budget"] == 512
+    # Latin text of the same length is ~4 chars/token, so it stays under budget.
+    latin_text = "word " * 180
+    latin = ingest.collect_ingest_diagnostics(
+        ingest.ExtractionResult(sections=[("document", latin_text)], extractor="plain_text"),
+        [("document", latin_text)],
+    )
+    assert not any(w["code"] == "chunk_over_token_budget" for w in latin["warnings"])
+
+
+def test_ingest_records_diagnostics_and_failed_stage(fresh_modules, tmp_path):
+    """A failed ingest still persists what extraction managed to produce."""
+    db, ingest = fresh_modules.db, fresh_modules.ingest
+    upload = tmp_path / "empty.txt"
+    upload.write_text("", encoding="utf-8")
+
+    with db.connect() as conn:
+        user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+        nb_id = conn.execute(
+            "INSERT INTO notebooks (user_id, title) VALUES (?, 'NB')", (user_id,)
+        ).lastrowid
+        source_id = conn.execute(
+            "INSERT INTO sources (user_id, notebook_id, filename, stored_path) VALUES (?, ?, 'empty.txt', ?)",
+            (user_id, nb_id, str(upload)),
+        ).lastrowid
+
+    # No text -> chunking yields nothing -> ingest fails before embedding, so
+    # this runs without any LLM/network access.
+    asyncio.run(ingest.process_source(source_id))
+
+    with db.connect() as conn:
+        row = conn.execute("SELECT status, diagnostics_json FROM sources WHERE id = ?", (source_id,)).fetchone()
+    diag = importlib.import_module("json").loads(row["diagnostics_json"])
+    assert row["status"] == "failed"
+    assert diag["failed_stage"] == "chunk"      # not 'embed': extraction is what came up empty
+    assert diag["chars"] == 0
+    assert diag["chunks"] == 0
+    assert any(w["code"] == "low_text" for w in diag["warnings"])

@@ -82,9 +82,11 @@
     </form>
 
   {% else %}
-    {# A4 artifacts: study_guide / faq / timeline — generated across the whole
-       notebook's summaries, saved to Notes. Label/blurb come from the i18n
-       catalog keyed by `tool.<kind>` / `tool.<kind>_blurb`. #}
+    {# A4 artifacts: study_guide / faq / timeline. Sources are picked here, the
+       same as compare/minutes/translate — the left-pane checkboxes scope chat
+       only, so without this panel there was no way to narrow the tool at all.
+       All boxes start checked to preserve the previous whole-notebook default.
+       Label/blurb come from the i18n catalog keyed by `tool.<kind>`. #}
     <h3 class="tool-panel-title">{{ t('tool.' ~ kind) }}</h3>
     <p class="muted small">{{ t('tool.' ~ kind ~ '_blurb') }}</p>
     <form class="artifact-form tool-panel-form"
@@ -94,6 +96,18 @@
           hx-indicator="#tool-loading"
           hx-disabled-elt="find button[type=submit]">
       {{ csrf_input() }}
+      <p class="muted small">{{ t('tool.artifact_sources_label') }}</p>
+      <ul class="compare-source-list">
+        {% for s in sources_indexed %}
+          <li>
+            <label>
+              <input type="checkbox" name="source_ids" value="{{ s.id }}" checked>
+              <span class="compare-source-name">{{ s.filename }}</span>
+              {% if not s.summary %}<span class="muted small">（無摘要）</span>{% endif %}
+            </label>
+          </li>
+        {% endfor %}
+      </ul>
       <button type="submit" class="wide small">{{ t('tool.generate', label=t('tool.' ~ kind)) }}</button>
     </form>
   {% endif %}

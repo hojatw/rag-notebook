@@ -28,6 +28,28 @@ latin_target_chars = 800      # target chunk size for Latin-script text
 cjk_target_chars = 400        # target chunk size for CJK text (denser per char)
 overlap_sentences = 1         # sentences of overlap between adjacent chunks
 
+# --- A6c spreadsheet ingestion (docs/SPREADSHEET_INGESTION.md) --------------
+# rows_per_chunk_max and embed_token_budget CHANGE CHUNK SHAPE -> re-index
+# existing spreadsheet sources after touching them. The rest only affect what
+# the next ingest reads/detects.
+[spreadsheet]
+max_rows = 5000               # per sheet, after the header row
+max_cols = 60                 # per sheet
+rows_per_chunk_max = 20       # upper bound on record-chunk packing
+embed_token_budget = 400      # estimated tokens per record chunk
+header_sample_rows = 5        # rows inspected when inferring a header
+wide_sheet_cols = 25          # above this, warn that the sheet is wide
+qa_question_synonyms = "question,q,問題,提問,問句,客戶提問"
+qa_answer_synonyms = "answer,a,答案,回覆,回答,解答,回覆內容"
+
+# --- A6a ingestion diagnostics (display thresholds only, no re-indexing) -----
+[diagnostics]
+low_text_chars = 200          # extracted total below this -> "almost no text" warning
+preview_chars = 500           # stored extracted-text preview length
+embedding_token_budget = 512  # model input window used for the over-budget warning
+cjk_chars_per_token = 1.0     # CJK-heavy estimate (conservative: 1 token per char)
+latin_chars_per_token = 4.0   # Latin estimate (the usual ~4 chars per token)
+
 # --- Embedding throughput (settings.* can still override per deployment) -----
 [embedding]
 batch_size = 64               # texts per embedding request
@@ -48,6 +70,7 @@ poll_interval_s = 2.0         # worker idle poll interval
 [runtime]
 briefing_lock_timeout_s = 90.0
 upload_batch_limit = 5        # max files per upload request
+max_source_bytes = 20000000   # hard cap for eagerly-parsed sources (.xlsx/.pptx/.csv)
 suggestions_ttl_hours = 24
 briefing_ttl_hours = 24
 

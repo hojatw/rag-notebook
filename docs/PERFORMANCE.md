@@ -4,7 +4,7 @@ Prioritised list of known performance / scalability issues, kept so they can be 
 
 **Deployment context:** the target is ~200 users (not all concurrent) on the customer's **borrowed, shared** Gemma 4 31B (chat) + multilingual-e5-large (embedding) endpoint — **the serving side is fixed, so every adaptation must happen app-side** — with hundreds-of-page research-report PDFs. See `../handover.md` for the pre-launch checklist and `RETRIEVAL.md` for the retrieval pipeline.
 
-Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
+Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deliberately not doing (reason + restart condition recorded)
 
 ---
 
@@ -49,11 +49,13 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## P2 — scale / cleanup
 
-### [ ] P2-1 · Reduce the SQLite vector copy (`embedding_json`) — *tradeoff, not a free cleanup*
+### [-] P2-1 · Reduce the SQLite vector copy (`embedding_json`) — *decided: keep as-is*
 - **Issue:** Every chunk's vector is persisted as JSON in SQLite **and** in Chroma.
 - **Correction (2026-06-09):** an earlier note here claimed only the fallback reads the SQLite copy — that was wrong. `vector_store.py:sync_from_sqlite` reads `embedding_json` to (re)build Chroma, so **SQLite is the durable source of truth and Chroma is a derived index** rebuilt from it without re-embedding (startup diff-sync, `/admin/index` Rebuild). Dropping the column means Chroma becomes the only vector copy; any rebuild/recovery would require **re-embedding the whole corpus** (cost + time + the endpoint being up).
 - **Impact:** ~12 KB/vector of JSON (~12 GB at 1M chunks) + `dumps`/`loads` CPU on ingest — but it buys cheap, offline index rebuilds.
-- **Fix (decision needed):** Don't simply delete. Options: (a) keep as-is (durability > disk); (b) store raw `float32` bytes instead of JSON (~4 KB/vector, ~3× smaller, still rebuildable) — the better middle ground; (c) drop it and accept re-embedding on rebuild. Recommend **(b)** if disk matters, else leave it.
+- **Options considered:** Don't simply delete. (a) keep as-is (durability > disk); (b) store raw `float32` bytes instead of JSON (~4 KB/vector, ~3× smaller, still rebuildable) — the better middle ground; (c) drop it and accept re-embedding on rebuild.
+- **Decision (2026-07-25): (a) keep as-is — deliberately not doing.** At POC scale disk is not the bottleneck, and the JSON copy buys the property that matters most here: rebuilding Chroma is offline, free, and does not require the customer's shared embedding endpoint to be up. (c) is explicitly rejected — it would turn "rebuild the index" into an operation that costs GPU time on a borrowed endpoint.
+- **Restart condition:** revisit and implement **(b) `float32` bytes** if either (1) a single deployment passes roughly **300k chunks**, or (2) disk pressure on the target host becomes a real operational concern. (b) keeps offline rebuildability, so it stays the preferred move whenever this reopens — no need to re-litigate (c).
 
 ### [x] P2-2 · Run vector + keyword search concurrently
 - **Issue:** `retrieve()` called `query_vectors(...)` then `keyword_candidates_from_sqlite(...)` sequentially, though they are independent.

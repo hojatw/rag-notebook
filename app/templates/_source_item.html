@@ -26,19 +26,25 @@
            title="納入對話範圍"
            aria-label="將 {{ source.filename }} 納入對話範圍">
     {% endif %}
+    {# A6a: failed sources open the drawer too — their ingestion diagnostics
+       (what was extracted, which stage broke) are the only way to tell a
+       scanned/empty file apart from an endpoint outage. #}
     <button type="button"
             class="source-line-btn"
-            {% if source.status == "indexed" %}
+            {% if source.status in ("indexed", "failed") %}
             hx-get="/notebooks/{{ notebook.id }}/sources/{{ source.id }}/preview"
             hx-target="#preview-content"
             hx-swap="innerHTML"
             hx-on::after-request="window.dispatchEvent(new CustomEvent('open-preview'))"
-            title="點擊預覽內容分塊"
+            title="{% if source.status == 'failed' %}點擊查看萃取診斷{% else %}點擊預覽內容分塊{% endif %}"
             {% else %}
             disabled
             title="索引完成後即可預覽"
             {% endif %}>
       <span class="source-name" title="{{ source.filename }}">{{ source.filename }}</span>
+      {% if source.diagnostics and source.diagnostics.warnings %}
+        <span class="source-warn" title="{{ t('diag.row_warning') }}" aria-label="{{ t('diag.row_warning') }}">!</span>
+      {% endif %}
       <span class="status {{ source.status }}">{{ source_status_labels.get(source.status, source.status) }}</span>
     </button>
   </div>

@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import re
 from pathlib import Path
@@ -10,7 +11,10 @@ from .vector_store import delete_source as delete_source_vectors
 from .vector_store import upsert_chunks
 
 
-ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm", ".srt", ".vtt"}
+ALLOWED_EXTENSIONS = {
+    ".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm", ".srt", ".vtt",
+    ".xlsx", ".csv", ".pptx",
+}
 logger = logging.getLogger(__name__)
 
 # Inline WebVTT tags (e.g. <v Speaker>, <00:00:01.000>, <c.classname>) stripped
@@ -23,7 +27,33 @@ def supported(filename: str) -> bool:
     return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
 
-def extract_sections(path: Path) -> list[tuple[str, str]]:
+@dataclasses.dataclass
+class ExtractionResult:
+    """Extracted sections plus what the extractor noticed on the way (A6a).
+
+    ``extractor`` and ``notes`` capture things only the extractor itself can
+    know — most importantly *which* code path produced the sections, since a
+    PDF that fell back to plain pypdf loses tables and paragraph structure and
+    therefore yields coarser citations. Diagnostics that can be measured from
+    the sections afterwards (counts, char totals) are **not** carried here;
+    they are derived in `collect_ingest_diagnostics` so there is one place that
+    computes them.
+    """
+    sections: list[tuple[str, str]]
+    extractor: str
+    notes: list[str] = dataclasses.field(default_factory=list)
+    #: Format-specific facts for the diagnostics panel (sheet types, header
+    #: decision, CSV encoding …). Free-form so a new format adds signals without
+    #: a schema change; rendered generically.
+    details: dict[str, Any] = dataclasses.field(default_factory=dict)
+    #: True when ``sections`` are already chunk-shaped and must NOT be re-packed
+    #: by :func:`chunk_sections`. Spreadsheets set this: a row is the semantic
+    #: unit, and sentence-packing across rows would glue unrelated records
+    #: together and destroy the ``sheet "X" row N`` citation labels.
+    pre_chunked: bool = False
+
+
+def extract_sections(path: Path) -> ExtractionResult:
     """Extract text sections from a supported source file.
 
     Dispatches per suffix to a helper. Each helper returns a list of
@@ -33,18 +63,41 @@ def extract_sections(path: Path) -> list[tuple[str, str]]:
     """
     suffix = path.suffix.lower()
     logger.info("extract_started path=%s suffix=%s", path.name, suffix)
+    notes: list[str] = []
     if suffix == ".pdf":
-        sections = _extract_pdf(path)
+        # Structured first; note the degradation explicitly when falling back,
+        # because "why are this file's citations only page-level?" is otherwise
+        # invisible to the user.
+        sections = _extract_pdf_with_pdfplumber(path)
+        if sections:
+            extractor = "pdf_pdfplumber"
+        else:
+            sections = _extract_pdf_with_pypdf(path)
+            extractor = "pdf_pypdf"
+            notes.append("pdf_structure_fallback")
     elif suffix == ".docx":
         sections = _extract_docx(path)
+        extractor = "docx"
     elif suffix in {".html", ".htm"}:
         sections = _extract_html(path)
+        extractor = "html"
     elif suffix in {".srt", ".vtt"}:
         sections = _extract_subtitles(path)
+        extractor = "subtitles"
+    elif suffix in {".xlsx", ".csv"}:
+        # Spreadsheets return fully-formed chunks (see _extract_spreadsheet).
+        return _extract_spreadsheet(path)
+    elif suffix == ".pptx":
+        # Slide sections flow through the normal chunker (short slides pack
+        # together rather than becoming one tiny vector each).
+        return _extract_pptx(path)
     else:
         sections = [("document", path.read_text(encoding="utf-8", errors="ignore"))]
-    logger.info("extract_completed path=%s sections=%s", path.name, len(sections))
-    return sections
+        extractor = "plain_text"
+    logger.info(
+        "extract_completed path=%s sections=%s extractor=%s", path.name, len(sections), extractor
+    )
+    return ExtractionResult(sections=sections, extractor=extractor, notes=notes)
 
 
 def _extract_subtitles(path: Path) -> list[tuple[str, str]]:
@@ -83,19 +136,13 @@ def _extract_subtitles(path: Path) -> list[tuple[str, str]]:
     return [("transcript", transcript)] if transcript else []
 
 
-def _extract_pdf(path: Path) -> list[tuple[str, str]]:
-    """Extract PDF paragraphs + tables in page reading order.
+def _extract_pdf_with_pypdf(path: Path) -> list[tuple[str, str]]:
+    """Plain page-level PDF text — the fallback when pdfplumber can't help.
 
-    Preferred path uses pdfplumber so paragraphs and tables can be emitted as
-    interleaved blocks (``page N paragraph K`` / ``page N table M``). If
-    pdfplumber is unavailable or fails for a document, falls back to plain
-    pypdf text extraction.
+    Loses tables and paragraph blocks, so citations degrade to ``page N``.
+    `extract_sections` records this as the ``pdf_structure_fallback`` note.
     """
     from pypdf import PdfReader
-
-    structured_sections = _extract_pdf_with_pdfplumber(path)
-    if structured_sections:
-        return structured_sections
 
     reader = PdfReader(str(path))
     return [
@@ -495,6 +542,595 @@ CJK_TARGET_CHARS = config.chunking.cjk_target_chars
 DEFAULT_OVERLAP_SENTENCES = config.chunking.overlap_sentences
 
 
+def _guard_source_size(path: Path) -> None:
+    """Refuse sources the extractor would parse eagerly beyond a sane size.
+
+    `.xlsx` / `.pptx` are zip containers, so the on-disk size says nothing about
+    what they expand to; `.csv` is read into memory whole for encoding
+    detection. The cap bounds all three before a parser is handed the file.
+    """
+    limit = config.runtime.max_source_bytes
+    size = path.stat().st_size
+    if size > limit:
+        raise ValueError(f"Source file is too large to ingest ({size} bytes > {limit}).")
+
+
+def _iter_pptx_shapes(shapes):
+    """Yield shapes depth-first, descending into groups.
+
+    Grouped shapes are the PPTX equivalent of the nested-table bug we hit in
+    DOCX: their text is invisible to a flat `slide.shapes` walk, so a deck whose
+    author grouped its bullet boxes would index as an empty slide.
+    """
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    for shape in shapes:
+        if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
+            yield from _iter_pptx_shapes(shape.shapes)
+        else:
+            yield shape
+
+
+def _extract_pptx(path: Path) -> ExtractionResult:
+    """Extract a .pptx deck as slide-scoped sections (A6b Phase 1, text-first).
+
+    Emits `slide N` (title + body), `slide N table K`, and `slide N notes` so a
+    citation points at a specific slide. Images/diagrams are **not** read — that
+    needs OCR (`A8`) or a vision model (`A9`); slides that carry only visual
+    content are reported through diagnostics instead of silently indexing as
+    empty, which is the whole point of shipping Phase 1 before either exists.
+    """
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    _guard_source_size(path)
+    presentation = Presentation(str(path))
+    sections: list[tuple[str, str]] = []
+    details: dict[str, Any] = {
+        "slides": 0,
+        "slides_without_text": 0,
+        "tables": 0,
+        "notes": 0,
+        "images": 0,
+    }
+    notes_list: list[str] = []
+
+    for index, slide in enumerate(presentation.slides, start=1):
+        details["slides"] += 1
+        title_shape = slide.shapes.title
+        lines: list[str] = []
+        table_sections: list[tuple[str, str]] = []
+        table_number = 0
+        has_visual = False
+        for shape in _iter_pptx_shapes(slide.shapes):
+            if getattr(shape, "has_table", False):
+                table_number += 1
+                details["tables"] += 1
+                rows = [[cell.text for cell in row.cells] for row in shape.table.rows]
+                rendered = _render_pdf_table(rows)
+                if rendered:
+                    # Held back so each slide reads body -> tables -> notes;
+                    # PPTX shape order does not follow visual reading order.
+                    table_sections.append((f"slide {index} table {table_number}", rendered))
+                continue
+            if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.PICTURE:
+                details["images"] += 1
+                has_visual = True
+                continue
+            if not getattr(shape, "has_text_frame", False):
+                # Charts, media, SmartArt — visual content Phase 1 cannot read.
+                has_visual = True
+                continue
+            text = shape.text_frame.text.strip()
+            if not text:
+                continue
+            if title_shape is not None and shape is title_shape:
+                lines.insert(0, text)
+            else:
+                lines.append(text)
+
+        body = "\n".join(lines).strip()
+        if body:
+            sections.append((f"slide {index}", body))
+        sections.extend(table_sections)
+        if not body and not table_sections and has_visual:
+            # A slide with visuals but no readable text: the exact case a user
+            # would otherwise blame on retrieval.
+            details["slides_without_text"] += 1
+
+        if getattr(slide, "has_notes_slide", False):
+            note_text = (slide.notes_slide.notes_text_frame.text or "").strip()
+            if note_text:
+                details["notes"] += 1
+                sections.append((f"slide {index} notes", note_text))
+
+    if details["slides_without_text"]:
+        notes_list.append("pptx_visual_only_slides")
+    logger.info(
+        "extract_completed path=%s sections=%s extractor=pptx slides=%s",
+        path.name, len(sections), details["slides"],
+    )
+    return ExtractionResult(
+        sections=sections, extractor="pptx", notes=notes_list, details=details
+    )
+
+
+# --------------------------------------------------------------------------
+# A6c · Spreadsheet ingestion (.xlsx / .csv)
+#
+# Design decisions (why, not just what) live in docs/SPREADSHEET_INGESTION.md.
+# The MVP detects Q&A sheets only; every other shape falls back to bounded
+# generic-record chunking and *says so* in diagnostics rather than pretending
+# it understood the sheet. All workbook access goes through _read_xlsx_sheets /
+# _read_csv_sheet so the reader can be swapped (python-calamine) without
+# touching chunk shaping.
+# --------------------------------------------------------------------------
+
+def _column_label(index: int) -> str:
+    """Excel-style fallback name for a column with no header (0 -> 'Column A')."""
+    letters = ""
+    n = index
+    while True:
+        letters = chr(ord("A") + n % 26) + letters
+        n = n // 26 - 1
+        if n < 0:
+            break
+    return f"Column {letters}"
+
+
+def _cell_text(value: Any) -> str:
+    """Render a cell as trimmed display text ('' for blanks)."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _looks_like_header(rows: list[list[Any]]) -> bool:
+    """Decide whether row 0 is a header rather than data.
+
+    Deliberately conservative — mislabelling data as a header silently deletes
+    a record, so every signal must point the same way: all cells textual, no
+    duplicates, and none long enough to be prose.
+    """
+    if not rows:
+        return False
+    values = [v for v in rows[0] if _cell_text(v)]
+    if not values:
+        return False
+    if any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
+        return False
+    labels = [_cell_text(v) for v in values]
+    if len(set(labels)) != len(labels):
+        return False
+    if any(len(label) > 40 for label in labels):
+        return False
+    # Sentences are data, not column names — this is what separates a headerless
+    # exported FAQ ("忘記密碼怎麼辦？") from a real header row ("問題").
+    if any(label[-1] in "。？！?!." for label in labels):
+        return False
+    # A header should also be terser than the rows beneath it.
+    body = [_cell_text(v) for row in rows[1:] for v in row if _cell_text(v)]
+    if body:
+        avg_header = sum(len(label) for label in labels) / len(labels)
+        avg_body = sum(len(text) for text in body) / len(body)
+        if avg_body and avg_header > avg_body * 1.2:
+            return False
+    return True
+
+
+def _synonyms(raw: str) -> list[str]:
+    return [part.strip().lower() for part in (raw or "").split(",") if part.strip()]
+
+
+def _match_column(columns: list[str], synonyms: list[str]) -> int | None:
+    """Find the column whose name matches one of `synonyms`.
+
+    Short synonyms ('q', 'a') must match exactly — as a substring they would hit
+    almost any English header. Longer ones may match as a substring so house
+    vocabulary like 客戶提問 still resolves via 提問.
+    """
+    normalized = [c.strip().lower() for c in columns]
+    for synonym in synonyms:
+        for index, name in enumerate(normalized):
+            if name == synonym:
+                return index
+    for synonym in synonyms:
+        if len(synonym) <= 2:
+            continue
+        for index, name in enumerate(normalized):
+            if synonym in name:
+                return index
+    return None
+
+
+def _detect_qa_columns(columns: list[str], has_header: bool) -> dict[str, Any] | None:
+    """Return the Q&A column mapping for this sheet, or None if it isn't Q&A."""
+    s = config.spreadsheet
+    question = _match_column(columns, _synonyms(s.qa_question_synonyms))
+    answer = _match_column(columns, _synonyms(s.qa_answer_synonyms))
+    if question is not None and answer is not None and question != answer:
+        return {"question": question, "answer": answer, "auto_detected": False}
+    # A headerless two-column sheet is the classic exported FAQ: treat it as
+    # question/answer but record that the mapping was guessed.
+    if not has_header and len(columns) == 2:
+        return {"question": 0, "answer": 1, "auto_detected": True}
+    return None
+
+
+def _meta_columns(columns: list[str], qa: dict[str, Any]) -> list[int]:
+    """Non-Q&A columns worth embedding as context (category / tags / keywords)."""
+    wanted = ("category", "分類", "類別", "tag", "標籤", "keyword", "關鍵字")
+    out = []
+    for index, name in enumerate(columns):
+        if index in (qa["question"], qa["answer"]):
+            continue
+        lowered = name.strip().lower()
+        if any(token in lowered for token in wanted):
+            out.append(index)
+    return out
+
+
+def _qa_sections(
+    sheet: str, columns: list[str], rows: list[tuple[int, list[Any]]], qa: dict[str, Any]
+) -> list[tuple[str, str]]:
+    """One chunk per Q&A row, in the trimmed-preamble shape (design doc)."""
+    meta = _meta_columns(columns, qa)
+    sections: list[tuple[str, str]] = []
+    for row_number, values in rows:
+        question = _cell_text(values[qa["question"]]) if qa["question"] < len(values) else ""
+        answer = _cell_text(values[qa["answer"]]) if qa["answer"] < len(values) else ""
+        if not question and not answer:
+            continue
+        preamble = f"Sheet: {sheet}"
+        for index in meta:
+            text = _cell_text(values[index]) if index < len(values) else ""
+            if text:
+                preamble += f" · {columns[index]}: {text}"
+        body = f"{preamble}\n\nQuestion:\n{question}\n\nAnswer:\n{answer}"
+        sections.append((f'sheet "{sheet}" row {row_number}', body))
+    return sections
+
+
+def _record_row_text(row_number: int, columns: list[str], values: list[Any]) -> str:
+    """`Row N:` block with one `column = value` line per populated cell."""
+    lines = [f"Row {row_number}:"]
+    for index, name in enumerate(columns):
+        text = _cell_text(values[index]) if index < len(values) else ""
+        if text:
+            lines.append(f"{name} = {text}")
+    return "\n".join(lines)
+
+
+def _split_wide_row(
+    sheet: str, columns: list[str], values: list[Any], row_number: int, preamble: str, budget: int
+) -> list[tuple[str, str]]:
+    """Split one over-budget row into column groups that repeat the identifier.
+
+    Without this a very wide row would be embedded and silently truncated past
+    the model's window, leaving its tail columns unreachable by vector search.
+    Every part repeats column 0 so each child chunk still identifies its record.
+    """
+    identifier = ""
+    if columns:
+        head = _cell_text(values[0]) if values else ""
+        identifier = f"{columns[0]} = {head}" if head else ""
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for index, name in enumerate(columns[1:], start=1):
+        text = _cell_text(values[index]) if index < len(values) else ""
+        if not text:
+            continue
+        line = f"{name} = {text}"
+        candidate = current + [line]
+        probe = f"{preamble}\n\nRow {row_number}:\n{identifier}\n" + "\n".join(candidate)
+        if current and estimate_embedding_tokens(probe) > budget:
+            groups.append(current)
+            current = [line]
+        else:
+            current = candidate
+    if current:
+        groups.append(current)
+    if not groups:
+        groups = [[]]
+
+    total = len(groups)
+    sections: list[tuple[str, str]] = []
+    for part, lines in enumerate(groups, start=1):
+        header = [f"Row {row_number}:"]
+        if identifier:
+            header.append(identifier)
+        body = f"{preamble}\n\n" + "\n".join(header + lines)
+        location = f'sheet "{sheet}" row {row_number}'
+        if total > 1:
+            location += f" part {part}/{total}"
+        sections.append((location, body))
+    return sections
+
+
+def _record_sections(
+    sheet: str, columns: list[str], rows: list[tuple[int, list[Any]]]
+) -> list[tuple[str, str]]:
+    """Generic-record chunking with token-aware adaptive row packing.
+
+    Rows are packed until the *estimated* embedding tokens reach the budget, so
+    wide sheets naturally degrade to one row per chunk instead of producing
+    chunks whose tails would be truncated away.
+    """
+    s = config.spreadsheet
+    budget = s.embed_token_budget
+    preamble = f"Sheet: {sheet} · Columns: {', '.join(columns)}"
+    sections: list[tuple[str, str]] = []
+    buffer: list[tuple[int, str]] = []
+
+    def flush() -> None:
+        if not buffer:
+            return
+        first, last = buffer[0][0], buffer[-1][0]
+        location = (
+            f'sheet "{sheet}" row {first}' if first == last
+            else f'sheet "{sheet}" rows {first}-{last}'
+        )
+        body = preamble + "\n\n" + "\n\n".join(text for _, text in buffer)
+        sections.append((location, body))
+        buffer.clear()
+
+    for row_number, values in rows:
+        row_text = _record_row_text(row_number, columns, values)
+        if row_text.count("\n") == 0:  # header line only -> the row was blank
+            continue
+        if estimate_embedding_tokens(f"{preamble}\n\n{row_text}") > budget:
+            flush()
+            sections.extend(_split_wide_row(sheet, columns, values, row_number, preamble, budget))
+            continue
+        candidate = preamble + "\n\n" + "\n\n".join([text for _, text in buffer] + [row_text])
+        if buffer and (
+            estimate_embedding_tokens(candidate) > budget or len(buffer) >= s.rows_per_chunk_max
+        ):
+            flush()
+        buffer.append((row_number, row_text))
+    flush()
+    return sections
+
+
+def _read_xlsx_sheets(path: Path) -> tuple[list[tuple[str, list[list[Any]]]], list[str], dict[str, Any]]:
+    """Read visible sheets from an .xlsx into plain row lists.
+
+    Single access point for workbook reading (the documented python-calamine
+    swap-point). Hidden and very-hidden sheets are skipped by default — they are
+    usually scratch pads or stale copies, and indexing them surprises users.
+    """
+    from openpyxl import load_workbook
+
+    s = config.spreadsheet
+    notes: list[str] = []
+    details: dict[str, Any] = {"skipped_sheets": [], "truncated_sheets": []}
+    sheets: list[tuple[str, list[list[Any]]]] = []
+    workbook = load_workbook(str(path), read_only=True, data_only=True)
+    try:
+        for worksheet in workbook.worksheets:
+            if getattr(worksheet, "sheet_state", "visible") != "visible":
+                details["skipped_sheets"].append(worksheet.title)
+                continue
+            rows: list[list[Any]] = []
+            truncated = False
+            for row in worksheet.iter_rows(values_only=True):
+                if len(rows) >= s.max_rows + 1:  # +1 leaves room for the header
+                    truncated = True
+                    break
+                values = list(row[: s.max_cols])
+                if len(row) > s.max_cols:
+                    truncated = True
+                if any(_cell_text(v) for v in values):
+                    rows.append(values)
+            if truncated:
+                details["truncated_sheets"].append(worksheet.title)
+            sheets.append((worksheet.title, rows))
+    finally:
+        workbook.close()
+    if details["skipped_sheets"]:
+        notes.append("spreadsheet_hidden_sheets_skipped")
+    if details["truncated_sheets"]:
+        notes.append("spreadsheet_truncated")
+    return sheets, notes, details
+
+
+def _count_uncached_formulas(path: Path) -> int:
+    """Count formula cells that carry no cached result.
+
+    `data_only=True` returns cached values, so a workbook saved by a tool that
+    never computed them reads as *empty* — the file looks ingested but holds no
+    text. Only worth a second pass when the first one actually saw blanks.
+    """
+    from openpyxl import load_workbook
+
+    s = config.spreadsheet
+    total = 0
+    workbook = load_workbook(str(path), read_only=True, data_only=False)
+    try:
+        for worksheet in workbook.worksheets:
+            if getattr(worksheet, "sheet_state", "visible") != "visible":
+                continue
+            for index, row in enumerate(worksheet.iter_rows(values_only=True)):
+                if index > s.max_rows:
+                    break
+                for value in row[: s.max_cols]:
+                    if isinstance(value, str) and value.startswith("="):
+                        total += 1
+    finally:
+        workbook.close()
+    return total
+
+
+def _decode_csv_bytes(raw: bytes) -> tuple[str, dict[str, Any]]:
+    """Decode CSV bytes, recording how (BOM / UTF-8 / detected / replaced).
+
+    zh-TW exports are still frequently Big5/CP950, which "successfully" decodes
+    into mojibake if UTF-8 is assumed — so the decision is recorded, never
+    silent.
+    """
+    import codecs
+
+    if raw.startswith(codecs.BOM_UTF8):
+        return raw.decode("utf-8-sig"), {"encoding": "utf-8-sig", "source": "bom"}
+    for bom, name in ((codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16")):
+        if raw.startswith(bom):
+            return raw.decode(name), {"encoding": name, "source": "bom"}
+    try:
+        return raw.decode("utf-8"), {"encoding": "utf-8", "source": "strict"}
+    except UnicodeDecodeError:
+        pass
+    try:
+        from charset_normalizer import from_bytes
+
+        best = from_bytes(raw).best()
+        if best is not None:
+            text = str(best)
+            return text, {
+                "encoding": best.encoding,
+                "source": "detected",
+                "replacements": text.count("�"),
+            }
+    except Exception:
+        logger.exception("csv_encoding_detection_failed")
+    text = raw.decode("utf-8", errors="replace")
+    return text, {"encoding": "utf-8", "source": "replace", "replacements": text.count("�")}
+
+
+def _read_csv_sheet(path: Path) -> tuple[list[tuple[str, list[list[Any]]]], list[str], dict[str, Any]]:
+    """Read a .csv as a single sheet, detecting encoding and delimiter."""
+    import csv as csv_module
+
+    s = config.spreadsheet
+    text, encoding_details = _decode_csv_bytes(path.read_bytes())
+    sample = text[:65536]
+    try:
+        delimiter = csv_module.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+    except csv_module.Error:
+        delimiter = ","
+    notes: list[str] = []
+    details: dict[str, Any] = {
+        "skipped_sheets": [],
+        "truncated_sheets": [],
+        "encoding": encoding_details,
+        "delimiter": delimiter,
+    }
+    if encoding_details.get("source") in {"detected", "replace"}:
+        notes.append("csv_encoding_fallback")
+    rows: list[list[Any]] = []
+    truncated = False
+    sheet_name = path.stem
+    for values in csv_module.reader(text.splitlines(), delimiter=delimiter):
+        if len(rows) >= s.max_rows + 1:
+            truncated = True
+            break
+        trimmed = values[: s.max_cols]
+        if len(values) > s.max_cols:
+            truncated = True
+        if any(_cell_text(v) for v in trimmed):
+            rows.append(list(trimmed))
+    if truncated:
+        details["truncated_sheets"].append(sheet_name)
+        notes.append("spreadsheet_truncated")
+    return [(sheet_name, rows)], notes, details
+
+
+def _extract_spreadsheet(path: Path) -> ExtractionResult:
+    """Extract an .xlsx / .csv into row-shaped chunks (A6c).
+
+    Returns ``pre_chunked=True``: each section is already the unit we want
+    embedded, so `process_source` must not run it through `chunk_sections`.
+    """
+    _guard_source_size(path)
+    s = config.spreadsheet
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        sheets, notes, details = _read_csv_sheet(path)
+        extractor = "csv"
+    else:
+        sheets, notes, details = _read_xlsx_sheets(path)
+        extractor = "xlsx"
+
+    sections: list[tuple[str, str]] = []
+    sheet_reports: list[dict[str, Any]] = []
+    saw_blank_cells = False
+    for sheet_name, rows in sheets:
+        if not rows:
+            sheet_reports.append({"sheet": sheet_name, "type": "empty", "rows": 0, "chunks": 0})
+            continue
+        has_header = _looks_like_header(rows[: max(1, s.header_sample_rows)])
+        if has_header:
+            columns = [
+                _cell_text(v) or _column_label(i) for i, v in enumerate(rows[0])
+            ]
+            body_rows = [(index + 2, values) for index, values in enumerate(rows[1:])]
+        else:
+            width = max(len(r) for r in rows)
+            columns = [_column_label(i) for i in range(width)]
+            body_rows = [(index + 1, values) for index, values in enumerate(rows)]
+        saw_blank_cells = saw_blank_cells or any(
+            not _cell_text(v) for _, values in body_rows for v in values
+        )
+
+        qa = _detect_qa_columns(columns, has_header)
+        if qa is not None:
+            sheet_sections = _qa_sections(sheet_name, columns, body_rows, qa)
+            sheet_type = "qa_pairs"
+        else:
+            sheet_sections = _record_sections(sheet_name, columns, body_rows)
+            sheet_type = "records"
+        sections.extend(sheet_sections)
+        report = {
+            "sheet": sheet_name,
+            "type": sheet_type,
+            "rows": len(body_rows),
+            "columns": len(columns),
+            "chunks": len(sheet_sections),
+            "header": "detected" if has_header else "generated",
+        }
+        if qa is not None and qa["auto_detected"]:
+            report["qa_columns"] = "auto_detected"
+        if len(columns) > s.wide_sheet_cols:
+            report["wide"] = True
+            if "spreadsheet_wide_sheet" not in notes:
+                notes.append("spreadsheet_wide_sheet")
+        sheet_reports.append(report)
+
+    if extractor == "xlsx" and saw_blank_cells:
+        # Only pay for the second pass when blanks exist — no blanks means no
+        # uncached formulas to find.
+        try:
+            formulas = _count_uncached_formulas(path)
+        except Exception:
+            logger.exception("formula_scan_failed path=%s", path.name)
+            formulas = 0
+        if formulas:
+            details["uncached_formulas"] = formulas
+            notes.append("spreadsheet_uncached_formulas")
+
+    details["sheets"] = sheet_reports
+    if not any(report.get("type") == "qa_pairs" for report in sheet_reports):
+        # Be explicit that nothing was recognised as Q&A rather than letting the
+        # user assume the sheet was understood.
+        notes.append("spreadsheet_generic_records")
+    logger.info(
+        "extract_completed path=%s sections=%s extractor=%s sheets=%s",
+        path.name, len(sections), extractor, len(sheet_reports),
+    )
+    return ExtractionResult(
+        sections=sections,
+        extractor=extractor,
+        notes=notes,
+        details=details,
+        pre_chunked=True,
+    )
+
+
 def is_mostly_cjk(text: str, threshold: float = 0.30) -> bool:
     """Return True when CJK characters dominate the text (>= threshold).
 
@@ -569,10 +1205,17 @@ def _section_kind(location: str) -> str:
         return "footer"
     if "footnote" in label or "endnote" in label:
         return "footnote"
+    if label.endswith(" notes"):
+        # A6b: speaker notes are presenter cues, a different register from the
+        # slide itself — keep them out of the same chunk so a citation says
+        # which one an answer came from.
+        return "slide_notes"
     if "text box" in label:
         return "text_box"
     if "transcript" in label:
         return "transcript"
+    if label.startswith('sheet "'):  # A6c spreadsheet rows are tabular by nature
+        return "table"
     return "body"
 
 
@@ -712,6 +1355,93 @@ def chunk_text(
     return [body for _, body in chunk_sections([("", text)], target_chars, overlap_sentences)]
 
 
+def estimate_embedding_tokens(text: str) -> int:
+    """Rough token count for the embedding input window (A6a).
+
+    An **estimate, not a measurement**: counting real tokens would mean shipping
+    the model's tokenizer. CJK-heavy text is charged ~1 token/char (conservative
+    — e5 rarely does better) and Latin text ~4 chars/token, reusing the same
+    `is_mostly_cjk` split the chunker already relies on. Used only to warn that
+    a chunk *may* be truncated, never to change chunking. Ground truth lives in
+    `tests/inspect_e5_chunk_tokens.py` (QUALITY.md Q0-5).
+    """
+    d = config.diagnostics
+    per_token = d.cjk_chars_per_token if is_mostly_cjk(text) else d.latin_chars_per_token
+    return int(len(text) / per_token) if per_token > 0 else 0
+
+
+def collect_ingest_diagnostics(
+    extraction: "ExtractionResult",
+    records: list[tuple[str, str]],
+) -> dict[str, Any]:
+    """Summarise what an ingest actually produced, for the source preview (A6a).
+
+    Everything here is derived from data the pipeline already had; the point is
+    to persist it instead of throwing it away, so a user can tell "extraction
+    produced nothing useful" apart from "retrieval/answering went wrong".
+    """
+    d = config.diagnostics
+    section_texts = [text for _, text in extraction.sections]
+    chars = sum(len(text) for text in section_texts)
+    kinds: dict[str, int] = {}
+    for location, _text in extraction.sections:
+        kind = _section_kind(location)
+        kinds[kind] = kinds.get(kind, 0) + 1
+    empty_sections = sum(1 for text in section_texts if not text.strip())
+    over_budget = [
+        text for _, text in records if estimate_embedding_tokens(text) > d.embedding_token_budget
+    ]
+
+    warnings: list[dict[str, Any]] = []
+    # Extractor-reported notes become warnings with their own copy; the payload
+    # each one needs comes from `details`.
+    for note in extraction.notes:
+        if note == "pdf_structure_fallback":
+            continue  # handled below so it keeps its position in the list
+        payload: dict[str, Any] = {"code": note}
+        if note == "spreadsheet_hidden_sheets_skipped":
+            payload["sheets"] = ", ".join(extraction.details.get("skipped_sheets", []))
+        elif note == "spreadsheet_truncated":
+            payload["sheets"] = ", ".join(extraction.details.get("truncated_sheets", []))
+        elif note == "spreadsheet_uncached_formulas":
+            payload["count"] = extraction.details.get("uncached_formulas", 0)
+        elif note == "pptx_visual_only_slides":
+            payload["count"] = extraction.details.get("slides_without_text", 0)
+        elif note == "csv_encoding_fallback":
+            encoding = extraction.details.get("encoding", {})
+            payload["encoding"] = encoding.get("encoding", "?")
+            payload["replacements"] = encoding.get("replacements", 0)
+        warnings.append(payload)
+    if chars < d.low_text_chars:
+        # The scanned-PDF / image-only signal. Deliberately reported even when
+        # indexing "succeeded", because that is exactly the silent-failure case.
+        warnings.append({"code": "low_text", "chars": chars, "threshold": d.low_text_chars})
+    if "pdf_structure_fallback" in extraction.notes:
+        warnings.append({"code": "pdf_structure_fallback"})
+    if over_budget:
+        warnings.append({
+            "code": "chunk_over_token_budget",
+            "count": len(over_budget),
+            "budget": d.embedding_token_budget,
+        })
+    if empty_sections:
+        warnings.append({"code": "empty_sections", "count": empty_sections})
+
+    preview = "\n\n".join(text.strip() for text in section_texts if text.strip())[: d.preview_chars]
+    return {
+        "extractor": extraction.extractor,
+        "chars": chars,
+        "sections": len(extraction.sections),
+        "chunks": len(records),
+        "section_kinds": kinds,
+        "warnings": warnings,
+        "preview": preview,
+        # Format-specific facts (per-sheet type/header decision, CSV encoding).
+        # Empty for formats that report none.
+        "details": extraction.details,
+    }
+
+
 def get_settings() -> dict[str, Any]:
     """Load the single global LLM settings row with the API key decrypted."""
     with connect() as conn:
@@ -756,13 +1486,23 @@ async def process_source(source_id: int) -> None:
         if source is None:
             logger.warning("ingest_source_missing source_id=%s", source_id)
             return
-        conn.execute("UPDATE sources SET status = 'processing', error = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (source_id,))
+        # Diagnostics describe the *current* ingest only, so clear the previous
+        # run's alongside its chunks — a reindex must not show stale warnings.
+        conn.execute(
+            "UPDATE sources SET status = 'processing', error = '', diagnostics_json = '{}', "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (source_id,),
+        )
         conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
     try:
         delete_source_vectors(source_id, source["user_id"])
     except Exception:
         logger.exception("vector_source_delete_failed source_id=%s", source_id)
 
+    # Which phase we are in, so a failure can say whether extraction produced
+    # nothing or the embedding endpoint was down (A6a "failure reason").
+    stage = "extract"
+    diagnostics: dict[str, Any] = {}
     try:
         logger.info(
             "ingest_started source_id=%s user_id=%s filename=%s",
@@ -770,27 +1510,40 @@ async def process_source(source_id: int) -> None:
             source["user_id"],
             source["filename"],
         )
-        sections = extract_sections(Path(source["stored_path"]))
+        extraction = extract_sections(Path(source["stored_path"]))
+        sections = extraction.sections
+        stage = "chunk"
         # Pack sentences across sections up to the chunk target so formats that
         # emit many small sections (PDF per-paragraph blocks) produce the same
         # well-sized chunks as single-section formats (TXT/MD) rather than
-        # hundreds of tiny fragments.
-        records: list[tuple[str, str]] = chunk_sections(sections)
+        # hundreds of tiny fragments. Spreadsheets opt out: a row is already the
+        # semantic unit and re-packing would glue unrelated records together.
+        records: list[tuple[str, str]] = (
+            list(sections) if extraction.pre_chunked else chunk_sections(sections)
+        )
+        # Collected before the empty-records check so a source that extracted
+        # nothing still gets diagnostics — that is the case users most need to
+        # see, and it is the only window into a failed source.
+        diagnostics = collect_ingest_diagnostics(extraction, records)
         if not records:
             raise ValueError("No extractable text found.")
 
         logger.info(
-            "ingest_chunked source_id=%s sections=%s chunks=%s",
+            "ingest_chunked source_id=%s sections=%s chunks=%s extractor=%s warnings=%s",
             source_id,
             len(sections),
             len(records),
+            diagnostics["extractor"],
+            len(diagnostics["warnings"]),
         )
+        stage = "embed"
         embeddings = await embed_texts(
             [text for _, text in records],
             get_settings(),
             role="passage",
             usage_context={"user_id": source["user_id"], "notebook_id": source["notebook_id"], "source_id": source_id},
         )
+        stage = "store"
         with connect() as conn:
             chunk_rows = [
                 (source["user_id"], source_id, index, location, text, dumps(embedding))
@@ -813,8 +1566,9 @@ async def process_source(source_id: int) -> None:
                 (source_id,),
             ).fetchall()
             conn.execute(
-                "UPDATE sources SET status = 'indexed', error = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (source_id,),
+                "UPDATE sources SET status = 'indexed', error = '', diagnostics_json = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (dumps(diagnostics), source_id),
             )
         upsert_chunks(
             [
@@ -836,13 +1590,17 @@ async def process_source(source_id: int) -> None:
         # summarization failure leaves the source fully usable for retrieval.
         await _generate_source_summary(source_id)
     except Exception as exc:
+        # Keep whatever was learned before the failure: which stage broke, and
+        # (when extraction got that far) what it managed to pull out. Without
+        # this a failed source shows an error string and nothing else.
+        failed_diagnostics = {**diagnostics, "failed_stage": stage}
         with connect() as conn:
             conn.execute(
                 """
                 UPDATE sources
-                SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP
+                SET status = 'failed', error = ?, diagnostics_json = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (str(exc)[:500], source_id),
+                (str(exc)[:500], dumps(failed_diagnostics), source_id),
             )
-        logger.exception("ingest_failed source_id=%s", source_id)
+        logger.exception("ingest_failed source_id=%s stage=%s", source_id, stage)

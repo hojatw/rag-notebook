@@ -57,7 +57,7 @@ def _make_docx(tmp_path: Path) -> Path:
 
 def test_docx_extracts_paragraphs_and_table_cells(tmp_path):
     """The legacy bug: table cells silently dropped. Regression check."""
-    sections = extract_sections(_make_docx(tmp_path))
+    sections = extract_sections(_make_docx(tmp_path)).sections
     body = next(text for label, text in sections if label == "document")
     # Paragraph content present.
     assert "Intro paragraph one." in body
@@ -70,7 +70,7 @@ def test_docx_extracts_paragraphs_and_table_cells(tmp_path):
 def test_docx_preserves_body_order_paragraphs_tables_interleaved(tmp_path):
     """Body order matters: the paragraph 'between' the two tables must
     appear AFTER the first table and BEFORE the nested-table block."""
-    sections = extract_sections(_make_docx(tmp_path))
+    sections = extract_sections(_make_docx(tmp_path)).sections
     body = next(text for label, text in sections if label == "document")
     pos_intro = body.index("Intro paragraph one.")
     pos_t1 = body.index("ABC Precision")
@@ -82,7 +82,7 @@ def test_docx_preserves_body_order_paragraphs_tables_interleaved(tmp_path):
 
 def test_docx_recurses_into_nested_tables(tmp_path):
     """A table inside a cell should still surface its cell text."""
-    sections = extract_sections(_make_docx(tmp_path))
+    sections = extract_sections(_make_docx(tmp_path)).sections
     body = next(text for label, text in sections if label == "document")
     assert "NESTED-LEFT" in body
     assert "NESTED-RIGHT" in body
@@ -91,7 +91,7 @@ def test_docx_recurses_into_nested_tables(tmp_path):
 def test_docx_extracts_header_and_footer_sections(tmp_path):
     """Headers / footers used to be invisible because they're not in
     doc.element.body — they live on each section.header / .footer."""
-    sections = extract_sections(_make_docx(tmp_path))
+    sections = extract_sections(_make_docx(tmp_path)).sections
     by_label = dict(sections)
     assert by_label.get("header", "").strip() == "DOC HEADER LINE"
     assert by_label.get("footer", "").strip() == "DOC FOOTER LINE"
@@ -100,7 +100,7 @@ def test_docx_extracts_header_and_footer_sections(tmp_path):
 def test_docx_renders_table_row_separators(tmp_path):
     """Cells in a row should join with ' | ' so the chunker can keep
     row structure recognisable for downstream retrieval."""
-    sections = extract_sections(_make_docx(tmp_path))
+    sections = extract_sections(_make_docx(tmp_path)).sections
     body = next(text for label, text in sections if label == "document")
     assert "Industry | Manufacturing | Taiwan" in body
 
@@ -166,7 +166,7 @@ def test_pdf_interleaves_paragraphs_and_tables_by_page_order(monkeypatch, tmp_pa
 
     path = tmp_path / "fixture.pdf"
     path.write_bytes(b"%PDF-1.4\n%fake\n")
-    sections = extract_sections(path)
+    sections = extract_sections(path).sections
 
     assert [location for location, _ in sections] == [
         "page 1 paragraph 1",
@@ -195,7 +195,7 @@ def test_html_extracts_meta_description(tmp_path):
             <meta name="description" content="Quarterly earnings report.">
         </head><body><p>Body text only.</p></body></html>
     """)
-    sections = extract_sections(path)
+    sections = extract_sections(path).sections
     text = sections[0][1]
     assert "Quarterly earnings report." in text
 
@@ -208,7 +208,7 @@ def test_html_extracts_image_alt_and_link_title(tmp_path):
             <a href="/spec" title="Full specification document">spec</a>
         </body></html>
     """)
-    sections = extract_sections(path)
+    sections = extract_sections(path).sections
     text = sections[0][1]
     assert "Architecture diagram showing the API gateway" in text
     assert "Full specification document" in text
@@ -225,7 +225,7 @@ def test_html_strips_script_style_and_hidden_elements(tmp_path):
             <p>VISIBLE_CONTENT</p>
         </body></html>
     """)
-    text = extract_sections(path)[0][1]
+    text = extract_sections(path).sections[0][1]
     assert "VISIBLE_CONTENT" in text
     assert "SECRET" not in text
     assert "JS-disabled fallback" not in text
@@ -244,7 +244,7 @@ def test_html_keeps_visible_table_content(tmp_path):
             </table>
         </body></html>
     """)
-    text = extract_sections(path)[0][1]
+    text = extract_sections(path).sections[0][1]
     assert "Country" in text
     assert "Taiwan" in text
     assert "123" in text
