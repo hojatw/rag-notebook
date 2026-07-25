@@ -89,7 +89,7 @@ Ollama、vLLM、TEI 這類本機 OpenAI-compatible 服務會透過 `/v1` endpoin
 - **Hybrid retrieval：** query rewrite、Chroma vector search、SQLite keyword search、LLM reranking、abstain threshold 與每則訊息的 retrieval debug details。
 - **Admin surfaces：** 使用者管理、vector-index console、LLM settings、audit trail，以及支援 retrieval profiles、run comparison、exports、調參指南的 in-deployment Eval Workbench。
 - **Governance backend：** 精簡 LLM usage 與 safety-event telemetry，不把 prompts、來源文字、retrieved snippets、模型輸出或 API keys 複製到 governance metadata。
-- **支援來源格式：** PDF、TXT、Markdown、DOCX、HTML、字幕（`.srt` / `.vtt`）、試算表（`.xlsx` / `.csv`——問答表會被辨識，其他形狀以有界的資料列分塊攝取，詳見 [docs/SPREADSHEET_INGESTION.md](docs/SPREADSHEET_INGESTION.md)）。
+- **支援來源格式：** PDF、TXT、Markdown、DOCX、HTML、簡報（`.pptx`，只讀文字：標題、內文、表格、備忘稿）、字幕（`.srt` / `.vtt`）、試算表（`.xlsx` / `.csv`——問答表會被辨識，其他形狀以有界的資料列分塊攝取，詳見 [docs/SPREADSHEET_INGESTION.md](docs/SPREADSHEET_INGESTION.md)）。
 - **持久化：** `data/` 下的 SQLite metadata、本機 uploads、Chroma vectors，以及 `logs/` 下的輪替 logs。
 
 ## 文件導覽

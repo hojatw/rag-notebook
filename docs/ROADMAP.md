@@ -15,8 +15,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 1. **Enterprise authentication:** `I1a` trusted reverse-proxy header mode, `I1b` OIDC, and `I1d` operator diagnostics are implemented; answer customer-discovery questions for each deployment, then add `I1c` SAML only when a customer IdP requires it.
 2. **Answer-quality loop:** `E1e-2` answer/citation judging is implemented (the measuring stick); next, implement `E2` notebook domain hints and answer policy and validate it through Eval Workbench comparisons (judged runs with/without hints).
 3. **Admin LLM operations:** `O1` Phase 1 is done; next LLM-ops work is Phase 2 profile management and safe activation once needed.
-4. **Format foundation:** implement `A6a` ingestion diagnostics before adding more source formats.
-5. **Source-format MVP path:** after `A6a`, prioritize `A6c` Q&A-style spreadsheets, then `A6` Web URL with SSRF guards, then `A6b` PPTX text-first ingestion.
+4. **Format foundation:** `A6a` ingestion diagnostics is implemented — every new extractor reports its own signals through it.
+5. **Source-format MVP path:** `A6c` spreadsheets and `A6b` PPTX Phase 1 are implemented; next is `A6` Web URL with SSRF guards.
 6. **Image/OCR path:** `A8` OCR and `A9` image search v1 depend on extraction diagnostics and capability checks; block image uploads unless `/settings` image understanding succeeds or a non-LLM OCR-only path is explicitly enabled.
 7. **Customer-driven later work:** keep `A10`/`A11` low priority unless a customer requirement or verified serving capability changes the economics.
 
@@ -263,7 +263,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ### Tier 2 — new extraction paths (app-side, no inference change)
 
-**Recommended implementation order:** `A6a` diagnostics is **done**, so every later format can explain its extraction quality — a new extractor should add its own signals to `ExtractionResult.notes` / `collect_ingest_diagnostics` rather than failing silently. Next ship `A6c` Q&A-style spreadsheets; then add `A6` Web URL with SSRF protection; then `A6b` PPTX Phase 1 text-first ingestion. `A8` OCR and `A9` image search v1 should follow only when extraction diagnostics and model/OCR capability are ready. `A6b` Phase 2 visual extraction can reuse the same image-caption/OCR path once proven.
+**Recommended implementation order:** `A6a` diagnostics, `A6c` spreadsheets, and `A6b` PPTX Phase 1 are **done** — a new extractor should add its own signals to `ExtractionResult.notes` / `details` (and a `_section_kind` branch when it introduces a genuinely different register) rather than failing silently. Next up is `A6` Web URL with SSRF protection. `A8` OCR and `A9` image search v1 should follow only when extraction diagnostics and model/OCR capability are ready. `A6b` Phase 2 visual extraction can reuse the same image-caption/OCR path once proven.
 
 #### [x] A6a · Ingestion diagnostics for source quality
 - **What:** show what the app actually extracted before/after indexing: extracted character count, section/page/table counts when available, chunk count, OCR/fallback flags, warnings, failure reason, and a small extracted-text preview, visible from the source row / preview drawer.
@@ -281,8 +281,13 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Paste URL → server-side fetch → readability extraction (`beautifulsoup4` already a dep) → existing chunk/embed pipeline. **Must add SSRF guards (block private IPs) and respect the customer's egress policy.**
 - **SSRF guardrail for implementation:** only allow `http`/`https`; resolve DNS and block loopback/private/link-local/multicast/reserved IP ranges; re-check every redirect target; cap redirects, response size, and request timeout; restrict accepted content types; optionally support deployment allow/block lists; record URL/status/diagnostics without copying full fetched content into audit/governance logs.
 
-#### [ ] A6b · PowerPoint decks as sources (.pptx)
-- **Phase 1 — text-first ingestion:** extract slide titles, body text, tables, and speaker notes into slide-scoped sections (`slide N`, `slide N notes`, `slide N table K`) that flow through the existing chunk/embed pipeline. Keep slide order and location labels stable so citations can point back to a specific slide. Visual-only slide content should be surfaced in ingestion diagnostics as unsupported visual content.
+#### [~] A6b · PowerPoint decks as sources (.pptx)
+- **Phase 1 done.** `_extract_pptx` (`app/ingest.py`) emits `slide N` (title first, then body text), `slide N table K`, and `slide N notes`, in that per-slide order — PPTX shape order does not follow visual reading order, so a predictable order beats a fake one. Sections flow through the normal chunker, so short slides pack together and citations become spans (`slide 1 – slide 2`) rather than one tiny vector per slide.
+  - **Grouped shapes are walked recursively** (`_iter_pptx_shapes`). This is the PPTX form of the nested-table bug: a flat `slide.shapes` walk finds *nothing* on a slide whose author grouped its text boxes, and the slide would index as empty. Covered by a test that asserts the flat walk would miss it.
+  - **Speaker notes get their own `_section_kind` (`slide_notes`)** so the chunker never merges presenter cues into slide-body chunks — they are a different register, and a citation should say which one an answer came from. Found by inspecting real output, not by spec.
+  - **Visual-only slides are reported, not silently empty:** pictures/charts/SmartArt increment `slides_without_text`, raising the `pptx_visual_only_slides` A6a warning that names OCR/vision as the missing capability. A slide holding only a table does **not** count as visual-only.
+  - Diagnostics also carry slide/table/notes/image counts. Dependency: `python-pptx` (pulls Pillow + XlsxWriter transitively).
+- **Phase 1 — text-first ingestion (as specified):** extract slide titles, body text, tables, and speaker notes into slide-scoped sections (`slide N`, `slide N notes`, `slide N table K`) that flow through the existing chunk/embed pipeline. Keep slide order and location labels stable so citations can point back to a specific slide. Visual-only slide content should be surfaced in ingestion diagnostics as unsupported visual content.
 - **Phase 2 — image understanding after OCR / vision support:** only revisit embedded images, screenshots, diagrams, and visual-only slides after A8 OCR and/or A9 vision support is available. OCR can extract text from screenshots; a vision-capable model is needed for chart/diagram/photo semantics. The resulting text should be stored as explicit sections such as `slide N image K OCR text` or `slide N image K visual description`, with diagnostics showing which method was used.
 - **MVP guardrail:** do not block Phase 1 on image understanding; ship text-first PPTX support first, then add Phase 2 only when the required OCR/vision capability exists or a customer explicitly needs it.
 
