@@ -47,7 +47,7 @@ Ingestion now parses `.pptx` (`python-pptx`, which pulls in **Pillow**) and `.xl
 Current mitigations are structural rather than sandboxing:
 
 - Uploads are authenticated — a user must already have an account, so this is not an anonymous-internet surface.
-- Parsing runs in the ingest worker, not the request path; `[spreadsheet].max_file_bytes` / `max_rows` / `max_cols` bound spreadsheet work, and a parser exception fails that one source (`status='failed'` with `failed_stage`) rather than the process.
+- Parsing runs in the ingest worker, not the request path; `[runtime].max_source_bytes` caps every eagerly-parsed format (`.xlsx` / `.pptx` / `.csv`) **before** a parser sees the file, `[spreadsheet].max_rows` / `max_cols` bound the per-sheet work, and a parser exception fails that one source (`status='failed'` with `failed_stage`) rather than the process.
 - Phase 1 PPTX **never decodes image bytes** — images are counted, not opened — so Pillow is currently a transitive dependency that ingest does not actually exercise. That changes the day `A8`/`A9` add OCR or vision, which is when this note needs revisiting.
 
 **Keep these parsers patched** (they are the highest-value dependency updates in this project), and re-evaluate isolation if the app is ever exposed to untrusted uploaders.

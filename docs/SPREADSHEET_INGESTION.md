@@ -295,7 +295,9 @@ users. No MVP override — revisit only if a customer asks.
 Tunables live in `app/config.py` as a `[spreadsheet]` group (defaults ←
 `config.toml` ← `NOTEBOOKLM_SPREADSHEET_<FIELD>`), per repo convention:
 
-- `max_file_bytes`, `max_rows`, `max_cols` — hard ingest caps;
+- `max_rows`, `max_cols` — hard per-sheet ingest caps (the whole-file size cap
+  is `[runtime].max_source_bytes`, shared with `.pptx`/`.csv` because all three
+  are parsed eagerly);
 - `rows_per_chunk_min` / `rows_per_chunk_max` — record-chunk grouping bounds;
 - `embed_token_budget` — estimated-token cap per chunk for the adaptive row
   packing (see "Token budgeting for record chunks");

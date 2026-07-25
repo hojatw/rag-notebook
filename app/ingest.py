@@ -542,6 +542,19 @@ CJK_TARGET_CHARS = config.chunking.cjk_target_chars
 DEFAULT_OVERLAP_SENTENCES = config.chunking.overlap_sentences
 
 
+def _guard_source_size(path: Path) -> None:
+    """Refuse sources the extractor would parse eagerly beyond a sane size.
+
+    `.xlsx` / `.pptx` are zip containers, so the on-disk size says nothing about
+    what they expand to; `.csv` is read into memory whole for encoding
+    detection. The cap bounds all three before a parser is handed the file.
+    """
+    limit = config.runtime.max_source_bytes
+    size = path.stat().st_size
+    if size > limit:
+        raise ValueError(f"Source file is too large to ingest ({size} bytes > {limit}).")
+
+
 def _iter_pptx_shapes(shapes):
     """Yield shapes depth-first, descending into groups.
 
@@ -570,6 +583,7 @@ def _extract_pptx(path: Path) -> ExtractionResult:
     from pptx import Presentation
     from pptx.enum.shapes import MSO_SHAPE_TYPE
 
+    _guard_source_size(path)
     presentation = Presentation(str(path))
     sections: list[tuple[str, str]] = []
     details: dict[str, Any] = {
@@ -1032,13 +1046,8 @@ def _extract_spreadsheet(path: Path) -> ExtractionResult:
     Returns ``pre_chunked=True``: each section is already the unit we want
     embedded, so `process_source` must not run it through `chunk_sections`.
     """
+    _guard_source_size(path)
     s = config.spreadsheet
-    size = path.stat().st_size
-    if size > s.max_file_bytes:
-        raise ValueError(
-            f"Spreadsheet is too large to ingest ({size} bytes > {s.max_file_bytes})."
-        )
-
     suffix = path.suffix.lower()
     if suffix == ".csv":
         sheets, notes, details = _read_csv_sheet(path)

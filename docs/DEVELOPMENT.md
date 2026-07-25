@@ -91,7 +91,8 @@ Copy [`config.example.toml`](../config.example.toml) to `config.toml` for local
 or deployment-specific overrides. Changing `[chunking]` — or the chunk-shaping
 values in `[spreadsheet]` (`rows_per_chunk_max`, `embed_token_budget`) — requires
 re-indexing existing sources. `[diagnostics]` thresholds only affect what the
-source preview *displays*, so they never require a re-index.
+source preview *displays*, so they never require a re-index. `[runtime].max_source_bytes`
+is the hard size cap for eagerly-parsed sources (`.xlsx` / `.pptx` / `.csv`).
 
 ## Logging
 

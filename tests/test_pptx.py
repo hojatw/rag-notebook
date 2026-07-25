@@ -165,3 +165,16 @@ def test_a_slide_with_only_a_table_is_not_counted_as_visual_only(tmp_path):
 
     assert result.details["slides_without_text"] == 0
     assert "pptx_visual_only_slides" not in result.notes
+
+
+def test_oversized_deck_is_refused(tmp_path, monkeypatch):
+    """PPTX is a zip container too — it needs the same cap the spreadsheets have."""
+    import app.config as app_config
+
+    prs = _deck(tmp_path)
+    prs.slides.add_slide(prs.slide_layouts[6])
+    path = _save(prs, tmp_path)
+    monkeypatch.setattr(app_config.config.runtime, "max_source_bytes", 10)
+
+    with pytest.raises(ValueError, match="too large"):
+        extract_sections(path)

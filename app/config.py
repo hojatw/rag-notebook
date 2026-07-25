@@ -54,7 +54,6 @@ class SpreadsheetConfig:
     re-indexing existing spreadsheet sources; the caps and synonym lists only
     affect what is read/detected on the next ingest.
     """
-    max_file_bytes: int = 20_000_000     # refuse larger workbooks outright
     max_rows: int = 5000                 # per sheet, after the header row
     max_cols: int = 60                   # per sheet
     rows_per_chunk_max: int = 20         # (chunk shape) upper bound on record packing
@@ -104,6 +103,11 @@ class JobsConfig:
 class RuntimeConfig:
     briefing_lock_timeout_s: float = 90.0
     upload_batch_limit: int = 5
+    # Hard size cap for source formats the extractor parses eagerly or loads
+    # whole into memory: .xlsx / .pptx (zip containers — a small archive can
+    # decompress to gigabytes) and .csv (read in one go for encoding
+    # detection). PDF/DOCX stream and are not covered here.
+    max_source_bytes: int = 20_000_000
     suggestions_ttl_hours: int = 24
     briefing_ttl_hours: int = 24
 

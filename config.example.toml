@@ -33,7 +33,6 @@ overlap_sentences = 1         # sentences of overlap between adjacent chunks
 # existing spreadsheet sources after touching them. The rest only affect what
 # the next ingest reads/detects.
 [spreadsheet]
-max_file_bytes = 20000000     # refuse larger workbooks outright
 max_rows = 5000               # per sheet, after the header row
 max_cols = 60                 # per sheet
 rows_per_chunk_max = 20       # upper bound on record-chunk packing
@@ -71,6 +70,7 @@ poll_interval_s = 2.0         # worker idle poll interval
 [runtime]
 briefing_lock_timeout_s = 90.0
 upload_batch_limit = 5        # max files per upload request
+max_source_bytes = 20000000   # hard cap for eagerly-parsed sources (.xlsx/.pptx/.csv)
 suggestions_ttl_hours = 24
 briefing_ttl_hours = 24
 

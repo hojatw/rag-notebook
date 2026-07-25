@@ -147,9 +147,20 @@ def test_hidden_sheets_are_skipped_and_recorded(tmp_path):
 
 
 def test_oversized_file_is_refused_with_a_clear_error(tmp_path, monkeypatch):
+    """A zip container's on-disk size says nothing about what it expands to."""
     import app.config as app_config
-    monkeypatch.setattr(app_config.config.spreadsheet, "max_file_bytes", 10)
+    monkeypatch.setattr(app_config.config.runtime, "max_source_bytes", 10)
     path = _write_xlsx(tmp_path, {"FAQ": [["問題", "答案"], ["a", "b"]]})
+
+    with pytest.raises(ValueError, match="too large"):
+        extract_sections(path)
+
+
+def test_oversized_csv_is_refused_before_being_read_into_memory(tmp_path, monkeypatch):
+    import app.config as app_config
+    monkeypatch.setattr(app_config.config.runtime, "max_source_bytes", 10)
+    path = tmp_path / "big.csv"
+    path.write_text("問題,答案\n" + "a,b\n" * 100, encoding="utf-8")
 
     with pytest.raises(ValueError, match="too large"):
         extract_sections(path)
