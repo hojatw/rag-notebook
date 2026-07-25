@@ -52,6 +52,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Issue:** Fixed `0.7·vector + 0.3·keyword` linear blend (`merge_candidates`).
 - **Impact:** Crude across differing score scales; RRF is more robust (and reduces the need for Q0-2-style weight tuning).
 - **Fix:** Replace the linear blend with RRF. Documented in `RETRIEVAL.md` open follow-ups.
+- **Deferred (2026-07-25) — not a rejection, a sequencing decision.** The 20-line change in `merge_candidates` is the small part; the cost is that the resulting `score` **changes scale** and three downstream consumers are calibrated on the current one:
+  1. the abstain gate — `low_confidence_threshold` (0.25) is compared directly against `top_score` in `app/main.py` (`ask` + the streaming path); RRF scores start around `1/(60+1)`, so the current threshold would abstain on everything;
+  2. the rerank blend — `combined = weight·rerank_score + base_weight·chunk["score"]` in `app/llm.py` mixes a 0–1 judge score with the hybrid score;
+  3. Retrieval Profiles — `vector_weight` / `keyword_weight` are stored, editable profile fields (`app/evals.py`, `app/retrieval.py`, `app/config.py`), so RRF changes their meaning and needs a migration story for existing profiles, plus updates to `tests/test_config.py` / `tests/test_ui.py`.
+- **Restart condition — do this *after*, not before:** (1) `Q1-6` gives us a judgeable eval set (recalibrating the abstain gate without a trustworthy measuring stick is tuning blind, and per Q0-2 above that gate is the *first* hallucination defense); and (2) `A6b`/`A6c` land, so the new content shapes (slides, table records) are already in the corpus and the score scale is recalibrated **once** rather than twice.
 
 ### [ ] Q1-2 · Keyword search → SQLite FTS5 + BM25
 - **Same item as [`PERFORMANCE.md` P1-2](PERFORMANCE.md)** — full description, the CJK-tokenization blocker, and segmentation options live there (and in `RETRIEVAL.md` → *P1-2 design note*). Tick both together when done.
