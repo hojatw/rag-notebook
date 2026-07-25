@@ -137,6 +137,15 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Future direction: topic-focused source comparison.** Re-introduce focus as a **topic** field, not a cosmetic prompt hint. On a non-empty topic, run a small source-scoped retrieval for each selected source, collect the topic-relevant chunks from each source, then compare on those chunks instead of the thin source summaries. The report should show Shared / Distinct / Contradictions plus which sources had weak or no topic evidence. This fits the current vector RAG design; the key change is using per-source retrieval before comparison. Measure against a representative set first.
 - **Later extension:** section-focused comparison can follow once ingestion preserves stronger section metadata (DOCX/HTML headings, PPTX slide titles, PDF page ranges, spreadsheet sheet/table names). Until then, topic retrieval is the safer v1.
 
+#### [ ] U18 · Timestamps in the viewer's local time
+- **Issue:** every stored timestamp is UTC (SQLite `CURRENT_TIMESTAMP`) and is rendered **raw**, so a zh-TW user sees times 8 hours behind their clock. It was invisible while surfaces showed dates only; it became visible once the outputs shelf started showing minutes (2026-07-25) and it will get worse as more surfaces show times.
+- **Affected surfaces today:** outputs shelf (`_notes_section.html`), audit log (`admin_audit.html` — date + time), eval run/set/list pages (`admin_eval_run.html`, `admin_eval_set.html`, `admin_evals.html` — full stamps), notebook cards (`home.html`), user admin (`admin_users.html`). `relative_time()` in `app/main.py` is **already correct** (it parses as UTC and computes a delta), so anything using it is unaffected — that is also the cheapest interim mitigation for a surface that only needs recency.
+- **Options:**
+  - **(a) Client-side conversion (recommended).** Emit machine-readable UTC in a `datetime` attribute (`<time datetime="2026-07-25T14:35:54Z">`) and let a small `app.js` pass rewrite the text via `toLocaleString()`. No schema, no config, correct for every viewer including DST, and one place to change. Degrades to the raw UTC stamp without JS — so keep the visible fallback explicitly labelled UTC.
+  - **(b) Per-user timezone setting.** A `users.timezone` column plus an account-page control, resolved per request. `users.theme` (U11) is the working precedent for the persistence + account-control shape, and this pairs naturally with `U15b`'s per-user locale. Costs a schema change and request-scoped resolution; only worth it if server-rendered output must be correct without JS (e.g. exports).
+  - **(c) Deployment-level timezone config.** One `[ui].timezone` value. Cheapest, wrong for any multi-region deployment; acceptable only for a single-office install.
+- **Note:** exported Markdown (notes/chat) also carries raw stamps — decide whether exports follow the viewer's zone or stay UTC (UTC is defensible for an archival artifact, but say so in the file).
+
 ---
 
 ## Admin evaluation workbench
