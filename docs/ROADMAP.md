@@ -105,7 +105,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ### Polish
 
-#### [ ] U11 · Dark mode (CSS variables are ready)
+#### [x] U11 · Dark mode (CSS variables are ready)
+- **Done.** Per-user theme (`users.theme`: `system` | `light` | `dark`) chosen on `/account` (`POST /account/theme`, allowlist `THEME_CHOICES` in `app/main.py`). `light`/`dark` render server-side as `<html data-theme>` so they work without JS; `system` is resolved before first paint by a synchronous inline script in `base.html` that also follows live OS changes.
+- Implemented **purely as a token layer**: one `[data-theme="dark"]` block overrides the `:root` variables and no component rule branches on theme. Getting there meant tokenising the last hardcoded colours (`--on-accent`/`--on-danger`, `--accent-2`, `--accent-soft-2`, `--accent-wash`, `--glass`, `--scrim`, `--placeholder`, `--chip-neutral-*`, `--code-*`) — zero hardcoded hex remains outside the token blocks. Light-mode computed values are unchanged. The only theme-duplicated rule is the `select` chevron (a data-URI SVG whose stroke can't read a variable). Contract written up in [`UI.md`](UI.md) §1.1.
 #### [x] U12 · Onboarding empty state (3-step "upload → wait → ask" guide)
 - **Fix:** **Done.** Empty chat state now shows a compact three-step upload → index → ask guide.
 #### [x] U13 · Accessibility pass (focus rings, aria labels, Esc to close modals)
