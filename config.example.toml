@@ -28,6 +28,21 @@ latin_target_chars = 800      # target chunk size for Latin-script text
 cjk_target_chars = 400        # target chunk size for CJK text (denser per char)
 overlap_sentences = 1         # sentences of overlap between adjacent chunks
 
+# --- A6c spreadsheet ingestion (docs/SPREADSHEET_INGESTION.md) --------------
+# rows_per_chunk_max and embed_token_budget CHANGE CHUNK SHAPE -> re-index
+# existing spreadsheet sources after touching them. The rest only affect what
+# the next ingest reads/detects.
+[spreadsheet]
+max_file_bytes = 20000000     # refuse larger workbooks outright
+max_rows = 5000               # per sheet, after the header row
+max_cols = 60                 # per sheet
+rows_per_chunk_max = 20       # upper bound on record-chunk packing
+embed_token_budget = 400      # estimated tokens per record chunk
+header_sample_rows = 5        # rows inspected when inferring a header
+wide_sheet_cols = 25          # above this, warn that the sheet is wide
+qa_question_synonyms = "question,q,問題,提問,問句,客戶提問"
+qa_answer_synonyms = "answer,a,答案,回覆,回答,解答,回覆內容"
+
 # --- A6a ingestion diagnostics (display thresholds only, no re-indexing) -----
 [diagnostics]
 low_text_chars = 200          # extracted total below this -> "almost no text" warning

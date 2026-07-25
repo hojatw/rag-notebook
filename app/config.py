@@ -47,6 +47,27 @@ class ChunkingConfig:  # changing these requires re-indexing
 
 
 @dataclasses.dataclass
+class SpreadsheetConfig:
+    """A6c spreadsheet ingestion. Design notes: docs/SPREADSHEET_INGESTION.md.
+
+    Values marked *(chunk shape)* change what gets stored and therefore require
+    re-indexing existing spreadsheet sources; the caps and synonym lists only
+    affect what is read/detected on the next ingest.
+    """
+    max_file_bytes: int = 20_000_000     # refuse larger workbooks outright
+    max_rows: int = 5000                 # per sheet, after the header row
+    max_cols: int = 60                   # per sheet
+    rows_per_chunk_max: int = 20         # (chunk shape) upper bound on record packing
+    embed_token_budget: int = 400        # (chunk shape) estimated tokens per record chunk
+    header_sample_rows: int = 5          # rows inspected when inferring a header
+    wide_sheet_cols: int = 25            # above this, warn that the sheet is wide
+    # Comma-separated column-name lists for Q&A detection. Customer sheets use
+    # house vocabulary (客戶提問 / 回覆內容), hence configurable.
+    qa_question_synonyms: str = "question,q,問題,提問,問句,客戶提問"
+    qa_answer_synonyms: str = "answer,a,答案,回覆,回答,解答,回覆內容"
+
+
+@dataclasses.dataclass
 class DiagnosticsConfig:
     """A6a ingestion diagnostics — thresholds for the per-source warnings.
 
@@ -127,6 +148,7 @@ class AuthConfig:
 class AppConfig:
     retrieval: RetrievalConfig = dataclasses.field(default_factory=RetrievalConfig)
     chunking: ChunkingConfig = dataclasses.field(default_factory=ChunkingConfig)
+    spreadsheet: SpreadsheetConfig = dataclasses.field(default_factory=SpreadsheetConfig)
     diagnostics: DiagnosticsConfig = dataclasses.field(default_factory=DiagnosticsConfig)
     embedding: EmbeddingConfig = dataclasses.field(default_factory=EmbeddingConfig)
     llm_retry: LLMRetryConfig = dataclasses.field(default_factory=LLMRetryConfig)
@@ -181,6 +203,7 @@ def load_config() -> AppConfig:
     return AppConfig(
         retrieval=_load_group(RetrievalConfig, "retrieval", toml_data),
         chunking=_load_group(ChunkingConfig, "chunking", toml_data),
+        spreadsheet=_load_group(SpreadsheetConfig, "spreadsheet", toml_data),
         diagnostics=_load_group(DiagnosticsConfig, "diagnostics", toml_data),
         embedding=_load_group(EmbeddingConfig, "embedding", toml_data),
         llm_retry=_load_group(LLMRetryConfig, "llm_retry", toml_data),

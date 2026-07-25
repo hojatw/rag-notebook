@@ -4202,6 +4202,29 @@ legend {
   margin: 0;
 }
 
+/* A6c per-sheet interpretation rows inside the diagnostics panel. */
+.diag-sheets {
+  display: grid;
+  gap: 4px;
+}
+
+.diag-sheet {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.diag-sheet-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
 .diag-preview-head {
   margin: 0;
   font-size: 11px;

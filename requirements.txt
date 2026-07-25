@@ -10,5 +10,9 @@ joserfc==1.7.2
 pypdf==6.14.2
 pdfplumber==0.11.10
 python-docx==1.2.0
+openpyxl==3.1.5
+# Pinned explicitly (A6c): it was already present transitively, but ingest now
+# imports it for CSV encoding detection (Big5/CP950 is common in zh-TW exports).
+charset-normalizer==3.4.7
 beautifulsoup4==4.15.0
 chromadb==1.5.9

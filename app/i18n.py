@@ -104,6 +104,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.extractor_docx": "Word 文件",
         "diag.extractor_html": "HTML",
         "diag.extractor_subtitles": "字幕檔",
+        "diag.extractor_xlsx": "Excel 活頁簿",
+        "diag.extractor_csv": "CSV",
         "diag.extractor_plain_text": "純文字",
         # Section kinds (mirrors _section_kind in app/ingest.py)
         "diag.kind_body": "內文",
@@ -118,6 +120,24 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.warn_pdf_structure_fallback": "這份 PDF 無法解析段落與表格結構，已退回逐頁純文字。引用位置只會精確到頁，表格內容可能變得難以閱讀。",
         "diag.warn_chunk_over_token_budget": "有 {count} 個分塊可能超過 embedding 模型的輸入上限（約 {budget} tokens），超出的尾端會被靜默截斷而檢索不到。此為估算值，非實際量測。",
         "diag.warn_empty_sections": "有 {count} 個分段是空白的，已略過。",
+        # A6c spreadsheet warnings
+        "diag.warn_spreadsheet_generic_records": "沒有偵測到問答（Q&A）欄位，因此整份試算表以「一般資料列」方式切塊。語意搜尋仍可用，但精確的篩選、計數與加總不在目前支援範圍。",
+        "diag.warn_spreadsheet_hidden_sheets_skipped": "已略過隱藏的工作表：{sheets}。隱藏表通常是暫存或過期資料，預設不索引。",
+        "diag.warn_spreadsheet_truncated": "工作表 {sheets} 超過列數或欄數上限，只索引了前面的部分。可在 [spreadsheet] 設定調整上限。",
+        "diag.warn_spreadsheet_uncached_formulas": "有 {count} 個公式儲存格沒有計算結果快取，讀進來是空的。請用 Excel 開啟並重新儲存，或匯出成含計算值的檔案。",
+        "diag.warn_spreadsheet_wide_sheet": "工作表欄位偏多，每個分塊只能容納少數幾列，檢索精度可能下降。",
+        "diag.warn_csv_encoding_fallback": "CSV 不是 UTF-8，已改用 {encoding} 解碼（無法辨識的字元 {replacements} 個）。若內容出現亂碼，請改存成 UTF-8 後重新上傳。",
+        # A6c spreadsheet details
+        "diag.sheets": "工作表",
+        "diag.sheet_type_qa_pairs": "問答（Q&A）",
+        "diag.sheet_type_records": "一般資料列",
+        "diag.sheet_type_empty": "空白",
+        "diag.sheet_header_detected": "首列為欄位名稱",
+        "diag.sheet_header_generated": "自動產生欄位名稱",
+        "diag.sheet_qa_auto": "問答欄位為自動判斷",
+        "diag.sheet_meta": "{rows} 列 · {columns} 欄 · {chunks} 分塊",
+        "diag.csv_encoding": "CSV 編碼",
+        "diag.csv_delimiter": "分隔符號",
         # --- Outputs shelf · entry type badges (U16 Phase 2) ------------------
         # Kept separate from the `tool.*` tile labels on purpose: the badge names
         # the artifact ("會議紀錄"), the tile names the action.
@@ -495,7 +515,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "js.provider_hint_openai": "請填入相容 /v1 的 base URL；模型欄位填模型名稱。",
         "js.provider_hint_azure": "請填入 Azure 資源端點；模型欄位填部署（deployment）名稱。",
         # upload formats hint (template-side, Phase 1c)
-        "upload.formats": "PDF · TXT · Markdown · DOCX · HTML · 字幕(SRT/VTT) · 一次最多 {count} 個",
+        "upload.formats": "PDF · TXT · Markdown · DOCX · HTML · 字幕(SRT/VTT) · 試算表(XLSX/CSV) · 一次最多 {count} 個",
     },
 }
 
