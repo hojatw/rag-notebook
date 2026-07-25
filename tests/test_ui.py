@@ -2894,3 +2894,116 @@ def test_theme_rejects_values_outside_the_allowlist(monkeypatch, tmp_path):
         with db.connect() as conn:
             row = conn.execute("SELECT theme FROM users WHERE username = 'admin'").fetchone()
         assert row["theme"] == "system"
+
+
+def _make_notebook(db, username="admin"):
+    """Create a notebook (plus a conversation + assistant message) for shelf tests."""
+    with db.connect() as conn:
+        user_id = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()["id"]
+        nb_id = conn.execute(
+            "INSERT INTO notebooks (user_id, title) VALUES (?, '產出架測試')", (user_id,)
+        ).lastrowid
+        conv_id = conn.execute(
+            "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, '對話')",
+            (user_id, nb_id),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'user', '問題')",
+            (conv_id, user_id),
+        )
+        msg_id = conn.execute(
+            "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'assistant', '回答')",
+            (conv_id, user_id),
+        ).lastrowid
+    return nb_id, msg_id
+
+
+def test_outputs_shelf_records_and_badges_the_entry_type(monkeypatch, tmp_path):
+    """U16 Phase 2: a saved tool result keeps the kind that produced it."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+
+        shelf = client.post(
+            f"/notebooks/{nb_id}/notes/add",
+            data={"title": "學習指南 — 產出架測試", "content": "# 重點", "kind": "study_guide"},
+        )
+
+        assert shelf.status_code == 200
+        with db.connect() as conn:
+            row = conn.execute("SELECT kind FROM notes WHERE notebook_id = ?", (nb_id,)).fetchone()
+        assert row["kind"] == "study_guide"
+        assert "學習指南" in shelf.text          # type badge rendered on the entry
+        # A single kind needs no filter row.
+        assert "note-filters" not in shelf.text
+
+
+def test_outputs_shelf_filter_appears_once_two_kinds_exist(monkeypatch, tmp_path):
+    """The client-side type filter shows up only when it has something to do."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, msg_id = _make_notebook(db)
+
+        client.post(
+            f"/notebooks/{nb_id}/notes/add",
+            data={"title": "來源比較：a vs b", "content": "比較", "kind": "compare"},
+        )
+        shelf = client.post(f"/notebooks/{nb_id}/notes/pin", data={"message_id": str(msg_id)})
+
+        assert shelf.status_code == 200
+        assert "note-filters" in shelf.text
+        assert "釘選回答" in shelf.text
+        assert "來源比較" in shelf.text
+        with db.connect() as conn:
+            kinds = sorted(r["kind"] for r in conn.execute(
+                "SELECT kind FROM notes WHERE notebook_id = ?", (nb_id,)
+            ))
+        assert kinds == ["compare", "pinned"]
+
+
+def test_outputs_shelf_rejects_forged_or_unknown_kinds(monkeypatch, tmp_path):
+    """Only SAVABLE_NOTE_KINDS may be set through save-to-shelf.
+
+    'pinned' is excluded on purpose: pinning has its own route, so a saved
+    artifact cannot claim to be a pinned chat answer.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+
+        for sent in ("pinned", "not_a_kind"):
+            response = client.post(
+                f"/notebooks/{nb_id}/notes/add",
+                data={"title": f"t-{sent}", "content": "c", "kind": sent},
+            )
+            assert response.status_code == 200
+
+        with db.connect() as conn:
+            kinds = [r["kind"] for r in conn.execute(
+                "SELECT kind FROM notes WHERE notebook_id = ? ORDER BY id", (nb_id,)
+            )]
+        assert kinds == ["note", "note"]
+
+
+def test_note_export_carries_the_type_label(monkeypatch, tmp_path):
+    """A downloaded shelf still says what produced each entry."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        client.post(
+            f"/notebooks/{nb_id}/notes/add",
+            data={"title": "時間軸 — 產出架測試", "content": "1999 年…", "kind": "timeline"},
+        )
+
+        export = client.get(f"/notebooks/{nb_id}/notes/export")
+
+        assert export.status_code == 200
+        assert "時間軸 ·" in export.text

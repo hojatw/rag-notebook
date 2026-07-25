@@ -6,7 +6,7 @@
   <div class="compare-result-body">
     <p class="muted small">比較對象：{{ filenames | join('、') }}{% if focus %} · 聚焦：{{ focus }}{% endif %}</p>
     <div class="markdown-body" data-markdown>{{ comparison }}</div>
-    {% with note_title = "來源比較：" ~ filenames | join(' vs ') ~ ("（" ~ focus ~ "）" if focus else ""), note_content = comparison %}
+    {% with note_title = "來源比較：" ~ filenames | join(' vs ') ~ ("（" ~ focus ~ "）" if focus else ""), note_content = comparison, note_kind = "compare" %}
       {% include "_save_note_button.html" %}
     {% endwith %}
   </div>

@@ -80,6 +80,19 @@ MESSAGES: dict[str, dict[str, str]] = {
         "auth.password_reset_sso_blocked": "此使用者已連結企業 SSO，不能重設本機密碼。",
         "auth.password_change_sso_blocked": "此帳號已連結企業 SSO，不能變更本機密碼。",
         "auth.sso_role_managed": "此使用者已連結企業 SSO，管理員角色由企業群組映射管理。",
+        # --- Outputs shelf · entry type badges (U16 Phase 2) ------------------
+        # Kept separate from the `tool.*` tile labels on purpose: the badge names
+        # the artifact ("會議紀錄"), the tile names the action.
+        "note.kind_pinned": "釘選回答",
+        "note.kind_note": "筆記",
+        "note.kind_compare": "來源比較",
+        "note.kind_minutes": "會議紀錄",
+        "note.kind_study_guide": "學習指南",
+        "note.kind_faq": "常見問答",
+        "note.kind_timeline": "時間軸",
+        "note.kind_translate": "翻譯摘要",
+        "note.filter_all": "全部",
+        "note.filter_label": "依類型篩選產出",
         # --- Account page · appearance (U11 dark mode) ------------------------
         "account.appearance_title": "外觀",
         "account.appearance_hint": "設定會存在你的帳號上，換裝置或換瀏覽器都會沿用。",

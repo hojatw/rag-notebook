@@ -243,6 +243,7 @@ Pinned answers / notes in a notebook's Studio.
 | `user_id` | INTEGER NOT NULL → `users(id)` CASCADE | |
 | `title` | TEXT DEFAULT `''` | |
 | `content` | TEXT DEFAULT `''` | |
+| `kind` | TEXT NOT NULL DEFAULT `''` | U16 Phase 2 outputs-shelf type: `pinned` \| `note` \| `compare` \| `minutes` \| `study_guide` \| `faq` \| `timeline` \| `translate`. Allowlist `NOTE_KINDS` in `app/main.py` (writes go through `SAVABLE_NOTE_KINDS`, which excludes `pinned`). Drives the type badge + shelf filter. Legacy rows are classified once by `_backfill_note_kinds` in `app/db.py` — exact for pinned (via `source_message_id`), best-effort by historical title prefix for tool outputs |
 | `source_message_id` | INTEGER → `messages(id)` **ON DELETE SET NULL** | the pinned message, if any |
 | `created_at` / `updated_at` | TEXT | |
 

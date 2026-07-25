@@ -185,6 +185,29 @@ templates.env.globals["eval_result_status_labels"] = i18n.EVAL_RESULT_STATUS_LAB
 # E1e-2: localised display for per-question answer outcome (raw value kept).
 templates.env.globals["eval_answer_outcome_labels"] = i18n.EVAL_ANSWER_OUTCOME_LABELS
 
+# U16 Phase 2 — outputs-shelf entry types, in the order the shelf's filter row
+# shows them. 'pinned' comes from the chat pin action and 'note' is a plain
+# saved/edited entry; the rest map 1:1 to the Studio tool that produced the
+# entry, so a new tool = one more member here plus its `note.kind_*` label.
+# Persisted in `notes.kind` (see app/db.py) and validated on write.
+NOTE_KINDS = (
+    "pinned",
+    "note",
+    "compare",
+    "minutes",
+    "study_guide",
+    "faq",
+    "timeline",
+    "translate",
+)
+# Kinds a save-to-shelf request may set. Pinning has its own route, so a client
+# cannot forge a "pinned" badge on an arbitrary saved artifact.
+SAVABLE_NOTE_KINDS = tuple(k for k in NOTE_KINDS if k != "pinned")
+# Exposed as a global (like the other label/order maps above) so every render
+# site of _notes_section.html gets the canonical order without threading it
+# through five call sites.
+templates.env.globals["note_kind_order"] = NOTE_KINDS
+
 
 def csrf_token_for_request(request: Request) -> str:
     """Return the signed CSRF token for this request, creating one if needed."""
@@ -2200,17 +2223,23 @@ def add_note(
     user: Annotated[dict, Depends(require_login)],
     title: str = Form(""),
     content: str = Form(...),
+    kind: str = Form("note"),
 ):
-    """Create a raw note (no source message). Used by Save-to-notes on comparison results."""
+    """Create a raw note (no source message). Used by Save-to-shelf on tool results."""
     cleaned_content = (content or "").strip()
     if not cleaned_content:
         raise HTTPException(status_code=400, detail="筆記內容不可為空。")
     cleaned_title = " ".join((title or "").split())[:80] or "已儲存筆記"
+    # The kind only ever comes from our own templates, so an unknown value means
+    # a bug rather than user input: keep the note, log it, badge it generically.
+    cleaned_kind = kind if kind in SAVABLE_NOTE_KINDS else "note"
+    if cleaned_kind != kind:
+        logger.warning("note_kind_rejected user_id=%s notebook_id=%s kind=%r", user["id"], notebook_id, kind)
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
         cursor = conn.execute(
-            "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, ?, ?)",
-            (notebook_id, user["id"], cleaned_title, cleaned_content),
+            "INSERT INTO notes (notebook_id, user_id, title, content, kind) VALUES (?, ?, ?, ?, ?)",
+            (notebook_id, user["id"], cleaned_title, cleaned_content, cleaned_kind),
         )
         note_id = cursor.lastrowid
         touch_notebook(conn, notebook_id)
@@ -2224,7 +2253,7 @@ def add_note(
         "note_added",
         "note",
         note_id,
-        {"notebook_id": notebook_id, "title": cleaned_title, "content_chars": len(cleaned_content)},
+        {"notebook_id": notebook_id, "title": cleaned_title, "content_chars": len(cleaned_content), "kind": cleaned_kind},
         "normal",
     )
     logger.info("note_added user_id=%s notebook_id=%s chars=%s", user["id"], notebook_id, len(cleaned_content))
@@ -2273,7 +2302,8 @@ def pin_note(
             raw_title = (prompting["content"] if prompting else None) or message["title"] or "Pinned note"
             title = " ".join(raw_title.split())[:80]
             cursor = conn.execute(
-                "INSERT INTO notes (notebook_id, user_id, title, content, source_message_id) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO notes (notebook_id, user_id, title, content, source_message_id, kind) "
+                "VALUES (?, ?, ?, ?, ?, 'pinned')",
                 (notebook_id, user["id"], title, message["content"], message_id),
             )
             note_id = cursor.lastrowid
@@ -3051,7 +3081,10 @@ def export_notes(
     lines = [f"# {notebook['title']} — {i18n.t('export.notes_suffix')}", ""]
     for note in notes:
         title = note["title"] or note["content"][:40]
-        lines += [f"## {title}", "", note["content"], "", f"_{note['created_at']}_", "", "---", ""]
+        # U16 Phase 2: carry the type badge into the export so a downloaded
+        # shelf still says what produced each entry.
+        kind_label = i18n.t("note.kind_" + (note["kind"] or "note"))
+        lines += [f"## {title}", "", note["content"], "", f"_{kind_label} · {note['created_at']}_", "", "---", ""]
     record_audit_event(
         request,
         user,
@@ -3082,7 +3115,8 @@ def export_note(
         if note is None:
             raise HTTPException(status_code=404, detail="找不到筆記")
     title = note["title"] or note["content"][:40] or i18n.t("export.notes_suffix")
-    lines = [f"# {title}", "", note["content"], "", f"_{note['created_at']}_", ""]
+    kind_label = i18n.t("note.kind_" + (note["kind"] or "note"))
+    lines = [f"# {title}", "", note["content"], "", f"_{kind_label} · {note['created_at']}_", ""]
     record_audit_event(
         request,
         user,
@@ -3399,7 +3433,15 @@ async def notebook_artifact(
         summaries = _fetch_source_summaries(conn, notebook_id, user["id"])
         settings = load_llm_settings(conn) or {}
 
-    base_ctx = {"notebook_id": notebook_id, "label": label, "notebook_title": notebook["title"], "artifact": ""}
+    # `kind` is already allowlisted by the ARTIFACT_PROMPTS check above and every
+    # member is in NOTE_KINDS, so it doubles as the shelf entry's type badge.
+    base_ctx = {
+        "notebook_id": notebook_id,
+        "label": label,
+        "notebook_title": notebook["title"],
+        "artifact": "",
+        "kind": kind,
+    }
     if not summaries:
         return render(
             request, "_artifact_result.html",

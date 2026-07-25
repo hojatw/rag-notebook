@@ -31,7 +31,7 @@
   {% else %}
     <p class="muted small">已從「{{ filename }}」整理完成，確認後可存成筆記。</p>
     <div class="markdown-body" data-markdown>{{ minutes }}</div>
-    {% with note_title = "會議整理 — " ~ filename, note_content = minutes %}
+    {% with note_title = "會議整理 — " ~ filename, note_content = minutes, note_kind = "minutes" %}
       {% include "_save_note_button.html" %}
     {% endwith %}
   {% endif %}

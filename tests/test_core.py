@@ -521,3 +521,64 @@ def test_concurrent_init_db_does_not_race_on_migrations(monkeypatch, tmp_path):
     with db.connect() as conn:
         notebook_cols = [r["name"] for r in conn.execute("PRAGMA table_info(notebooks)")]
     assert "followups_enabled" in notebook_cols
+
+
+def test_note_kind_backfill_classifies_legacy_rows(fresh_modules):
+    """U16 Phase 2: rows written before notes.kind existed get classified once.
+
+    Pinned answers are exact (source_message_id); tool outputs are recovered
+    best-effort from the title prefix those generators used at the time.
+    """
+    db = fresh_modules.db
+    with db.connect() as conn:
+        user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+        nb_id = conn.execute(
+            "INSERT INTO notebooks (user_id, title) VALUES (?, 'NB')", (user_id,)
+        ).lastrowid
+        conv_id = conn.execute(
+            "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, 'C')",
+            (user_id, nb_id),
+        ).lastrowid
+        msg_id = conn.execute(
+            "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'assistant', 'A')",
+            (conv_id, user_id),
+        ).lastrowid
+        # Simulate pre-migration rows: kind blanked out, as the column default
+        # left them before _backfill_note_kinds ran.
+        rows = [
+            ("釘選的問題", None),
+            ("來源比較：a.pdf vs b.pdf", None),
+            ("會議整理 — 逐字稿.txt", None),
+            ("摘要翻譯（English） — a.pdf", None),
+            ("學習指南 — NB", None),
+            ("常見問答 — NB", None),
+            ("時間軸 — NB", None),
+            ("我自己寫的東西", None),
+        ]
+        for title, _ in rows:
+            conn.execute(
+                "INSERT INTO notes (notebook_id, user_id, title, content, kind) VALUES (?, ?, ?, 'x', '')",
+                (nb_id, user_id, title),
+            )
+        conn.execute(
+            "UPDATE notes SET source_message_id = ? WHERE title = '釘選的問題'", (msg_id,)
+        )
+
+    fresh_modules.db.init_db()
+
+    with db.connect() as conn:
+        kinds = {r["title"]: r["kind"] for r in conn.execute("SELECT title, kind FROM notes")}
+    assert kinds["釘選的問題"] == "pinned"
+    assert kinds["來源比較：a.pdf vs b.pdf"] == "compare"
+    assert kinds["會議整理 — 逐字稿.txt"] == "minutes"
+    assert kinds["摘要翻譯（English） — a.pdf"] == "translate"
+    assert kinds["學習指南 — NB"] == "study_guide"
+    assert kinds["常見問答 — NB"] == "faq"
+    assert kinds["時間軸 — NB"] == "timeline"
+    # Unrecognised titles stay generic rather than being guessed at.
+    assert kinds["我自己寫的東西"] == "note"
+    # Idempotent: a second init_db must not reclassify anything.
+    fresh_modules.db.init_db()
+    with db.connect() as conn:
+        again = {r["title"]: r["kind"] for r in conn.execute("SELECT title, kind FROM notes")}
+    assert again == kinds

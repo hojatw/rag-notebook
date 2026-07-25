@@ -3346,6 +3346,50 @@ legend {
   gap: 8px;
 }
 
+/* U16 Phase 2 — outputs-shelf type filter. Per UI.md §3.5 these are `.tag`
+   (classification, no status dot); `.is-active` is the selected state. */
+.note-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: var(--sp-2);
+}
+
+.note-filter {
+  gap: 5px;
+  cursor: pointer;
+  background: transparent;
+  min-height: 22px;
+  padding: 2px 8px;
+  font-size: 11px;
+  transition: background 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease);
+}
+
+.note-filter:hover { border-color: var(--line-strong); background: var(--surface-tint); }
+
+.note-filter.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  border-color: var(--line-accent);
+}
+
+.note-filter-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.note-filter.is-active .note-filter-count { color: inherit; }
+
+/* Type badge on each shelf entry. Sits before the title, never shrinks. */
+.note-kind {
+  flex: none;
+  min-height: 20px;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
 .note-list {
   list-style: none;
   margin: 0;

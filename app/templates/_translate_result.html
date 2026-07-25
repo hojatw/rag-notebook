@@ -5,7 +5,7 @@
 {% elif translated %}
   <p class="muted small">「{{ filename }}」的摘要翻譯（{{ target_language }}）：</p>
   <div class="markdown-body" data-markdown>{{ translated }}</div>
-  {% with note_title = "摘要翻譯（" ~ target_language ~ "） — " ~ filename, note_content = translated %}
+  {% with note_title = "摘要翻譯（" ~ target_language ~ "） — " ~ filename, note_content = translated, note_kind = "translate" %}
     {% include "_save_note_button.html" %}
   {% endwith %}
 {% endif %}
