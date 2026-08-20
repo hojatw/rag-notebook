@@ -12,13 +12,14 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## Recommended next round
 
-1. **Enterprise authentication:** `I1a` trusted reverse-proxy header mode, `I1b` OIDC, and `I1d` operator diagnostics are implemented; answer customer-discovery questions for each deployment, then add `I1c` SAML only when a customer IdP requires it.
-2. **Answer-quality loop:** `E1e-2` answer/citation judging is implemented (the measuring stick); next, implement `E2` notebook domain hints and answer policy and validate it through Eval Workbench comparisons (judged runs with/without hints).
-3. **Admin LLM operations:** `O1` Phase 1 is done; next LLM-ops work is Phase 2 profile management and safe activation once needed.
-4. **Format foundation:** `A6a` ingestion diagnostics is implemented — every new extractor reports its own signals through it.
-5. **Source-format MVP path:** `A6c` spreadsheets and `A6b` PPTX Phase 1 are implemented; next is `A6` Web URL with SSRF guards.
-6. **Image/OCR path:** `A8` OCR and `A9` image search v1 depend on extraction diagnostics and capability checks; block image uploads unless `/settings` image understanding succeeds or a non-LLM OCR-only path is explicitly enabled.
-7. **Customer-driven later work:** keep `A10`/`A11` low priority unless a customer requirement or verified serving capability changes the economics.
+1. **P0 index safety:** complete `O0`. The current Clear action leaves Chroma's collection dimension locked and can break every ingest after an embedding-dimension change. The temporary operator script is not the product fix.
+2. **Enterprise authentication:** `I1a` trusted reverse-proxy header mode, `I1b` OIDC, and `I1d` operator diagnostics are implemented; answer customer-discovery questions for each deployment, then add `I1c` SAML only when a customer IdP requires it.
+3. **Answer-quality loop:** `E1e-2` answer/citation judging is implemented (the measuring stick); next, implement `E2` notebook domain hints and answer policy and validate it through Eval Workbench comparisons (judged runs with/without hints).
+4. **Admin LLM operations:** `O1` Phase 1 is done; next LLM-ops work is Phase 2 profile management and safe activation once needed.
+5. **Format foundation:** `A6a` ingestion diagnostics is implemented — every new extractor reports its own signals through it.
+6. **Source-format MVP path:** `A6c` spreadsheets and `A6b` PPTX Phase 1 are implemented; next is `A6` Web URL with SSRF guards.
+7. **Image/OCR path:** `A8` OCR and `A9` image search v1 depend on extraction diagnostics and capability checks; block image uploads unless `/settings` image understanding succeeds or a non-LLM OCR-only path is explicitly enabled.
+8. **Customer-driven later work:** keep `A10`/`A11` low priority unless a customer requirement or verified serving capability changes the economics.
 
 ---
 
@@ -158,7 +159,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Guardrails:**
   - Generated candidate questions are suggestions only; admins must review/approve/edit before they become ground truth.
   - Each run stores immutable snapshots: eval set version, active/candidate profile, LLM setting summary, app version/commit when available, aggregate metrics, and per-question results.
-  - Runtime-safe parameters can be applied immediately; index-affecting parameters (chunk sizes, overlap, embedding model/prefix/dimension) must be shown with strong "requires Clear/Rebuild or reindex" warnings and should not be silently applied.
+  - Runtime-safe parameters can be applied immediately; index-affecting parameters (chunk sizes, overlap, embedding model/prefix/dimension) must be shown with strong Reindex warnings and should not be silently applied. Dimension changes must stay blocked or use the temporary O0 migration tool until the permanent collection-reset workflow lands.
   - Export has two modes: sanitized profile/report (settings + aggregate metrics, no source text) and full internal report (questions, expected evidence, failures; for in-environment or explicitly approved sharing only). Full internal report exports must be recorded in the durable audit trail.
 - **Phased (tick as done):**
   - [x] E1a — **Done.** Schema + admin shell landed: `eval_sets`, `eval_items`, `eval_runs`, `eval_results`, `retrieval_profiles`; `/admin/evals` shows the active baseline profile, eval sets, and historical run list. This creates the audit trail before any tuning UI exists.
@@ -168,7 +169,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] E1e-1 — **Done.** LLM-assisted eval authoring landed as a draft-only flow: admins can generate candidate questions from selected indexed sources, request answerable / cross-lingual / unanswerable item types, review item type, reference answer, expected substrings, and source/chunk grounding, then approve manually. Generated metadata records compact origin/model/prompt-version/source ids without copying prompts or source text. The deterministic chunk-based generator remains available as a no-LLM fallback.
   - [x] E1e-2 — **Done.** Answer-quality and citation judging (route A, comparative/structured). Opt-in per run (`judge_enabled`, default off, ~2× LLM cost): each item runs a deterministic abstain decision, then — unless it abstained — generates an answer and LLM-judges answer quality, groundedness, and citation correctness; abstain correctness and a substring-hit-rate anchor are computed deterministically, not by the judge. Judge metrics are stored and shown **separately** from retrieval Recall/MRR (nested `metrics_json.judge`) and labelled a reference signal, not ground truth. A single item's generate/judge failure is isolated (`answer_outcome=error`) and never fails the run; `judge_enabled=0` fully regresses to retrieval-only behaviour. Generated answers + judge rationale + unsupported-claim text appear **only in full internal exports** (audited); the sanitized report carries aggregate judge numbers only. Telemetry separates `eval_answer` / `eval_judge` call types. **Implementation plan:** [`E1E2_ANSWER_JUDGING_PLAN.md`](E1E2_ANSWER_JUDGING_PLAN.md).
   - [x] E1f — **Done.** Eval tuning guide landed as `/admin/evals/help` and as a first-class tab in the Eval workbench. It converts the internal tuning PDF/discussion into HTML covering: when to tune parameters vs fix Eval items, symptom -> likely cause -> parameter guidance, profile experiment workflow, starter profiles, non-runtime-safe changes that require reindex, and the role of future domain hints / answer policy. The PDF remains optional/shareable, but the product source of truth is now HTML so labels stay aligned with the live profile UI.
-- **Recommended next implementation round:** with **E1e-2** now providing the answer-quality measuring stick, prioritize **E2** (notebook domain hints + answer policy) and validate it via judged with/without-hints run comparisons. Further audit expansion should wait for customer requirements, e.g. explicit read-access audit for source preview/result viewing. Defer index-affecting parameter application until there is a clear Clear/Rebuild UX.
+- **Recommended next implementation round:** fix **O0** first because dimension migration can break all ingestion. With **E1e-2** providing the answer-quality measuring stick, then prioritize **E2** (notebook domain hints + answer policy) and validate it via judged with/without-hints run comparisons. Further audit expansion should wait for customer requirements, e.g. explicit read-access audit for source preview/result viewing. Defer index-affecting parameter application until O0 provides a safe reset/Reindex workflow and clear UX.
 
 #### [ ] E2 · Notebook domain hints and answer policy — high priority for answer quality
 - **Issue:** Some "inaccurate" answers are not fixed by retrieval-weight tuning alone. Domain-specific aliases, abbreviations, internal product names, and deployment-specific answer rules may need to be available at the notebook level so query rewrite can find the right evidence and final answers follow the customer's rules.
@@ -227,6 +228,19 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## Admin operations
 
+### Critical priority — vector-index safety
+
+#### [~] O0 · Reset Chroma collection dimension safely
+- **Live P0 defect:** `/admin/index` Clear calls `collection.delete(ids=...)`. Chroma keeps the collection schema after the last vector is deleted, so an empty collection can remain locked to (for example) 1024 dimensions. `probe_index_dimension()` sees no stored embedding and reports `None`; settings then accept a 1536-dimensional model, but the first query/upsert fails with `Collection expecting embedding with dimension of 1024, got 1536`.
+- **Operational impact:** ingestion fails after the embedding model changes; repeated Clear/Rebuild does not repair it. In split app/worker deployments, both processes also cache collection handles, so replacing the collection in only the web process is insufficient.
+- **Temporary mitigation landed:** `scripts/reset_chroma_dimension.py` provides dry-run classification, requires stopped services for apply, backs up SQLite + Chroma, replaces the collection, restores only safe target-dimension vectors, and marks old-dimension indexed sources for Reindex. This is an operator workaround, not completion of O0.
+- **Permanent-fix acceptance criteria:**
+  1. Clear used for a dimension migration deletes/recreates the collection schema, not only its records.
+  2. App and dedicated worker cannot keep stale cached collection handles after reset; concurrent ingest is blocked, drained, or safely retried.
+  3. Startup sync cannot silently reinsert old-dimension SQLite embeddings and re-lock the new collection; affected sources receive an explicit Reindex state/path.
+  4. Regression coverage proves `384 → Clear/migrate → 1536` succeeds in both inline-worker and split-worker operating models.
+  5. Admin copy, audit metadata, README, and operator docs describe the same safe migration and rollback behavior; remove the temporary warning only after these checks pass.
+
 ### Medium priority — safer LLM configuration and deployment flexibility
 
 #### [ ] O1 · Admin-only LLM settings diagnostics and profiles
@@ -237,7 +251,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] O1b — **Done.** The settings diagnostics section probes streaming support, provider usage reporting, JSON-following sanity, and optional image understanding. The image-understanding checkbox is off by default and sends only a tiny built-in test image when explicitly enabled. The result records capability/status only and does not enable A9 automatically.
 - **Phase 2 — multiple profiles + safe activation:**
   - [ ] O1c — Replace the single global settings row with admin-managed LLM profiles: name, provider, base URLs, encrypted API key, chat model, embedding model/prefixes, temperature, timeout, last test status, and active flag. Migrate the existing `llm_settings` row into the default active profile.
-  - [ ] O1d — Add safe profile activation rules. Chat-only changes can activate directly after a successful chat test. Embedding-affecting changes (model/base URL/prefix/dimension) must be blocked or strongly gated when the existing Chroma index dimension/config is incompatible, with clear Clear/Rebuild or reindex guidance.
+  - [ ] O1d — Add safe profile activation rules. Chat-only changes can activate directly after a successful chat test. Embedding-affecting changes (model/base URL/prefix/dimension) must be blocked or strongly gated when the existing Chroma index dimension/config is incompatible. Do not direct admins to Clear/Rebuild for dimension migration until O0 is complete; use the temporary O0 workaround and explicit Reindex guidance.
 - **Future phase — task-specific routing:**
   - [ ] O1e — Allow admins to assign different profiles to answer generation, embeddings, eval judging, eval authoring, source summaries, Studio artifacts, and low-cost follow-up/starter questions. Keep this out of the MVP until global profile switching is stable.
 - **Guardrails:**

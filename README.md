@@ -71,6 +71,14 @@ On save, the app probes the embedding endpoint once and rejects settings that
 would mismatch the existing Chroma index dimension. API keys are encrypted at
 rest with Fernet using `NOTEBOOKLM_SECRET`.
 
+> **Known P0 defect — embedding dimension changes:** `/admin/index` **Clear**
+> currently deletes vector records but does not reset the Chroma collection's
+> locked dimension. Clear/Rebuild alone can therefore still fail with
+> `Collection expecting embedding with dimension of X, got Y`. Until the
+> permanent O0 fix lands, stop every app/worker process and use
+> [`scripts/reset_chroma_dimension.py`](scripts/reset_chroma_dimension.py) as
+> documented in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#temporary-workaround-embedding-dimension-migration-p0).
+
 The same page also provides admin-only diagnostics: test the chat model and
 embedding model separately, inspect latency/status/model summaries and
 embedding dimension, and probe optional capabilities such as streaming,

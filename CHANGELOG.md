@@ -11,6 +11,12 @@
 
 ### 新增
 
+- **Chroma embedding 維度重設 workaround（P0 暫行工具）**：新增
+  `scripts/reset_chroma_dimension.py`。工具預設 dry-run，只有同時指定 `--apply` 與
+  `--services-stopped` 才會變更資料；執行前自動備份 SQLite + Chroma，重建 collection，
+  回填可安全沿用的目標維度 vectors，並把仍是舊維度的 indexed 來源改為待 Reindex。
+  Docker 與本機操作步驟見 `docs/DEVELOPMENT.md`。
+
 - **簡報來源 `.pptx`（A6b Phase 1，只讀文字）**：投影片標題與內文、表格、
   備忘稿各自成為分段（`slide N` / `slide N table K` / `slide N notes`），引用可以指回
   特定投影片。群組起來的文字方塊會遞迴讀取——扁平走訪會讓整張投影片索引成空白。
@@ -50,6 +56,14 @@
 - 決策紀錄：`P2-1`（SQLite 向量複本）裁定維持現狀並寫下重啟條件；
   `Q1-1`（RRF）記為排序決策並列出重新校準的前置條件。
   詳見 `docs/PERFORMANCE.md`、`docs/QUALITY.md`。
+
+### 已知問題
+
+- **P0 — `/admin/index` Clear 不會重設 Chroma collection 維度：**現行實作只執行
+  `collection.delete(ids=...)`；即使 vector count 已是 0，collection schema 仍可能鎖在
+  舊維度。設定頁因看不到任何 stored embedding 會誤判為未鎖定，新維度第一次 upsert
+  才以 `Collection expecting embedding with dimension of X, got Y` 失敗。永久修正與
+  multi-process cache/worker 協調列為 `ROADMAP.md` O0；修正完成前使用上述 workaround。
 
 ## [0.2.0] - 2026-07-25
 
