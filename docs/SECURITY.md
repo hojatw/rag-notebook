@@ -4,6 +4,23 @@
 
 This is a **single-machine proof of concept**, not a hardened production service. It is suitable for local experiments and small trusted single-machine deployments after you set a strong `NOTEBOOKLM_SECRET`. Do not expose it directly to the public internet without adding the hardening items listed below.
 
+### What "proof of concept" is actually claiming — and when to drop it
+
+The label currently carries **two different statements**, and only one of them is about immaturity:
+
+- **Architectural scope** — single machine, SQLite, local files, embedded Chroma, no HA, no horizontal scale. At the scale this is built for (see [`DEPLOYMENT_CONTEXT.md`](DEPLOYMENT_CONTEXT.md)) that is a **deliberate, defensible architecture**, not a placeholder. Calling it "POC" undersells it.
+- **Hardening and measurement maturity** — this is what the label is honestly signalling, and it is the half that can be closed.
+
+So the question is not "when does this become production", it is "when can the scope be stated as a scope, and the maturity gap be declared closed". Three conditions, all checkable — **not a judgement call**:
+
+1. **`SEC-4` (login rate limiting) is closed.** It is the last open item that decides whether this can face a network at all: `POST /login` has no throttle or lockout, and PBKDF2's 200k iterations make each attempt expensive to serve. Everything else still open is `P2`/`P3` hygiene.
+2. **A representative eval set exists (`Q1-3` in [`QUALITY.md`](QUALITY.md)).** This is the important one. **Right now there is no way to measure whether a retrieval change helps.** Six items say so in their own text — `Q0-2` and `Q1-4` ("needs Q1-3"), `Q1-6` ("this is Q1-3's job"), `Q1-7` ("to prove the arm helps rather than merely changes results"), `QLT-1` in the review backlog, and `Q1-2`/`P1-2` (blocked on a representative CJK corpus) — plus `Q1-1` indirectly, since its restart condition runs through `Q1-6`. A retrieval system whose quality cannot be measured should not claim to be past proof-of-concept; that is a factual statement about what is known, not modesty.
+3. **Someone other than the author has completed an upgrade using only the documentation.** `RELEASE.md` and the CHANGELOG upgrade notes exist, but have never been executed by a second person. Until they have, "it is documented" is untested.
+
+Deliberately **not** on this list: backup/restore drills, monitoring, and uptime targets. Those belong to whoever operates a given deployment, and their absence says nothing about this repository's maturity.
+
+When all three hold, rewrite this section as a **scope statement** ("single machine by design; not HA, not multi-tenant-isolated, not horizontally scalable") plus the honest remaining limits, and drop "proof of concept" from `README.md`, `README.zh-TW.md`, `AGENTS.md`, and `CLAUDE.md` in the same change. Do not drop it piecemeal — a repo that calls itself production in one file and a POC in another has answered the question for nobody.
+
 ## Reporting a vulnerability
 
 Please report security issues **privately** rather than opening a public issue:
