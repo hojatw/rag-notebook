@@ -1390,6 +1390,36 @@ li code {
 
 .index-actions form { margin: 0; }
 
+/* O0 dimension migration: the typed-confirmation row. Wraps to its own line on
+   narrow screens so the input never gets squeezed under its own label. */
+.index-migrate-form {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-top: var(--sp-4);
+}
+
+/* The label sits on its own line: as a flex sibling it gets shrunk to ~88px
+   and wraps to three cramped lines, because label + input + button together
+   overflow the settings column.
+   `display: block` overrides the global `label { display: grid }` — under grid
+   the inline <code>{dimension}</code> becomes a grid item and the sentence
+   breaks into three stacked rows. */
+.index-migrate-form label {
+  display: block;
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.index-migrate-form input {
+  width: 9rem;
+  margin: 0;
+}
+
 /* ---------------------------------------------------------------- modal (source preview) */
 
 .modal {

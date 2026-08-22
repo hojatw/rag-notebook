@@ -22,9 +22,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import socket
+import time
 from dataclasses import dataclass
 
 from . import db
+from .config import config
 
 
 logger = logging.getLogger(__name__)
@@ -206,3 +210,188 @@ def chunk_dimension(embedding_json: str) -> int | None:
     except (TypeError, ValueError):
         return None
     return len(value) if isinstance(value, list) else None
+
+
+# --------------------------------------------------------------------------
+# Write barrier (O0 criterion 2, D1: refuse rather than drain)
+# --------------------------------------------------------------------------
+
+class MigrationBusy(RuntimeError):
+    """A migration cannot start right now. The message is admin-facing."""
+
+
+def _owner_tag() -> str:
+    return f"{socket.gethostname()}/{os.getpid()}"
+
+
+def _lock_timeout() -> float:
+    return float(config.runtime.index_migration_lock_timeout_s)
+
+
+def migration_lock_is_live(conn, now: float | None = None) -> bool:
+    """Whether a migration lock is held and has not aged out.
+
+    The single definition of that rule: the admin route, the preview, and the
+    ingest worker's claim all go through here, so the barrier cannot end up
+    meaning one thing to the migration and another to the queue it pauses.
+    Takes an open connection because ``claim_next_job`` calls it from inside
+    its ``BEGIN IMMEDIATE`` transaction.
+    """
+    row = conn.execute("SELECT locked_at FROM vector_index_state WHERE id = 1").fetchone()
+    if row is None or row["locked_at"] is None:
+        return False
+    return float(row["locked_at"]) > (now or time.time()) - _lock_timeout()
+
+
+def migration_lock_state() -> dict[str, object]:
+    """Who holds the migration lock, and whether it has gone stale."""
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT locked_at, locked_by FROM vector_index_state WHERE id = 1"
+        ).fetchone()
+    if row is None or row["locked_at"] is None:
+        return {"locked": False, "owner": "", "age_s": 0.0, "stale": False}
+    age = time.time() - float(row["locked_at"])
+    return {
+        "locked": True,
+        "owner": str(row["locked_by"] or ""),
+        "age_s": round(age, 1),
+        "stale": age > _lock_timeout(),
+    }
+
+
+def acquire_migration_lock() -> str:
+    """Take the migration lock, or raise :class:`MigrationBusy`.
+
+    The check-and-set runs inside ``BEGIN IMMEDIATE`` so two admins clicking
+    at once cannot both proceed. A running ingest job blocks the migration
+    outright (D1): that job is mid-flight with the *old* embedding model, and
+    interrupting it safely is more machinery than a single-machine POC needs —
+    telling the operator to wait is honest and takes one sentence to explain.
+
+    Queued jobs are deliberately fine: they have not embedded anything yet, so
+    once the migration finishes they run against the new model and produce
+    correct-width vectors.
+    """
+    owner = _owner_tag()
+    now = time.time()
+    stale_before = now - _lock_timeout()
+    conn = db.connect()
+    try:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        held = conn.execute(
+            "SELECT locked_at, locked_by FROM vector_index_state WHERE id = 1"
+        ).fetchone()
+        if held is not None and held["locked_at"] is not None and float(held["locked_at"]) > stale_before:
+            conn.execute("ROLLBACK")
+            raise MigrationBusy(
+                f"另一個維度遷移正在進行中（{held['locked_by']}）。請等它完成後再試。"
+            )
+        running = conn.execute(
+            "SELECT COUNT(*) AS n FROM ingest_jobs WHERE status = 'running'"
+        ).fetchone()
+        if running is not None and int(running["n"]) > 0:
+            conn.execute("ROLLBACK")
+            raise MigrationBusy(
+                f"目前有 {running['n']} 個攝取工作正在執行，它們仍在使用舊的 embedding 模型。"
+                "請等佇列清空（或停掉 worker）後再執行遷移。"
+            )
+        conn.execute(
+            "UPDATE vector_index_state SET locked_at = ?, locked_by = ? WHERE id = 1",
+            (now, owner),
+        )
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+    logger.info("index_migration_lock_acquired owner=%s", owner)
+    return owner
+
+
+def release_migration_lock() -> None:
+    """Release the lock. Safe to call when not held."""
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE vector_index_state SET locked_at = NULL, locked_by = '' WHERE id = 1"
+        )
+        conn.commit()
+    logger.info("index_migration_lock_released")
+
+
+def ingest_queue_snapshot() -> dict[str, int]:
+    """Queued/running job counts, for the pre-migration preview."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM ingest_jobs"
+            " WHERE status IN ('queued', 'running') GROUP BY status"
+        ).fetchall()
+    counts = {"queued": 0, "running": 0}
+    for row in rows:
+        counts[str(row["status"])] = int(row["n"])
+    return counts
+
+
+# --------------------------------------------------------------------------
+# Target dimension
+# --------------------------------------------------------------------------
+
+def target_dimension_from_diagnostics() -> tuple[int | None, str]:
+    """The configured embedding model's width, from the O1 settings probe.
+
+    Deliberately *not* probed here: reading the stored diagnostic forces the
+    admin to have run "Test embedding model" on `/settings` against the model
+    they intend to migrate to, so the target is a number the endpoint actually
+    returned rather than one typed into a form. Returns ``(None, reason)`` when
+    that has not happened.
+    """
+    with db.connect() as conn:
+        row = conn.execute("SELECT diagnostics_json FROM llm_settings WHERE id = 1").fetchone()
+    try:
+        diagnostics = json.loads(row["diagnostics_json"] or "{}") if row else {}
+    except (TypeError, ValueError):
+        diagnostics = {}
+    embedding = diagnostics.get("embedding") if isinstance(diagnostics, dict) else None
+    if not isinstance(embedding, dict):
+        return None, "尚未在「設定」頁測試 embedding 模型，無法得知目標維度。"
+    if embedding.get("status") != "ok":
+        return None, "最近一次 embedding 測試未通過，請先在「設定」頁測試成功再遷移。"
+    dimension = embedding.get("embedding_dimension")
+    if not isinstance(dimension, int) or dimension <= 0:
+        return None, "最近一次 embedding 測試沒有回報維度，請重新測試。"
+    return dimension, ""
+
+
+# --------------------------------------------------------------------------
+# Orchestration
+# --------------------------------------------------------------------------
+
+def run_migration(target_dimension: int) -> dict[str, int]:
+    """Replace the collection and reconcile source states. Admin-triggered.
+
+    Ordering matters: the collection is replaced first, then source states are
+    written, then reusable vectors are restored. If the process dies between
+    the swap and the restore, startup sync repopulates from SQLite for the
+    sources still marked ``indexed`` — which are exactly the target-dimension
+    ones — so the crash window degrades to "slower", not "wrong".
+    """
+    from . import vector_store
+
+    owner = acquire_migration_lock()
+    try:
+        plan = classify_sources(target_dimension)
+        removed = vector_store.reset_collection()
+        states = apply_source_states(plan)
+        restored = vector_store.sync_from_sqlite(
+            mode="full", expected_dimension=target_dimension
+        )
+        result = {
+            **plan.summary(),
+            "removed_vectors": removed,
+            "restored_vectors": restored["upserted"],
+            "skipped_vectors": restored["skipped_dimension"],
+            **states,
+        }
+        logger.info("index_migration_completed owner=%s result=%s", owner, result)
+        return result
+    finally:
+        release_migration_lock()

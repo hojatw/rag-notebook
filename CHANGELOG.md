@@ -26,6 +26,15 @@
   `sync_from_sqlite()` 另加一層守衛：維度不符的分塊會被跳過而非寫入，並在回傳值
   多一個 `skipped_dimension` 計數與一筆 warning log。
 
+- **O0 Phase C — `/admin/index` 維度遷移流程**：管理員可直接在索引頁完成 embedding
+  維度遷移，不必停服務跑腳本。目標維度取自「設定」頁最近一次**成功**的 embedding
+  測試而非手動輸入——這樣那個數字一定是 endpoint 真的回傳過的；頁面先顯示 dry-run
+  預覽（可沿用／需重新索引／可復原各幾個、哪些檔名會被標記），要把目標維度打字回來
+  才能送出。有攝取工作正在執行時直接拒絕（它們仍在用舊模型），遷移期間持有一把鎖，
+  worker 的 `claim_next_job()` 會暫停認領，避免任何 upsert 落在 collection 刪除與
+  重建之間、把新集合又鎖回舊維度。鎖逾時會被視為 stale 回收，死掉的程序不會卡住佇列。
+  審計事件 `index_dimension_migrated` 記錄前後維度與各項數量。
+
 ### 修正
 
 - **`/admin/index` 不再把「清除／重建」當成更換 embedding 維度的方法**：原本空集合會顯示

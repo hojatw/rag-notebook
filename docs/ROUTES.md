@@ -67,6 +67,10 @@ GET  /admin/auth                                          auth mode display + SS
 GET  /admin/index                                         Chroma index health page (admin only)
 POST /admin/index/rebuild                                 full re-upsert of every SQLite chunk
 POST /admin/index/clear                                   delete every Chroma vector
+POST /admin/index/migrate                                 O0: replace the collection to change embedding dimension.
+                                                          Target comes from the last successful /settings embedding
+                                                          test, must be typed back to confirm, and is refused while
+                                                          an ingest job is running. Audited as index_dimension_migrated
 GET  /admin/evals                                         admin eval workbench: active profile, eval sets, run history
 GET  /admin/evals/help                                    in-product eval tuning guide for retrieval profiles
 POST /admin/evals/sets                                    create an eval set for an existing notebook

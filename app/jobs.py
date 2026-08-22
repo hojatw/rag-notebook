@@ -67,6 +67,17 @@ def claim_next_job() -> Optional[dict]:
     try:
         conn.isolation_level = None  # manual transaction control
         conn.execute("BEGIN IMMEDIATE")
+        # O0 write barrier: an embedding-dimension migration is replacing the
+        # Chroma collection. Claiming now would upsert between its delete and
+        # its recreate and rebuild it at the old dimension, silently undoing
+        # the migration. Idle here instead — the lock clears in seconds, and a
+        # lock left behind by a dead process expires on its own timeout.
+        from .index_migration import migration_lock_is_live
+
+        if migration_lock_is_live(conn, now):
+            conn.execute("ROLLBACK")
+            logger.info("ingest_claim_paused reason=index_migration_in_progress")
+            return None
         row = conn.execute(
             """
             SELECT id, source_id, attempts FROM ingest_jobs

@@ -459,6 +459,15 @@ def init_db() -> None:
         # new formats can add signals without a migration each time. Rewritten
         # on every (re)ingest, never appended to.
         _ensure_column(conn, "sources", "diagnostics_json", "TEXT NOT NULL DEFAULT '{}'")
+        # O0 Phase C: the migration write barrier. While `locked_at` is set the
+        # ingest worker refuses to claim jobs, so nothing can upsert between the
+        # collection's delete and its recreate — an upsert landing in that window
+        # rebuilds the collection at the OLD dimension and silently undoes the
+        # migration. `locked_by` is diagnostics only (which process holds it),
+        # never an authorization check. A lock older than the configured timeout
+        # is treated as stale and reclaimed, the same contract as briefing_locks.
+        _ensure_column(conn, "vector_index_state", "locked_at", "REAL")
+        _ensure_column(conn, "vector_index_state", "locked_by", "TEXT NOT NULL DEFAULT ''")
         # U16 Phase 2: what produced an outputs-shelf entry ('pinned', 'note', or
         # a Studio tool kind — allowlist NOTE_KINDS in app/main.py). Drives the
         # type badge and the shelf filter. '' means "not yet classified" and is
