@@ -1,15 +1,19 @@
 # O0 · 安全重設 Chroma collection 維度 — 實作計劃
 
-> **狀態**：**已完成**（Phase A–D 全數實作）。`ROADMAP.md` O0 已標記為 `[x]`，暫行警語已全數移除。本檔保留為設計紀錄與決策依據。
+> **已封存 2026-08-22。**（Phase A–D 全數實作，PR #81/#83/#86/#87/#88。）
+> 本檔保留為**設計紀錄**，不是待辦清單——尤其 §6 的收尾清單，那些項目**都已完成**，
+> 只是當初沒有回來打勾（已於封存時補上）。操作程序以 [`DEVELOPMENT.md`](../DEVELOPMENT.md)
+> → *Changing the embedding dimension* 為準。
+> **原狀態行**：`ROADMAP.md` O0 已標記為 `[x]`，暫行警語已全數移除。本檔保留為設計紀錄與決策依據。
 > **已裁決**：D1 = 有 running job 就拒絕遷移、D2 = 新增 `stale_embedding` 狀態、D3 = 流程放 `/admin/index`、D4 = 腳本保留為 break-glass。四項皆已實作，見 §2。
-> **權威來源**：範圍與驗收標準見 [`ROADMAP.md`](ROADMAP.md) O0；向量層行為見 [`RETRIEVAL.md`](RETRIEVAL.md)；schema 見 [`SCHEMA.md`](SCHEMA.md)；操作程序見 [`DEVELOPMENT.md`](DEVELOPMENT.md)。本檔是實作藍圖，設計決策以那些權威文件為準。
+> **權威來源**：範圍與驗收標準見 [`ROADMAP.md`](../ROADMAP.md) O0；向量層行為見 [`RETRIEVAL.md`](../RETRIEVAL.md)；schema 見 [`SCHEMA.md`](../SCHEMA.md)；操作程序見 [`DEVELOPMENT.md`](../DEVELOPMENT.md)。本檔是實作藍圖，設計決策以那些權威文件為準。
 > **前置已滿足**：`scripts/reset_chroma_dimension.py`（含分類邏輯與 5 個測試）已在 main；`/admin/index` 誤導文案已修正並有回歸測試。
 
 ---
 
 ## 1. 缺陷本質
 
-`clear_all_vectors()`（[`app/vector_store.py:272`](../app/vector_store.py)）只做 `col.delete(ids=...)`。Chroma 在第一次 upsert 時把維度寫進 collection schema，**刪光 records 不會刪掉 schema**，於是：
+`clear_all_vectors()`（[`app/vector_store.py:272`](../../app/vector_store.py)）只做 `col.delete(ids=...)`。Chroma 在第一次 upsert 時把維度寫進 collection schema，**刪光 records 不會刪掉 schema**，於是：
 
 1. collection 空了，但仍鎖在舊維度（例如 1024）。
 2. `probe_index_dimension()` 讀不到任何 stored embedding → 回報 `None`。
@@ -134,14 +138,14 @@ Phase A 單獨就能解掉 P0 的主要痛點（單機 inline worker 是目前�
 
 永久修法完成後，**依序**移除暫行警語，並確認彼此一致：
 
-- [ ] `/admin/index` 的「更換 embedding 維度」區塊：從「跑 script」改寫為產品流程說明。
-- [ ] 更新 `test_admin_index_page_warns_clear_does_not_reset_dimension` 的斷言（目前釘住 script 路徑字串）。
-- [ ] audit event：擴充既有的 `index_cleared`（已是 high sensitivity），新增 `index_dimension_migrated`，metadata 記 `{from_dimension, to_dimension, restored, marked_stale}`，不記任何向量內容。
-- [ ] 移除 `README.md` / `README.zh-TW.md` / `AGENTS.md` / `docs/RETRIEVAL.md` / `docs/DEVELOPMENT.md` 的 P0 警語。
-- [ ] `CHANGELOG.md`「已知問題」段落移除，改列入「修正」。
-- [ ] `docs/ROADMAP.md` O0 標記 `[x]`；`O1d` 移除「Do not direct admins to Clear/Rebuild until O0 is complete」的但書。
-- [ ] `scripts/reset_chroma_dimension.py` 文件標為 break-glass（D4）。
-- [ ] `docs/SCHEMA.md` 反映 `vector_index_state` 與 `stale_embedding` 狀態。
+- [x] `/admin/index` 的「更換 embedding 維度」區塊：從「跑 script」改寫為產品流程說明。
+- [x] 更新 `test_admin_index_page_warns_clear_does_not_reset_dimension` 的斷言（目前釘住 script 路徑字串）。
+- [x] audit event：擴充既有的 `index_cleared`（已是 high sensitivity），新增 `index_dimension_migrated`，metadata 記 `{from_dimension, to_dimension, restored, marked_stale}`，不記任何向量內容。
+- [x] 移除 `README.md` / `README.zh-TW.md` / `AGENTS.md` / `docs/RETRIEVAL.md` / `docs/DEVELOPMENT.md` 的 P0 警語。
+- [x] `CHANGELOG.md`「已知問題」段落移除，改列入「修正」。
+- [x] `docs/ROADMAP.md` O0 標記 `[x]`；`O1d` 移除「Do not direct admins to Clear/Rebuild until O0 is complete」的但書。
+- [x] `scripts/reset_chroma_dimension.py` 文件標為 break-glass（D4）。
+- [x] `docs/SCHEMA.md` 反映 `vector_index_state` 與 `stale_embedding` 狀態。
 
 ---
 

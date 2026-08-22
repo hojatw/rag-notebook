@@ -19,7 +19,21 @@ Treat it as a POC, not a production service. Keep changes scoped and behavior-pr
 - Read `docs/SPREADSHEET_INGESTION.md` before implementing XLSX/CSV ingestion or changing spreadsheet chunking assumptions.
 - Read `docs/UI.md` before adding or restyling any page or component — it is the front-end design contract (page archetypes, components, data presentation, interaction, voice). Align new UI to it.
 - Read `docs/I18N.md` before adding user-facing copy or changing language behavior — UI strings go through the `app/i18n.py` catalog (`t()` / `window.I18N`), never hardcoded. It covers adding strings/locales, switching the locale, and known exceptions.
+- Read `docs/DEPLOYMENT_CONTEXT.md` when a decision hinges on deployment realities — the fixed/borrowed serving side, user scale, corpus shape, or language mix. Most trade-offs recorded in `PERFORMANCE.md` / `QUALITY.md` / `ROADMAP.md` are derived from those facts; this is where they are written down.
+- Read `docs/RELEASE.md` before touching `VERSION`, `CHANGELOG.md`, or anything under `.github/`. The short version: feature PRs only append to CHANGELOG's `[未發布]` and must **not** bump `VERSION` — the bump is its own `chore(release)` PR.
 - Read `handover.md` when present for local cross-session work state. It is gitignored and may contain current priorities, but it is not a durable project rule source.
+
+### The rest of `docs/`, by purpose
+
+The list above is task-gated: load a file when your change touches its area. For orientation, the whole directory groups as follows.
+
+- **Contracts** (read before changing that area): `RETRIEVAL.md`, `SCHEMA.md`, `ROUTES.md`, `UI.md`, `I18N.md`, `SECURITY.md`, `AUTHENTICATION.md`, and `UX_REVIEW_GUIDE.md` (the durable rubric every UX review is judged by — its findings log is `UX_REVIEW.md`).
+- **Operating**: `DEVELOPMENT.md`, `SSO_DEPLOYMENT.zh-TW.md`, `RELEASE.md`.
+- **Grounding facts**: `DEPLOYMENT_CONTEXT.md`.
+- **Backlogs** (living, tick-off format): `ROADMAP.md`, `QUALITY.md`, `PERFORMANCE.md`. `REVIEW_BACKLOG_2026-08-22.md` is a **temporary** staging list from one review pass — its items dissolve into the three above as they land, and the file is deleted once empty.
+- **Design deep-dives**: `SPREADSHEET_INGESTION.md`, `PRODUCT_DESIGN_NOTES.md` (unscheduled product exploration, deliberately kept out of `ROADMAP.md` so the backlog stays scannable).
+- **Customer-facing**: `PRODUCT_WHITEPAPER.zh-TW.md`.
+- **Closed implementation plans**, kept as design records rather than instructions: `O0_DIMENSION_RESET_PLAN.md`, `E1E2_ANSWER_JUDGING_PLAN.md`. Both describe work that is **already done** — read them for *why* a design is shaped the way it is, never as a to-do list.
 
 ## Runtime And Dependencies
 
@@ -52,7 +66,15 @@ Run the smallest checks that match the change. For general Python changes, prefe
 ```bash
 .venv/bin/pytest
 .venv/bin/python -m py_compile app/*.py tests/*.py
+git diff --check
 ```
+
+For front-end changes, also smoke-test the affected page in a browser at **both**
+desktop and mobile widths — layout regressions in this app have repeatedly been
+width-specific and invisible in tests.
+
+CI runs the same `py_compile` + `pytest` pair on every PR, so a green local run is
+a green CI run; see [`docs/RELEASE.md`](docs/RELEASE.md).
 
 For retrieval changes, also run the eval harness when an LLM configuration is available:
 
@@ -92,7 +114,7 @@ For Docker/runtime changes, build the image and smoke-test at least `/` and `/lo
   dimension check. **Clear/Rebuild is not a dimension migration** — Chroma locks
   a collection's width on first write and deleting records does not release it;
   only replacing the collection does (`reset_collection()`). The migration flow
-  lives on `/admin/index` and is described in `docs/O0_DIMENSION_RESET_PLAN.md`.
+  lives on `/admin/index` and is described in `docs/archive/O0_DIMENSION_RESET_PLAN.md`.
   Read that before touching `clear_all_vectors`, `reset_collection`, the
   `vector_index_state` generation/lock, or startup sync's dimension guard.
 - Before changing query rewrite, hybrid retrieval, reranking, chunking, or scoring, read `docs/RETRIEVAL.md` and update eval expectations where appropriate.

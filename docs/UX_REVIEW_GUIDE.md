@@ -2,7 +2,7 @@
 
 The durable spec for **every** UX/UI review of this app, so each pass judges by
 the same directions and produces the same shaped report. The living findings log
-is [`UX_REVIEW.md`](UX_REVIEW.md); this file is the method behind it.
+is [`UX_REVIEW.md`](archive/2026-06-19-UX_REVIEW.md); this file is the method behind it.
 
 ## The six directions (judge every surface against these)
 

@@ -1,7 +1,14 @@
 # E1e-2 · 答案品質與引用判斷 — 實作計劃
 
-> **狀態**：已規劃、待實作（將由另一個 session 執行）。
-> **權威來源**：範圍見 [`ROADMAP.md`](ROADMAP.md) E1e-2；答案品質背景見 [`QUALITY.md`](QUALITY.md) Q1-5；eval 流程見 [`RETRIEVAL.md`](RETRIEVAL.md)「Evaluation」。本檔是實作藍圖，設計決策以那些權威文件為準。
+> **已封存 2026-08-22。這份計劃已經實作完成，不是待辦清單。**
+> E1e-2 於 PR #72 實作並 merge（`ROADMAP.md` 標 `[x]`，測試在 `tests/test_evals_judge.py`）。
+> 本檔保留為**設計紀錄**——讀它是為了理解「為什麼判分機制長這樣」，例如為何 judge 的
+> 標籤在缺少 reference answer 時要作廢、為何 groundedness 與 citation 不受影響。
+> 現況以 [`QUALITY.md`](../QUALITY.md) 與 [`ROADMAP.md`](../ROADMAP.md) 為準。
+>
+> *（封存前這裡寫的是「已規劃、待實作」——那在實作完成後就沒有更新過，會讓讀者
+> 以為這件事還沒做。）*
+> **權威來源**：範圍見 [`ROADMAP.md`](../ROADMAP.md) E1e-2；答案品質背景見 [`QUALITY.md`](../QUALITY.md) Q1-5；eval 流程見 [`RETRIEVAL.md`](../RETRIEVAL.md)「Evaluation」。本檔是實作藍圖，設計決策以那些權威文件為準。
 > **前置已滿足**：PR #70（企業 auth）已 merge 進 main；Eval Workbench E1a–f 已完成；`eval_items.expected_answer`（reference answer）欄位已存在。
 
 ---
@@ -21,9 +28,9 @@
 
 ## 3. 現狀與落點
 
-- 目前 `run_eval_job`（[`app/evals.py`](../app/evals.py) line ~270）**只做檢索**：每題 `retrieve()` → `eval_item_hit_rank()` → 存 `eval_results`（status/hit_rank/top_score/latency/retrieved_json）。
+- 目前 `run_eval_job`（[`app/evals.py`](../../app/evals.py) line ~270）**只做檢索**：每題 `retrieve()` → `eval_item_hit_rank()` → 存 `eval_results`（status/hit_rank/top_score/latency/retrieved_json）。
 - `run_metrics_from_results`（evals.py ~235）聚合 Recall/MRR 等到 `eval_runs.metrics_json`。
-- 可複用：`generate_answer()`（[`app/llm.py`](../app/llm.py) line ~924）。**無現成 judge 函式**（需新增）。
+- 可複用：`generate_answer()`（[`app/llm.py`](../../app/llm.py) line ~924）。**無現成 judge 函式**（需新增）。
 - abstain 邏輯在 `ask()`（不在 `retrieve()`）；eval 走 `retrieve()`，所以 abstain 需在 eval 內**自行複製決策**（見 §4）。
 - 既有欄位：`eval_items.expected_answer`、`expected_substrings_json`、`item_type`（answerable / cross_lingual / **unanswerable**）。
 
