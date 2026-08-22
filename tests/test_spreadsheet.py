@@ -191,3 +191,23 @@ def test_csv_big5_is_decoded_and_flagged(tmp_path):
     assert result.details["encoding"]["source"] == "detected"
     assert "csv_encoding_fallback" in result.notes
     assert "如何退貨？" in result.sections[0][1]     # decoded, not replacement chars
+
+
+def test_csv_gbk_is_decoded_not_mistaken_for_korean(tmp_path):
+    """GBK/GB18030 exports (zh-CN) must decode as Chinese, not cp949 mojibake.
+
+    charset-normalizer 3.4.9 scored this sample as cp949 (Korean) and returned
+    "櫓벌盧땡繫斤" — plausible-looking text, so nothing raised and the garbage
+    would have been chunked and embedded as though it were the document. 3.5.1
+    picks gb18030 correctly. Pinned because the failure mode is silent: a
+    customer sending a Simplified Chinese CSV would get an indexed source full
+    of Korean-looking noise and no error anywhere to explain it.
+    """
+    path = tmp_path / "gbk.csv"
+    path.write_bytes("问题,答案\n如何退货？,七天内可退货。\n".encode("gbk"))
+
+    result = extract_sections(path)
+
+    assert result.details["encoding"]["source"] == "detected"
+    assert "如何退货？" in result.sections[0][1]
+    assert "櫓" not in result.sections[0][1]
