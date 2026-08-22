@@ -14,6 +14,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("NOTEBOOKLM_SECRET", "test-secret-do-not-use-in-prod")
+# The suite runs with a real NOTEBOOKLM_SECRET, which since SEC-1 means the
+# production seeding path: only `admin`, with a forced password change. Almost
+# every test here predates that and signs in as the `user` demo account to
+# exercise ordinary (non-admin) behaviour, so opt this process back into the
+# demo pair explicitly. The seeding policy itself is covered by its own tests
+# (tests/test_security.py), which override this per test.
+os.environ.setdefault("NOTEBOOKLM_SEED_DEMO_USERS", "1")
 
 
 def local_embedding(text: str, dimensions: int = 384) -> list[float]:

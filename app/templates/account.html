@@ -9,9 +9,23 @@
   {% if saved %}<div class="notice">密碼已更新。</div>{% endif %}
   {% if theme_saved %}<div class="notice">{{ t("account.theme_saved") }}</div>{% endif %}
   {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+  {% if user.must_change_password %}
+  {# The .alert box is a flex row (accent bar + content), so a bare <strong>
+     would be blockified into its own narrow flex item and wrap mid-word.
+     Keep the title and body inside one wrapper so they share a single item. #}
+  <div class="alert" role="alert">
+    <div>
+      <strong>{{ t("account.force_change_title") }}</strong><br>
+      {{ t("account.force_change_body") }}
+    </div>
+  </div>
+  {% endif %}
 
   {# U11: appearance applies to every account, including SSO-managed ones,
-     so it sits outside the local-password branch below. #}
+     so it sits outside the local-password branch below.
+     SEC-1: hidden while a password change is being forced — require_login pins
+     such an account to this page, so /account/theme would only bounce back. #}
+  {% if not user.must_change_password %}
   <form method="post" action="/account/theme" class="settings-grid" data-loading-form>
     {{ csrf_input() }}
     <section class="settings-section">
@@ -33,6 +47,7 @@
       <button type="submit" data-loading-text="儲存中...">{{ t("account.theme_save") }}</button>
     </div>
   </form>
+  {% endif %}
 
   {% if external_identity_count %}
   <section class="settings-section">
@@ -62,7 +77,9 @@
     </section>
     <div class="settings-foot">
       <button type="submit" data-loading-text="儲存中...">更新密碼</button>
-      <a href="/notebooks" class="ghost">返回筆記本</a>
+      {# SEC-1: no escape hatch while the change is being forced — the link would
+         only redirect straight back here. #}
+      {% if not user.must_change_password %}<a href="/notebooks" class="ghost">返回筆記本</a>{% endif %}
     </div>
   </form>
   {% endif %}

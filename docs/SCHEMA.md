@@ -43,7 +43,15 @@ Every user-owned table carries `user_id` so authorization is enforced per-row at
 ---
 
 ## `users`
-Login accounts. Seeded with `admin` / `user` on first init.
+Login accounts.
+
+**Seeding depends on the environment** (`_seed_default_users` in `app/db.py`). With
+demo seeding enabled — `NOTEBOOKLM_SEED_DEMO_USERS=1`, or by default when running
+on the insecure dev secret — both `admin` and `user` are created with their
+advertised passwords. Otherwise **only `admin`** is created, carrying
+`must_change_password = 1`; `user` is not seeded at all, so deleting it survives a
+restart. `init_db()` runs on every start of both the web app and the worker, which
+is why that distinction matters.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -52,6 +60,7 @@ Login accounts. Seeded with `admin` / `user` on first init.
 | `password_hash` | TEXT NOT NULL | PBKDF2-SHA256 via `app/security.py` |
 | `is_admin` | INTEGER NOT NULL DEFAULT 0 | 1 = admin (can access `/settings`, `/admin/*`) |
 | `theme` | TEXT NOT NULL DEFAULT `'system'` | U11 colour theme: `system` \| `light` \| `dark`. Allowlist enforced at the route layer (`THEME_CHOICES` in `app/main.py`), not by a CHECK constraint. Rendered as `<html data-theme>`; `system` is resolved client-side against `prefers-color-scheme` |
+| `must_change_password` | INTEGER NOT NULL DEFAULT 0 | SEC-1. 1 = this account may reach only `/account`, `POST /account/password`, and `/logout` until it sets a new password (gate lives in `require_login`, so it covers the admin routers too). Set on the bootstrap `admin` seeded outside local development, and back-filled by `_flag_default_passwords` onto any account whose password still verifies against its seeded default — that back-fill is what neutralises databases created before this column existed. Only the two seeded usernames are examined (this is not a weak-password sweep), and **SSO-linked accounts are skipped**: `POST /account/password` refuses external identities, so flagging one would leave it with no way out. That case is logged instead. Cleared by a successful `POST /account/password`, which also writes a `bootstrap_password_changed` audit event |
 | `created_at` | TEXT | |
 
 ## `external_identities`
