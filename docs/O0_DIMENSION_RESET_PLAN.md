@@ -1,6 +1,6 @@
 # O0 · 安全重設 Chroma collection 維度 — 實作計劃
 
-> **狀態**：已規劃、待實作。暫行 workaround 已於 PR #81 merge 進 main（64a79e0）。
+> **狀態**：**Phase A 已實作**；Phase B–D 待排。暫行 workaround 已於 PR #81 merge 進 main（64a79e0）。
 > **權威來源**：範圍與驗收標準見 [`ROADMAP.md`](ROADMAP.md) O0；向量層行為見 [`RETRIEVAL.md`](RETRIEVAL.md)；schema 見 [`SCHEMA.md`](SCHEMA.md)；操作程序見 [`DEVELOPMENT.md`](DEVELOPMENT.md)。本檔是實作藍圖，設計決策以那些權威文件為準。
 > **前置已滿足**：`scripts/reset_chroma_dimension.py`（含分類邏輯與 5 個測試）已在 main；`/admin/index` 誤導文案已修正並有回歸測試。
 
@@ -59,12 +59,14 @@ def reset_collection() -> int:
 
 **新增單列表 `vector_index_state`**：
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | INTEGER **PK** CHECK(id = 1) | 單列 |
-| `generation` | INTEGER NOT NULL DEFAULT 0 | 每次 reset +1 |
-| `locked_at` | REAL NULL | 遷移進行中；NULL 表示未鎖 |
-| `locked_by` | TEXT | process 識別，僅供診斷 |
+| Column | Type | Phase | Notes |
+|---|---|---|---|
+| `id` | INTEGER **PK** CHECK(id = 1) | **A（已建）** | 單列 |
+| `generation` | INTEGER NOT NULL DEFAULT 0 | **A（已建）** | 每次 reset +1 |
+| `locked_at` | REAL NULL | C | 遷移進行中；NULL 表示未鎖 |
+| `locked_by` | TEXT | C | process 識別，僅供診斷 |
+
+> **實作偏離**：Phase A 只建了 `id` + `generation` 兩欄。`locked_at` / `locked_by` 要到 §3.3 的寫入屏障才有用途，先加是投機；`app/db.py` 的 `_ensure_column()` 讓之後補欄很便宜。`SCHEMA.md` 描述的是**已建**的兩欄，不是這張完整規劃表——兩者的差異就是尚未實作的部分。
 
 `collection()` 改為：讀 DB generation，與本 process 快取的值比對，不同就丟掉 handle 重新取得。
 
@@ -100,7 +102,7 @@ def reset_collection() -> int:
 
 | Phase | 內容 | 產出 | 相依 |
 |---|---|---|---|
-| **A** | `reset_collection()` + `vector_index_state` 表 + generation 檢查 | 單進程維度遷移可行；schema + `SCHEMA.md` | — |
+| **A ✓** | `reset_collection()` + `vector_index_state` 表 + generation 檢查 | **已實作。**單進程維度遷移可行；schema + `SCHEMA.md` 已同步。另釘了一條缺陷見證測試（clear 後 probe 回報 `None` 卻仍拒絕新維度），Chroma 若改掉這行為會失敗提醒。**未含寫入屏障**——`reset_collection()` 的 docstring 標明「呼叫端須確保無並行 ingest」，屏障隨 Phase C 的觸發流程落地。 | — |
 | **B** | 分類邏輯上提至 `app/`、`stale_embedding` 狀態、startup sync 防護 | 驗收標準 3；`SCHEMA.md`、`ROUTES.md` 視情況 | A |
 | **C** | `/admin/index` 遷移 UI（dry-run 預覽 → 打字確認 → 執行 → 自動 enqueue Reindex）+ audit event | 驗收標準 5 的產品面 | A, B |
 | **D** | split-worker 覆蓋、移除全部暫行警語、script 降級為 break-glass | 驗收標準 4；收尾 | A–C |
