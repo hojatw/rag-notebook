@@ -270,8 +270,14 @@ oversights:
 
 - group/role claims are evaluated at login time only — group changes in AD or
   the IdP take effect at the user's next login;
-- session cookies are signed but have no server-side revocation; disabling a
-  user at the IdP does not terminate an existing app session until it expires;
+- sessions are stateless signed cookies with **no session table**, so revocation
+  is limited to what the token can carry (SEC-3, 2026-08-22): an absolute
+  lifetime (`[auth].session_max_age_hours`, default 12) and a
+  `users.password_version` bump. **Neither helps for an SSO account disabled at
+  the IdP** — there is no local password to change, so the practical bound is the
+  session lifetime. Deleting the local user *is* immediate, because every request
+  re-reads the account. Note that before SEC-3 the phrase "until it expires" in
+  this list was misleading: the tokens did not expire at all;
 - no RP-initiated (IdP) logout — app logout clears the local session only.
 
 ## Implementation notes (repo conventions)

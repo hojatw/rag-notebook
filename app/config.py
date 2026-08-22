@@ -148,6 +148,12 @@ class UIConfig:
 @dataclasses.dataclass
 class AuthConfig:
     local_login_enabled: bool = True
+    # SEC-3: absolute session lifetime. Counted from when the session was issued
+    # and never extended by activity — a rolling window would keep a stolen
+    # cookie alive for as long as it kept being used, which is the case this
+    # exists to bound. 12 hours covers a working day without carrying a session
+    # overnight; raise it per deployment if re-login friction outweighs that.
+    session_max_age_hours: float = 12.0
     trusted_header_enabled: bool = False
     trusted_header_secret: str = ""
     trusted_header_secret_header: str = "X-NotebookLM-Auth-Secret"

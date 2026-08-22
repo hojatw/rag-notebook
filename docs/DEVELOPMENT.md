@@ -91,7 +91,16 @@ Copy [`config.example.toml`](../config.example.toml) to `config.toml` for local
 or deployment-specific overrides. Changing `[chunking]` — or the chunk-shaping
 values in `[spreadsheet]` (`rows_per_chunk_max`, `embed_token_budget`) — requires
 re-indexing existing sources. `[diagnostics]` thresholds only affect what the
-source preview *displays*, so they never require a re-index. ### File size caps
+source preview *displays*, so they never require a re-index. ### Session lifetime
+
+`[auth].session_max_age_hours` (default 12) is the **absolute** lifetime of a
+signed-in session, counted from login and **not extended by activity**. Raising it
+trades exposure for fewer re-logins; the effective value is printed in the
+`app_started` log line so it is visible per deployment. Changing a password (or an
+admin resetting one) revokes that account's other sessions immediately, regardless
+of this setting — see [`SECURITY.md`](SECURITY.md) → *Sessions*.
+
+### File size caps
 
 There are **two**, named for the pipeline stage that enforces them, because they
 protect different things:

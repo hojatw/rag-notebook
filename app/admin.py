@@ -464,8 +464,13 @@ def admin_reset_password(
             raise HTTPException(status_code=404, detail="User not found")
         if target["external_identity_count"]:
             raise HTTPException(status_code=400, detail=i18n.t("auth.password_reset_sso_blocked"))
+        # SEC-3: an admin reset must also end that user's live sessions —
+        # resetting a compromised account's password is pointless if whoever is
+        # already signed in stays signed in. Unlike a self-service change there
+        # is no session to re-issue: the target is signed out everywhere.
         result = conn.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
+            "UPDATE users SET password_hash = ?, password_version = password_version + 1"
+            " WHERE id = ?",
             (hash_password(new_password), target_id),
         )
         if result.rowcount == 0:
@@ -476,10 +481,13 @@ def admin_reset_password(
         "user_password_reset",
         "user",
         target_id,
-        {"target_username": target["username"]},
+        {"target_username": target["username"], "sessions_revoked": True},
         "high",
     )
-    logger.info("password_reset admin_user_id=%s target_user_id=%s", user["id"], target_id)
+    logger.info(
+        "password_reset admin_user_id=%s target_user_id=%s sessions_revoked=all",
+        user["id"], target_id,
+    )
     return RedirectResponse("/admin/users", status_code=303)
 
 

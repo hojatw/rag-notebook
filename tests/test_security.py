@@ -288,3 +288,71 @@ def test_sso_linked_accounts_are_never_flagged(monkeypatch, tmp_path):
         "flagging an SSO-linked account would lock it out: it may only change its "
         "password, and /account/password refuses external identities"
     )
+
+
+# --- SEC-3: sessions expire and can be revoked --------------------------------
+
+
+def test_session_token_carries_a_timestamp_and_expires(monkeypatch):
+    """The token itself expires, not just the cookie the browser holds.
+
+    A cookie `max_age` is only advice to a browser; anything that copies the
+    token *value* ignores it. Before SEC-3 the token was signed with a non-timed
+    serializer and carried no issue time at all, so a copied session value was
+    valid forever.
+
+    The clock is moved rather than the max_age lowered: itsdangerous compares
+    `age > max_age`, so a freshly minted token passes even `max_age=0` and a test
+    written that way would prove nothing.
+    """
+    import itsdangerous.timed
+
+    from app.security import sign_user_id, unsign_user_id
+
+    token = sign_user_id(7, SECRET, password_version=3)
+    assert unsign_user_id(token, SECRET, max_age_seconds=3600) == (7, 3)
+
+    real_time = itsdangerous.timed.time.time
+    monkeypatch.setattr(
+        itsdangerous.timed.time, "time", lambda: real_time() + 3601
+    )
+    assert unsign_user_id(token, SECRET, max_age_seconds=3600) is None
+
+
+def test_session_token_is_rejected_when_tampered_or_foreign():
+    from app.security import sign_user_id, unsign_user_id
+
+    token = sign_user_id(7, SECRET, password_version=1)
+    assert unsign_user_id(token, "a-different-secret", 3600) is None
+    assert unsign_user_id(token[:-3] + "aaa", SECRET, 3600) is None
+    assert unsign_user_id(None, SECRET, 3600) is None
+    assert unsign_user_id("", SECRET, 3600) is None
+
+
+def test_pre_sec3_tokens_are_refused():
+    """Tokens minted before SEC-3 have no timestamp — they must not still work.
+
+    Those are precisely the never-expiring cookies this change retires, so
+    accepting them for compatibility would defeat the point. Everyone is signed
+    out once on upgrade; that is the intended cost and is called out in
+    CHANGELOG's upgrade notes.
+    """
+    from itsdangerous import URLSafeSerializer
+
+    from app.security import unsign_user_id
+
+    legacy = URLSafeSerializer(SECRET, salt="notebooklm-rag-poc").dumps({"uid": 7})
+    assert unsign_user_id(legacy, SECRET, 3600) is None
+
+
+def test_password_version_defaults_to_one_for_old_tokens():
+    """A token without `pv` decodes as version 1, matching the column default.
+
+    Belt-and-braces: no such token can reach here today (the format change above
+    rejects them first), but the default keeps the contract explicit rather than
+    raising KeyError if the payload shape ever changes again.
+    """
+    from app.security import serializer, unsign_user_id
+
+    token = serializer(SECRET).dumps({"uid": 7})
+    assert unsign_user_id(token, SECRET, 3600) == (7, 1)

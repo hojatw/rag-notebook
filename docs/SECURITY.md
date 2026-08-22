@@ -44,9 +44,18 @@ Audit metadata is intentionally compact: store action identifiers, target ids, f
 
 A full review on **2026-08-22** surfaced a set of hardening items. They are triaged and tracked in `docs/REVIEW_BACKLOG_2026-08-22.md` with priorities and locations, and are folded back into this file as each lands.
 
-**Fixed:** `SEC-1` bootstrap accounts (above) and `SEC-2` upload size limits / multipart buffering (see the parser note below) — the two rated P0.
+**Fixed:** `SEC-1` bootstrap accounts (above), `SEC-2` upload size limits / multipart buffering (see the parser note below), and `SEC-3` session lifetime + revocation (below).
 
-**Still open:** **session tokens that never expire and cannot be revoked** (changing a password does not end other sessions — the highest-severity item remaining), **no login rate limiting**, **prompt-injection detection with English-only patterns** on a zh-TW deployment, and two low-severity hygiene items (a `SELECT *` that carries `password_hash` into the template context, and a raw exception string echoed to an admin).
+**Still open:** **no login rate limiting** (the highest-severity item remaining — `POST /login` has no throttle or lockout, and PBKDF2's 200k iterations make each attempt a costly one to serve), **prompt-injection detection with English-only patterns** on a zh-TW deployment, and two low-severity hygiene items (a `SELECT *` that carries `password_hash` into the template context, and a raw exception string echoed to an admin).
+
+### Sessions (SEC-3, 2026-08-22)
+
+Sessions are stateless signed cookies — there is no server-side session table — so both expiry and revocation have to be carried by the token itself.
+
+- **Absolute lifetime.** `[auth].session_max_age_hours` (default 12) is enforced on the **token**, not just the cookie: a `max_age` cookie attribute is only advice to a browser, and anything that copies the token value ignores it. The lifetime is counted from issue and is deliberately **not extended by activity** — a rolling window would keep a stolen cookie alive for as long as it kept being used, which is the case this bounds. The effective value is logged in `app_started`, so a deployment that sets it absurdly high cannot silently undo this.
+- **Revocation via `users.password_version`.** The token embeds the version it was issued under; `current_user` compares it against the column on every request. Every password change bumps it. Self-service changes re-issue the actor's cookie, so you sign out your *other* devices; an admin reset re-issues nothing, so the target is signed out everywhere and the audit event records `sessions_revoked`.
+- **Known limits, accepted for a POC:** there is still no "sign out all my devices" control that does not involve changing a password, no per-session listing, and no way to revoke one specific device. SSO logins issue local sessions and are covered by expiry, but the app does not consume IdP-side logout or token revocation — that limitation is recorded in [`AUTHENTICATION.md`](AUTHENTICATION.md).
+- **Upgrading:** pre-SEC-3 tokens carry no timestamp and fail validation, so **every user is signed out once** on deploy. That is intended — those are exactly the never-expiring cookies being retired.
 
 Keep treating the app as a POC and re-audit before any untrusted-network exposure.
 

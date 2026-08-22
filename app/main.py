@@ -190,8 +190,10 @@ async def lifespan(_app: FastAPI):
         worker_stop = asyncio.Event()
         worker_task = asyncio.create_task(run_worker_loop(stop_event=worker_stop))
     logger.info(
-        "app_started version=%s log_level=%s log_file=%s data_dir=%s inline_worker=%s",
+        "app_started version=%s log_level=%s log_file=%s data_dir=%s inline_worker=%s "
+        "session_max_age_h=%s",
         build_label(), LOG_LEVEL, LOG_FILE, os.environ.get("NOTEBOOKLM_DATA_DIR", "data"), INLINE_WORKER,
+        config.auth.session_max_age_hours,
     )
     try:
         yield
@@ -429,13 +431,28 @@ async def request_logger(request: Request, call_next):
 
 
 def current_user(request: Request) -> dict:
-    """Resolve the currently signed-in user from the session cookie."""
-    user_id = unsign_user_id(request.cookies.get("session"), SECRET)
-    if not user_id:
+    """Resolve the currently signed-in user from the session cookie.
+
+    Three things have to hold, not one: the token must be validly signed, it must
+    not be older than the configured lifetime (both enforced by
+    ``unsign_user_id``), and the ``password_version`` it was issued under must
+    still match the account's current one. That last check is the revocation
+    mechanism — bumping the column signs out every session except one that gets
+    re-issued afterwards.
+    """
+    decoded = unsign_user_id(request.cookies.get("session"), SECRET, SESSION_MAX_AGE_SECONDS)
+    if not decoded:
         raise HTTPException(status_code=401)
+    user_id, token_password_version = decoded
     with connect() as conn:
         user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if user is None:
+        raise HTTPException(status_code=401)
+    if int(user["password_version"]) != token_password_version:
+        logger.info(
+            "session_revoked user_id=%s reason=password_changed token_version=%s current_version=%s",
+            user_id, token_password_version, user["password_version"],
+        )
         raise HTTPException(status_code=401)
     return dict(user)
 
@@ -607,8 +624,8 @@ def healthz():
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     """Send signed-in users to the notebook grid; everyone else to login."""
-    user_id = unsign_user_id(request.cookies.get("session"), SECRET)
-    return RedirectResponse("/notebooks" if user_id else "/login", status_code=303)
+    signed_in = unsign_user_id(request.cookies.get("session"), SECRET, SESSION_MAX_AGE_SECONDS)
+    return RedirectResponse("/notebooks" if signed_in else "/login", status_code=303)
 
 
 @app.get("/sources")
@@ -808,10 +825,31 @@ def _external_auth_metadata(
     return metadata
 
 
-def _set_session_cookie(request: Request, response: Response, user_id: int) -> None:
+SESSION_MAX_AGE_SECONDS = int(config.auth.session_max_age_hours * 3600)
+
+
+def _password_version(conn, user_id: int) -> int:
+    row = conn.execute("SELECT password_version FROM users WHERE id = ?", (user_id,)).fetchone()
+    return int(row["password_version"]) if row else 1
+
+
+def _set_session_cookie(
+    request: Request, response: Response, user_id: int, password_version: int | None = None
+) -> None:
+    """Issue the session cookie for ``user_id``.
+
+    The token carries the account's ``password_version`` (SEC-3) so a later
+    password change can invalidate every *other* session, and `max_age` is set on
+    both the token and the cookie: the token is what the server enforces, the
+    cookie attribute just stops the browser sending one it already knows is dead.
+    """
+    if password_version is None:
+        with connect() as conn:
+            password_version = _password_version(conn, user_id)
     response.set_cookie(
         "session",
-        sign_user_id(user_id, SECRET),
+        sign_user_id(user_id, SECRET, password_version),
+        max_age=SESSION_MAX_AGE_SECONDS,
         httponly=True,
         samesite="lax",
         secure=request.url.scheme == "https",
@@ -3873,11 +3911,21 @@ def change_own_password(
         )
     was_forced = bool(user.get("must_change_password"))
     with connect() as conn:
+        # SEC-3: bumping password_version invalidates every session issued under
+        # the old password — including any established with a leaked or bootstrap
+        # credential. The actor's own session is restored below by re-issuing the
+        # cookie, so changing your password signs out your *other* devices, not
+        # the one you are sitting at.
         conn.execute(
-            "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
+            "UPDATE users SET password_hash = ?, must_change_password = 0,"
+            " password_version = password_version + 1 WHERE id = ?",
             (hash_password(new_password), user["id"]),
         )
-    logger.info("password_changed user_id=%s forced=%s", user["id"], was_forced)
+        new_version = _password_version(conn, user["id"])
+    logger.info(
+        "password_changed user_id=%s forced=%s password_version=%s sessions_revoked=others",
+        user["id"], was_forced, new_version,
+    )
     if was_forced:
         # The bootstrap credential is spent; the account-page pin from
         # require_login is lifted, so send them into the app rather than leaving
@@ -3891,12 +3939,16 @@ def change_own_password(
             {"username": user["username"]},
             "high",
         )
-        return RedirectResponse("/notebooks", status_code=303)
-    return render(
+        redirect = RedirectResponse("/notebooks", status_code=303)
+        _set_session_cookie(request, redirect, user["id"], new_version)
+        return redirect
+    response = render(
         request,
         "account.html",
         _account_context({**user, "must_change_password": 0}, saved=True),
     )
+    _set_session_cookie(request, response, user["id"], new_version)
+    return response
 
 
 # Mounted last so the shared helpers above (render, require_admin,
