@@ -172,22 +172,44 @@ data/                  SQLite metadata, uploads, and Chroma index.
 logs/app.log           Rotating app log.
 ```
 
-## Temporary workaround: embedding dimension migration (P0)
+## Changing the embedding dimension
 
-The current `/admin/index` Clear action removes vector records but does **not**
-replace the Chroma collection schema. An empty collection may therefore remain
-locked to the previous embedding dimension. This is tracked as critical-priority
-`ROADMAP.md` O0; Clear/Rebuild is not a safe dimension-migration procedure until
-the permanent fix lands.
+Chroma locks a collection's vector width on the first upsert, and deleting every
+record does **not** release it — only replacing the collection object does. So
+moving to an embedding model of a different dimension is its own flow, never
+Clear/Rebuild.
 
-Use `scripts/reset_chroma_dimension.py` only when `/settings` diagnostics or the
-provider response has confirmed the new target dimension. Dry-run is the
-default. Apply mode requires every web app and ingest worker using the same
-`data/` directory to be stopped. This tool does not migrate between two models
-or prefixes that happen to return the same dimension; those changes require a
-normal source Reindex so the stored embeddings are regenerated.
+**In the app (the normal path):**
 
-Local/venv dry-run and apply (replace `1536` with the confirmed target):
+1. `/settings` → **Test embedding model** against the new model. The migration
+   reads its target width from that stored result, so it is always a number the
+   endpoint actually returned rather than one typed into a form.
+2. `/admin/index` → **更換 embedding 維度**. The page previews what would happen:
+   how many sources keep their vectors, how many need re-embedding, and which
+   filenames are affected.
+3. Type the target dimension to confirm, then run it.
+4. Reindex the sources it listed. That is the only step that costs embedding
+   calls; the migration itself makes none.
+
+The migration replaces the `rag_chunks` collection, restores the vectors already
+at the target width, moves the rest to the `stale_embedding` status (excluded
+from search and from startup sync, recovered by Reindex), and holds a lock that
+pauses the ingest queue until it finishes. SQLite, uploads, notebooks, messages,
+and notes are untouched throughout.
+
+It refuses to start while an ingest job is **running** — that job is mid-flight
+with the old model. Queued jobs are fine; they run afterwards against the new
+one. It also cannot re-embed for you: two models that both return, say, 1536
+dimensions are indistinguishable to a width check, so switching between them (or
+changing an embedding prefix) needs a plain source Reindex instead.
+
+**Break-glass: `scripts/reset_chroma_dimension.py`**
+
+Use this only when the app will not start and `/admin/index` is unreachable. It
+does the same job from outside the app: dry-run by default, `--apply` requires
+`--services-stopped`, and it backs up SQLite + Chroma to
+`data/backups/chroma-dimension-reset-*.tar.gz` before touching anything. Every
+web and worker process sharing the `data/` directory must be stopped first.
 
 ```bash
 .venv/bin/python scripts/reset_chroma_dimension.py --target-dimension 1536
@@ -199,38 +221,23 @@ Docker Compose:
 
 ```bash
 docker compose stop worker app
-docker compose run --rm --no-deps \
-  -v ./scripts:/app/scripts:ro \
+docker compose run --rm --no-deps -v ./scripts:/app/scripts:ro \
   app python scripts/reset_chroma_dimension.py \
   --data-dir /app/data --target-dimension 1536
-docker compose run --rm --no-deps \
-  -v ./scripts:/app/scripts:ro \
+docker compose run --rm --no-deps -v ./scripts:/app/scripts:ro \
   app python scripts/reset_chroma_dimension.py \
-  --data-dir /app/data --target-dimension 1536 \
-  --apply --services-stopped
+  --data-dir /app/data --target-dimension 1536 --apply --services-stopped
 docker compose up -d
 ```
 
-The apply run:
-
-- writes `data/backups/chroma-dimension-reset-*.tar.gz` before mutation;
-- deletes/recreates only the `rag_chunks` Chroma collection;
-- preserves SQLite, uploads, notebooks, messages, notes, and source files;
-- restores indexed target-dimension chunks and target-dimension chunks left by
-  this exact Chroma mismatch failure;
-- changes old/mixed/unknown-dimension `indexed` sources to `failed` so startup
-  sync cannot silently re-lock the collection, and lists them for Reindex;
-- leaves unrelated failed/uploaded/processing sources unchanged.
-
-After restart, verify `/admin/index`, then Reindex every source listed by the
-tool. Keep the backup until retrieval and at least one fresh Reindex succeed.
-The script does not call the embedding endpoint itself, so dry-run and recovery
-of reusable vectors have no model cost; subsequent Reindex calls do.
+Keep the backup until retrieval and at least one fresh Reindex succeed. The
+script marks affected sources `failed` rather than `stale_embedding`, so after
+recovering this way, Reindex the sources it names.
 
 ## Persistence Safety
 
 Do not commit runtime state under `data/` or `logs/`, and do not commit `.env`
 or real secrets. For same-dimension vector drift, prefer the `/admin/index`
 Clear/Rebuild flows over manual filesystem edits. For an embedding-dimension
-change, the current Clear action is unsafe; use the stopped-service O0
-workaround above until the permanent fix lands.
+change use the migration flow above — Clear does not release the collection's
+locked width.

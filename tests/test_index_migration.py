@@ -370,3 +370,104 @@ def test_run_migration_releases_the_lock_when_it_fails(fresh_modules, monkeypatc
         im.run_migration(1536)
 
     assert im.migration_lock_state()["locked"] is False
+
+
+# -------------------- split-worker operating model (O0 criterion 4) --------------------
+
+def _second_process_vector_store():
+    """Load an independent copy of app.vector_store, standing in for the worker.
+
+    A standalone ``python -m app.worker`` has its own ``_client`` /
+    ``_collection`` / ``_collection_generation`` globals while sharing the same
+    SQLite file and Chroma directory. Executing the module a second time
+    reproduces exactly that: separate module state, shared on-disk state. (Its
+    ``from . import db`` still resolves to the one already-imported ``app.db``,
+    so both halves agree on the data dir — same as two real processes reading
+    the same ``NOTEBOOKLM_DATA_DIR``.)
+    """
+    import importlib.util
+
+    spec = importlib.util.find_spec("app.vector_store")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_split_worker_does_not_write_through_a_handle_from_before_the_migration(fresh_modules):
+    """O0 criterion 4, split-worker model: 384 → migrate → 1536 across processes.
+
+    The web process migrates while the worker process is holding a collection
+    handle it fetched earlier. Without the generation counter the worker would
+    keep upserting into the deleted collection — the failure the single-process
+    tests cannot reproduce.
+    """
+    import app.index_migration as im
+
+    db, web = fresh_modules.db, fresh_modules.vector_store
+    worker = _second_process_vector_store()
+
+    _seed_source(db, filename="old.txt", status="indexed", dimension=384, chunks=2)
+    web.sync_from_sqlite(mode="full")
+    stale_handle = worker.collection()                 # worker warms its cache at 384
+    assert worker.probe_index_dimension()["dimension"] == 384
+
+    im.run_migration(1536)                             # web process migrates
+
+    # The worker must notice and re-fetch before its next write.
+    assert worker.collection() is not stale_handle
+    worker.upsert_chunks([{
+        "id": 501, "user_id": 1, "source_id": 1, "chunk_index": 0,
+        "filename": "new.txt", "location": "p1", "text": "new", "embedding": [0.1] * 1536,
+    }])
+
+    # Both halves agree on the migrated index.
+    assert worker.probe_index_dimension()["dimension"] == 1536
+    assert web.probe_index_dimension()["dimension"] == 1536
+    assert web.collection().count() == 1
+
+
+def test_split_worker_and_web_share_one_generation_counter(fresh_modules):
+    """Either process resetting invalidates the other — the barrier is symmetric."""
+    db, web = fresh_modules.db, fresh_modules.vector_store
+    worker = _second_process_vector_store()
+
+    _seed_source(db, filename="a.txt", status="indexed", dimension=384, chunks=1)
+    web.sync_from_sqlite(mode="full")
+    web_handle, worker_handle = web.collection(), worker.collection()
+    assert web.index_generation() == worker.index_generation()
+
+    worker.reset_collection()                          # this time the *worker* resets
+
+    assert web.index_generation() == worker.index_generation()
+    assert web.collection() is not web_handle          # the web process refreshes too
+    assert worker.collection() is not worker_handle
+
+
+def test_inline_worker_model_migrates_end_to_end(fresh_modules):
+    """O0 criterion 4, inline-worker model: one process, ingest re-runs after.
+
+    The default single-machine deployment. After the migration the queued
+    source re-ingests through the normal path and lands at the new width.
+    """
+    import app.index_migration as im
+    import app.jobs as jobs
+
+    db, vs = fresh_modules.db, fresh_modules.vector_store
+    old = _seed_source(db, filename="old.txt", status="indexed", dimension=384, chunks=2)
+    vs.sync_from_sqlite(mode="full")
+    assert vs.probe_index_dimension()["dimension"] == 384
+
+    im.run_migration(1536)
+
+    assert _status_of(db, old)["status"] == im.STALE_STATUS
+    assert vs.probe_index_dimension()["dimension"] is None   # empty, and unlocked
+
+    # Reindex is the recovery path: the queue is claimable again and the
+    # re-ingested source writes at the new width.
+    jobs.enqueue_source(old)
+    assert jobs.claim_next_job() is not None
+    vs.upsert_chunks([{
+        "id": 601, "user_id": 1, "source_id": old, "chunk_index": 0,
+        "filename": "old.txt", "location": "p1", "text": "re-embedded", "embedding": [0.1] * 1536,
+    }])
+    assert vs.probe_index_dimension()["dimension"] == 1536

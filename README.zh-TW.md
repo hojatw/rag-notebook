@@ -61,12 +61,11 @@ OpenAI-compatible 或 Azure OpenAI endpoint。Embedding model 尚未設定前，
 儲存時，app 會 probe embedding endpoint 一次，並拒絕和既有 Chroma index 維度不符的設定。API key 會使用以
 `NOTEBOOKLM_SECRET` 為基礎的 Fernet 靜態加密。
 
-> **已知 P0 缺陷 — embedding 維度變更：**`/admin/index` 的 **Clear** 目前只刪除
-> vector records，不會重設 Chroma collection 已鎖定的維度，因此只做 Clear/Rebuild
-> 仍可能得到 `Collection expecting embedding with dimension of X, got Y`。在 O0 永久修正
-> 完成前，請停止所有 app/worker processes，依
-> [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#temporary-workaround-embedding-dimension-migration-p0)
-> 使用 [`scripts/reset_chroma_dimension.py`](scripts/reset_chroma_dimension.py)。
+**換到維度不同的 embedding 模型**有自己的流程，不是 Clear/Rebuild：Chroma 在第一次
+寫入時鎖定集合維度，刪掉 records 並不會解除。先在 `/settings` 執行「測試 embedding
+模型」，再到 `/admin/index` 使用**更換 embedding 維度** — 它會換掉整個集合、保留已是
+目標維度的向量，其餘標記為待重新索引。詳見
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#changing-the-embedding-dimension)。
 
 OpenAI-compatible 範例：
 

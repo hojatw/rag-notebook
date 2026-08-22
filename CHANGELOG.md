@@ -11,11 +11,12 @@
 
 ### 新增
 
-- **Chroma embedding 維度重設 workaround（P0 暫行工具）**：新增
-  `scripts/reset_chroma_dimension.py`。工具預設 dry-run，只有同時指定 `--apply` 與
-  `--services-stopped` 才會變更資料；執行前自動備份 SQLite + Chroma，重建 collection，
-  回填可安全沿用的目標維度 vectors，並把仍是舊維度的 indexed 來源改為待 Reindex。
-  Docker 與本機操作步驟見 `docs/DEVELOPMENT.md`。
+- **`scripts/reset_chroma_dimension.py`（break-glass 維度遷移工具）**：在 app 起不來、
+  進不了 `/admin/index` 時，從應用程式外部完成維度遷移。預設 dry-run，只有同時指定
+  `--apply` 與 `--services-stopped` 才會變更資料；執行前自動備份 SQLite + Chroma，重建
+  collection，回填可安全沿用的目標維度 vectors，並把仍是舊維度的 indexed 來源標記為待
+  Reindex。**一般情況請用 `/admin/index` 的遷移流程**（見下方 O0 修正）。Docker 與本機
+  操作步驟見 `docs/DEVELOPMENT.md`。
 
 - **O0 Phase B — `stale_embedding` 來源狀態與 startup sync 維度守衛**：新增
   `app/index_migration.py`，依照既有向量的維度把來源分類（可沿用／只因鎖定而失敗
@@ -34,6 +35,16 @@
   worker 的 `claim_next_job()` 會暫停認領，避免任何 upsert 落在 collection 刪除與
   重建之間、把新集合又鎖回舊維度。鎖逾時會被視為 stale 回收，死掉的程序不會卡住佇列。
   審計事件 `index_dimension_migrated` 記錄前後維度與各項數量。
+
+- **P0 修正完成 — `/admin/index` Clear 不再是維度遷移的死路（O0）**：原本 Clear 只執行
+  `collection.delete(ids=...)`，即使 vector count 歸零，collection schema 仍鎖在舊維度；
+  設定頁看不到任何 stored embedding 會誤判為未鎖定，直到新維度第一次 upsert 才以
+  `Collection expecting embedding with dimension of X, got Y` 失敗，且反覆 Clear/Rebuild
+  無法修復。現在有完整的遷移路徑：`reset_collection()` 真正換掉 collection 物件、
+  `vector_index_state.generation` 讓其他 process 的快取 handle 失效、遷移期間持鎖暫停
+  ingest 佇列、startup sync 拒絕寫入維度不符的分塊、維度不符的來源進入 `stale_embedding`
+  等待重新索引。`scripts/reset_chroma_dimension.py` 保留為 break-glass（app 起不來時用）。
+  涵蓋 inline worker 與 split worker 兩種部署形態的回歸測試。
 
 ### 修正
 
@@ -81,14 +92,6 @@
 - 決策紀錄：`P2-1`（SQLite 向量複本）裁定維持現狀並寫下重啟條件；
   `Q1-1`（RRF）記為排序決策並列出重新校準的前置條件。
   詳見 `docs/PERFORMANCE.md`、`docs/QUALITY.md`。
-
-### 已知問題
-
-- **P0 — `/admin/index` Clear 不會重設 Chroma collection 維度：**現行實作只執行
-  `collection.delete(ids=...)`；即使 vector count 已是 0，collection schema 仍可能鎖在
-  舊維度。設定頁因看不到任何 stored embedding 會誤判為未鎖定，新維度第一次 upsert
-  才以 `Collection expecting embedding with dimension of X, got Y` 失敗。永久修正與
-  multi-process cache/worker 協調列為 `ROADMAP.md` O0；修正完成前使用上述 workaround。
 
 ## [0.2.0] - 2026-07-25
 
