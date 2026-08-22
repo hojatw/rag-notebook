@@ -8,12 +8,17 @@
 
 **基準線**：review 當下 `main @ 6b1c0d0`（VERSION 0.3.0），`pytest` **288 passed**。
 
-**進度**：**文件批（DOC-1~15）全數完成**，P0 兩項（`SEC-1`、`SEC-2`）與 `PERF-1` 亦已完成，
-全部溶解進權威 backlog。
+**進度**：**文件批（DOC-1~15）全數完成**；安全性 `SEC-1`~`SEC-3` 與 LLM 相容性
+`LLM-1`~`LLM-3` 亦已完成，`PERF-1` 同時解決。全部溶解進權威 backlog。
 
-**仍待排（15 項）**：`SEC-3`~`SEC-8`、`PERF-2`、`PERF-3`、`QLT-1`、`LLM-1`~`LLM-5`、
-`MNT-1`、`MNT-2`。其中 `SEC-3` 是目前最高風險——它同時是 `SEC-1` 的驗收缺口：
-以初始密碼建立的 session **在強制變更密碼之後仍然有效**（已實測）。
+**仍待排（12 項，全為 P2/P3）**：`SEC-4`~`SEC-8`、`PERF-2`、`PERF-3`、`QLT-1`、
+`LLM-4`、`LLM-5`、`MNT-1`、`MNT-2`。**沒有一項是上線前必須**。
+
+其中兩項的順序建議：
+- **`LLM-4`（`estimate_tokens` 中文低估 4 倍）先做** —— 它很小，而且 `LLM-3` 的
+  上限值要改用實測數字時會依賴它修好（`is_estimated=1` 的資料不可用）。
+- **`QLT-1`（關鍵字先截斷後評分）需要 `Q1-3` 代表性 eval set** —— 修法直覺正確，
+  但它改變檢索行為，沒有尺可以量之前不建議動。
 
 每項完成後請照上面的規則打勾並註明 durable 紀錄的位置；全部清空後刪除本檔。
 
@@ -61,7 +66,8 @@
   (b) route 內邊寫邊計數，超過 `max_source_bytes` 即中止並刪檔；(c) 反向代理設 body size 上限。
 - **一起做**：PERF-1（同一個函式）。
 
-### [ ] SEC-3 · P1 · session token 無時效、無法撤銷
+### [x] SEC-3 · P1 · session token 無時效、無法撤銷
+> **已完成** — PR #95 — token 改用帶時間戳的簽章器 + `[auth].session_max_age_hours`（絕對壽命，不因使用延長）；撤銷靠新的 `users.password_version`。durable 紀錄見 [`SECURITY.md`](SECURITY.md) → *Sessions*。
 - **位置**：[`app/security.py:108`](../app/security.py) `sign_user_id()`、
   [`app/main.py:684`](../app/main.py) `_set_session_cookie()`。
 - **問題**：用 `URLSafeSerializer`（非 `URLSafeTimedSerializer`），payload 只有 `{"uid": id}`，
@@ -147,14 +153,16 @@ effort 值域隨版本變動）；Anthropic Claude 4.7+ `temperature` 已 deprec
 開源／vLLM（本專案目前部署的 Gemma）**不受影響**。
 業界無標準的參數能力查詢 API（`openai-python` issue #3073 至今 open）。
 
-### [ ] LLM-1 · P1 · HTTP 400「不支援的參數」無法診斷
+### [x] LLM-1 · P1 · HTTP 400「不支援的參數」無法診斷
+> **已完成** — PR #96 — 400 + 指名參數的錯誤改為專屬訊息，指引到設定頁重新測試。
 - **位置**：[`app/main.py:367`](../app/main.py) `friendly_error_message()`。
 - **問題**：400 在 [`app/llm.py:303`](../app/llm.py) 被歸為不可重試的 4xx，
   然後 `friendly_error_message` 對非 401/429/5xx 一律回 `error.generic_check`。
   admin 只會看到「請檢查設定」，看不到「這個模型不吃 temperature」。
 - **修法**：加一條 400 + `unsupported`/`invalid parameter` 的專屬訊息。約 10 行。
 
-### [ ] LLM-2 · P1 · `build_chat_request` 無條件送 `temperature`
+### [x] LLM-2 · P1 · `build_chat_request` 無條件送 `temperature`
+> **已完成** — PR #96 — `/settings` 測試連線時**實測**模型接受哪些參數並記住，`build_chat_request` 依結果決定是否送 `temperature`、用 `max_tokens` 還是 `max_completion_tokens`。
 - **位置**：[`app/llm.py:2220`](../app/llm.py)。
 - **問題**：payload 永遠帶 `temperature`，無 provider/model 判斷。
   若部署選 `azure_openai` + GPT-5.x（effort ≠ none），**每一次 chat 呼叫都會 400**——
@@ -168,7 +176,8 @@ effort 值域隨版本變動）；Anthropic Claude 4.7+ `temperature` 已 deprec
   3. `build_chat_request` 依探測結果決定是否送 `temperature`。
 - **落點**：`ROADMAP.md` `O1`「admin capability probes」已預留此位置。
 
-### [ ] LLM-3 · P1 · chat 請求完全不送 `max_tokens`
+### [x] LLM-3 · P1 · chat 請求完全不送 `max_tokens`
+> **已完成** — PR #96 — 新增 `[max_tokens]` 依 `call_type` 給輸出上限；調參說明見 [`DEVELOPMENT.md`](DEVELOPMENT.md) → *LLM output caps*。
 - **位置**：[`app/llm.py:2220`](../app/llm.py)。
 - **問題**：無輸出上限。在借來的共用 endpoint 上，一次失控的長輸出會長時間佔住 GPU。
 - **已裁決**：與 LLM-2 一起做（動到同一段 payload 組裝）。值放 `app/config.py` 新增群組，
