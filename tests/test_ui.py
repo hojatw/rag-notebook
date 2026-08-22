@@ -3551,3 +3551,147 @@ def test_oversized_spreadsheet_is_refused_at_upload_not_in_the_worker(monkeypatc
         with db.connect() as conn:
             rows = conn.execute("SELECT filename FROM sources").fetchall()
         assert [r["filename"] for r in rows] == ["ok.pdf"]
+
+
+# --- SEC-3: password changes revoke other sessions, sessions expire -----------
+
+
+def _settled_admin(main, tmp_path):
+    """Get past SEC-1's forced bootstrap change so the account is in normal state."""
+    client = TestClient(main.app)
+    client.__enter__()
+    _login(client)
+    token = client.cookies.get("csrf_token")
+    client.post(
+        "/account/password",
+        data={
+            "current_password": "admin123",
+            "new_password": "password-one",
+            "confirm_password": "password-one",
+            "csrf_token": token,
+        },
+        follow_redirects=False,
+    )
+    return client
+
+
+def test_changing_a_password_revokes_other_sessions_but_not_your_own(monkeypatch, tmp_path):
+    """The SEC-1 acceptance gap this closes.
+
+    SEC-1 spends the bootstrap credential for *login*, but a session established
+    with it used to survive the forced change untouched — so anyone who had
+    already signed in with `admin123` stayed signed in. Bumping
+    `users.password_version` and comparing it per request fixes that, and
+    re-issuing the actor's cookie keeps them from logging themselves out.
+    """
+    monkeypatch.setenv("NOTEBOOKLM_SEED_DEMO_USERS", "0")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    laptop = _settled_admin(main, tmp_path)
+    try:
+        copied = laptop.cookies.get("session")
+        phone = TestClient(main.app)
+        phone.cookies.set("session", copied)
+        assert phone.get("/notebooks", follow_redirects=False).status_code == 200
+
+        token = laptop.cookies.get("csrf_token")
+        changed = laptop.post(
+            "/account/password",
+            data={
+                "current_password": "password-one",
+                "new_password": "password-two",
+                "confirm_password": "password-two",
+                "csrf_token": token,
+            },
+            follow_redirects=False,
+        )
+        assert changed.status_code == 200
+
+        stale = TestClient(main.app)
+        stale.cookies.set("session", copied)
+        assert stale.get("/notebooks", follow_redirects=False).status_code == 303, (
+            "the session issued under the old password must be revoked"
+        )
+        assert laptop.get("/notebooks", follow_redirects=False).status_code == 200, (
+            "the session that performed the change must be re-issued, not dropped"
+        )
+
+        with db.connect() as conn:
+            version = conn.execute(
+                "SELECT password_version FROM users WHERE username = 'admin'"
+            ).fetchone()["password_version"]
+        assert version == 3  # 1 seeded, +1 forced change, +1 this change
+    finally:
+        laptop.__exit__(None, None, None)
+
+
+def test_admin_reset_signs_the_target_out_everywhere(monkeypatch, tmp_path):
+    """Resetting a compromised account is pointless if the intruder stays in.
+
+    Unlike a self-service change there is no session to preserve — the target is
+    signed out on every device, and the audit event records that.
+    """
+    monkeypatch.setenv("NOTEBOOKLM_SEED_DEMO_USERS", "0")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    admin = _settled_admin(main, tmp_path)
+    try:
+        admin.post(
+            "/admin/users/new",
+            data={"username": "victim", "password": "victim-password"},
+            follow_redirects=False,
+        )
+        victim = TestClient(main.app)
+        victim.get("/login")
+        victim.post(
+            "/login",
+            data={
+                "username": "victim",
+                "password": "victim-password",
+                "csrf_token": victim.cookies.get("csrf_token"),
+            },
+            follow_redirects=False,
+        )
+        assert victim.get("/notebooks", follow_redirects=False).status_code == 200
+
+        with db.connect() as conn:
+            target_id = conn.execute(
+                "SELECT id FROM users WHERE username = 'victim'"
+            ).fetchone()["id"]
+        admin.post(
+            f"/admin/users/{target_id}/reset-password",
+            data={"new_password": "reset-by-admin"},
+            follow_redirects=False,
+        )
+
+        assert victim.get("/notebooks", follow_redirects=False).status_code == 303
+        with db.connect() as conn:
+            audit = conn.execute(
+                "SELECT action, metadata_json FROM audit_events"
+                " WHERE action = 'user_password_reset' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert '"sessions_revoked": true' in audit["metadata_json"].lower()
+    finally:
+        admin.__exit__(None, None, None)
+
+
+def test_an_expired_session_is_refused(monkeypatch, tmp_path):
+    """Past the configured lifetime the token stops working, clock-based."""
+    import itsdangerous.timed
+
+    monkeypatch.setenv("NOTEBOOKLM_SEED_DEMO_USERS", "0")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    client = _settled_admin(main, tmp_path)
+    try:
+        assert client.get("/notebooks", follow_redirects=False).status_code == 200
+
+        real_time = itsdangerous.timed.time.time
+        monkeypatch.setattr(
+            itsdangerous.timed.time,
+            "time",
+            lambda: real_time() + main.SESSION_MAX_AGE_SECONDS + 60,
+        )
+        assert client.get("/notebooks", follow_redirects=False).status_code == 303
+    finally:
+        client.__exit__(None, None, None)

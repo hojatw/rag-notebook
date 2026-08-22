@@ -474,6 +474,13 @@ def init_db() -> None:
         # back-filled by `_flag_default_passwords` onto any account still using a
         # seeded default. Defaults to 0 so every existing account is unaffected.
         _ensure_column(conn, "users", "must_change_password", "INTEGER NOT NULL DEFAULT 0")
+        # SEC-3: bumped on every password change (self-service, forced bootstrap
+        # change, or an admin reset). Session cookies embed the version they were
+        # issued under, so a bump invalidates every session for that account
+        # except the one that is re-issued to the actor. This is what makes
+        # "changing a password signs the other sessions out" work without a
+        # server-side session table.
+        _ensure_column(conn, "users", "password_version", "INTEGER NOT NULL DEFAULT 1")
         # A6a: what the extractor actually produced for this source — counts,
         # the extractor path taken, warnings, and a bounded text preview. One
         # JSON blob (same pattern as llm_settings.diagnostics_json from O1a) so

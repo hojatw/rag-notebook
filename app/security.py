@@ -6,7 +6,7 @@ import secrets
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from itsdangerous import BadSignature, URLSafeSerializer
+from itsdangerous import BadSignature, SignatureExpired, URLSafeSerializer, URLSafeTimedSerializer
 
 
 # Fernet ciphertext begins with "gAAAAA" (b"\x80\x00...") so we can detect
@@ -97,9 +97,15 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
-def serializer(secret: str) -> URLSafeSerializer:
-    """Create the signed-cookie serializer for the given application secret."""
-    return URLSafeSerializer(secret, salt="notebooklm-rag-poc")
+def serializer(secret: str) -> URLSafeTimedSerializer:
+    """Create the signed-cookie serializer for the given application secret.
+
+    **Timed** (SEC-3): the token embeds the moment it was issued, so
+    :func:`unsign_user_id` can refuse one that is older than the configured
+    session lifetime. Before this the session token was signed but carried no
+    time at all — a copied cookie stayed valid forever.
+    """
+    return URLSafeTimedSerializer(secret, salt="notebooklm-rag-poc")
 
 
 def csrf_serializer(secret: str) -> URLSafeSerializer:
@@ -107,19 +113,38 @@ def csrf_serializer(secret: str) -> URLSafeSerializer:
     return URLSafeSerializer(secret, salt="notebooklm-rag-poc.csrf")
 
 
-def sign_user_id(user_id: int, secret: str) -> str:
-    """Encode a user id into a tamper-resistant session cookie value."""
-    return serializer(secret).dumps({"uid": user_id})
+def sign_user_id(user_id: int, secret: str, password_version: int = 1) -> str:
+    """Encode a user id into a tamper-resistant, time-stamped session cookie value.
+
+    ``password_version`` is the caller's ``users.password_version`` at the moment
+    the session was issued. :func:`unsign_user_id` returns it so the request path
+    can compare it against the stored one — that comparison is what makes
+    "changing a password signs out the other sessions" possible without a server
+    -side session table.
+    """
+    return serializer(secret).dumps({"uid": user_id, "pv": int(password_version)})
 
 
-def unsign_user_id(value: str | None, secret: str) -> int | None:
-    """Decode a session cookie value and return its user id when valid."""
+def unsign_user_id(
+    value: str | None, secret: str, max_age_seconds: int | None = None
+) -> tuple[int, int] | None:
+    """Decode a session cookie and return ``(user_id, password_version)``.
+
+    Returns ``None`` when the cookie is missing, tampered with, malformed, or —
+    when ``max_age_seconds`` is given — older than that many seconds.
+
+    Tokens issued before SEC-3 carry no timestamp and were produced by a
+    non-timed serializer, so they fail signature validation here and are simply
+    treated as invalid. That logs everyone out once on upgrade, which is the
+    intended behaviour: those are exactly the never-expiring tokens this change
+    exists to retire.
+    """
     if not value:
         return None
     try:
-        data = serializer(secret).loads(value)
-        return int(data["uid"])
-    except (BadSignature, KeyError, TypeError, ValueError):
+        data = serializer(secret).loads(value, max_age=max_age_seconds)
+        return int(data["uid"]), int(data.get("pv", 1))
+    except (BadSignature, SignatureExpired, KeyError, TypeError, ValueError):
         return None
 
 

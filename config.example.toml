@@ -88,6 +88,7 @@ language = "zh-TW"            # default UI locale; the i18n catalog falls back t
 # --- Authentication / enterprise SSO ----------------------------------------
 [auth]
 local_login_enabled = true
+session_max_age_hours = 12.0   # SEC-3: absolute session lifetime, not extended by activity
 trusted_header_enabled = false
 trusted_header_secret = ""    # required when trusted_header_enabled = true
 trusted_header_secret_header = "X-NotebookLM-Auth-Secret"
