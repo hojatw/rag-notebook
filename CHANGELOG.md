@@ -9,6 +9,8 @@
 
 ## [未發布]
 
+## [0.3.0] - 2026-08-22
+
 ### 新增
 
 - **`scripts/reset_chroma_dimension.py`（break-glass 維度遷移工具）**：在 app 起不來、
@@ -103,6 +105,26 @@
 - 決策紀錄：`P2-1`（SQLite 向量複本）裁定維持現狀並寫下重啟條件；
   `Q1-1`（RRF）記為排序決策並列出重新校準的前置條件。
   詳見 `docs/PERFORMANCE.md`、`docs/QUALITY.md`。
+
+### 升級注意事項
+
+- 無破壞性變更，直接部署即可；新的 `vector_index_state` 資料表與其欄位於啟動時
+  自動套用（既有的 idempotent migration 機制）。
+
+- **要更換 embedding 模型的維度時，請改用 `/admin/index` 的「更換 embedding 維度」，
+  不要用「清除／重建」。** 這是本版最重要的維運變更：Chroma 在第一次寫入時鎖定集合
+  維度，清除只刪 records、不會解鎖，過去這條路會讓索引看似清空卻仍拒絕新維度，且
+  反覆清除／重建無法修復（O0）。新流程會先要求在「設定」頁測試 embedding 模型成功，
+  據此取得目標維度，顯示 dry-run 預覽後再執行。
+
+- **既有加密的 API key 不受影響。** 本版把 `cryptography` 升到 50.0.0，已實測確認
+  49.0.0 產生的 Fernet ciphertext 在 50.0.0 下仍能正確解密，**不需要重新輸入 API key**。
+
+- 新增來源狀態 `stale_embedding`（介面顯示「需重新索引」），代表檔案沒問題、只是
+  既有向量的維度不符。若你先前用 `scripts/reset_chroma_dimension.py` 做過遷移，那些
+  來源會是 `failed`（腳本的既有行為，刻意不變），照樣執行「重新索引」即可。
+
+- 建議升級後檢查 `/admin/index`：若「Chroma 缺少」不為 0，執行一次「重建索引」。
 
 ## [0.2.0] - 2026-07-25
 
