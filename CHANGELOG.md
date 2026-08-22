@@ -36,6 +36,8 @@
   重建之間、把新集合又鎖回舊維度。鎖逾時會被視為 stale 回收，死掉的程序不會卡住佇列。
   審計事件 `index_dimension_migrated` 記錄前後維度與各項數量。
 
+### 修正
+
 - **P0 修正完成 — `/admin/index` Clear 不再是維度遷移的死路（O0）**：原本 Clear 只執行
   `collection.delete(ids=...)`，即使 vector count 歸零，collection schema 仍鎖在舊維度；
   設定頁看不到任何 stored embedding 會誤判為未鎖定，直到新維度第一次 upsert 才以
@@ -45,8 +47,6 @@
   ingest 佇列、startup sync 拒絕寫入維度不符的分塊、維度不符的來源進入 `stale_embedding`
   等待重新索引。`scripts/reset_chroma_dimension.py` 保留為 break-glass（app 起不來時用）。
   涵蓋 inline worker 與 split worker 兩種部署形態的回歸測試。
-
-### 修正
 
 - **`/admin/index` 不再把「清除／重建」當成更換 embedding 維度的方法**：原本空集合會顯示
   「尚未鎖定維度」，而清除的確認對話框承諾「之後執行重建即可恢復搜尋」——在維度變更的情境
@@ -86,6 +86,17 @@
 
 - 新增 `openpyxl`（A6c）、`python-pptx`（A6b，會連帶帶入 Pillow 與 XlsxWriter），
   並把原本是傳遞相依的 `charset-normalizer` 明確 pin 住（A6c 直接 import 它做編碼偵測）。
+
+- **安全性更新**：`cryptography` 50.0.0（GHSA-g6cj-pr64-35w5，high — 漏洞在 PKCS#7
+  EnvelopedData 解密，本專案只用 Fernet + PBKDF2HMAC，實際踩不到，仍升級）；
+  `pypdf` 6.15.0（GHSA-fp3f-mc75-235c、GHSA-fwg2-594c-jp42，medium — **這兩個踩得到**，
+  惡意 PDF 可耗盡記憶體/CPU）。已實測確認 `cryptography` 49 加密的 API key 在 50 下
+  仍能正確解密，**既有部署不需要重新輸入 API key**。
+
+- 例行更新：`fastapi` 0.141.1、`uvicorn` 0.52.3、`joserfc` 1.7.4、
+  `charset-normalizer` 3.5.1。charset-normalizer 的升級順帶修好一個無聲的錯誤——
+  3.4.9 會把 GBK 編碼的 CSV 判成 cp949（韓文）並回傳看似正常的亂碼，不會拋錯，
+  那堆亂碼會被當成內容切塊並 embed。已補回歸測試。
 
 ### 變更
 
