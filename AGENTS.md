@@ -93,7 +93,9 @@ For Docker/runtime changes, build the image and smoke-test at least `/` and `/lo
   removes vectors but does not reset the Chroma collection's locked dimension;
   do not describe Clear/Rebuild as a valid dimension-migration path until O0 is
   fixed. Use `scripts/reset_chroma_dimension.py` with all app/worker processes
-  stopped, then Reindex the sources the tool reports.
+  stopped, then Reindex the sources the tool reports. The permanent fix is
+  planned in `docs/O0_DIMENSION_RESET_PLAN.md` — read it before touching
+  `clear_all_vectors`, collection caching, or startup sync.
 - Before changing query rewrite, hybrid retrieval, reranking, chunking, or scoring, read `docs/RETRIEVAL.md` and update eval expectations where appropriate.
 
 ## Security Expectations
