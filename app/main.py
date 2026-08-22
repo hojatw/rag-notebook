@@ -509,6 +509,29 @@ def render(request: Request, name: str, context: dict, status_code: int = 200) -
     )
 
 
+#: Substrings providers use when refusing a request parameter. Deliberately broad
+#: — this only selects a more specific *message*, so a false positive costs an
+#: admin a slightly-off hint, while a miss costs them the generic message that
+#: sends them looking in the wrong place.
+UNSUPPORTED_PARAMETER_MARKERS = (
+    "unsupported parameter",
+    "unsupported_parameter",
+    "unrecognized request argument",
+    "unknown parameter",
+    "is not supported with this model",
+    "unsupported_value",
+    "max_completion_tokens",
+)
+
+
+def _mentions_unsupported_parameter(response: httpx.Response) -> bool:
+    try:
+        text = (response.text or "").lower()
+    except Exception:
+        return False
+    return any(marker in text for marker in UNSUPPORTED_PARAMETER_MARKERS)
+
+
 def friendly_error_message(exc: Exception | str, action: str | None = None) -> str:
     """Return a user-facing error without leaking provider/raw exception text."""
     action = action if action is not None else i18n.t("error.action_default")
@@ -523,6 +546,15 @@ def friendly_error_message(exc: Exception | str, action: str | None = None) -> s
             return i18n.t("error.ratelimit", action=action)
         if status >= 500:
             return i18n.t("error.unavailable")
+        # LLM-1: a 400 naming a request parameter is the one 4xx an admin can
+        # actually act on, and it is the failure mode of pointing this app at a
+        # model that refuses `temperature` (GPT-5-class reasoning models).
+        # Without this it renders as the generic "check your settings", which
+        # sends people hunting through the wrong things — every LLM call in the
+        # app fails at once, so it looks like a total outage rather than one
+        # unsupported field.
+        if status == 400 and _mentions_unsupported_parameter(exc.response):
+            return i18n.t("error.unsupported_parameter")
         return i18n.t("error.generic_check", action=action)
     if isinstance(exc, RuntimeError) and "settings" in text.lower():
         return i18n.t("error.no_llm")

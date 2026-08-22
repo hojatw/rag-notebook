@@ -105,6 +105,24 @@
                 <span class="status {{ status_class(cap.status or 'not_tested') }}">{{ diagnostic_status_labels.get(cap.status or 'not_tested', cap.status or 'not_tested') }}</span>
               </li>
             {% endfor %}
+            {# LLM-2: deliberately not a pass/fail pill. A model that refuses
+               temperature is not broken, it just takes a different request
+               shape, and a red "failed" here would send admins chasing a
+               non-problem. Report the shape instead. #}
+            {% set sampling = caps.get('sampling_params', {}) %}
+            {% set field = (caps.get('max_tokens_field', {}).get('field')) or 'max_tokens' %}
+            <li>
+              <span>{{ t('settings.cap_sampling') }}</span>
+              <span class="muted">
+                {%- if sampling.status == 'succeeded' -%}
+                  {{ t('settings.cap_sampling_full', field=field) }}
+                {%- elif sampling.status == 'failed' -%}
+                  {{ t('settings.cap_sampling_limited', field=field) }}
+                {%- else -%}
+                  {{ t('settings.cap_sampling_unknown') }}
+                {%- endif -%}
+              </span>
+            </li>
           </ul>
         {% else %}
           <p class="muted">{{ t('settings.no_diag') }}</p>

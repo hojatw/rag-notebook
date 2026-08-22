@@ -464,15 +464,119 @@ def test_settings_chat_probe_detects_json_stream_and_usage(monkeypatch, tmp_path
         asyncio.run(client.aclose())
         llm.set_http_client(None)
 
-    assert calls["n"] == 3
+    # 4, not 3: LLM-2 added a sampling-parameter probe that runs before the rest
+    # (it decides how every later request is shaped). It is one extra request on
+    # an explicit admin "test connection" click, not on the request path.
+    assert calls["n"] == 4
     assert result["status"] == "succeeded"
     assert result["capabilities"]["json_following"]["status"] == "succeeded"
     assert result["capabilities"]["streaming"]["status"] == "succeeded"
     assert result["capabilities"]["usage_reporting"]["status"] == "succeeded"
     assert result["capabilities"]["image_understanding"]["status"] == "succeeded"
+    # An endpoint that accepts temperature + max_tokens is the common case.
+    assert result["capabilities"]["sampling_params"]["status"] == "succeeded"
+    assert result["capabilities"]["max_tokens_field"]["field"] == "max_tokens"
     with db.connect() as conn:
         rows = conn.execute("SELECT * FROM llm_usage_events ORDER BY id").fetchall()
     assert [row["call_type"] for row in rows] == ["settings_chat_probe", "settings_stream_probe", "settings_image_probe"]
     assert all("prompt" not in row["metadata_json"] for row in rows)
     assert all("output" not in row["metadata_json"] for row in rows)
     assert all("api_key" not in row["metadata_json"] for row in rows)
+
+
+def test_probe_detects_a_model_that_refuses_temperature(monkeypatch, tmp_path):
+    """End-to-end for the GPT-5-class case: probe, record, then adapt.
+
+    Simulates an endpoint that 400s on `temperature` and wants
+    `max_completion_tokens` instead — the shape a colleague hit on GPT-5.4-mini.
+    The point is that this is *measured*, not inferred from the model name:
+    there is no capability endpoint to ask (openai-python#3073 is still open) and
+    name-prefix matching breaks on every new release.
+    """
+    _db, _governance, llm = _fresh_governance_stack(monkeypatch, tmp_path)
+    seen: list[dict] = []
+
+    def handler(request):
+        body = json.loads(request.read().decode())
+        seen.append(body)
+        if "temperature" in body or "max_tokens" in body:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "Unsupported parameter: 'temperature' is not supported with this model."}},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    llm.set_http_client(client)
+    try:
+        result = asyncio.run(
+            llm.probe_chat_diagnostics(
+                {
+                    "provider": "openai_compatible",
+                    "base_url": "http://llm.test/v1",
+                    "chat_model": "gpt-5.4-mini",
+                    "api_key": "",
+                    "temperature": 0.2,
+                    "timeout_seconds": 10,
+                }
+            )
+        )
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+
+    caps = result["capabilities"]
+    assert caps["sampling_params"]["status"] == "failed"
+    assert caps["sampling_params"]["temperature_accepted"] is False
+    assert caps["max_tokens_field"]["field"] == "max_completion_tokens"
+
+    # Having measured it, the probe's own later requests adapt — which is what
+    # proves the recorded result is actually consumed rather than just displayed.
+    assert any("temperature" not in body for body in seen)
+    adapted = [b for b in seen if "max_completion_tokens" in b]
+    assert adapted, "later requests should switch to the field the model accepts"
+    assert all("temperature" not in b for b in adapted)
+
+
+def test_probe_does_not_infer_capabilities_from_an_unrelated_failure(monkeypatch, tmp_path):
+    """A 500 says nothing about parameter support and must not be recorded as such.
+
+    Getting this wrong would be worse than not probing: one flaky request would
+    permanently strip `temperature` from a model that supports it.
+    """
+    _db, _governance, llm = _fresh_governance_stack(monkeypatch, tmp_path)
+
+    def handler(request):
+        return httpx.Response(500, json={"error": {"message": "internal error"}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    llm.set_http_client(client)
+    try:
+        result = asyncio.run(
+            llm.probe_chat_diagnostics(
+                {
+                    "provider": "openai_compatible",
+                    "base_url": "http://llm.test/v1",
+                    "chat_model": "chat",
+                    "api_key": "",
+                    "timeout_seconds": 10,
+                }
+            )
+        )
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+
+    assert result["capabilities"]["sampling_params"]["status"] == "not_tested"
+    # And the permissive default still applies downstream.
+    assert "temperature" in llm.build_chat_request(
+        {"base_url": "http://llm.test/v1", "chat_model": "chat", "temperature": 0.2,
+         "diagnostics": {"chat": {"capabilities": result["capabilities"]}}},
+        "hi", "sys",
+    )["json"]

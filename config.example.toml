@@ -115,3 +115,29 @@ oidc_groups_claim = "groups"
 oidc_admin_groups = ""
 oidc_auto_provision = true
 oidc_allowed_algorithms = "RS256"
+
+# --- LLM output caps (LLM-3) -------------------------------------------------
+# Truncation limits, not length targets. Sized for zh-TW output (~1 token/char);
+# replace with measured p95 x 1.5 from llm_usage_events once you have traffic.
+[max_tokens]
+settings_chat_probe = 128
+settings_stream_probe = 128
+settings_image_probe = 128
+query_rewrite = 512
+followups = 512
+source_summary = 512
+rerank = 768
+starter_questions = 768
+briefing = 768
+translate_summary = 768
+eval_judge = 1536
+answer_stream = 2048
+chat_completion = 2048
+eval_answer = 2048
+meeting_minutes = 3072
+compare = 3072
+artifact_study_guide = 3072
+artifact_faq = 3072
+artifact_timeline = 3072
+eval_authoring = 3072
+default = 2048

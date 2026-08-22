@@ -675,3 +675,127 @@ def test_chat_completion_stream_yields_delta_content():
     finally:
         asyncio.run(client.aclose())
         llm.set_http_client(None)
+
+
+# --- LLM-2 / LLM-3: sampling-parameter capability and output caps -------------
+
+
+def _settings(**overrides):
+    base = {
+        "provider": "openai_compatible",
+        "base_url": "http://llm.test/v1",
+        "chat_model": "chat",
+        "api_key": "",
+        "temperature": 0.2,
+        "timeout_seconds": 30,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_request_carries_temperature_and_max_tokens_by_default():
+    """Unprobed, behave exactly as before plus the new output cap.
+
+    The permissive default matters: every OpenAI-compatible server this project
+    actually targets accepts both fields, so a fresh install must not start
+    silently dropping `temperature` just because nobody has clicked "test" yet.
+    """
+    from app.llm import build_chat_request
+
+    request = build_chat_request(_settings(), "hi", "sys", call_type="rerank")
+    assert request["json"]["temperature"] == 0.2
+    assert request["json"]["max_tokens"] == 768  # [max_tokens].rerank
+    assert "max_completion_tokens" not in request["json"]
+
+
+def test_temperature_is_omitted_when_the_probe_found_it_unsupported():
+    """The GPT-5-class case that motivated this (a colleague hit it on 5.4-mini).
+
+    Every LLM call in the app funnels through build_chat_request, so sending an
+    unsupported parameter fails chat, rewrite, rerank, briefing and evals at once
+    — a total outage, not a degradation.
+    """
+    from app.llm import build_chat_request
+
+    probed = _settings(
+        diagnostics={
+            "chat": {
+                "capabilities": {
+                    "sampling_params": {"status": "failed", "temperature_accepted": False},
+                    "max_tokens_field": {"status": "succeeded", "field": "max_completion_tokens"},
+                }
+            }
+        }
+    )
+    request = build_chat_request(probed, "hi", "sys", temperature=0.9, call_type="chat_completion")
+    assert "temperature" not in request["json"]
+    assert request["json"]["max_completion_tokens"] == 2048
+    assert "max_tokens" not in request["json"]
+
+
+def test_inconclusive_probe_leaves_temperature_alone():
+    """A timeout or 500 says nothing about capabilities — do not infer from it.
+
+    Recording "unsupported" from an unrelated failure would strip temperature
+    from every later request on a model that supports it perfectly well.
+    """
+    from app.llm import build_chat_request
+
+    probed = _settings(
+        diagnostics={"chat": {"capabilities": {"sampling_params": {"status": "not_tested"}}}}
+    )
+    assert "temperature" in build_chat_request(probed, "hi", "sys")["json"]
+
+
+def test_every_call_type_has_its_own_output_cap():
+    """A new call_type must not silently inherit the default.
+
+    `resolve_max_tokens` looks the field up by name with a fallback, so a typo or
+    a new call site would quietly get `default` instead of a size chosen for its
+    output shape. This pins the two lists together.
+    """
+    import dataclasses
+    import pathlib
+    import re
+
+    from app.config import MaxTokensConfig
+
+    known = {f.name for f in dataclasses.fields(MaxTokensConfig)}
+    app_dir = pathlib.Path(__file__).resolve().parents[1] / "app"
+    used = set()
+    for path in app_dir.glob("*.py"):
+        used.update(re.findall(r'call_type="([a-z_]+)"', path.read_text(encoding="utf-8")))
+    # Artifact call types are built as f"artifact_{label}" from ARTIFACT_PROMPTS.
+    from app.llm import ARTIFACT_PROMPTS
+
+    used.update(f"artifact_{label}" for _, _, label in ARTIFACT_PROMPTS.values())
+    # Embedding calls never reach build_chat_request, so an output cap would be
+    # meaningless for them — excluded rather than given a field that implies
+    # embeddings have a response length.
+    used -= {"settings_embedding_probe"}
+    missing = sorted(used - known)
+    assert not missing, f"call_type(s) with no [max_tokens] entry, silently using default: {missing}"
+
+
+def test_unsupported_parameter_400_gets_an_actionable_message():
+    """LLM-1: the one 4xx an admin can act on must not read as "check settings"."""
+    import httpx
+
+    import app.main as main
+
+    response = httpx.Response(
+        400,
+        request=httpx.Request("POST", "http://llm.test/v1/chat/completions"),
+        json={"error": {"message": "Unsupported parameter: 'temperature' is not supported with this model."}},
+    )
+    exc = httpx.HTTPStatusError("400", request=response.request, response=response)
+    message = main.friendly_error_message(exc)
+    assert message == main.i18n.t("error.unsupported_parameter")
+    assert message != main.i18n.t("error.generic_check", action=main.i18n.t("error.action_default"))
+
+    # An unrelated 400 still gets the generic message.
+    plain = httpx.Response(
+        400, request=response.request, json={"error": {"message": "bad request"}}
+    )
+    plain_exc = httpx.HTTPStatusError("400", request=plain.request, response=plain)
+    assert main.friendly_error_message(plain_exc) != main.i18n.t("error.unsupported_parameter")

@@ -87,6 +87,53 @@ class EmbeddingConfig:
 
 
 @dataclasses.dataclass
+class MaxTokensConfig:
+    """LLM-3: per-call-type output caps.
+
+    A cap is a **truncation limit, not a length target** — setting one too low
+    does not make the model write less, it cuts the response off mid-way. For the
+    call types that return JSON that is worse than it sounds: the caller parses
+    with a try/except and degrades silently (rerank falls back to hybrid order,
+    query rewrite falls back to the original question), so an over-tight cap
+    shows up as "retrieval quietly got worse", not as an error. Hence the
+    generous headroom on those.
+
+    Sized for **Traditional Chinese** output at roughly 1 token per character
+    (see `DiagnosticsConfig.cjk_chars_per_token`); the same content in English
+    needs about a quarter of this. Values are ~2x the expected output.
+
+    Replace these with measured numbers once a deployment has traffic:
+    `llm_usage_events` records `completion_tokens` per `call_type` — take p95 and
+    multiply by 1.5, filtering on `is_estimated = 0`.
+    """
+    # Names must match the `call_type` strings used at the call sites exactly —
+    # `resolve_max_tokens` looks the field up by that name and silently falls back
+    # to `default` on a miss. `tests/test_llm.py` pins that every call_type in the
+    # codebase has a field here, so a new one cannot quietly inherit the default.
+    settings_chat_probe: int = 128       # diagnostics: replies "ok"
+    settings_stream_probe: int = 128
+    settings_image_probe: int = 128
+    query_rewrite: int = 512             # JSON array, 1-4 short queries
+    followups: int = 512                 # JSON, 3 short questions
+    source_summary: int = 512            # 2-4 sentence per-source summary
+    rerank: int = 768                    # JSON, ~20 x {"id", "score"}
+    starter_questions: int = 768         # JSON, 4 questions under 80 chars
+    briefing: int = 768                  # one 80-110 word paragraph
+    translate_summary: int = 768
+    eval_judge: int = 1536               # JSON: 3 dimensions + rationales
+    answer_stream: int = 2048            # a grounded answer with citations
+    chat_completion: int = 2048          # the non-streaming default call_type
+    eval_answer: int = 2048              # same shape as an answer
+    meeting_minutes: int = 3072          # headed sections with bullets
+    compare: int = 3072
+    artifact_study_guide: int = 3072
+    artifact_faq: int = 3072
+    artifact_timeline: int = 3072
+    eval_authoring: int = 3072           # several draft eval items
+    default: int = 2048                  # any call type not listed above
+
+
+@dataclasses.dataclass
 class LLMRetryConfig:
     max_attempts: int = 3
     backoff_base_s: float = 0.5
@@ -190,6 +237,7 @@ class AppConfig:
     diagnostics: DiagnosticsConfig = dataclasses.field(default_factory=DiagnosticsConfig)
     embedding: EmbeddingConfig = dataclasses.field(default_factory=EmbeddingConfig)
     llm_retry: LLMRetryConfig = dataclasses.field(default_factory=LLMRetryConfig)
+    max_tokens: MaxTokensConfig = dataclasses.field(default_factory=MaxTokensConfig)
     jobs: JobsConfig = dataclasses.field(default_factory=JobsConfig)
     runtime: RuntimeConfig = dataclasses.field(default_factory=RuntimeConfig)
     ui: UIConfig = dataclasses.field(default_factory=UIConfig)
@@ -274,6 +322,7 @@ def load_config() -> AppConfig:
         diagnostics=_load_group(DiagnosticsConfig, "diagnostics", toml_data),
         embedding=_load_group(EmbeddingConfig, "embedding", toml_data),
         llm_retry=_load_group(LLMRetryConfig, "llm_retry", toml_data),
+        max_tokens=_load_group(MaxTokensConfig, "max_tokens", toml_data),
         jobs=_load_group(JobsConfig, "jobs", toml_data),
         runtime=_load_group(RuntimeConfig, "runtime", toml_data),
         ui=_load_group(UIConfig, "ui", toml_data),

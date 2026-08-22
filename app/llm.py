@@ -553,12 +553,28 @@ async def probe_chat_diagnostics(
             "streaming": {"status": "not_tested"},
             "usage_reporting": {"status": "not_tested"},
             "json_following": {"status": "not_tested"},
+            SAMPLING_PARAMS_CAPABILITY: {"status": "not_tested"},
+            MAX_TOKENS_FIELD_CAPABILITY: {"status": "not_tested", "field": "max_tokens"},
             "image_understanding": {"status": "not_tested" if include_image else "skipped"},
         },
     }
     if not model:
         result["error_class"] = "MissingSettings"
         return result
+
+    # Runs first: every probe below builds its request through build_chat_request,
+    # which consults this result. Measuring it up front means the rest of the
+    # diagnostics exercise the same request shape the app will actually send.
+    sampling = await _probe_sampling_params(settings, usage_context=usage_context)
+    result["capabilities"].update(sampling)
+    if sampling[SAMPLING_PARAMS_CAPABILITY].get("status") == "failed":
+        settings = {
+            **settings,
+            "diagnostics": {
+                **(settings.get("diagnostics") or {}),
+                "chat": {"capabilities": sampling},
+            },
+        }
 
     json_probe = await _probe_chat_once(
         settings,
@@ -611,7 +627,7 @@ async def _probe_chat_once(
     expect_json: bool = False,
     messages_override: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    request = build_chat_request(settings, user_prompt, system_prompt, temperature=0.0)
+    request = build_chat_request(settings, user_prompt, system_prompt, temperature=0.0, call_type=call_type)
     if messages_override is not None:
         request["json"]["messages"] = messages_override
     timeout = float(settings.get("timeout_seconds") or 60)
@@ -688,12 +704,113 @@ async def _probe_chat_once(
     }
 
 
+async def _probe_sampling_params(
+    settings: dict[str, Any], *, usage_context: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Find out, by asking, which sampling/limit parameters this model accepts.
+
+    There is no capability endpoint to consult — see `chat_sampling_support`. So
+    we send the smallest possible request carrying `temperature` plus
+    `max_tokens`; if the provider rejects it with a 4xx naming one of those
+    parameters, we retry without `temperature` and with
+    `max_completion_tokens`, which is the GPT-5-era shape.
+
+    Returns the two capability entries `build_chat_request` reads back.
+    """
+    resolved = chat_settings(settings)
+    timeout = float(settings.get("timeout_seconds") or 60)
+    base_payload: dict[str, Any] = {
+        "messages": [
+            {"role": "system", "content": DIAGNOSTIC_SYSTEM_PROMPT},
+            {"role": "user", "content": "Reply with exactly: ok"},
+        ],
+    }
+
+    async def attempt(extra: dict[str, Any]) -> tuple[bool, str]:
+        payload = {**base_payload, **extra}
+        provider = resolved.get("provider") or "openai_compatible"
+        if provider == "azure_openai":
+            request = _azure_request(resolved, resolved["chat_model"], "chat/completions", payload)
+        else:
+            payload["model"] = resolved["chat_model"]
+            request = {
+                "url": (resolved.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+                + "/chat/completions",
+                "headers": _bearer_headers(resolved.get("api_key") or ""),
+                "json": payload,
+            }
+        try:
+            await _post_json_with_retry(
+                request["url"], request["headers"], request["json"], timeout, retry_stats={}
+            )
+            return True, ""
+        except httpx.HTTPStatusError as exc:
+            return False, (exc.response.text or "")[:400]
+        except Exception as exc:
+            return False, exc.__class__.__name__
+
+    cap_sampling: dict[str, Any] = {"status": "not_tested"}
+    cap_field: dict[str, Any] = {"status": "not_tested", "field": "max_tokens"}
+
+    ok, detail = await attempt({"temperature": 0.0, "max_tokens": 16})
+    if ok:
+        return {
+            SAMPLING_PARAMS_CAPABILITY: {"status": "succeeded", "temperature_accepted": True},
+            MAX_TOKENS_FIELD_CAPABILITY: {"status": "succeeded", "field": "max_tokens"},
+        }
+
+    lowered = detail.lower()
+    # Only treat this as a *capability* answer when the provider actually named a
+    # parameter. A timeout or a 500 says nothing about what the model supports,
+    # and recording "unsupported" from those would wrongly strip temperature from
+    # every later request.
+    mentions_param = any(
+        token in lowered
+        for token in ("temperature", "max_tokens", "max_completion_tokens", "unsupported", "unrecognized")
+    )
+    if not mentions_param:
+        return {
+            SAMPLING_PARAMS_CAPABILITY: {"status": "not_tested", "error_class": "inconclusive"},
+            MAX_TOKENS_FIELD_CAPABILITY: {"status": "not_tested", "field": "max_tokens"},
+        }
+
+    ok2, detail2 = await attempt({"max_completion_tokens": 16})
+    if ok2:
+        logger.warning(
+            "chat_model_rejects_sampling_params model=%s detail=%s",
+            resolved.get("chat_model"), lowered[:200],
+        )
+        return {
+            SAMPLING_PARAMS_CAPABILITY: {
+                "status": "failed",
+                "temperature_accepted": False,
+                "error_class": "UnsupportedParameter",
+            },
+            MAX_TOKENS_FIELD_CAPABILITY: {"status": "succeeded", "field": "max_completion_tokens"},
+        }
+
+    ok3, _ = await attempt({"max_tokens": 16})
+    if ok3:
+        return {
+            SAMPLING_PARAMS_CAPABILITY: {
+                "status": "failed",
+                "temperature_accepted": False,
+                "error_class": "UnsupportedParameter",
+            },
+            MAX_TOKENS_FIELD_CAPABILITY: {"status": "succeeded", "field": "max_tokens"},
+        }
+    return {
+        SAMPLING_PARAMS_CAPABILITY: {"status": "not_tested", "error_class": "inconclusive"},
+        MAX_TOKENS_FIELD_CAPABILITY: {"status": "not_tested", "field": "max_tokens"},
+    }
+
+
 async def _probe_chat_stream(
     settings: dict[str, Any],
     *,
     usage_context: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    request = build_chat_request(settings, "Reply with exactly: ok", DIAGNOSTIC_SYSTEM_PROMPT, temperature=0.0)
+    request = build_chat_request(settings, "Reply with exactly: ok", DIAGNOSTIC_SYSTEM_PROMPT, temperature=0.0, call_type="settings_stream_probe")
     request["json"]["stream"] = True
     request["json"]["stream_options"] = {"include_usage": True}
     timeout = float(settings.get("timeout_seconds") or 60)
@@ -1598,7 +1715,7 @@ async def chat_completion(
     usage_context: dict[str, Any] | None = None,
 ) -> str:
     """Call the configured chat completion endpoint and return message text."""
-    request = build_chat_request(settings, user_prompt, system_prompt, temperature)
+    request = build_chat_request(settings, user_prompt, system_prompt, temperature, call_type=call_type)
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
     input_chars = len(system_prompt) + len(user_prompt)
@@ -1673,7 +1790,7 @@ async def chat_completion_stream(
     usage_context: dict[str, Any] | None = None,
 ):
     """Stream message text from an OpenAI-compatible chat completion endpoint."""
-    request = build_chat_request(settings, user_prompt, system_prompt, temperature)
+    request = build_chat_request(settings, user_prompt, system_prompt, temperature, call_type=call_type)
     request["json"]["stream"] = True
     request["json"]["stream_options"] = {"include_usage": True}
     timeout = float(settings.get("timeout_seconds") or 60)
@@ -2205,26 +2322,92 @@ def build_embedding_request(settings: dict[str, Any], texts: list[str]) -> dict[
     }
 
 
+#: Capability names recorded by the `/settings` chat probe that `build_chat_request`
+#: reads back. Kept as constants so the probe and the consumer cannot drift apart.
+SAMPLING_PARAMS_CAPABILITY = "sampling_params"
+MAX_TOKENS_FIELD_CAPABILITY = "max_tokens_field"
+
+
+def chat_sampling_support(settings: dict[str, Any]) -> dict[str, Any]:
+    """What the configured chat model accepts, as measured by the last probe.
+
+    There is no standard way to ask a provider which parameters a model supports
+    — OpenAI's own SDK still has an open request for it (openai-python#3073), and
+    `GET /v1/models` returns no capability data. The industry answer is either
+    hardcoded model-name prefixes, which break on every new release, or trying it
+    and reading the error. `/settings` → *Test chat model* does the latter once
+    and stores the result; this reads it back.
+
+    Returns ``{"temperature": bool, "max_tokens_field": str}``. Defaults are
+    permissive (send `temperature`, use `max_tokens`) because that is correct for
+    every OpenAI-compatible server this project actually targets — a model that
+    rejects them is the exception, and until the probe has run we should behave
+    exactly as before rather than silently dropping parameters.
+    """
+    diagnostics = settings.get("diagnostics")
+    chat = diagnostics.get("chat") if isinstance(diagnostics, dict) else None
+    capabilities = chat.get("capabilities") if isinstance(chat, dict) else None
+    if not isinstance(capabilities, dict):
+        return {"temperature": True, "max_tokens_field": "max_tokens"}
+
+    sampling = capabilities.get(SAMPLING_PARAMS_CAPABILITY)
+    temperature_ok = True
+    if isinstance(sampling, dict) and sampling.get("status") == "failed":
+        temperature_ok = False
+
+    field = "max_tokens"
+    max_tokens_cap = capabilities.get(MAX_TOKENS_FIELD_CAPABILITY)
+    if isinstance(max_tokens_cap, dict):
+        detected = str(max_tokens_cap.get("field") or "").strip()
+        if detected in {"max_tokens", "max_completion_tokens"}:
+            field = detected
+    return {"temperature": temperature_ok, "max_tokens_field": field}
+
+
+def resolve_max_tokens(call_type: str | None) -> int:
+    """Output cap for a call type, from `[max_tokens]` (LLM-3)."""
+    if not call_type:
+        return config.max_tokens.default
+    return int(getattr(config.max_tokens, call_type, config.max_tokens.default))
+
+
 def build_chat_request(
     settings: dict[str, Any],
     user_prompt: str,
     system_prompt: str = SYSTEM_PROMPT,
     temperature: float | None = None,
+    call_type: str | None = None,
 ) -> dict[str, Any]:
     """Build the provider-specific HTTP request for chat completion.
 
     Resolves the chat connection first (see ``chat_settings``), so the chat
     endpoint, key and provider are independent of embedding.
+
+    Two things beyond the messages (LLM-2 / LLM-3):
+
+    * ``temperature`` is **omitted** when the last `/settings` probe found the
+      model rejects it. GPT-5-class reasoning models accept sampling parameters
+      only when reasoning effort is ``none``; sending one otherwise fails the
+      request with a 400. Since every LLM call in this app funnels through here,
+      that would take down chat, rewrite, rerank, briefing and evals at once —
+      not degrade them.
+    * ``max_tokens`` bounds the response. On a shared, borrowed endpoint one
+      runaway generation occupies the GPU for everyone, and nothing else caps it.
+      GPT-5 renamed the field to ``max_completion_tokens``; the probe records
+      which one the model took.
     """
     resolved = chat_settings(settings)
-    effective_temperature = resolved.get("temperature") if temperature is None else temperature
-    payload = {
-        "temperature": float(0.2 if effective_temperature is None else effective_temperature),
+    support = chat_sampling_support(settings)
+    payload: dict[str, Any] = {
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
     }
+    if support["temperature"]:
+        effective_temperature = resolved.get("temperature") if temperature is None else temperature
+        payload["temperature"] = float(0.2 if effective_temperature is None else effective_temperature)
+    payload[support["max_tokens_field"]] = resolve_max_tokens(call_type)
     provider = resolved.get("provider") or "openai_compatible"
     if provider == "azure_openai":
         return _azure_request(resolved, resolved["chat_model"], "chat/completions", payload)
