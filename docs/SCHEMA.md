@@ -28,6 +28,7 @@ users ─┬─< notebooks ─┬─< sources ─┬─< chunks
        ├─< sources / chunks / conversations / messages / notes   (user_id on every row, per-user scoping)
        └─< external_identities
 llm_settings : single row (id = 1), global
+vector_index_state : single row (id = 1), global
 
 eval_sets ─< eval_items
           └─< eval_runs ─< eval_results
@@ -268,6 +269,16 @@ DB-backed ingest queue (P1-1). At most one job per source.
 | `claimed_at` | REAL | unix timestamp of claim; drives the visibility timeout (nullable) |
 | `error` | TEXT DEFAULT `''` | last failure message |
 | `created_at` / `updated_at` | TEXT | |
+
+## `vector_index_state`
+Cross-process coordination for the Chroma collection (O0, Phase A). Single row.
+
+Chroma locks a collection's embedding dimension on the first upsert, and deleting every record does **not** release it — only replacing the collection object does. Because each process (web app, standalone ingest worker) caches its own collection handle in a module global, the process that replaces the collection bumps `generation`; every other process compares it in `collection()` and re-fetches on mismatch, so no one keeps writing through a handle to the deleted collection.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER **PK** CHECK(id = 1) | single row, seeded by `init_db()` |
+| `generation` | INTEGER NOT NULL DEFAULT 0 | incremented by `reset_collection()`; compared against each process's cached handle |
 
 ## `retrieval_profiles`
 Admin-created retrieval parameter snapshots for the in-deployment eval workbench (E1). Profiles are audit/history records **and** applyable: the `is_active` row seeds the live `ACTIVE_RETRIEVAL_PARAMS` in `app/retrieval.py` at startup (E1c apply/rollback).

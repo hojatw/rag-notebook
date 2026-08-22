@@ -6,6 +6,8 @@ integration end-to-end.
 """
 import asyncio
 
+import pytest
+
 
 def seed_one_indexed_source(db, ingest, tmp_path, text="Alpha project revenue is 42 dollars."):
     """Helper: create a SQLite source row, ingest it, return the source_id."""
@@ -166,3 +168,133 @@ def test_probe_index_dimension_survives_unreadable_index(fresh_modules, local_em
     assert probe == {"dimension": None, "readable": False}
     # Back-compat wrapper must not raise either.
     assert vs.current_dimension() is None
+
+
+def _chunk(chunk_id: int, dimension: int) -> dict:
+    """Build one upsert-shaped chunk with an embedding of the given dimension."""
+    return {
+        "id": chunk_id,
+        "user_id": 1,
+        "source_id": 1,
+        "chunk_index": 0,
+        "filename": "src.txt",
+        "location": "p1",
+        "text": f"chunk {chunk_id}",
+        "embedding": [0.1] * dimension,
+    }
+
+
+def test_clear_all_vectors_leaves_the_dimension_locked(fresh_modules):
+    """O0 regression witness: this is the defect, pinned so it can't be lost.
+
+    Deleting every record empties the collection but Chroma keeps its schema,
+    so a different dimension is still rejected. probe_index_dimension reports
+    None (nothing to measure), which is exactly why /settings wrongly accepts
+    the new model. If Chroma ever changes this, the test fails loudly and O0's
+    premise needs re-checking.
+    """
+    vs = fresh_modules.vector_store
+    vs.upsert_chunks([_chunk(1, 384)])
+
+    assert vs.clear_all_vectors() == 1
+    assert vs.probe_index_dimension()["dimension"] is None  # looks unlocked...
+
+    with pytest.raises(Exception) as excinfo:  # ...but is not
+        vs.upsert_chunks([_chunk(2, 1536)])
+    assert "dimension" in str(excinfo.value).lower()
+
+
+def test_reset_collection_releases_the_locked_dimension(fresh_modules):
+    """O0 criterion 1: replacing the collection lets a new dimension in."""
+    vs = fresh_modules.vector_store
+    vs.upsert_chunks([_chunk(1, 384)])
+
+    assert vs.reset_collection() == 1
+
+    vs.upsert_chunks([_chunk(2, 1536)])
+    assert vs.probe_index_dimension()["dimension"] == 1536
+
+
+def test_reset_collection_recovers_an_already_broken_index(fresh_modules):
+    """The realistic entry point: an operator already pressed Clear.
+
+    The collection is empty but still locked, which is the state a deployment
+    is actually found in. reset_collection has to repair it, not just prevent
+    it.
+    """
+    vs = fresh_modules.vector_store
+    vs.upsert_chunks([_chunk(1, 384)])
+    vs.clear_all_vectors()
+
+    assert vs.reset_collection() == 0  # nothing left to discard
+
+    vs.upsert_chunks([_chunk(2, 1536)])
+    assert vs.probe_index_dimension()["dimension"] == 1536
+
+
+def test_reset_collection_bumps_the_shared_generation(fresh_modules):
+    """The generation counter is what other processes watch."""
+    vs = fresh_modules.vector_store
+    before = vs.index_generation()
+
+    vs.reset_collection()
+
+    assert vs.index_generation() == before + 1
+
+
+def test_stale_collection_handle_is_refreshed_after_another_process_resets(fresh_modules):
+    """O0 criterion 2: a cached handle from before a reset must not be reused.
+
+    Stands in for the split app/worker deployment: the web process replaces the
+    collection while the ingest worker still holds a handle to the deleted one.
+    We simulate the worker by restoring its stale handle and generation, then
+    assert the next collection() call hands back a live object that can be
+    written through.
+    """
+    vs = fresh_modules.vector_store
+    vs.upsert_chunks([_chunk(1, 384)])
+    worker_handle = vs.collection()
+    worker_generation = vs._collection_generation
+
+    # The "web process" migrates the collection to a new dimension.
+    vs.reset_collection()
+    vs.upsert_chunks([_chunk(2, 1536)])
+
+    # The "worker process" still has its pre-reset cache.
+    vs._collection = worker_handle
+    vs._collection_generation = worker_generation
+
+    refreshed = vs.collection()
+
+    assert refreshed is not worker_handle
+    assert vs._collection_generation != worker_generation
+    # The refreshed handle writes at the new dimension without raising.
+    vs.upsert_chunks([_chunk(3, 1536)])
+    assert vs.probe_index_dimension()["dimension"] == 1536
+
+
+def test_init_db_adds_the_state_table_and_preserves_the_generation(fresh_modules):
+    """Upgrade path: existing deployments have no vector_index_state row yet.
+
+    init_db() runs on every startup, so it must both create the table on an
+    older database and leave an already-advanced generation alone — reseeding
+    it to 0 each boot would make every restart look like a reset to the other
+    processes watching it.
+    """
+    db, vs = fresh_modules.db, fresh_modules.vector_store
+
+    # Simulate a database created before this table existed.
+    with db.connect() as conn:
+        conn.execute("DROP TABLE vector_index_state")
+        conn.commit()
+    assert vs.index_generation() == 0  # missing table degrades to "never reset"
+
+    db.init_db()
+    assert vs.index_generation() == 0
+
+    vs.reset_collection()
+    advanced = vs.index_generation()
+    assert advanced == 1
+
+    db.init_db()  # a later restart must not reseed
+    assert vs.index_generation() == advanced
