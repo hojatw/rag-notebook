@@ -197,6 +197,11 @@ app/jobs.py            DB-backed ingest queue (ingest_jobs): enqueue + atomic cl
 app/worker.py          Ingest worker loop (standalone or inline).
 app/llm.py             LLM/embedding HTTP, query rewrite, rerank, starter questions.
 app/governance.py      AI usage/safety telemetry normalization + sanitized recorders.
+app/index_migration.py O0 embedding-dimension migration: source classification by
+                       vector dimension, the /admin/index flow, and the
+                       vector_index_state generation + lock.
+app/i18n.py            UI message catalog (t() / window.I18N); see docs/I18N.md.
+app/version.py         Build identity (VERSION + git sha) for footer/logs/healthz.
 app/vector_store.py    Chroma persistent client + diff sync + index_status + clear_all_vectors.
 app/security.py        Password hashing, signed session cookies, Fernet API-key encryption.
 app/templates/         Jinja pages and HTMX partials.

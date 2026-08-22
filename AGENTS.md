@@ -114,7 +114,7 @@ For Docker/runtime changes, build the image and smoke-test at least `/` and `/lo
   dimension check. **Clear/Rebuild is not a dimension migration** — Chroma locks
   a collection's width on first write and deleting records does not release it;
   only replacing the collection does (`reset_collection()`). The migration flow
-  lives on `/admin/index` and is described in `docs/O0_DIMENSION_RESET_PLAN.md`.
+  lives on `/admin/index` and is described in `docs/archive/O0_DIMENSION_RESET_PLAN.md`.
   Read that before touching `clear_all_vectors`, `reset_collection`, the
   `vector_index_state` generation/lock, or startup sync's dimension guard.
 - Before changing query rewrite, hybrid retrieval, reranking, chunking, or scoring, read `docs/RETRIEVAL.md` and update eval expectations where appropriate.

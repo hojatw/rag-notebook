@@ -198,7 +198,7 @@
   文件：`docs/AUTHENTICATION.md`、`docs/SSO_DEPLOYMENT.zh-TW.md`（維運指引）。
 - **Eval Workbench E1e-2：答案品質與引用判斷**（#72）：以 LLM judge 評估答案品質與
   引用正確性，並可跨 run 比較。實作於 `app/evals.py`，測試 `tests/test_evals_judge.py`。
-  規劃文件：`docs/E1E2_ANSWER_JUDGING_PLAN.md`（#71）。
+  規劃文件：`docs/archive/E1E2_ANSWER_JUDGING_PLAN.md`（#71）。
 - 共享 Claude Code 開發設定（#63）：committed permissions、hooks、slash commands。
 
 ### 變更

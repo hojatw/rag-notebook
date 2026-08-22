@@ -8,8 +8,14 @@
 
 **基準線**：review 當下 `main @ 6b1c0d0`（VERSION 0.3.0），`pytest` **288 passed**。
 
-**進度**：P0 兩項（`SEC-1`、`SEC-2`）與 `PERF-1` 已完成並溶解進權威 backlog；
-其餘仍待排。每項完成後請照上面的規則打勾並註明 durable 紀錄的位置。
+**進度**：**文件批（DOC-1~15）全數完成**，P0 兩項（`SEC-1`、`SEC-2`）與 `PERF-1` 亦已完成，
+全部溶解進權威 backlog。
+
+**仍待排（15 項）**：`SEC-3`~`SEC-8`、`PERF-2`、`PERF-3`、`QLT-1`、`LLM-1`~`LLM-5`、
+`MNT-1`、`MNT-2`。其中 `SEC-3` 是目前最高風險——它同時是 `SEC-1` 的驗收缺口：
+以初始密碼建立的 session **在強制變更密碼之後仍然有效**（已實測）。
+
+每項完成後請照上面的規則打勾並註明 durable 紀錄的位置；全部清空後刪除本檔。
 
 優先權定義：
 - **P0** — 網路曝險部署前必修
@@ -248,46 +254,54 @@ sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, N
 
 ### 過時
 
-### [ ] DOC-1 · P0 · `SECURITY.md` 的 demo 帳號指示實際無效
+### [x] DOC-1 · P0 · `SECURITY.md` 的 demo 帳號指示實際無效
+> **已完成** — PR #91 — `SECURITY.md` 的 Bootstrap accounts 段落已改寫，並留下歷史註記。
 - **位置**：[`SECURITY.md:22`](SECURITY.md)「Change or **remove** them before exposing the app on a network」。
 - **問題**：SEC-1 已證明「remove」無效（重啟就種回來）。
   **這是最危險的一種過時：文件給了一個會讓人以為自己安全的操作步驟。**
 - **相依**：SEC-1 修完後一起改寫。
 
-### [ ] DOC-2 · P1 · `SECURITY.md`「無已知延後的加固項目」需改寫
+### [x] DOC-2 · P1 · `SECURITY.md`「無已知延後的加固項目」需改寫
+> **已完成** — PR #93 — Hardening status 已改為分「已修正 / 仍未關閉」，並更新最高風險項。
 - **位置**：[`SECURITY.md:44`](SECURITY.md)「No currently known application-level hardening item is intentionally deferred here.」
 - **問題**：SEC-1～SEC-8 一旦記錄，這句話即不成立。
 
-### [ ] DOC-3 · P1 · `E1E2_ANSWER_JUDGING_PLAN.md` 狀態寫錯
+### [x] DOC-3 · P1 · `E1E2_ANSWER_JUDGING_PLAN.md` 狀態寫錯
+> **已完成** — PR #94 — 狀態改正並搬至 [`archive/`](archive/E1E2_ANSWER_JUDGING_PLAN.md)。
 - **問題**：開頭寫「狀態：已規劃、**待實作**（將由另一個 session 執行）」，
   但 E1e-2 早已完成（`ROADMAP.md:169` 標 `[x] Done`、`tests/test_evals_judge.py` 439 行在跑）。
 - **修法**：改狀態 + 搬 `docs/archive/`。
 
-### [ ] DOC-4 · P1 · `O0_DIMENSION_RESET_PLAN.md` §6 收尾清單全未打勾
+### [x] DOC-4 · P1 · `O0_DIMENSION_RESET_PLAN.md` §6 收尾清單全未打勾
+> **已完成** — PR #94 — §6 收尾清單 8 項全數補打勾，搬至 [`archive/`](archive/O0_DIMENSION_RESET_PLAN.md)。
 - **問題**：8 項全是 `[ ]`，但檔案開頭同時寫「**已完成**（Phase A–D 全數實作）…暫行警語已全數移除」。
   已驗證：清單指名的 5 個檔案（README / README.zh-TW / AGENTS / RETRIEVAL / DEVELOPMENT）
   **P0 警語確實都已移除**。是清單沒打勾，同一份文件自己打自己。
 - **修法**：打勾 + 搬 `docs/archive/`。
 
-### [ ] DOC-5 · P2 · `UX_REVIEW.md` 是 2026-06-19/20 的全結案快照
+### [x] DOC-5 · P2 · `UX_REVIEW.md` 是 2026-06-19/20 的全結案快照
+> **已完成** — PR #94 — 搬至 [`archive/2026-06-19-UX_REVIEW.md`](archive/2026-06-19-UX_REVIEW.md)；方法論 `UX_REVIEW_GUIDE.md` 留在原地。
 - **問題**：所有 H/M/L/V 項目**全部 `[x]`**，0 個未結。檔案自己開頭就說「這是某個時間點的走查快照」。
 - **修法**：搬 `docs/archive/2026-06-19-UX_REVIEW.md`。
   （方法論 `UX_REVIEW_GUIDE.md` 是durable 規範，**留在原地**。）
 
 ### 遺漏
 
-### [ ] DOC-6 · P1 · 發版流程完全沒有文件
+### [x] DOC-6 · P1 · 發版流程完全沒有文件
+> **已完成** — PR #94 — 新增 [`RELEASE.md`](RELEASE.md)。
 - **問題**：「功能 PR 只累積 CHANGELOG `[未發布]`、VERSION bump 是獨立的 `chore(release)` PR」
   這套慣例在 repo 裡 grep 不到任何一處，只存在維護者腦中。
 - **修法**：新增 `docs/RELEASE.md`。以可交接性標準，這是最該補的一份。
 
-### [ ] DOC-7 · P1 · CI 完全沒有文件
+### [x] DOC-7 · P1 · CI 完全沒有文件
+> **已完成** — PR #94 — 併入 [`RELEASE.md`](RELEASE.md) 的 CI 段落。
 - **問題**：`.github/workflows/ci.yml`（每個 PR 跑 py_compile + pytest）、
   `dependabot.yml`、`release.yml` 都在運作，但 `DEVELOPMENT.md` 的 Verification 章節
   只講本機怎麼跑，**沒有一個字提到 CI 會擋 PR**。
 - **修法**：併入 DOC-6 的 `docs/RELEASE.md`。
 
-### [ ] DOC-8 · P1 · 部署環境事實無 committed 來源
+### [x] DOC-8 · P1 · 部署環境事實無 committed 來源
+> **已完成** — PR #94 — 新增 [`DEPLOYMENT_CONTEXT.md`](DEPLOYMENT_CONTEXT.md)；`QUALITY.md` 與 `PERFORMANCE.md` 的斷掉指標已改指向它。
 - **問題**：`QUALITY.md` 和 `PERFORMANCE.md` 的「Deployment context」都指向 `../handover.md`，
   但 handover.md 是 gitignored。**而且已經斷了**——handover.md 目前**完全沒有** deployment context
   （Gemma / 使用者規模 / 硬體全部不在裡面）。
@@ -296,37 +310,44 @@ sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, N
   因此用「初期是為了在…環境中做 POC」的歷史框架描述由來，
   **不要**寫成「本產品的部署對象就是 X」。客戶名與機器細節留在 handover.md，不進 git。
 
-### [ ] DOC-9 · P2 · `app/index_migration.py` 不在任何架構圖
+### [x] DOC-9 · P2 · `app/index_migration.py` 不在任何架構圖
+> **已完成** — PR #94 — `CLAUDE.md` 架構圖與 `DEVELOPMENT.md` layout 都補上了。
 - **問題**：397 行、上週隨 0.3.0 出貨，但 `CLAUDE.md` 架構圖、`AGENTS.md`、
   `DEVELOPMENT.md` repository layout **三處都沒有它**。
   （O0 的**功能**文件寫得很完整，是**模組**沒被登記進地圖。）
 
-### [ ] DOC-10 · P2 · 架構圖缺其他模組
+### [x] DOC-10 · P2 · 架構圖缺其他模組
+> **已完成** — PR #94 — 併同 DOC-9 補齊（`governance.py` / `i18n.py` / `version.py`）。
 - `DEVELOPMENT.md` repository layout 缺 `app/i18n.py`（605 行）。
 - `CLAUDE.md` 架構圖缺 `governance.py`、`i18n.py`、`version.py`。
 
-### [ ] DOC-11 · P3 · `ROUTES.md` 缺兩個 legacy redirect
+### [x] DOC-11 · P3 · `ROUTES.md` 缺兩個 legacy redirect
+> **已完成** — PR #94 — `ROUTES.md` 現為 82/82 完全同步。
 - **問題**：`/chat`、`/sources`（`legacy_redirect`）未記載。
   **其餘 80/82 條 route 全部有記載**——已用程式逐條比對。
 
 ### 不一致
 
-### [ ] DOC-12 · P2 · 兩份 README 已漂移
+### [x] DOC-12 · P2 · 兩份 README 已漂移
+> **已完成** — PR #94 — 兩份 README 的 doc map 已一致。
 - **問題**：`README.zh-TW.md` 的 doc map 比 `README.md` **少 3 份**——
   `AUTHENTICATION.md`、`I18N.md`、`SSO_DEPLOYMENT.zh-TW.md`。
   中文讀者剛好看不到企業 auth 與 i18n。
 
-### [ ] DOC-13 · P2 · 4 份文件不在任何頂層索引
+### [x] DOC-13 · P2 · 4 份文件不在任何頂層索引
+> **已完成** — PR #94 — `AGENTS.md` 新增依用途的分類，`docs/` 覆蓋率 100%。
 - `E1E2_ANSWER_JUDGING_PLAN.md`、`PRODUCT_DESIGN_NOTES.md`、`UX_REVIEW.md`、`UX_REVIEW_GUIDE.md`
   （只能從 ROADMAP/QUALITY 內文偶然連到）。
 - **已裁決**：**不新增 `docs/README.md`**，分類直接長進 `AGENTS.md` 的
   「Context To Read First」。
 
-### [ ] DOC-14 · P2 · `CLAUDE.md` 的 quick index 漏了 auth/SSO
+### [x] DOC-14 · P2 · `CLAUDE.md` 的 quick index 漏了 auth/SSO
+> **已完成** — PR #94 — quick index 補上 auth/SSO、發版、部署脈絡三個 gate。
 - **問題**：要改登入的 session 從 `CLAUDE.md` 讀不到 `AUTHENTICATION.md` 的 gate，
   得繞到 `AGENTS.md` 才有。auth 是高風險區，不該留這個漏洞。
 
-### [ ] DOC-15 · P2 · `handover.md` 瘦身
+### [x] DOC-15 · P2 · `handover.md` 瘦身
+> **已完成** — PR #94 — 可進 git 的那一半（`AGENTS.md` Verification）已併入；`handover.md` 本身是 gitignored 的本機檔案，另行瘦身。
 - **建議（待確認）**：**瘦身，不刪除**。逐段拆解後 85% 重複，但非零價值：
   - **保留**：Current Workspace（repo 路徑、branch 狀態、殘留 `origin/codex/*` 遠端分支、
     不可 commit 的本機檔案）——只有這段不可取代。
