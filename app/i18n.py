@@ -399,6 +399,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "error.auth": "模型服務驗證失敗，請檢查系統設定中的 API key。",
         "error.ratelimit": "{action}暫時被模型服務限流，請稍後再試。",
         "error.unavailable": "模型服務暫時無法回應，請稍後再試。",
+        "error.unsupported_parameter": "目前設定的聊天模型不接受這個請求參數（例如 temperature）。請到「系統設定」重新測試聊天模型連線——測試會自動偵測這個模型支援哪些參數並記住。",
         "error.generic_check": "{action}失敗，請檢查系統設定後再試。",
         "error.no_llm": "尚未完成 LLM 設定，請先到系統設定填入模型連線資訊。",
         "error.generic_retry": "{action}失敗，請稍後再試；如果持續發生，請查看系統記錄。",
@@ -471,6 +472,13 @@ MESSAGES: dict[str, dict[str, str]] = {
         "settings.cap_usage": "Provider usage reporting",
         "settings.cap_json": "JSON-following sanity check",
         "settings.cap_image": "Image understanding",
+        # LLM-2: not a pass/fail capability — it reports which request shape this
+        # model takes, so the wording avoids "失敗" for a model that is merely
+        # different (GPT-5-class models reject temperature by design).
+        "settings.cap_sampling": "請求參數形狀",
+        "settings.cap_sampling_full": "接受 temperature，長度上限用 {field}",
+        "settings.cap_sampling_limited": "不接受 temperature（已自動略過），長度上限用 {field}",
+        "settings.cap_sampling_unknown": "尚未偵測——按上方「測試聊天模型」即可偵測",
         "settings.status_succeeded": "成功",
         "settings.status_failed": "失敗",
         "settings.status_skipped": "未測試",

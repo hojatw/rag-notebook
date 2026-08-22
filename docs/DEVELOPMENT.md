@@ -91,7 +91,29 @@ Copy [`config.example.toml`](../config.example.toml) to `config.toml` for local
 or deployment-specific overrides. Changing `[chunking]` — or the chunk-shaping
 values in `[spreadsheet]` (`rows_per_chunk_max`, `embed_token_budget`) — requires
 re-indexing existing sources. `[diagnostics]` thresholds only affect what the
-source preview *displays*, so they never require a re-index. ### Session lifetime
+source preview *displays*, so they never require a re-index.
+
+### LLM output caps
+
+`[max_tokens]` sets a per-`call_type` cap on the response. These are **truncation
+limits, not length targets** — too low does not make the model write less, it cuts
+the response off. For the call types that return JSON that is worse than it
+sounds: the caller parses with a `try/except` and degrades silently (rerank falls
+back to hybrid order, query rewrite to the original question), so an over-tight
+cap shows up as *"retrieval quietly got worse"*, not as an error.
+
+Defaults are sized for **Traditional Chinese** at roughly 1 token per character;
+the same content in English needs about a quarter. Replace them with measured
+numbers once a deployment has traffic:
+
+```bash
+sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, NTILE(20) OVER (PARTITION BY call_type ORDER BY completion_tokens) AS b FROM llm_usage_events WHERE status='succeeded' AND completion_tokens IS NOT NULL AND is_estimated=0) SELECT call_type, COUNT(*) n, MAX(completion_tokens) p95 FROM ranked WHERE b<=19 GROUP BY call_type ORDER BY p95 DESC;"
+```
+
+Take p95 × 1.5. The `is_estimated = 0` filter matters — estimated counts use a
+Latin ratio and under-count CJK (tracked as `LLM-4`).
+
+### Session lifetime
 
 `[auth].session_max_age_hours` (default 12) is the **absolute** lifetime of a
 signed-in session, counted from login and **not extended by activity**. Raising it

@@ -181,9 +181,13 @@ def compact_diagnostic_capabilities(capabilities: dict[str, Any]) -> dict[str, A
             "latency_ms": round(float(value.get("latency_ms") or 0), 1),
             "error_class": str(value.get("error_class") or "")[:120],
         }
-        for key in ("usage_available", "stream_usage_fallback", "json_valid"):
+        for key in ("usage_available", "stream_usage_fallback", "json_valid", "temperature_accepted"):
             if key in value:
                 item[key] = bool(value.get(key))
+        # LLM-2/3: which max-tokens field the model took. A string, not a flag —
+        # and build_chat_request reads it back, so it must survive compaction.
+        if "field" in value:
+            item["field"] = str(value.get("field") or "")[:40]
         compact[str(name)[:80]] = item
     return compact
 
