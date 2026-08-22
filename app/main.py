@@ -335,12 +335,34 @@ def current_user(request: Request) -> dict:
     return dict(user)
 
 
+# SEC-1: the only paths a user carrying `must_change_password` may reach. Kept
+# deliberately tiny — reading the account page, submitting the new password, and
+# signing out. Everything else redirects back here, so a bootstrap credential
+# cannot be used to browse, upload, or ask anything.
+PASSWORD_CHANGE_ALLOWED_PATHS = frozenset({"/account", "/account/password", "/logout"})
+
+
 def require_login(request: Request) -> dict:
-    """Require authentication and redirect anonymous users to login."""
+    """Require authentication and redirect anonymous users to login.
+
+    Also enforces SEC-1's forced password change: an account still holding a
+    seeded bootstrap password is pinned to the account page until it sets a real
+    one. The check lives here rather than in middleware so it automatically
+    covers every authenticated route — including the admin routers, which reach
+    it through ``require_admin``.
+    """
     try:
-        return current_user(request)
+        user = current_user(request)
     except HTTPException:
         raise HTTPException(status_code=303, headers={"Location": "/login"})
+    if user.get("must_change_password") and request.url.path not in PASSWORD_CHANGE_ALLOWED_PATHS:
+        logger.info(
+            "password_change_required_redirect user_id=%s path=%s",
+            user["id"],
+            request.url.path,
+        )
+        raise HTTPException(status_code=303, headers={"Location": "/account"})
+    return user
 
 
 def require_admin(user: Annotated[dict, Depends(require_login)]) -> dict:
@@ -3681,10 +3703,32 @@ def change_own_password(
             _account_context(user, error=error, external_identity_count=external_count),
             400,
         )
+    was_forced = bool(user.get("must_change_password"))
     with connect() as conn:
-        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), user["id"]))
-    logger.info("password_changed user_id=%s", user["id"])
-    return render(request, "account.html", _account_context(user, saved=True))
+        conn.execute(
+            "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
+            (hash_password(new_password), user["id"]),
+        )
+    logger.info("password_changed user_id=%s forced=%s", user["id"], was_forced)
+    if was_forced:
+        # The bootstrap credential is spent; the account-page pin from
+        # require_login is lifted, so send them into the app rather than leaving
+        # them staring at the form they were just forced through.
+        record_audit_event(
+            request,
+            user,
+            "bootstrap_password_changed",
+            "user",
+            user["id"],
+            {"username": user["username"]},
+            "high",
+        )
+        return RedirectResponse("/notebooks", status_code=303)
+    return render(
+        request,
+        "account.html",
+        _account_context({**user, "must_change_password": 0}, saved=True),
+    )
 
 
 # Mounted last so the shared helpers above (render, require_admin,

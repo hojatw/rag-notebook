@@ -18,7 +18,9 @@ Include reproduction steps and the affected version/commit. We aim to acknowledg
 - `NOTEBOOKLM_SECRET` signs session cookies and is the KDF input for Fernet encryption of stored LLM API keys (`app/security.py`). Keep it secret and stable — **changing it invalidates every encrypted API key**, which must then be re-entered at `/settings`.
 - Never commit `.env`, real secrets, or runtime state under `data/` or `logs/`.
 - Do not use `NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1` for any network-exposed or production-like run; it is a local-development convenience only.
-- The demo accounts (`admin/admin123`, `user/user123`) are for local development. Change or remove them before exposing the app on a network.
+- **Bootstrap accounts.** The demo pair (`admin/admin123`, `user/user123`) is seeded **only** when demo seeding is on: explicitly via `NOTEBOOKLM_SEED_DEMO_USERS=1`, or by default when running on the insecure dev secret. Any deployment with a real `NOTEBOOKLM_SECRET` seeds **only `admin`**, and that account must change its password at first login before it can reach anything else — the password is a one-time bootstrap credential, not a standing one. `user` is not seeded there at all.
+  - **Upgrading an existing deployment:** on the next start, any account still using its seeded default password is flagged for a forced change. Nothing is deleted, so no data is lost, but `admin123` / `user123` stop being usable for anything except setting a new password. Plan to be at the keyboard for the first login after the upgrade.
+  - **Historical note (fixed 2026-08-22):** this section previously told operators to "change or remove" the demo accounts. *Removing* them did not work: `init_db()` runs on every start of both the web app and the worker, and re-created both accounts — with their original passwords — on the next restart. If you are auditing a deployment that has not been upgraded, assume `user/user123` exists regardless of whether it was deleted.
 - Enterprise SSO / AD integration is tracked as high-priority roadmap item `I1`
   and designed in [`AUTHENTICATION.md`](AUTHENTICATION.md). Trusted
   reverse-proxy header mode (`I1a`) and OIDC (`I1b`) are implemented but
@@ -38,7 +40,7 @@ Audit metadata is intentionally compact: store action identifiers, target ids, f
 
 ## Hardening status
 
-No currently known application-level hardening item is intentionally deferred here. Keep treating the app as a POC and re-audit before any untrusted-network exposure.
+A full review on **2026-08-22** surfaced hardening items beyond `SEC-1` (bootstrap accounts, fixed above). They are triaged and tracked in `docs/REVIEW_BACKLOG_2026-08-22.md` with priorities and locations, and are folded back into this file as each lands. The open ones at the time of writing: **no upload size limit** (a multipart body is also fully buffered in memory by the CSRF middleware — the highest-severity item still open), **session tokens that never expire and cannot be revoked** (changing a password does not end other sessions), **no login rate limiting**, **prompt-injection detection with English-only patterns** on a zh-TW deployment, and two low-severity hygiene items. Keep treating the app as a POC and re-audit before any untrusted-network exposure.
 
 ### Attack surface note: uploaded-file parsers (A6b / A6c, 2026-07-25)
 

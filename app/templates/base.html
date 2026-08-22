@@ -43,7 +43,13 @@
         </span>
       </a>
       {% if user %}
-        {% if breadcrumb_items %}
+        {# SEC-1: an account pinned by the forced password change can reach only
+           /account and /logout, so every nav target would bounce straight back.
+           Render no navigation at all rather than links that silently no-op —
+           the page should look like the gate it is. The sign-out control below
+           stays, since logging out is always allowed. #}
+        {% if user.must_change_password %}
+        {% elif breadcrumb_items %}
           <nav aria-label="{{ t('a11y.breadcrumb') }}" class="breadcrumb">
             {% for crumb in breadcrumb_items %}
               {% if crumb.href %}
@@ -76,10 +82,14 @@
         {% endif %}
         <form action="/logout" method="post" class="session">
           {{ csrf_input() }}
-          {% if user.is_admin and breadcrumb %}<a href="/settings" class="ghost small">系統設定</a>{% endif %}
-          <a href="/account"
-             class="user-chip {% if request.url.path.startswith('/account') %}active{% endif %}"
-             title="帳號設定">{{ user.username }}</a>
+          {% if user.is_admin and breadcrumb and not user.must_change_password %}<a href="/settings" class="ghost small">系統設定</a>{% endif %}
+          {% if user.must_change_password %}
+            <span class="user-chip active">{{ user.username }}</span>
+          {% else %}
+            <a href="/account"
+               class="user-chip {% if request.url.path.startswith('/account') %}active{% endif %}"
+               title="帳號設定">{{ user.username }}</a>
+          {% endif %}
           <button type="submit" class="ghost">{{ t("nav.logout") }}</button>
         </form>
       {% endif %}

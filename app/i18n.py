@@ -168,6 +168,9 @@ MESSAGES: dict[str, dict[str, str]] = {
         "account.theme_save": "儲存外觀",
         "account.theme_saved": "外觀設定已更新。",
         "account.theme_invalid": "不支援的外觀選項。",
+        # --- Account page · forced password change (SEC-1) --------------------
+        "account.force_change_title": "請先變更密碼",
+        "account.force_change_body": "這個帳號目前使用的是系統建立的初始密碼。設定新密碼之後才能使用其他功能。",
         "auth_admin.title": "認證狀態",
         "auth_admin.intro": "檢查目前啟用的登入方式、SSO 設定完整度與操作注意事項。",
         "auth_admin.modes": "登入模式",

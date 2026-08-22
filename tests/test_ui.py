@@ -3257,3 +3257,112 @@ def test_shelf_shows_the_time_so_same_day_entries_differ(monkeypatch, tmp_path):
         assert shelf.status_code == 200
         assert "07-25 14:35" in shelf.text
         assert 'title="2026-07-25 14:35:54"' in shelf.text   # full stamp on hover
+
+
+# --- SEC-1: the bootstrap admin cannot use the app until it changes password --
+
+
+def _bootstrap_app(monkeypatch, tmp_path):
+    """Fresh app running the production seeding policy (no demo pair)."""
+    monkeypatch.setenv("NOTEBOOKLM_SEED_DEMO_USERS", "0")
+    return _fresh_app(monkeypatch, tmp_path)
+
+
+def test_bootstrap_admin_is_pinned_to_the_account_page(monkeypatch, tmp_path):
+    """A seeded admin that never changed its password can reach nothing else.
+
+    The gate lives in `require_login`, so it covers every authenticated route
+    including the admin routers (which reach it through `require_admin`).
+    """
+    main, db = _bootstrap_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+
+        for path in ("/notebooks", "/search", "/admin/users", "/settings"):
+            response = client.get(path, follow_redirects=False)
+            assert response.status_code == 303, path
+            assert response.headers["location"] == "/account", path
+
+        # The one page it may reach explains why, through the i18n catalog.
+        account = client.get("/account")
+        assert account.status_code == 200
+        import app.i18n as i18n
+
+        assert i18n.t("account.force_change_title") in account.text
+        # No escape hatch anywhere on the page: not in the form footer, and not
+        # in the chrome either — every nav target would just bounce back here.
+        assert 'href="/notebooks"' not in account.text
+        assert 'href="/search"' not in account.text
+        assert 'href="/admin/users"' not in account.text
+        assert 'class="primary-nav"' not in account.text
+        # Theme editing is hidden too — /account/theme would only bounce back.
+        assert 'action="/account/theme"' not in account.text
+        # Signing out stays available; it is the one way out that is not the form.
+        assert 'action="/logout"' in account.text
+
+
+def test_forced_password_change_releases_the_account(monkeypatch, tmp_path):
+    """Setting a real password clears the flag, audits it, and unpins the account."""
+    main, db = _bootstrap_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+
+        response = client.post(
+            "/account/password",
+            data={
+                "current_password": "admin123",
+                "new_password": "a-real-password",
+                "confirm_password": "a-real-password",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/notebooks"
+
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT must_change_password FROM users WHERE username = 'admin'"
+            ).fetchone()
+            audit = conn.execute(
+                "SELECT action, sensitivity FROM audit_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert row["must_change_password"] == 0
+        assert audit["action"] == "bootstrap_password_changed"
+        assert audit["sensitivity"] == "high"
+
+        # The pin is lifted.
+        assert client.get("/notebooks", follow_redirects=False).status_code == 200
+
+        # And the old bootstrap credential no longer works.
+        client.post("/logout", follow_redirects=False)
+        rejected = client.post(
+            "/login",
+            data={"username": "admin", "password": "admin123"},
+            follow_redirects=False,
+        )
+        assert rejected.status_code == 400
+
+
+def test_forced_change_rejects_a_bad_confirmation(monkeypatch, tmp_path):
+    """A failed attempt leaves the account pinned rather than quietly releasing it."""
+    main, db = _bootstrap_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+
+        response = client.post(
+            "/account/password",
+            data={
+                "current_password": "admin123",
+                "new_password": "a-real-password",
+                "confirm_password": "mismatched",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 400
+
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT must_change_password FROM users WHERE username = 'admin'"
+            ).fetchone()
+        assert row["must_change_password"] == 1
+        assert client.get("/notebooks", follow_redirects=False).status_code == 303

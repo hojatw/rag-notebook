@@ -111,7 +111,18 @@ NOTEBOOKLM_LOG_BACKUP_COUNT=5
 NOTEBOOKLM_DATA_DIR=data
 NOTEBOOKLM_SECRET=replace-me-with-a-long-random-string
 NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1  # local-only opt-in when NOTEBOOKLM_SECRET is unset
+NOTEBOOKLM_SEED_DEMO_USERS=0            # see below; defaults to the dev-secret answer
 ```
+
+**`NOTEBOOKLM_SEED_DEMO_USERS`** controls whether the demo pair
+(`admin/admin123` + `user/user123`) is seeded with standing passwords. Unset, it
+follows the same signal the login page uses to decide whether printing those
+credentials is safe: **on** with the insecure dev secret, **off** whenever a real
+`NOTEBOOKLM_SECRET` is set. With it off, only `admin` is seeded and that account
+must change its password at first login before it can reach any other page; `user`
+is not seeded, so deleting it survives a restart. Set it to `1` only for local
+development or a throwaway demo. See [`SECURITY.md`](SECURITY.md) for the
+upgrade behaviour on an existing deployment.
 
 The app records startup/shutdown, HTTP requests, login attempts, source
 upload/index/reindex/delete, embedding API calls, Chroma upsert/query, query

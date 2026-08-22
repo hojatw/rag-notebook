@@ -4,7 +4,14 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .security import decrypt_secret, encrypt_secret, get_app_secret, hash_password
+from .security import (
+    INSECURE_DEV_SECRET,
+    decrypt_secret,
+    encrypt_secret,
+    get_app_secret,
+    hash_password,
+    verify_password,
+)
 
 
 def _app_secret() -> str:
@@ -15,6 +22,11 @@ def _app_secret() -> str:
 DATA_DIR = Path(os.environ.get("NOTEBOOKLM_DATA_DIR", "data"))
 DB_PATH = DATA_DIR / "app.sqlite3"
 UPLOAD_DIR = DATA_DIR / "uploads"
+#: Opt in/out of seeding the demo accounts (see `_seed_default_users`). Read from
+#: the environment rather than `app/config.py` because this is a bootstrap-time
+#: decision made before any settings exist — the same reason `NOTEBOOKLM_DATA_DIR`
+#: is read here. Unset means "decide from the app secret".
+SEED_DEMO_USERS_ENV = "NOTEBOOKLM_SEED_DEMO_USERS"
 
 
 def connect() -> sqlite3.Connection:
@@ -453,6 +465,11 @@ def init_db() -> None:
         # layer (see THEME_CHOICES in app/main.py) rather than a CHECK constraint,
         # so adding a theme later stays a code-only change.
         _ensure_column(conn, "users", "theme", "TEXT NOT NULL DEFAULT 'system'")
+        # SEC-1: this account must change its password before it can use the app.
+        # Set on the bootstrap `admin` seeded outside local development, and
+        # back-filled by `_flag_default_passwords` onto any account still using a
+        # seeded default. Defaults to 0 so every existing account is unaffected.
+        _ensure_column(conn, "users", "must_change_password", "INTEGER NOT NULL DEFAULT 0")
         # A6a: what the extractor actually produced for this source — counts,
         # the extractor path taken, warnings, and a bounded text preview. One
         # JSON blob (same pattern as llm_settings.diagnostics_json from O1a) so
@@ -526,8 +543,7 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_notes_notebook_created ON notes(notebook_id, created_at DESC)"
         )
         conn.execute("INSERT OR IGNORE INTO llm_settings (id) VALUES (1)")
-        _ensure_user(conn, "admin", "admin123", True)
-        _ensure_user(conn, "user", "user123", False)
+        _seed_default_users(conn)
         _migrate_default_notebooks(conn)
 
 
@@ -630,15 +646,105 @@ def _backfill_note_kinds(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE notes SET kind = 'note' WHERE kind = ''")
 
 
-def _ensure_user(conn: sqlite3.Connection, username: str, password: str, is_admin: bool) -> None:
+#: Username -> the password `_seed_default_users` would create it with. Used both
+#: for seeding and for `_flag_default_passwords`, which is the half that protects
+#: deployments seeded before this file learned to stop shipping standing defaults.
+SEEDED_DEFAULT_PASSWORDS: dict[str, str] = {"admin": "admin123", "user": "user123"}
+
+
+def seed_demo_users_enabled() -> bool:
+    """Whether to seed the full demo account pair with standing passwords.
+
+    Explicit ``NOTEBOOKLM_SEED_DEMO_USERS`` wins in both directions. Unset, this
+    falls back to "are we running on the insecure dev secret?" — the same signal
+    the login page already uses to decide whether printing the demo credentials
+    is safe (``demo_hint`` in ``app/main.py``). So local development keeps working
+    with no new configuration, while any deployment that sets a real
+    ``NOTEBOOKLM_SECRET`` stops getting standing default passwords.
+    """
+    override = os.environ.get(SEED_DEMO_USERS_ENV, "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return _app_secret() == INSECURE_DEV_SECRET
+
+
+def _ensure_user(
+    conn: sqlite3.Connection,
+    username: str,
+    password: str,
+    is_admin: bool,
+    must_change_password: bool = False,
+) -> None:
     """Seed a user account without overwriting an existing username."""
     conn.execute(
         """
-        INSERT OR IGNORE INTO users (username, password_hash, is_admin)
-        VALUES (?, ?, ?)
+        INSERT OR IGNORE INTO users (username, password_hash, is_admin, must_change_password)
+        VALUES (?, ?, ?, ?)
         """,
-        (username, hash_password(password), int(is_admin)),
+        (username, hash_password(password), int(is_admin), int(must_change_password)),
     )
+
+
+def _seed_default_users(conn: sqlite3.Connection) -> None:
+    """Seed the bootstrap accounts, without leaving a standing default password.
+
+    ``init_db()`` runs on **every** start of both the web app and the worker, so
+    whatever this function creates is re-created after each restart. That used to
+    mean an operator who followed SECURITY.md and *deleted* the demo accounts got
+    them back — with their original passwords — on the next restart.
+
+    Two different environments need two different answers, and the app already
+    distinguishes them the same way the login page decides whether to print the
+    demo credentials (``SECRET == INSECURE_DEV_SECRET``):
+
+    * **Local development** (the insecure dev secret is explicitly allowed): seed
+      both accounts exactly as before. The convenience is the point, the login
+      page advertises them, and nothing is exposed.
+    * **Anything else** (a real ``NOTEBOOKLM_SECRET`` is set): seed **only**
+      ``admin``, and mark it ``must_change_password`` so the password is a
+      one-time bootstrap credential rather than a standing one. ``user`` is not
+      seeded at all, so deleting it now sticks.
+
+    ``admin`` is still seeded in production on purpose: a deployment that restarts
+    with no accounts must remain enterable. The forced change is what makes that
+    safe.
+    """
+    if seed_demo_users_enabled():
+        _ensure_user(conn, "admin", SEEDED_DEFAULT_PASSWORDS["admin"], True)
+        _ensure_user(conn, "user", SEEDED_DEFAULT_PASSWORDS["user"], False)
+        return
+    _ensure_user(conn, "admin", SEEDED_DEFAULT_PASSWORDS["admin"], True, must_change_password=True)
+    _flag_default_passwords(conn)
+
+
+def _flag_default_passwords(conn: sqlite3.Connection) -> None:
+    """Force a password change on any account still using its seeded default.
+
+    Not seeding ``user`` any more only helps deployments created from here on.
+    Every database seeded by an earlier version already carries ``admin/admin123``
+    and ``user/user123``, and those accounts are exactly the ones an attacker
+    would try first. Rather than silently deleting accounts that may own data, we
+    verify each seeded username against the password it *would* have been created
+    with, and flag the ones that never changed — the credential still works once,
+    to change itself, and nothing else.
+
+    Accounts whose password was already changed verify false and are left alone,
+    so this is safe to run on every startup.
+    """
+    for username, default_password in SEEDED_DEFAULT_PASSWORDS.items():
+        row = conn.execute(
+            "SELECT id, password_hash, must_change_password FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if row is None or row["must_change_password"]:
+            continue
+        if verify_password(default_password, row["password_hash"]):
+            conn.execute(
+                "UPDATE users SET must_change_password = 1 WHERE id = ?",
+                (row["id"],),
+            )
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
