@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 import time
 from typing import Any
 
@@ -9,6 +10,9 @@ COLLECTION_NAME = "rag_chunks"
 logger = logging.getLogger(__name__)
 _client = None
 _collection = None
+# The generation this process's cached ``_collection`` handle was built at.
+# ``None`` means "no cached handle". See ``index_generation``.
+_collection_generation: int | None = None
 
 
 def chroma_available() -> bool:
@@ -22,27 +26,91 @@ def chroma_available() -> bool:
 
 def reset_client() -> None:
     """Clear cached Chroma client objects for tests or data-dir changes."""
-    global _client, _collection
+    global _client, _collection, _collection_generation
     _client = None
     _collection = None
+    _collection_generation = None
+
+
+def index_generation() -> int:
+    """Read the shared collection generation from SQLite (O0).
+
+    Bumped by :func:`reset_collection` whenever the Chroma collection object is
+    replaced. Every process compares it against the generation its cached
+    handle was built at, so a reset in the web process invalidates the ingest
+    worker's handle too — without it the worker would keep upserting into the
+    deleted collection.
+
+    Returns 0 when the table doesn't exist yet (``collection()`` can be reached
+    before ``init_db()`` in tests), which is the same as "never reset".
+    """
+    try:
+        with db.connect() as conn:
+            row = conn.execute("SELECT generation FROM vector_index_state WHERE id = 1").fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row["generation"]) if row else 0
 
 
 def collection():
-    """Return the persistent Chroma collection for source chunks."""
-    global _client, _collection
-    if _collection is not None:
+    """Return the persistent Chroma collection for source chunks.
+
+    Re-fetches the handle when another process has bumped the generation, so a
+    collection replaced elsewhere is never written through a stale handle.
+    """
+    global _client, _collection, _collection_generation
+    generation = index_generation()
+    if _collection is not None and _collection_generation == generation:
         return _collection
     import chromadb
     from chromadb.config import Settings
 
+    if _collection is not None:
+        logger.info(
+            "vector_collection_handle_refreshed cached_generation=%s current_generation=%s",
+            _collection_generation, generation,
+        )
     vector_dir = db.DATA_DIR / "chroma"
     vector_dir.mkdir(parents=True, exist_ok=True)
-    _client = chromadb.PersistentClient(path=str(vector_dir), settings=Settings(anonymized_telemetry=False))
+    if _client is None:
+        _client = chromadb.PersistentClient(path=str(vector_dir), settings=Settings(anonymized_telemetry=False))
     _collection = _client.get_or_create_collection(
         name=COLLECTION_NAME,
         metadata={"hnsw:space": "cosine"},
     )
+    _collection_generation = generation
     return _collection
+
+
+def reset_collection() -> int:
+    """Delete and recreate the collection, releasing its locked dimension (O0).
+
+    ``clear_all_vectors`` only deletes records; Chroma keeps the collection's
+    embedding dimension, so an emptied collection still rejects a different
+    one. Replacing the collection object is the only way to release it.
+
+    Returns the number of vectors that were discarded.
+
+    **Caller precondition:** no ingest may run concurrently. Between the delete
+    and the recreate, an upsert from another process would recreate the
+    collection at the *old* dimension and undo the reset. The migration flow
+    that calls this must block the queue first (ROADMAP O0 criterion 2); this
+    primitive deliberately does not, so it stays usable from recovery paths.
+    """
+    global _client, _collection, _collection_generation
+    if not chroma_available():
+        return 0
+    col = collection()
+    removed = int(col.count())
+    _client.delete_collection(name=COLLECTION_NAME)
+    _collection = None
+    _collection_generation = None
+    with db.connect() as conn:
+        conn.execute("UPDATE vector_index_state SET generation = generation + 1 WHERE id = 1")
+        conn.commit()
+    collection()  # rebuild at the new generation, unlocked
+    logger.info("vector_collection_reset removed=%s generation=%s", removed, _collection_generation)
+    return removed
 
 
 def vector_id(chunk_id: int) -> str:

@@ -193,6 +193,21 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_ingest_jobs_status
             ON ingest_jobs(status, id);
 
+            -- Cross-process coordination for the Chroma collection (O0).
+            -- Chroma locks a collection's embedding dimension on first upsert
+            -- and deleting every record does NOT release it, so a dimension
+            -- migration has to replace the collection object itself. Each
+            -- process caches its own collection handle, so the replacing
+            -- process bumps `generation` and every other process notices the
+            -- mismatch on its next collection() call and re-fetches. Single
+            -- row; the CHECK keeps it that way.
+            CREATE TABLE IF NOT EXISTS vector_index_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                generation INTEGER NOT NULL DEFAULT 0
+            );
+
+            INSERT OR IGNORE INTO vector_index_state (id, generation) VALUES (1, 0);
+
             -- Admin-only in-deployment eval workbench (E1). Eval data stays in
             -- the customer deployment; runs snapshot the profile and per-item
             -- results so tuning decisions can be audited and revisited.
