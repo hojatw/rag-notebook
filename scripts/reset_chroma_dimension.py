@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
-"""Temporary operator workaround for a Chroma collection dimension change.
+"""Break-glass embedding-dimension migration, for when the app will not start.
 
-The current admin Clear action deletes vector records but keeps the Chroma
-collection and its locked embedding dimension. This script replaces that
-collection safely while preserving SQLite, uploads, notebooks, and messages.
+**The normal path is in the app**: `/settings` → Test embedding model, then
+`/admin/index` → 更換 embedding 維度. That flow previews the change, pauses the
+ingest queue, and records an audit event. Use this script only when the app
+cannot come up and `/admin/index` is unreachable — a corrupt collection that
+crashes startup sync, for example.
 
-Dry-run is the default. A real change requires both ``--apply`` and
-``--services-stopped`` because the web app and ingest worker cache Chroma
-collection handles and must not write during the migration.
+It replaces the collection while preserving SQLite, uploads, notebooks, and
+messages. Dry-run is the default; a real change requires both ``--apply`` and
+``--services-stopped``, because every web and worker process caches its own
+Chroma collection handle and must not write during the migration.
+
+Kept deliberately independent of ``app.index_migration``: this has to run when
+importing the app is exactly what fails. The two classify sources by the same
+rules — change both together, and treat ``tests/test_index_migration.py`` as
+the reference. One difference is intentional: the app marks unusable sources
+``stale_embedding``, while this script marks them ``failed``, because it cannot
+assume the running deployment understands the newer status.
 """
 
 from __future__ import annotations

@@ -72,14 +72,14 @@ Filter is always `{user_id}` (multi-tenant isolation) and adds `{source_id: {$in
 
 No-embedding-fallback policy: `embed_texts` raises when the embedding model isn't configured (previously fell back to a SHA-256 hash bag-of-tokens vector — removed because the resulting vectors are dim-incompatible with any real model and silent fallback masked misconfiguration as poor retrieval). The upload route refuses ingestion when LLM isn't configured ([`llm_settings_status`](../app/main.py:660)), and `/settings` save probes the embedding endpoint to validate connectivity + dim consistency against the existing Chroma index.
 
-> **Known P0 defect (O0):** deleting every vector does not reset a Chroma
-> collection's locked dimension. The current `/admin/index` Clear action can
-> therefore show an empty index while the collection still rejects a new
-> dimension. Do not use Clear/Rebuild as the embedding-dimension migration
-> procedure. Until O0 is permanently fixed, stop every app/worker process and
-> run [`scripts/reset_chroma_dimension.py`](../scripts/reset_chroma_dimension.py)
-> using the procedure in [`DEVELOPMENT.md`](DEVELOPMENT.md#temporary-workaround-embedding-dimension-migration-p0),
-> then Reindex the sources reported by the tool.
+> **Dimension changes are a migration, not a Clear (O0).** Deleting every vector
+> does not reset a Chroma collection's locked width, so Clear can leave an empty
+> index that still rejects a new dimension. Use **Migrate embedding dimension**
+> on `/admin/index`: it replaces the collection, keeps vectors already at the
+> target width, moves the rest to `stale_embedding` for Reindex, and pauses the
+> ingest queue for the duration. Startup sync also refuses to upsert chunks
+> whose width disagrees with the collection, so a stray old-dimension row can no
+> longer re-lock it. See [`DEVELOPMENT.md`](DEVELOPMENT.md#changing-the-embedding-dimension).
 
 Model-specific prefixes: `embed_texts(..., role="query"|"passage")` prepends an optional, settings-driven prefix (`/settings` → *Embedding query/passage prefix*). Retrieve embeds queries with `role="query"`, ingest embeds chunks with `role="passage"`. The e5 family needs `query: ` / `passage: `; OpenAI and others leave them blank (default), so the prefix is opt-in and only changes the text sent to the endpoint, never the stored chunk. **Changing a prefix changes the vectors → re-index** (`/admin/index` Rebuild).
 
@@ -207,7 +207,7 @@ for q in questions:
 
 Most of these are now **centralized in [`app/config.py`](../app/config.py)** and overridable at runtime without code edits — defaults ← `config.toml` ← `NOTEBOOKLM_<GROUP>_<FIELD>` env (see the README "Tuning / configuration" section). The mapping: hybrid weights → `[retrieval] vector_weight/keyword_weight`; rerank weights → `rerank_weight/rerank_base_weight`; vector/keyword/rerank candidate counts → `candidate_pool_size`; rerank limit → `final_chunk_count`; abstain → `low_confidence_threshold`; chunking → `[chunking] *`; embedding batch → `[embedding] batch_size`. The module constants below still exist (call sites read them) but their values come from config. `is_mostly_cjk` threshold and the rewrite-history count remain plain constants.
 
-> **Runtime override (E1c eval workbench).** The seven runtime-safe retrieval knobs (`vector_weight`, `keyword_weight`, `candidate_pool_size`, `final_chunk_count`, `rerank_weight`, `rerank_base_weight`, `low_confidence_threshold`) are read at request time from `ACTIVE_RETRIEVAL_PARAMS` in `app/retrieval.py`, not the import-time module constants. The config/env values still define the **defaults**; an admin can override them live by **applying a retrieval profile** at `/admin/evals` (persisted via `retrieval_profiles.is_active`, reloaded on startup). `retrieve()` / `merge_candidates()` / `rerank_chunks()` also accept a per-call `params` override, which the eval runner uses to test a candidate profile in isolation without changing live chat retrieval. Index-affecting parameters (chunking, embedding model/prefix/dimension) are **not** part of this override path and require Reindex. For a dimension change, use the temporary O0 migration tool above rather than the current Clear/Rebuild UI.
+> **Runtime override (E1c eval workbench).** The seven runtime-safe retrieval knobs (`vector_weight`, `keyword_weight`, `candidate_pool_size`, `final_chunk_count`, `rerank_weight`, `rerank_base_weight`, `low_confidence_threshold`) are read at request time from `ACTIVE_RETRIEVAL_PARAMS` in `app/retrieval.py`, not the import-time module constants. The config/env values still define the **defaults**; an admin can override them live by **applying a retrieval profile** at `/admin/evals` (persisted via `retrieval_profiles.is_active`, reloaded on startup). `retrieve()` / `merge_candidates()` / `rerank_chunks()` also accept a per-call `params` override, which the eval runner uses to test a candidate profile in isolation without changing live chat retrieval. Index-affecting parameters (chunking, embedding model/prefix/dimension) are **not** part of this override path and require Reindex. For a dimension change, use the `/admin/index` migration flow above rather than Clear/Rebuild.
 
 | Knob | Default | Location | What it controls |
 |---|---:|---|---|

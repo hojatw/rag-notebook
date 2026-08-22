@@ -1,7 +1,7 @@
 # O0 · 安全重設 Chroma collection 維度 — 實作計劃
 
-> **狀態**：**Phase A、B、C 已實作**；Phase D 待排。暫行 workaround 已於 PR #81 merge 進 main（64a79e0）。
-> **已裁決**：D1 = 有 running job 就拒絕遷移、D2 = 新增 `stale_embedding` 狀態、D3 = 流程放 `/admin/index`（皆已實作）。D4（腳本去留）留到 Phase D，見 §2。
+> **狀態**：**已完成**（Phase A–D 全數實作）。`ROADMAP.md` O0 已標記為 `[x]`，暫行警語已全數移除。本檔保留為設計紀錄與決策依據。
+> **已裁決**：D1 = 有 running job 就拒絕遷移、D2 = 新增 `stale_embedding` 狀態、D3 = 流程放 `/admin/index`、D4 = 腳本保留為 break-glass。四項皆已實作，見 §2。
 > **權威來源**：範圍與驗收標準見 [`ROADMAP.md`](ROADMAP.md) O0；向量層行為見 [`RETRIEVAL.md`](RETRIEVAL.md)；schema 見 [`SCHEMA.md`](SCHEMA.md)；操作程序見 [`DEVELOPMENT.md`](DEVELOPMENT.md)。本檔是實作藍圖，設計決策以那些權威文件為準。
 > **前置已滿足**：`scripts/reset_chroma_dimension.py`（含分類邏輯與 5 個測試）已在 main；`/admin/index` 誤導文案已修正並有回歸測試。
 
@@ -30,7 +30,7 @@
 | D1 | 遷移期間的並行 ingest | (a) 排空並等待 in-flight job (b) **佇列非空或有 running job 就拒絕遷移** | **(b)** | POC 單機、遷移是罕見的計劃性操作。排空邏輯要處理 timeout、部分失敗、worker 沒回應，複雜度不成比例。直接拒絕並告訴管理員「等佇列清空或停掉 worker」誠實且好懂。 |
 | D2 ✓ | 舊維度來源的狀態 | (a) 沿用 `status='failed'`（workaround 現行做法） (b) **新增 `stale_embedding` 狀態** | **(b) — 已裁決並實作** | `failed` 混淆「攝取壞掉」與「需要重新 embed」。管理員看到一排 failed 會以為檔案有問題。這是唯一值得動 schema 的地方——沿用 failed 會讓 admin 介面說謊。 |
 | D3 | 遷移流程的落點 | (a) **`/admin/index` 新增遷移動作** (b) 綁進 `/settings` 儲存流程 | **(a)** | `/settings` 存檔時使用者心智在「設定模型」，不在「我要毀掉索引」。`/admin/index` 已是索引維運頁，且 dry-run 預覽需要空間。`/settings` 仍負責擋下不相容的維度變更並指向 `/admin/index`。 |
-| D4 | 永久修法後 script 去留 | (a) 刪除 (b) **保留為 break-glass** | **(b)** | app 起不來時（例如 collection 已壞到 startup sync 就炸）UI 流程用不了。保留但在文件標為「僅限 app 無法啟動時」。 |
+| D4 ✓ | 永久修法後 script 去留 | (a) 刪除 (b) **保留為 break-glass** | **(b) — 已裁決並實作** | app 起不來時（例如 collection 已壞到 startup sync 就炸）UI 流程用不了。保留但在文件標為「僅限 app 無法啟動時」。 |
 
 ---
 
@@ -106,7 +106,7 @@ def reset_collection() -> int:
 | **A ✓** | `reset_collection()` + `vector_index_state` 表 + generation 檢查 | **已實作。**單進程維度遷移可行；schema + `SCHEMA.md` 已同步。另釘了一條缺陷見證測試（clear 後 probe 回報 `None` 卻仍拒絕新維度），Chroma 若改掉這行為會失敗提醒。**未含寫入屏障**——`reset_collection()` 的 docstring 標明「呼叫端須確保無並行 ingest」，屏障隨 Phase C 的觸發流程落地。 | — |
 | **B ✓** | 分類邏輯上提至 `app/`、`stale_embedding` 狀態、startup sync 防護 | **已實作。**新增 `app/index_migration.py`（`classify_sources` / `apply_source_states`）；`sync_from_sqlite` 加維度守衛並回傳 `skipped_dimension`；`stale_embedding` 狀態有標籤與樣式；`SCHEMA.md` 已同步。D2 裁決為新增狀態。 | A |
 | **C ✓** | `/admin/index` 遷移 UI + 寫入屏障 + audit event | **已實作。**目標維度取自 `/settings` 最近一次成功的 embedding 測試（不手動輸入）；頁面顯示 dry-run 預覽；需打字回目標維度確認；有 running job 時拒絕；遷移期間持鎖，`claim_next_job()` 暫停認領；審計事件 `index_dimension_migrated`。 | A, B |
-| **D** | split-worker 覆蓋、移除全部暫行警語、script 降級為 break-glass | 驗收標準 4；收尾 | A–C |
+| **D ✓** | split-worker 覆蓋、移除全部暫行警語、script 降級為 break-glass | **已實作。**以第二份獨立載入的 `vector_store`（自有 module 快取）模擬 worker process，覆蓋 384→migrate→1536；兩條 split-worker 測試都經過「拿掉 generation 檢查就會失敗」的反向驗證。README（中英）、AGENTS、RETRIEVAL、DEVELOPMENT、CHANGELOG 的暫行警語已移除，腳本 docstring 改標 break-glass。 | A–C |
 
 Phase A 單獨就能解掉 P0 的主要痛點（單機 inline worker 是目前預設部署形態），建議先落地 A 再排 B–D。
 

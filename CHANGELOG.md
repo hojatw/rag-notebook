@@ -11,11 +11,12 @@
 
 ### 新增
 
-- **Chroma embedding 維度重設 workaround（P0 暫行工具）**：新增
-  `scripts/reset_chroma_dimension.py`。工具預設 dry-run，只有同時指定 `--apply` 與
-  `--services-stopped` 才會變更資料；執行前自動備份 SQLite + Chroma，重建 collection，
-  回填可安全沿用的目標維度 vectors，並把仍是舊維度的 indexed 來源改為待 Reindex。
-  Docker 與本機操作步驟見 `docs/DEVELOPMENT.md`。
+- **`scripts/reset_chroma_dimension.py`（break-glass 維度遷移工具）**：在 app 起不來、
+  進不了 `/admin/index` 時，從應用程式外部完成維度遷移。預設 dry-run，只有同時指定
+  `--apply` 與 `--services-stopped` 才會變更資料；執行前自動備份 SQLite + Chroma，重建
+  collection，回填可安全沿用的目標維度 vectors，並把仍是舊維度的 indexed 來源標記為待
+  Reindex。**一般情況請用 `/admin/index` 的遷移流程**（見下方 O0 修正）。Docker 與本機
+  操作步驟見 `docs/DEVELOPMENT.md`。
 
 - **O0 Phase B — `stale_embedding` 來源狀態與 startup sync 維度守衛**：新增
   `app/index_migration.py`，依照既有向量的維度把來源分類（可沿用／只因鎖定而失敗
@@ -36,6 +37,16 @@
   審計事件 `index_dimension_migrated` 記錄前後維度與各項數量。
 
 ### 修正
+
+- **P0 修正完成 — `/admin/index` Clear 不再是維度遷移的死路（O0）**：原本 Clear 只執行
+  `collection.delete(ids=...)`，即使 vector count 歸零，collection schema 仍鎖在舊維度；
+  設定頁看不到任何 stored embedding 會誤判為未鎖定，直到新維度第一次 upsert 才以
+  `Collection expecting embedding with dimension of X, got Y` 失敗，且反覆 Clear/Rebuild
+  無法修復。現在有完整的遷移路徑：`reset_collection()` 真正換掉 collection 物件、
+  `vector_index_state.generation` 讓其他 process 的快取 handle 失效、遷移期間持鎖暫停
+  ingest 佇列、startup sync 拒絕寫入維度不符的分塊、維度不符的來源進入 `stale_embedding`
+  等待重新索引。`scripts/reset_chroma_dimension.py` 保留為 break-glass（app 起不來時用）。
+  涵蓋 inline worker 與 split worker 兩種部署形態的回歸測試。
 
 - **`/admin/index` 不再把「清除／重建」當成更換 embedding 維度的方法**：原本空集合會顯示
   「尚未鎖定維度」，而清除的確認對話框承諾「之後執行重建即可恢復搜尋」——在維度變更的情境
@@ -76,19 +87,22 @@
 - 新增 `openpyxl`（A6c）、`python-pptx`（A6b，會連帶帶入 Pillow 與 XlsxWriter），
   並把原本是傳遞相依的 `charset-normalizer` 明確 pin 住（A6c 直接 import 它做編碼偵測）。
 
+- **安全性更新**：`cryptography` 50.0.0（GHSA-g6cj-pr64-35w5，high — 漏洞在 PKCS#7
+  EnvelopedData 解密，本專案只用 Fernet + PBKDF2HMAC，實際踩不到，仍升級）；
+  `pypdf` 6.15.0（GHSA-fp3f-mc75-235c、GHSA-fwg2-594c-jp42，medium — **這兩個踩得到**，
+  惡意 PDF 可耗盡記憶體/CPU）。已實測確認 `cryptography` 49 加密的 API key 在 50 下
+  仍能正確解密，**既有部署不需要重新輸入 API key**。
+
+- 例行更新：`fastapi` 0.141.1、`uvicorn` 0.52.3、`joserfc` 1.7.4、
+  `charset-normalizer` 3.5.1。charset-normalizer 的升級順帶修好一個無聲的錯誤——
+  3.4.9 會把 GBK 編碼的 CSV 判成 cp949（韓文）並回傳看似正常的亂碼，不會拋錯，
+  那堆亂碼會被當成內容切塊並 embed。已補回歸測試。
+
 ### 變更
 
 - 決策紀錄：`P2-1`（SQLite 向量複本）裁定維持現狀並寫下重啟條件；
   `Q1-1`（RRF）記為排序決策並列出重新校準的前置條件。
   詳見 `docs/PERFORMANCE.md`、`docs/QUALITY.md`。
-
-### 已知問題
-
-- **P0 — `/admin/index` Clear 不會重設 Chroma collection 維度：**現行實作只執行
-  `collection.delete(ids=...)`；即使 vector count 已是 0，collection schema 仍可能鎖在
-  舊維度。設定頁因看不到任何 stored embedding 會誤判為未鎖定，新維度第一次 upsert
-  才以 `Collection expecting embedding with dimension of X, got Y` 失敗。永久修正與
-  multi-process cache/worker 協調列為 `ROADMAP.md` O0；修正完成前使用上述 workaround。
 
 ## [0.2.0] - 2026-07-25
 

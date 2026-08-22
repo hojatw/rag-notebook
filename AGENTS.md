@@ -89,13 +89,12 @@ For Docker/runtime changes, build the image and smoke-test at least `/` and `/lo
 - **The API key is optional** on both connections. Local services (e5, Ollama, vLLM, TEI) accept requests without one — a blank key sends no auth header; readiness is decided by the model being set, not the key. Do not re-add `not api_key` to the "configured" guards.
 - Embedding responses must provide OpenAI-compatible `data[].embedding`; chat responses must provide `choices[0].message.content`.
 - Changing embedding models can change vector dimensions. Preserve the existing
-  dimension check. **Known P0 defect:** the current `/admin/index` Clear action
-  removes vectors but does not reset the Chroma collection's locked dimension;
-  do not describe Clear/Rebuild as a valid dimension-migration path until O0 is
-  fixed. Use `scripts/reset_chroma_dimension.py` with all app/worker processes
-  stopped, then Reindex the sources the tool reports. The permanent fix is
-  planned in `docs/O0_DIMENSION_RESET_PLAN.md` — read it before touching
-  `clear_all_vectors`, collection caching, or startup sync.
+  dimension check. **Clear/Rebuild is not a dimension migration** — Chroma locks
+  a collection's width on first write and deleting records does not release it;
+  only replacing the collection does (`reset_collection()`). The migration flow
+  lives on `/admin/index` and is described in `docs/O0_DIMENSION_RESET_PLAN.md`.
+  Read that before touching `clear_all_vectors`, `reset_collection`, the
+  `vector_index_state` generation/lock, or startup sync's dimension guard.
 - Before changing query rewrite, hybrid retrieval, reranking, chunking, or scoring, read `docs/RETRIEVAL.md` and update eval expectations where appropriate.
 
 ## Security Expectations
