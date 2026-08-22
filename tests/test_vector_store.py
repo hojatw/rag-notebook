@@ -76,7 +76,7 @@ def test_diff_sync_is_no_op_when_aligned(fresh_modules, local_embed, tmp_path):
 
     result = vs.sync_from_sqlite(mode="diff")
 
-    assert result == {"upserted": 0, "deleted": 0}
+    assert result == {"upserted": 0, "deleted": 0, "skipped_dimension": 0}
     assert vs.index_status()["in_sync"] is True
 
 

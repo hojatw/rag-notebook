@@ -167,6 +167,10 @@ templates.env.globals["source_status_labels"] = {
     "processing": "處理中",
     "indexed": "已索引",
     "failed": "失敗",
+    # O0: the file is fine, its vectors are just at the wrong embedding
+    # dimension. Kept distinct from 失敗 so an admin doesn't go hunting for a
+    # broken upload — the fix is Reindex, not re-upload.
+    "stale_embedding": "需重新索引",
 }
 
 # i18n (Phase 0): `t()` resolves UI copy from the message catalog; `i18n_js()`

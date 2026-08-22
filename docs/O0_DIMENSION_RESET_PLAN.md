@@ -1,6 +1,7 @@
 # O0 · 安全重設 Chroma collection 維度 — 實作計劃
 
-> **狀態**：**Phase A 已實作**；Phase B–D 待排。暫行 workaround 已於 PR #81 merge 進 main（64a79e0）。
+> **狀態**：**Phase A、B 已實作**；Phase C–D 待排。暫行 workaround 已於 PR #81 merge 進 main（64a79e0）。
+> **已裁決**：D2 = 新增 `stale_embedding` 狀態（已實作）。D1、D3、D4 仍待拍板，見 §2。
 > **權威來源**：範圍與驗收標準見 [`ROADMAP.md`](ROADMAP.md) O0；向量層行為見 [`RETRIEVAL.md`](RETRIEVAL.md)；schema 見 [`SCHEMA.md`](SCHEMA.md)；操作程序見 [`DEVELOPMENT.md`](DEVELOPMENT.md)。本檔是實作藍圖，設計決策以那些權威文件為準。
 > **前置已滿足**：`scripts/reset_chroma_dimension.py`（含分類邏輯與 5 個測試）已在 main；`/admin/index` 誤導文案已修正並有回歸測試。
 
@@ -27,7 +28,7 @@
 | # | 決策 | 選項 | 建議 | 理由 |
 |---|---|---|---|---|
 | D1 | 遷移期間的並行 ingest | (a) 排空並等待 in-flight job (b) **佇列非空或有 running job 就拒絕遷移** | **(b)** | POC 單機、遷移是罕見的計劃性操作。排空邏輯要處理 timeout、部分失敗、worker 沒回應，複雜度不成比例。直接拒絕並告訴管理員「等佇列清空或停掉 worker」誠實且好懂。 |
-| D2 | 舊維度來源的狀態 | (a) 沿用 `status='failed'`（workaround 現行做法） (b) **新增 `stale_embedding` 狀態** | **(b)** | `failed` 混淆「攝取壞掉」與「需要重新 embed」。管理員看到一排 failed 會以為檔案有問題。這是唯一值得動 schema 的地方——沿用 failed 會讓 admin 介面說謊。 |
+| D2 ✓ | 舊維度來源的狀態 | (a) 沿用 `status='failed'`（workaround 現行做法） (b) **新增 `stale_embedding` 狀態** | **(b) — 已裁決並實作** | `failed` 混淆「攝取壞掉」與「需要重新 embed」。管理員看到一排 failed 會以為檔案有問題。這是唯一值得動 schema 的地方——沿用 failed 會讓 admin 介面說謊。 |
 | D3 | 遷移流程的落點 | (a) **`/admin/index` 新增遷移動作** (b) 綁進 `/settings` 儲存流程 | **(a)** | `/settings` 存檔時使用者心智在「設定模型」，不在「我要毀掉索引」。`/admin/index` 已是索引維運頁，且 dry-run 預覽需要空間。`/settings` 仍負責擋下不相容的維度變更並指向 `/admin/index`。 |
 | D4 | 永久修法後 script 去留 | (a) 刪除 (b) **保留為 break-glass** | **(b)** | app 起不來時（例如 collection 已壞到 startup sync 就炸）UI 流程用不了。保留但在文件標為「僅限 app 無法啟動時」。 |
 
@@ -103,7 +104,7 @@ def reset_collection() -> int:
 | Phase | 內容 | 產出 | 相依 |
 |---|---|---|---|
 | **A ✓** | `reset_collection()` + `vector_index_state` 表 + generation 檢查 | **已實作。**單進程維度遷移可行；schema + `SCHEMA.md` 已同步。另釘了一條缺陷見證測試（clear 後 probe 回報 `None` 卻仍拒絕新維度），Chroma 若改掉這行為會失敗提醒。**未含寫入屏障**——`reset_collection()` 的 docstring 標明「呼叫端須確保無並行 ingest」，屏障隨 Phase C 的觸發流程落地。 | — |
-| **B** | 分類邏輯上提至 `app/`、`stale_embedding` 狀態、startup sync 防護 | 驗收標準 3；`SCHEMA.md`、`ROUTES.md` 視情況 | A |
+| **B ✓** | 分類邏輯上提至 `app/`、`stale_embedding` 狀態、startup sync 防護 | **已實作。**新增 `app/index_migration.py`（`classify_sources` / `apply_source_states`）；`sync_from_sqlite` 加維度守衛並回傳 `skipped_dimension`；`stale_embedding` 狀態有標籤與樣式；`SCHEMA.md` 已同步。D2 裁決為新增狀態。 | A |
 | **C** | `/admin/index` 遷移 UI（dry-run 預覽 → 打字確認 → 執行 → 自動 enqueue Reindex）+ audit event | 驗收標準 5 的產品面 | A, B |
 | **D** | split-worker 覆蓋、移除全部暫行警語、script 降級為 break-glass | 驗收標準 4；收尾 | A–C |
 

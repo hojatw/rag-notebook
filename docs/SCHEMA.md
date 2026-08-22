@@ -191,8 +191,8 @@ An uploaded document. `notebook_id` is nullable for legacy rows (backfilled by t
 | `filename` | TEXT NOT NULL | original name |
 | `stored_path` | TEXT NOT NULL | path under `data/uploads/<user_id>/` |
 | `content_type` | TEXT DEFAULT `''` | |
-| `status` | TEXT NOT NULL DEFAULT `'uploaded'` | `uploaded` → `processing` → `indexed` \| `failed` |
-| `error` | TEXT DEFAULT `''` | failure message (truncated) |
+| `status` | TEXT NOT NULL DEFAULT `'uploaded'` | `uploaded` → `processing` → `indexed` \| `failed` \| `stale_embedding`. Free text — no CHECK constraint; the allowed set lives in `source_status_labels` (`app/main.py`). **`stale_embedding` (O0)** means the file is fine but its stored vectors are at the wrong embedding dimension: excluded from every `status = 'indexed'` query (which is what stops startup sync re-locking a reset collection), not selectable for chat, and recovered through Reindex. Deliberately *not* `failed` — that would send an admin looking for a broken upload |
+| `error` | TEXT DEFAULT `''` | failure message (truncated); also carries the `stale_embedding` explanation, which the source row renders |
 | `summary` / `summary_at` | TEXT DEFAULT `''` | per-source TL;DR generated after indexing |
 | `diagnostics_json` | TEXT NOT NULL DEFAULT `'{}'` | A6a ingestion diagnostics: `extractor`, `chars`, `sections`, `chunks`, `section_kinds`, `warnings[]`, bounded `preview`, and `failed_stage` on failure. Written by `process_source` (`app/ingest.py`) and **replaced** on every re-ingest. Same scope as the source itself — the text preview must not be copied into audit/governance rows |
 | `created_at` / `updated_at` | TEXT | |

@@ -1725,7 +1725,10 @@ tbody tr:hover {
 }
 
 .status.processing,
-.status.uploaded {
+.status.uploaded,
+/* O0: actionable, not broken — same warn palette as the transient states
+   because the source recovers through Reindex, not re-upload. */
+.status.stale_embedding {
   background: var(--warn-soft);
   color: var(--warn);
   border-color: var(--warn-line);

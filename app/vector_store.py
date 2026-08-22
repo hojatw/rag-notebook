@@ -349,7 +349,11 @@ def clear_all_vectors() -> int:
     return len(ids)
 
 
-def sync_from_sqlite(batch_size: int = 500, mode: str = "diff") -> dict[str, int]:
+def sync_from_sqlite(
+    batch_size: int = 500,
+    mode: str = "diff",
+    expected_dimension: int | None = None,
+) -> dict[str, int]:
     """Reconcile the Chroma collection with SQLite chunks.
 
     Modes:
@@ -362,13 +366,26 @@ def sync_from_sqlite(batch_size: int = 500, mode: str = "diff") -> dict[str, int
             Use from the admin "Rebuild index" button when drift is
             suspected or after restoring from a backup.
 
-    Returns ``{"upserted": int, "deleted": int}``.
+    **Dimension guard (O0 criterion 3).** SQLite keeps every chunk's embedding
+    at whatever width it was created with, so after an embedding-model change
+    a plain replay would push old vectors back into Chroma — and into a
+    *freshly reset* (still unlocked) collection that replay is what re-locks it
+    at the old dimension. Chunks whose width doesn't match the target are
+    therefore skipped rather than upserted, and counted in the result.
+
+    The target is the collection's own dimension when it holds vectors; for an
+    empty collection there is nothing to read, so pass ``expected_dimension``
+    (the configured embedding model's width). With neither, no filtering
+    happens and behaviour is exactly as before.
+
+    Returns ``{"upserted": int, "deleted": int, "skipped_dimension": int}``.
     """
     if not chroma_available():
         logger.warning("vector_sync_skipped reason=chroma_unavailable")
-        return {"upserted": 0, "deleted": 0}
+        return {"upserted": 0, "deleted": 0, "skipped_dimension": 0}
     started = time.perf_counter()
     col = collection()
+    target_dimension = probe_index_dimension()["dimension"] or expected_dimension
 
     sqlite_chunk_ids = _indexed_chunk_ids()
     if mode == "diff":
@@ -390,26 +407,50 @@ def sync_from_sqlite(batch_size: int = 500, mode: str = "diff") -> dict[str, int
         logger.info("vector_orphans_deleted count=%s", len(orphan_ids))
 
     upserted = 0
+    skipped_dimension = 0
+    skipped_source_ids: set[int] = set()
     for start in range(0, len(pending_rows), batch_size):
-        batch = [
-            {
-                "id": row["id"],
-                "user_id": row["user_id"],
-                "source_id": row["source_id"],
-                "chunk_index": row["chunk_index"],
-                "filename": row["filename"],
-                "location": row["location"],
-                "text": row["text"],
-                "embedding": db.loads(row["embedding_json"]),
-            }
-            for row in pending_rows[start : start + batch_size]
-        ]
+        batch = []
+        for row in pending_rows[start : start + batch_size]:
+            embedding = db.loads(row["embedding_json"])
+            if target_dimension is not None and len(embedding) != target_dimension:
+                # Replaying this would re-lock a reset collection at the old
+                # width. The source needs re-embedding, not a replay.
+                skipped_dimension += 1
+                skipped_source_ids.add(int(row["source_id"]))
+                continue
+            batch.append(
+                {
+                    "id": row["id"],
+                    "user_id": row["user_id"],
+                    "source_id": row["source_id"],
+                    "chunk_index": row["chunk_index"],
+                    "filename": row["filename"],
+                    "location": row["location"],
+                    "text": row["text"],
+                    "embedding": embedding,
+                }
+            )
         upsert_chunks(batch)
         upserted += len(batch)
 
+    if skipped_dimension:
+        # Loud on purpose: silently dropping chunks would look like a healthy
+        # sync while those sources quietly stop being searchable.
+        logger.warning(
+            "vector_sync_dimension_mismatch_skipped chunks=%s sources=%s target_dimension=%s"
+            " hint=reindex_these_sources",
+            skipped_dimension, sorted(skipped_source_ids), target_dimension,
+        )
+
     elapsed_ms = (time.perf_counter() - started) * 1000
     logger.info(
-        "vector_sync_completed mode=%s upserted=%s deleted=%s sqlite_chunks=%s elapsed_ms=%.1f",
-        mode, upserted, len(orphan_ids), len(sqlite_chunk_ids), elapsed_ms,
+        "vector_sync_completed mode=%s upserted=%s deleted=%s skipped_dimension=%s"
+        " sqlite_chunks=%s elapsed_ms=%.1f",
+        mode, upserted, len(orphan_ids), skipped_dimension, len(sqlite_chunk_ids), elapsed_ms,
     )
-    return {"upserted": upserted, "deleted": len(orphan_ids)}
+    return {
+        "upserted": upserted,
+        "deleted": len(orphan_ids),
+        "skipped_dimension": skipped_dimension,
+    }
