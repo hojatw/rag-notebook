@@ -56,7 +56,17 @@ Current mitigations are structural rather than sandboxing:
 
 ## Triaged dependency-audit findings
 
-The items below are surfaced by Dependabot / `pip-audit` but have been assessed as **not exploitable in this deployment**. They are documented here so the alerts are not repeatedly re-investigated.
+The items below are surfaced by Dependabot / `pip-audit`. Each records how it was assessed against *this* deployment, so the alerts are not repeatedly re-investigated. An advisory that turns out not to apply is still patched when the upgrade is cheap — the note explains why the alert existed, not why the upgrade was skipped.
+
+### GHSA-g6cj-pr64-35w5 — `cryptography < 50.0.0` (high) — patched; the affected path was never used
+
+A Bleichenbacher oracle in **PKCS#7 `EnvelopedData` decryption**. This app's only use of `cryptography` is [`app/security.py`](../app/security.py): Fernet (AES-CBC + HMAC) for API-key encryption at rest, plus PBKDF2HMAC/SHA-256 for key derivation. It never calls the PKCS#7 envelope APIs, so the oracle was unreachable — upgraded to `50.0.0` anyway because it is the advisory's fix and costs nothing.
+
+- **Verified on upgrade:** a Fernet token produced under `49.0.0` still decrypts correctly under `50.0.0` with the same `NOTEBOOKLM_SECRET`, and a wrong secret still yields `""` rather than garbage. Existing encrypted API keys in deployed databases are unaffected — no re-entry needed.
+
+### GHSA-fp3f-mc75-235c / GHSA-fwg2-594c-jp42 — `pypdf < 6.15.0` (medium) — applicable, patched
+
+Unbounded memory/CPU on crafted `/ToUnicode` streams and CID font width ranges. Unlike the other two entries here this **is** reachable: the app parses user-uploaded PDFs. It is denial-of-service only (no code execution, no disclosure), and ingest runs in the worker behind `[runtime].max_source_bytes` with per-source failure isolation, so the blast radius is one stuck ingest job rather than the web process. Patched to `6.15.0` — a direct application of the "keep these parsers patched" rule above.
 
 ### CVE-2026-45829 — `chromadb==1.5.9` (critical) — not applicable
 
