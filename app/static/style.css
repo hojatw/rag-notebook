@@ -1390,6 +1390,27 @@ li code {
 
 .index-actions form { margin: 0; }
 
+/* O0 dimension migration: the typed-confirmation row. Wraps to its own line on
+   narrow screens so the input never gets squeezed under its own label. */
+.index-migrate-form {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-top: var(--sp-4);
+}
+
+.index-migrate-form label {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.index-migrate-form input {
+  width: 9rem;
+  margin: 0;
+}
+
 /* ---------------------------------------------------------------- modal (source preview) */
 
 .modal {

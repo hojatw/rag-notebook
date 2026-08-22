@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import i18n
+from . import i18n, index_migration
 from .config import config
 from .db import connect, loads
 from .main import record_audit_event, render, require_admin
@@ -173,9 +173,97 @@ def admin_index(
 
     ``msg`` is a small flash code passed via query string after a POST so we
     can show "Rebuilt" / "Cleared" without introducing a session-flash store.
+
+    The page doubles as the O0 dimension-migration console, so it also carries
+    a dry-run preview: the target width from the last `/settings` embedding
+    test, what the migration would do to each source, and whether the ingest
+    queue currently blocks it.
     """
     status = vector_index_status()
-    return render(request, "admin_index.html", {"user": user, "status": status, "msg": msg or ""})
+    return render(
+        request,
+        "admin_index.html",
+        {"user": user, "status": status, "msg": msg or "", "migration": _migration_preview()},
+    )
+
+
+def _migration_preview() -> dict[str, Any]:
+    """Everything the index page needs to describe a dimension migration.
+
+    Read-only and cheap: no embedding endpoint is called, the target comes from
+    the stored `/settings` diagnostic. Safe to compute on every page render.
+    """
+    target, reason = index_migration.target_dimension_from_diagnostics()
+    preview: dict[str, Any] = {
+        "target_dimension": target,
+        "blocked_reason": reason,
+        "queue": index_migration.ingest_queue_snapshot(),
+        "lock": index_migration.migration_lock_state(),
+        "stale_sources": index_migration.stale_source_count(),
+        "plan": None,
+    }
+    if target is not None:
+        plan = index_migration.classify_sources(target)
+        preview["plan"] = plan.summary()
+        preview["stale_filenames"] = [
+            source.filename
+            for source in plan.sources
+            if source.source_id in set(plan.mark_stale_ids)
+        ][:20]
+    return preview
+
+
+@router.post("/admin/index/migrate")
+def admin_index_migrate(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+    confirm: str = Form(""),
+):
+    """Run an embedding-dimension migration (admin only, O0 Phase C).
+
+    Destructive and hard to undo, so it is gated three ways: the target width
+    must come from a *successful* `/settings` embedding test, the operator must
+    type the dimension back to confirm, and a running ingest job refuses the
+    whole thing. The migration then takes a lock that pauses the ingest queue
+    for its duration.
+    """
+    target, reason = index_migration.target_dimension_from_diagnostics()
+    if target is None:
+        return RedirectResponse(f"/admin/index?msg=migrate-blocked-{reason}", status_code=303)
+    if confirm.strip() != str(target):
+        return RedirectResponse("/admin/index?msg=migrate-confirm-mismatch", status_code=303)
+
+    before = vector_index_status().get("dimension")
+    try:
+        result = index_migration.run_migration(target)
+    except index_migration.MigrationBusy as exc:
+        logger.warning("admin_index_migrate_busy admin_user_id=%s reason=%s", user["id"], exc)
+        return RedirectResponse(f"/admin/index?msg=migrate-busy-{exc}", status_code=303)
+
+    record_audit_event(
+        request,
+        user,
+        "index_dimension_migrated",
+        "vector_index",
+        None,
+        {
+            "from_dimension": before,
+            "to_dimension": target,
+            "removed_vectors": result["removed_vectors"],
+            "restored_vectors": result["restored_vectors"],
+            "sources_recovered": result["recovered"],
+            "sources_marked_stale": result["stale"],
+        },
+        "high",
+    )
+    logger.info(
+        "admin_index_migrated admin_user_id=%s from=%s to=%s restored=%s stale=%s",
+        user["id"], before, target, result["restored_vectors"], result["stale"],
+    )
+    return RedirectResponse(
+        f"/admin/index?msg=migrated-{target}-{result['restored_vectors']}-{result['stale']}",
+        status_code=303,
+    )
 
 
 @router.post("/admin/index/rebuild")

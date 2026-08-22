@@ -102,6 +102,11 @@ class JobsConfig:
 @dataclasses.dataclass
 class RuntimeConfig:
     briefing_lock_timeout_s: float = 90.0
+    # O0: how long a held embedding-dimension migration lock stays valid. The
+    # migration is a collection swap plus a bounded SQLite update, so minutes
+    # is generous; the timeout exists only so a process that died mid-migration
+    # cannot wedge the ingest queue forever.
+    index_migration_lock_timeout_s: float = 600.0
     upload_batch_limit: int = 5
     # Hard size cap for source formats the extractor parses eagerly or loads
     # whole into memory: .xlsx / .pptx (zip containers — a small archive can

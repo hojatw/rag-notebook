@@ -9,6 +9,15 @@
 
   {% if msg.startswith('rebuilt-') %}
     <div class="notice">索引已重建 — 已寫入 {{ msg.split('-', 1)[1] }} 個分塊。</div>
+  {% elif msg.startswith('migrated-') %}
+    {% set parts = msg.split('-') %}
+    <div class="notice">維度遷移完成 — 集合已重建為 {{ parts[1] }} 維，回填 {{ parts[2] }} 個向量，{{ parts[3] }} 個來源標記為需重新索引。</div>
+  {% elif msg == 'migrate-confirm-mismatch' %}
+    <div class="alert">確認的維度不符，未執行任何變更。</div>
+  {% elif msg.startswith('migrate-busy-') %}
+    <div class="alert">{{ msg.split('-', 2)[2] }}</div>
+  {% elif msg.startswith('migrate-blocked-') %}
+    <div class="alert">{{ msg.split('-', 2)[2] }}</div>
   {% elif msg.startswith('cleared-') %}
     <div class="notice">已清除 {{ msg.split('-', 1)[1] }} 個向量。沿用<strong>同一個</strong> embedding 模型時，執行「重建」即可重新建立；若你是為了更換 embedding 維度而清除，「重建」會因維度不符而失敗 — 請改用下方的維度遷移程序。</div>
   {% endif %}
@@ -79,10 +88,70 @@
 
   <section class="settings-section">
     <h2>更換 embedding 維度</h2>
-    <div class="alert">
-      <p><strong>「清除」不是維度遷移的方法。</strong>Chroma 在第一次寫入時鎖定集合維度，刪光向量並不會解除鎖定 — 集合看起來是空的，之後卻仍會以 <code>Collection expecting embedding with dimension of N</code> 拒絕新維度的寫入，且反覆清除／重建無法修復。</p>
-      <p class="small">要更換 embedding 模型的維度，請<strong>停掉所有 app 與 worker 程序</strong>，再執行 <code>scripts/reset_chroma_dimension.py</code>（預設為 dry-run，會先備份 SQLite 與 Chroma），完成後回到本頁對工具列出的來源執行 Reindex。詳細步驟見 <code>docs/DEVELOPMENT.md</code>。</p>
-    </div>
+    <p class="muted">Chroma 在第一次寫入時鎖定集合維度，「清除」不會解除鎖定。要換到不同維度的 embedding 模型，請用下面的遷移流程 — 它會換掉整個集合、保留可沿用的向量，並把維度不符的來源標記為<strong>需重新索引</strong>。</p>
+
+    {% if migration.target_dimension is none %}
+      <div class="alert">
+        <p><strong>尚無法遷移。</strong>{{ migration.blocked_reason }}</p>
+        <p class="small">目標維度取自「設定」頁最近一次<strong>成功</strong>的 embedding 測試，而非手動輸入 — 這樣這個數字一定是 endpoint 真的回傳過的。<a href="/settings">前往設定頁測試</a>。</p>
+      </div>
+    {% else %}
+      <div class="index-stat-grid">
+        <div class="index-stat">
+          <span class="index-stat-label">目標維度</span>
+          <span class="index-stat-value">{{ migration.target_dimension }}</span>
+          <span class="muted small">（來自設定頁的 embedding 測試）</span>
+        </div>
+        <div class="index-stat">
+          <span class="index-stat-label">可沿用來源</span>
+          <span class="index-stat-value">{{ migration.plan.reusable }}</span>
+          <span class="muted small">（向量已是目標維度）</span>
+        </div>
+        <div class="index-stat">
+          <span class="index-stat-label">需重新索引</span>
+          <span class="index-stat-value {% if migration.plan.stale %}warn{% endif %}">{{ migration.plan.stale }}</span>
+          <span class="muted small">（維度不符，須重新產生 embedding）</span>
+        </div>
+        <div class="index-stat">
+          <span class="index-stat-label">可復原</span>
+          <span class="index-stat-value">{{ migration.plan.recovered }}</span>
+          <span class="muted small">（只因鎖定而失敗，會轉回已索引）</span>
+        </div>
+      </div>
+
+      {% if migration.stale_filenames %}
+        <p class="hint muted small">將被標記為需重新索引：{{ migration.stale_filenames | join("、") }}{% if migration.plan.stale > migration.stale_filenames | length %} 等 {{ migration.plan.stale }} 個{% endif %}。這些來源的檔案不受影響，重新索引即可恢復搜尋。</p>
+      {% endif %}
+
+      {% if migration.queue.running %}
+        <div class="alert">
+          <p><strong>目前無法遷移：有 {{ migration.queue.running }} 個攝取工作正在執行。</strong>它們仍在使用舊的 embedding 模型。請等佇列清空（或停掉 worker）後再試。</p>
+        </div>
+      {% elif migration.lock.locked and not migration.lock.stale %}
+        <div class="alert">
+          <p><strong>另一個遷移正在進行中</strong>（{{ migration.lock.owner }}，已 {{ migration.lock.age_s }} 秒）。</p>
+        </div>
+      {% else %}
+        {% if migration.queue.queued %}
+          <p class="hint muted small">佇列中有 {{ migration.queue.queued }} 個等待中的工作 — 不影響遷移，它們會在遷移後以新模型執行。</p>
+        {% endif %}
+        <form method="post" action="/admin/index/migrate" class="index-migrate-form"
+              data-confirm="將重建 Chroma 集合，並把 {{ migration.plan.stale }} 個來源標記為需重新索引。重新索引會呼叫 embedding endpoint，有成本。確定執行？"
+              data-loading-form>
+          {{ csrf_input() }}
+          <label for="migrate-confirm">輸入目標維度 <code>{{ migration.target_dimension }}</code> 以確認</label>
+          <input type="text" id="migrate-confirm" name="confirm" inputmode="numeric"
+                 autocomplete="off" placeholder="{{ migration.target_dimension }}" required>
+          <button type="submit" class="danger" data-loading-text="遷移中...">執行維度遷移</button>
+        </form>
+      {% endif %}
+    {% endif %}
+
+    {% if migration.stale_sources %}
+      <p class="hint muted small">目前有 <strong>{{ migration.stale_sources }}</strong> 個來源等待重新索引。到各自的筆記本點「重新索引」即可 — 它們不會出現在對話範圍內，啟動同步也不會把舊向量寫回去。</p>
+    {% endif %}
+
+    <p class="hint muted small">app 無法啟動而進不了這一頁時，改用 <code>scripts/reset_chroma_dimension.py</code>（需停掉所有程序）。詳見 <code>docs/DEVELOPMENT.md</code>。</p>
   </section>
 
   <div class="settings-foot">

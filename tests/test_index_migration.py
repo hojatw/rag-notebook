@@ -190,3 +190,183 @@ def test_sync_without_a_target_dimension_keeps_old_behaviour(fresh_modules):
 
     assert result["upserted"] == 2
     assert result["skipped_dimension"] == 0
+
+
+# -------------------- write barrier (O0 criterion 2, D1) --------------------
+
+def test_migration_is_refused_while_an_ingest_job_runs(fresh_modules):
+    """D1: a running job is mid-flight with the OLD model, so refuse outright.
+
+    Draining it safely is more machinery than a single-machine POC needs;
+    telling the operator to wait is honest and explains itself in a sentence.
+    """
+    import pytest
+    import app.index_migration as im
+
+    db = fresh_modules.db
+    source_id = _seed_source(db, filename="a.txt", status="processing", dimension=384)
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO ingest_jobs (source_id, status, claimed_at) VALUES (?, 'running', ?)",
+            (source_id, 1.0),
+        )
+        conn.commit()
+
+    with pytest.raises(im.MigrationBusy, match="攝取工作"):
+        im.acquire_migration_lock()
+
+    assert im.migration_lock_state()["locked"] is False   # nothing was left held
+
+
+def test_queued_jobs_do_not_block_a_migration(fresh_modules):
+    """A queued job hasn't embedded anything yet — it runs after, on the new model."""
+    import app.index_migration as im
+
+    db = fresh_modules.db
+    source_id = _seed_source(db, filename="a.txt", status="uploaded", dimension=384)
+    with db.connect() as conn:
+        conn.execute("INSERT INTO ingest_jobs (source_id, status) VALUES (?, 'queued')", (source_id,))
+        conn.commit()
+
+    im.acquire_migration_lock()
+
+    assert im.migration_lock_state()["locked"] is True
+    im.release_migration_lock()
+
+
+def test_second_migration_is_refused_while_one_holds_the_lock(fresh_modules):
+    import pytest
+    import app.index_migration as im
+
+    im.acquire_migration_lock()
+    try:
+        with pytest.raises(im.MigrationBusy, match="進行中"):
+            im.acquire_migration_lock()
+    finally:
+        im.release_migration_lock()
+
+
+def test_worker_will_not_claim_jobs_during_a_migration(fresh_modules):
+    """**The barrier's whole point.** No upsert may land mid-swap.
+
+    A claim here would ingest → upsert → recreate the collection at the old
+    dimension between reset_collection's delete and its recreate, silently
+    undoing the migration.
+    """
+    import app.index_migration as im
+    import app.jobs as jobs
+
+    db = fresh_modules.db
+    source_id = _seed_source(db, filename="a.txt", status="uploaded", dimension=384)
+    jobs.enqueue_source(source_id)
+    assert jobs.claim_next_job() is not None      # claimable when unlocked
+
+    with db.connect() as conn:                    # put it back
+        conn.execute("UPDATE ingest_jobs SET status = 'queued', claimed_at = NULL")
+        conn.commit()
+    im.acquire_migration_lock()
+    try:
+        assert jobs.claim_next_job() is None      # paused
+    finally:
+        im.release_migration_lock()
+    assert jobs.claim_next_job() is not None      # resumes afterwards
+
+
+def test_a_stale_lock_does_not_wedge_the_queue_forever(fresh_modules, monkeypatch):
+    """A process that died mid-migration must not stop ingest permanently."""
+    import app.index_migration as im
+    import app.jobs as jobs
+
+    db = fresh_modules.db
+    source_id = _seed_source(db, filename="a.txt", status="uploaded", dimension=384)
+    jobs.enqueue_source(source_id)
+    im.acquire_migration_lock()
+    # Patch through the module's own `config` reference: other suites reload
+    # the app graph, after which `app.config.config` can be a different object
+    # than the one this module closed over.
+    monkeypatch.setattr(im.config.runtime, "index_migration_lock_timeout_s", -1.0)
+
+    assert im.migration_lock_state()["stale"] is True
+    assert jobs.claim_next_job() is not None      # the queue moves again
+
+    # Once that job finishes, a fresh migration takes the stale lock over
+    # instead of being blocked by the dead process's leftovers.
+    with db.connect() as conn:
+        conn.execute("UPDATE ingest_jobs SET status = 'done'")
+        conn.commit()
+    im.acquire_migration_lock()
+    im.release_migration_lock()
+
+
+# -------------------- target dimension --------------------
+
+def test_target_dimension_requires_a_successful_embedding_test(fresh_modules):
+    """The target must be a width the endpoint actually returned, not typed in."""
+    import json as json_module
+    import app.index_migration as im
+
+    db = fresh_modules.db
+    assert im.target_dimension_from_diagnostics() == (None, "尚未在「設定」頁測試 embedding 模型，無法得知目標維度。")
+
+    def _store(payload):
+        with db.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO llm_settings (id) VALUES (1)")
+            conn.execute(
+                "UPDATE llm_settings SET diagnostics_json = ? WHERE id = 1",
+                (json_module.dumps({"embedding": payload}),),
+            )
+            conn.commit()
+
+    _store({"status": "failed", "embedding_dimension": 1536})
+    assert im.target_dimension_from_diagnostics()[0] is None      # a failed probe is not a target
+
+    _store({"status": "ok", "embedding_dimension": None})
+    assert im.target_dimension_from_diagnostics()[0] is None      # ok but no number
+
+    _store({"status": "ok", "embedding_dimension": 1536})
+    assert im.target_dimension_from_diagnostics() == (1536, "")
+
+
+# -------------------- end-to-end --------------------
+
+def test_run_migration_swaps_the_collection_and_reconciles_sources(fresh_modules):
+    """384 → 1536 end to end, with a mix of reusable and stale sources."""
+    import app.index_migration as im
+
+    db, vs = fresh_modules.db, fresh_modules.vector_store
+    old = _seed_source(db, filename="old.txt", status="indexed", dimension=384, chunks=2)
+    new = _seed_source(db, filename="new.txt", status="indexed", dimension=1536, chunks=3)
+    vs.sync_from_sqlite(mode="full")               # locks the collection at 384
+    assert vs.probe_index_dimension()["dimension"] == 384
+
+    result = im.run_migration(1536)
+
+    assert result["stale"] == 1
+    assert result["restored_vectors"] == 3         # only the 1536 source comes back
+    assert vs.probe_index_dimension()["dimension"] == 1536
+    assert _status_of(db, old)["status"] == im.STALE_STATUS
+    assert _status_of(db, new)["status"] == "indexed"
+    assert im.migration_lock_state()["locked"] is False   # lock always released
+
+    # And the migrated index survives a routine startup sync unchanged.
+    after = vs.sync_from_sqlite(mode="diff")
+    assert after == {"upserted": 0, "deleted": 0, "skipped_dimension": 0}
+    assert vs.probe_index_dimension()["dimension"] == 1536
+
+
+def test_run_migration_releases_the_lock_when_it_fails(fresh_modules, monkeypatch):
+    """A crash mid-migration must not leave the ingest queue paused."""
+    import pytest
+    import app.index_migration as im
+
+    db = fresh_modules.db
+    _seed_source(db, filename="a.txt", status="indexed", dimension=384)
+    monkeypatch.setattr(
+        fresh_modules.vector_store, "reset_collection",
+        lambda: (_ for _ in ()).throw(RuntimeError("chroma exploded")),
+    )
+
+    with pytest.raises(RuntimeError, match="chroma exploded"):
+        im.run_migration(1536)
+
+    assert im.migration_lock_state()["locked"] is False

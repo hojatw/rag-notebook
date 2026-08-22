@@ -406,6 +406,16 @@ def sync_from_sqlite(
         col.delete(ids=orphan_ids)
         logger.info("vector_orphans_deleted count=%s", len(orphan_ids))
 
+    if target_dimension is None and pending_rows:
+        # Nothing to compare against: empty collection, no caller hint. Let the
+        # first row set the width the rest are held to. Without this a SQLite
+        # state holding two widths (mid-migration, or a restore that mixed
+        # eras) makes Chroma reject the whole batch with "Inconsistent
+        # dimensions" — which on the startup path means the app does not come
+        # up at all. Locking to the first row and skipping the rest keeps the
+        # index usable and names the sources that need a Reindex.
+        target_dimension = len(db.loads(pending_rows[0]["embedding_json"]))
+
     upserted = 0
     skipped_dimension = 0
     skipped_source_ids: set[int] = set()

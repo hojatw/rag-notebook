@@ -1,7 +1,7 @@
 # O0 · 安全重設 Chroma collection 維度 — 實作計劃
 
-> **狀態**：**Phase A、B 已實作**；Phase C–D 待排。暫行 workaround 已於 PR #81 merge 進 main（64a79e0）。
-> **已裁決**：D2 = 新增 `stale_embedding` 狀態（已實作）。D1、D3、D4 仍待拍板，見 §2。
+> **狀態**：**Phase A、B、C 已實作**；Phase D 待排。暫行 workaround 已於 PR #81 merge 進 main（64a79e0）。
+> **已裁決**：D1 = 有 running job 就拒絕遷移、D2 = 新增 `stale_embedding` 狀態、D3 = 流程放 `/admin/index`（皆已實作）。D4（腳本去留）留到 Phase D，見 §2。
 > **權威來源**：範圍與驗收標準見 [`ROADMAP.md`](ROADMAP.md) O0；向量層行為見 [`RETRIEVAL.md`](RETRIEVAL.md)；schema 見 [`SCHEMA.md`](SCHEMA.md)；操作程序見 [`DEVELOPMENT.md`](DEVELOPMENT.md)。本檔是實作藍圖，設計決策以那些權威文件為準。
 > **前置已滿足**：`scripts/reset_chroma_dimension.py`（含分類邏輯與 5 個測試）已在 main；`/admin/index` 誤導文案已修正並有回歸測試。
 
@@ -105,7 +105,7 @@ def reset_collection() -> int:
 |---|---|---|---|
 | **A ✓** | `reset_collection()` + `vector_index_state` 表 + generation 檢查 | **已實作。**單進程維度遷移可行；schema + `SCHEMA.md` 已同步。另釘了一條缺陷見證測試（clear 後 probe 回報 `None` 卻仍拒絕新維度），Chroma 若改掉這行為會失敗提醒。**未含寫入屏障**——`reset_collection()` 的 docstring 標明「呼叫端須確保無並行 ingest」，屏障隨 Phase C 的觸發流程落地。 | — |
 | **B ✓** | 分類邏輯上提至 `app/`、`stale_embedding` 狀態、startup sync 防護 | **已實作。**新增 `app/index_migration.py`（`classify_sources` / `apply_source_states`）；`sync_from_sqlite` 加維度守衛並回傳 `skipped_dimension`；`stale_embedding` 狀態有標籤與樣式；`SCHEMA.md` 已同步。D2 裁決為新增狀態。 | A |
-| **C** | `/admin/index` 遷移 UI（dry-run 預覽 → 打字確認 → 執行 → 自動 enqueue Reindex）+ audit event | 驗收標準 5 的產品面 | A, B |
+| **C ✓** | `/admin/index` 遷移 UI + 寫入屏障 + audit event | **已實作。**目標維度取自 `/settings` 最近一次成功的 embedding 測試（不手動輸入）；頁面顯示 dry-run 預覽；需打字回目標維度確認；有 running job 時拒絕；遷移期間持鎖，`claim_next_job()` 暫停認領；審計事件 `index_dimension_migrated`。 | A, B |
 | **D** | split-worker 覆蓋、移除全部暫行警語、script 降級為 break-glass | 驗收標準 4；收尾 | A–C |
 
 Phase A 單獨就能解掉 P0 的主要痛點（單機 inline worker 是目前預設部署形態），建議先落地 A 再排 B–D。

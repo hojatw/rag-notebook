@@ -2381,6 +2381,62 @@ def test_admin_index_page_warns_clear_does_not_reset_dimension(monkeypatch, tmp_
         assert "scripts/reset_chroma_dimension.py" in page.text
 
 
+def test_admin_index_migration_needs_a_successful_embedding_test(monkeypatch, tmp_path):
+    """O0 Phase C: the target width comes from a probe, never from the form.
+
+    Without a successful /settings embedding test there is no trustworthy
+    target, so the page must refuse rather than offer a box to type a number
+    into — a typo there rebuilds the index at the wrong width.
+    """
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        page = client.get("/admin/index")
+
+        assert page.status_code == 200
+        assert "尚無法遷移" in page.text
+        assert "尚未在「設定」頁測試 embedding 模型" in page.text
+        assert 'action="/admin/index/migrate"' not in page.text   # no form offered
+
+        # And the endpoint itself refuses, not just the UI.
+        posted = client.post("/admin/index/migrate", data={"confirm": "1536"}, follow_redirects=False)
+        assert posted.status_code == 303
+        assert "migrate-blocked" in posted.headers["location"]
+
+
+def test_admin_index_migration_requires_typing_the_dimension(monkeypatch, tmp_path):
+    """A destructive action needs more than one click."""
+    import json as json_module
+
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:      # the schema is created by the lifespan
+        _login(client)
+        with db.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO llm_settings (id) VALUES (1)")
+            conn.execute(
+                "UPDATE llm_settings SET diagnostics_json = ? WHERE id = 1",
+                (json_module.dumps({"embedding": {"status": "ok", "embedding_dimension": 1536}}),),
+            )
+            conn.commit()
+
+        page = client.get("/admin/index")
+        assert 'action="/admin/index/migrate"' in page.text
+        assert "輸入目標維度" in page.text
+
+        wrong = client.post("/admin/index/migrate", data={"confirm": "384"}, follow_redirects=False)
+        assert wrong.status_code == 303
+        assert "migrate-confirm-mismatch" in wrong.headers["location"]
+
+        right = client.post("/admin/index/migrate", data={"confirm": "1536"}, follow_redirects=False)
+        assert right.status_code == 303
+        assert "migrated-1536" in right.headers["location"]
+
+        audit = client.get("/admin/audit", params={"sensitivity": "high"})
+        assert "index_dimension_migrated" in audit.text
+
+
 def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_path):
     """O1 Phase 1: admins can test chat/embedding without storing prompts or secrets."""
     main, db = _fresh_app(monkeypatch, tmp_path)

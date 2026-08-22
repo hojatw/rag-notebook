@@ -69,6 +69,7 @@ poll_interval_s = 2.0         # worker idle poll interval
 # --- Misc runtime ------------------------------------------------------------
 [runtime]
 briefing_lock_timeout_s = 90.0
+index_migration_lock_timeout_s = 600.0   # O0: a stale dimension-migration lock is reclaimed after this
 upload_batch_limit = 5        # max files per upload request
 max_source_bytes = 20000000   # hard cap for eagerly-parsed sources (.xlsx/.pptx/.csv)
 suggestions_ttl_hours = 24
