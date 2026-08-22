@@ -1400,9 +1400,18 @@ li code {
   margin-top: var(--sp-4);
 }
 
+/* The label sits on its own line: as a flex sibling it gets shrunk to ~88px
+   and wraps to three cramped lines, because label + input + button together
+   overflow the settings column.
+   `display: block` overrides the global `label { display: grid }` — under grid
+   the inline <code>{dimension}</code> becomes a grid item and the sentence
+   breaks into three stacked rows. */
 .index-migrate-form label {
+  display: block;
+  flex: 1 0 100%;
   margin: 0;
   font-size: 0.9rem;
+  font-weight: 400;
   color: var(--muted);
 }
 

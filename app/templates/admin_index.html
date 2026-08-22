@@ -52,7 +52,7 @@
       <div class="index-stat">
         <span class="index-stat-label">向量維度</span>
         <span class="index-stat-value">{{ status.dimension if status.dimension is not none else "—" }}</span>
-        <span class="muted small">{% if status.dimension is not none %}（由第一次寫入鎖定）{% else %}（讀不到向量 — 集合可能仍鎖定舊維度，清除不會解鎖）{% endif %}</span>
+        <span class="muted small">{% if status.dimension is not none %}（由第一次寫入鎖定）{% else %}（讀不到向量；可能仍鎖定舊維度）{% endif %}</span>
       </div>
     </div>
 
