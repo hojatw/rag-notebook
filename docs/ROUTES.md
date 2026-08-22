@@ -13,6 +13,9 @@ GET  /auth/oidc/login                                     start OIDC Authorizati
 GET  /auth/oidc/callback                                  complete OIDC login, validate ID token, issue local session
 POST /logout                                              clear session
 
+GET  /sources                                             legacy bookmark -> /notebooks
+GET  /chat                                                legacy bookmark -> /notebooks
+
 GET  /notebooks                                           notebook grid
 GET  /search                                              search notebooks, sources, conversations, and notes
 POST /notebooks/new                                       create a notebook

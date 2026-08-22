@@ -103,6 +103,11 @@ Ollama、vLLM、TEI 這類本機 OpenAI-compatible 服務會透過 `/v1` endpoin
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) - 產品/admin roadmap：UX、Eval Workbench、AI governance、LLM operations、來源格式支援與新 AI 功能。
 - [`docs/PRODUCT_WHITEPAPER.zh-TW.md`](docs/PRODUCT_WHITEPAPER.zh-TW.md) - 客戶向繁中產品白皮書。
 - [`docs/RETRIEVAL.md`](docs/RETRIEVAL.md) - 檢索 pipeline、ranking、reranking、eval workflow 與調參旋鈕。
+- [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) - 本機帳號、企業 SSO（信任標頭 / OIDC）、AD 整合與角色對應。
+- [`docs/SSO_DEPLOYMENT.zh-TW.md`](docs/SSO_DEPLOYMENT.zh-TW.md) - 維運指引：反向代理／OIDC 設定範例、安全契約檢查表與認證測試計劃。
+- [`docs/I18N.md`](docs/I18N.md) - UI 文案的 i18n 目錄（`t()` / `window.I18N`）、新增字串／語系的方式與既有例外。
+- [`docs/DEPLOYMENT_CONTEXT.md`](docs/DEPLOYMENT_CONTEXT.md) - 形塑既有取捨的部署事實（推論端不可改、使用規模、語料與語言）。
+- [`docs/RELEASE.md`](docs/RELEASE.md) - 版號、CHANGELOG 與 CI 的流程慣例。
 - [`docs/QUALITY.md`](docs/QUALITY.md) - retrieval 與 answer-quality backlog。
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) - performance 與 scalability backlog。
 - [`docs/SECURITY.md`](docs/SECURITY.md) - security policy 與 dependency-audit triage。

@@ -2,7 +2,7 @@
 
 Known **retrieval- and answer-quality** issues, kept separate from [`PERFORMANCE.md`](PERFORMANCE.md) (pure speed/scale). Each item lists **Issue → Impact → Fix**, a **priority**, and a **status** box. Read [`RETRIEVAL.md`](RETRIEVAL.md) first — it documents the pipeline and the tuning knobs referenced here.
 
-**Deployment context:** serving the customer's **borrowed, fixed** Gemma 4 31B (chat) + multilingual-e5-large (embedding, 1024-dim). Switching off the old OpenAI models (1536-dim) invalidates several empirically-tuned knobs, and all adaptation must be **app-side** (we can't change their serving). See `../handover.md`.
+**Deployment context:** the serving side is **borrowed and fixed** — Gemma 4 31B (chat) + multilingual-e5-large (embedding, 1024-dim). Moving off the earlier 1536-dim OpenAI models invalidates several empirically-tuned knobs, and every adaptation has to be **app-side** because the serving cannot be changed. The facts these items lean on, and why they lead to the trade-offs recorded here, are in [`DEPLOYMENT_CONTEXT.md`](DEPLOYMENT_CONTEXT.md).
 
 Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 

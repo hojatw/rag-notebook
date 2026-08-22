@@ -168,6 +168,11 @@ endpoint, not stored chunks.
 - [`docs/SSO_DEPLOYMENT.zh-TW.md`](docs/SSO_DEPLOYMENT.zh-TW.md) - operator guide
   for deploying/testing enterprise SSO: reverse-proxy config examples and the
   auth test plan.
+- [`docs/DEPLOYMENT_CONTEXT.md`](docs/DEPLOYMENT_CONTEXT.md) - the deployment
+  realities most trade-offs in the backlogs are derived from: a fixed/borrowed
+  serving side, user scale, corpus shape, and language mix.
+- [`docs/RELEASE.md`](docs/RELEASE.md) - versioning, CHANGELOG, and CI
+  conventions. Feature PRs never bump `VERSION`; that is its own release PR.
 - [`docs/QUALITY.md`](docs/QUALITY.md) - retrieval and answer-quality backlog.
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) - performance and scalability
   backlog.
