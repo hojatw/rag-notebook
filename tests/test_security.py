@@ -222,3 +222,69 @@ def test_changed_passwords_are_left_alone(monkeypatch, tmp_path):
     db.init_db()  # idempotent across repeated restarts
 
     assert _user_row(db, "admin")["must_change_password"] == 0
+
+
+def test_only_the_seeded_usernames_are_considered(monkeypatch, tmp_path):
+    """The back-fill is scoped to the accounts we shipped, not a weak-password sweep.
+
+    An ordinary account that happens to use `admin123` is left alone: the point
+    is to spend the credentials *this project handed out*, not to audit user
+    password choices, which would be a different (and much more intrusive)
+    feature.
+    """
+    from app.security import hash_password
+
+    db = _fresh_db(monkeypatch, tmp_path, seed_demo="1")
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO users (username, password_hash, is_admin) VALUES ('bob', ?, 1)",
+            (hash_password("admin123"),),
+        )
+
+    monkeypatch.setenv("NOTEBOOKLM_SEED_DEMO_USERS", "0")
+    db.init_db()
+
+    assert _user_row(db, "admin")["must_change_password"] == 1
+    assert _user_row(db, "bob")["must_change_password"] == 0
+
+
+def test_sso_linked_accounts_are_never_flagged(monkeypatch, tmp_path):
+    """Guards against a permanent lockout, not just an inconvenience.
+
+    A flagged account may only change its password, but `/account/password`
+    refuses SSO-linked accounts (`auth.password_change_sso_blocked`). An account
+    that was both flagged *and* SSO-linked would therefore have no way out.
+
+    External auth cannot produce that state today — it only ever creates fresh
+    usernames with an unguessable `sso:<uuid>` hash. `_flag_default_passwords`
+    skips linked accounts anyway, so the property holds by construction rather
+    than by coincidence, and a future "link SSO to an existing local account"
+    feature cannot lock an operator out.
+    """
+    import uuid
+
+    from app.security import hash_password
+
+    db = _fresh_db(monkeypatch, tmp_path, seed_demo="0")
+    with db.connect() as conn:
+        # Worst case: an SSO identity attached to the seeded bootstrap admin,
+        # which still holds `admin123`.
+        admin_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+        conn.execute(
+            "INSERT INTO external_identities (user_id, provider, subject) VALUES (?, 'oidc', 'sub-1')",
+            (admin_id,),
+        )
+        conn.execute("UPDATE users SET must_change_password = 0 WHERE id = ?", (admin_id,))
+        # And an ordinary SSO-provisioned account.
+        conn.execute(
+            "INSERT INTO users (username, password_hash, is_admin) VALUES ('sso-user', ?, 0)",
+            (hash_password(f"sso:{uuid.uuid4().hex}"),),
+        )
+
+    db.init_db()
+
+    assert _user_row(db, "sso-user")["must_change_password"] == 0
+    assert _user_row(db, "admin")["must_change_password"] == 0, (
+        "flagging an SSO-linked account would lock it out: it may only change its "
+        "password, and /account/password refuses external identities"
+    )

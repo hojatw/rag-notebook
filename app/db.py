@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sqlite3
 from pathlib import Path
@@ -12,6 +13,9 @@ from .security import (
     hash_password,
     verify_password,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _app_secret() -> str:
@@ -732,19 +736,44 @@ def _flag_default_passwords(conn: sqlite3.Connection) -> None:
 
     Accounts whose password was already changed verify false and are left alone,
     so this is safe to run on every startup.
+
+    **SSO-linked accounts are skipped, and that is a lockout guard, not a
+    courtesy.** A flagged account may only change its password, but
+    ``POST /account/password`` refuses accounts with an external identity (the
+    same guardrail that blocks admin password resets for them). An account that
+    was both flagged *and* SSO-linked would have no way out at all. Today the
+    external-auth flow only ever creates fresh usernames with an unguessable
+    ``sso:<uuid>`` hash, so it cannot produce one — this check makes that safe by
+    construction rather than by coincidence, so a future "link SSO to an existing
+    local account" feature cannot lock an operator out. Such an account keeps a
+    working default password, which is worse than useless silently, so it is
+    logged loudly instead: the fix there is to disable local login for the
+    deployment or reset the password through admin tooling.
     """
     for username, default_password in SEEDED_DEFAULT_PASSWORDS.items():
         row = conn.execute(
-            "SELECT id, password_hash, must_change_password FROM users WHERE username = ?",
+            """
+            SELECT u.id, u.password_hash, u.must_change_password,
+                   (SELECT COUNT(*) FROM external_identities e WHERE e.user_id = u.id)
+                       AS external_identity_count
+              FROM users u
+             WHERE u.username = ?
+            """,
             (username,),
         ).fetchone()
         if row is None or row["must_change_password"]:
             continue
-        if verify_password(default_password, row["password_hash"]):
-            conn.execute(
-                "UPDATE users SET must_change_password = 1 WHERE id = ?",
-                (row["id"],),
+        if not verify_password(default_password, row["password_hash"]):
+            continue
+        if row["external_identity_count"]:
+            logger.warning(
+                "seeded_default_password_left_unflagged username=%s reason=sso_linked "
+                "detail=account still accepts its seeded password over local login, but "
+                "forcing a change would lock it out; disable local login or reset it via admin",
+                username,
             )
+            continue
+        conn.execute("UPDATE users SET must_change_password = 1 WHERE id = ?", (row["id"],))
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
