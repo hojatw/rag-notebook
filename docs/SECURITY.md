@@ -42,7 +42,13 @@ Audit metadata is intentionally compact: store action identifiers, target ids, f
 
 ## Hardening status
 
-A full review on **2026-08-22** surfaced hardening items beyond `SEC-1` (bootstrap accounts, fixed above). They are triaged and tracked in `docs/REVIEW_BACKLOG_2026-08-22.md` with priorities and locations, and are folded back into this file as each lands. The open ones at the time of writing: **no upload size limit** (a multipart body is also fully buffered in memory by the CSRF middleware — the highest-severity item still open), **session tokens that never expire and cannot be revoked** (changing a password does not end other sessions), **no login rate limiting**, **prompt-injection detection with English-only patterns** on a zh-TW deployment, and two low-severity hygiene items. Keep treating the app as a POC and re-audit before any untrusted-network exposure.
+A full review on **2026-08-22** surfaced a set of hardening items. They are triaged and tracked in `docs/REVIEW_BACKLOG_2026-08-22.md` with priorities and locations, and are folded back into this file as each lands.
+
+**Fixed:** `SEC-1` bootstrap accounts (above) and `SEC-2` upload size limits / multipart buffering (see the parser note below) — the two rated P0.
+
+**Still open:** **session tokens that never expire and cannot be revoked** (changing a password does not end other sessions — the highest-severity item remaining), **no login rate limiting**, **prompt-injection detection with English-only patterns** on a zh-TW deployment, and two low-severity hygiene items (a `SELECT *` that carries `password_hash` into the template context, and a raw exception string echoed to an admin).
+
+Keep treating the app as a POC and re-audit before any untrusted-network exposure.
 
 ### Attack surface note: uploaded-file parsers (A6b / A6c, 2026-07-25)
 
@@ -51,7 +57,8 @@ Ingestion now parses `.pptx` (`python-pptx`, which pulls in **Pillow**) and `.xl
 Current mitigations are structural rather than sandboxing:
 
 - Uploads are authenticated — a user must already have an account, so this is not an anonymous-internet surface.
-- Parsing runs in the ingest worker, not the request path; `[runtime].max_source_bytes` caps every eagerly-parsed format (`.xlsx` / `.pptx` / `.csv`) **before** a parser sees the file, `[spreadsheet].max_rows` / `max_cols` bound the per-sheet work, and a parser exception fails that one source (`status='failed'` with `failed_stage`) rather than the process.
+- **Bounded before anything is stored or parsed (SEC-2, 2026-08-22).** `[runtime].upload_max_file_bytes` caps each file *at upload time*, for every format, enforced while streaming to disk (and drops to the stricter `extract_max_file_bytes` for `.xlsx`/`.pptx`/`.csv`, so those fail up front rather than in the worker) — an oversized file is refused with 413 and its partial write removed. A whole request is bounded at `upload_max_file_bytes * upload_batch_limit` and refused from `Content-Length` **before any body is read**. Previously nothing capped upload size at all: only file *count* was limited, and `extract_max_file_bytes` (then named `max_source_bytes`) applied at parse time, once the file was already on disk. Worse, the CSRF middleware called `await request.body()` on multipart requests to regex the token out of the raw body — and the upload form is a plain HTML form that carries no header to short-circuit that — so every upload was materialised in memory in full. A handful of large files was enough to exhaust it, from an ordinary authenticated account and with no vulnerability involved. The middleware no longer reads multipart bodies; upload routes validate CSRF from their own parsed form via `verify_multipart_csrf`, and a startup assertion fails the boot if a multipart route omits it, so the check cannot be dropped silently.
+- Parsing runs in the ingest worker, not the request path; `[runtime].extract_max_file_bytes` caps every eagerly-parsed format (`.xlsx` / `.pptx` / `.csv`) **before** a parser sees the file, `[spreadsheet].max_rows` / `max_cols` bound the per-sheet work, and a parser exception fails that one source (`status='failed'` with `failed_stage`) rather than the process.
 - Phase 1 PPTX **never decodes image bytes** — images are counted, not opened — so Pillow is currently a transitive dependency that ingest does not actually exercise. That changes the day `A8`/`A9` add OCR or vision, which is when this note needs revisiting.
 
 **Keep these parsers patched** (they are the highest-value dependency updates in this project), and re-evaluate isolation if the app is ever exposed to untrusted uploaders.
@@ -70,7 +77,7 @@ A Bleichenbacher oracle in **PKCS#7 `EnvelopedData` decryption**. This app's onl
 
 ### GHSA-fp3f-mc75-235c / GHSA-fwg2-594c-jp42 — `pypdf < 6.15.0` (medium) — applicable, patched
 
-Unbounded memory/CPU on crafted `/ToUnicode` streams and CID font width ranges. Unlike the other two entries here this **is** reachable: the app parses user-uploaded PDFs. It is denial-of-service only (no code execution, no disclosure), and ingest runs in the worker behind `[runtime].max_source_bytes` with per-source failure isolation, so the blast radius is one stuck ingest job rather than the web process. Patched to `6.15.0` — a direct application of the "keep these parsers patched" rule above.
+Unbounded memory/CPU on crafted `/ToUnicode` streams and CID font width ranges. Unlike the other two entries here this **is** reachable: the app parses user-uploaded PDFs. It is denial-of-service only (no code execution, no disclosure), and ingest runs in the worker behind `[runtime].extract_max_file_bytes` with per-source failure isolation, so the blast radius is one stuck ingest job rather than the web process. Patched to `6.15.0` — a direct application of the "keep these parsers patched" rule above.
 
 ### CVE-2026-45829 — `chromadb==1.5.9` (critical) — not applicable
 

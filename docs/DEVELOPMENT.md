@@ -91,8 +91,34 @@ Copy [`config.example.toml`](../config.example.toml) to `config.toml` for local
 or deployment-specific overrides. Changing `[chunking]` — or the chunk-shaping
 values in `[spreadsheet]` (`rows_per_chunk_max`, `embed_token_budget`) — requires
 re-indexing existing sources. `[diagnostics]` thresholds only affect what the
-source preview *displays*, so they never require a re-index. `[runtime].max_source_bytes`
-is the hard size cap for eagerly-parsed sources (`.xlsx` / `.pptx` / `.csv`).
+source preview *displays*, so they never require a re-index. ### File size caps
+
+There are **two**, named for the pipeline stage that enforces them, because they
+protect different things:
+
+| Setting | Stage | Formats | Protects |
+|---|---|---|---|
+| `[runtime].upload_max_file_bytes` (50 MB) | web request, while streaming to disk | **all** | the host — disk fill, request memory |
+| `[runtime].extract_max_file_bytes` (20 MB) | ingest worker, file already stored | `.xlsx` / `.pptx` / `.csv` only | the **parser** |
+
+The second exists because those three formats' on-disk size says nothing about
+their parse cost: `.xlsx` / `.pptx` are zip containers (a small archive can
+decompress to gigabytes) and `.csv` is read whole into memory for encoding
+detection. PDF and DOCX stream, so they are exempt.
+
+**The upload path applies whichever is stricter for the file's format**
+(`ingest.upload_limit_for`), so a 30 MB spreadsheet is refused at upload with an
+explanation rather than uploading fine and failing in the worker minutes later.
+`extract_max_file_bytes` remains enforced in the worker as the backstop for files
+that did not arrive through an upload — a reindex of something stored before the
+cap existed, or a file dropped into `data/uploads/` by hand.
+
+Raising the upload cap does **not** raise the parse cap. A whole request is
+additionally bounded at `upload_max_file_bytes * upload_batch_limit` (plus 1 MB of
+framing), refused from `Content-Length` before any body is read.
+
+`extract_max_file_bytes` was called `max_source_bytes` before this rename; the old
+key is still read, with a deprecation warning at startup.
 
 ## Logging
 

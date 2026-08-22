@@ -8,6 +8,9 @@
 
 **基準線**：review 當下 `main @ 6b1c0d0`（VERSION 0.3.0），`pytest` **288 passed**。
 
+**進度**：P0 兩項（`SEC-1`、`SEC-2`）與 `PERF-1` 已完成並溶解進權威 backlog；
+其餘仍待排。每項完成後請照上面的規則打勾並註明 durable 紀錄的位置。
+
 優先權定義：
 - **P0** — 網路曝險部署前必修
 - **P1** — 近期排程，有明確受害情境
@@ -20,7 +23,9 @@
 
 ## 1 · 安全（SEC）
 
-### [ ] SEC-1 · P0 · 預設帳號「重啟即復活」
+### [x] SEC-1 · P0 · 預設帳號「重啟即復活」
+> **已完成**（PR #91）。durable 紀錄見 [`SECURITY.md`](SECURITY.md) → *Secrets and data* 的
+> Bootstrap accounts 段落，以及 [`SCHEMA.md`](SCHEMA.md) 的 `users.must_change_password`。
 - **位置**：[`app/db.py:529-530`](../app/db.py) `_ensure_user()`；`init_db()` 由
   [`app/main.py:128`](../app/main.py)（web lifespan）與 [`app/worker.py:78`](../app/worker.py) 每次啟動呼叫。
 - **問題**：`admin/admin123`、`user/user123` 無條件種入。`INSERT OR IGNORE` 只保證不覆寫既有帳號，
@@ -32,7 +37,10 @@
 - **連帶**：需要 `users` 新欄位（密碼待變更旗標）→ 依 AGENTS.md 規則必須同步 [`SCHEMA.md`](SCHEMA.md)；
   完成後改寫 `SECURITY.md`（見 DOC-1）。
 
-### [ ] SEC-2 · P0 · 上傳無大小上限，且整包 body 進記憶體
+### [x] SEC-2 · P0 · 上傳無大小上限，且整包 body 進記憶體
+> **已完成**（PR #93）。durable 紀錄見 [`SECURITY.md`](SECURITY.md) → *Attack surface note:
+> uploaded-file parsers*，容量參數說明見 [`DEVELOPMENT.md`](DEVELOPMENT.md) → *File size caps*。
+> 順帶把 `max_source_bytes` 改名為 `extract_max_file_bytes`（舊鍵仍相容）。
 - **位置**：[`app/main.py:1681`](../app/main.py) `upload_source()`、
   [`app/main.py:256-273`](../app/main.py) `_submitted_csrf_token()`、
   [`app/templates/notebook.html:73`](../app/templates/notebook.html)。
@@ -94,7 +102,8 @@
 
 > 已列在 [`PERFORMANCE.md`](PERFORMANCE.md) 的項目（P1-2 FTS5、P3-2 三次 LLM 呼叫）不重複列。
 
-### [ ] PERF-1 · P1 · `upload_source` 是 `async def` 但內部全是 blocking I/O
+### [x] PERF-1 · P1 · `upload_source` 是 `async def` 但內部全是 blocking I/O
+> **已完成**（PR #93，與 SEC-2 同一支）。durable 紀錄見 [`PERFORMANCE.md`](PERFORMANCE.md) `P1-4`。
 - **位置**：[`app/main.py:1681`](../app/main.py)。
 - **問題**：`shutil.copyfileobj`（磁碟寫入）、多次 `connect()`（SQLite）、`enqueue_source()`
   全部同步執行在 event loop 上。上傳大檔期間整個 web process 的所有請求被卡住。

@@ -6,8 +6,8 @@ import json
 import os
 import re
 import secrets
-import shutil
 import sqlite3
+import inspect
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -32,7 +32,7 @@ from joserfc.errors import JoseError
 from .config import config
 from .db import UPLOAD_DIR, connect, dumps, init_db, load_llm_settings, loads
 from .governance import record_ai_safety_events
-from .ingest import supported
+from .ingest import supported, upload_limit_for
 from .jobs import enqueue_source
 from .worker import run_worker_loop
 from . import i18n
@@ -81,6 +81,15 @@ CSRF_FORM_FIELD = "csrf_token"
 CSRF_HEADER_NAME = "x-csrf-token"
 CSRF_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 CSRF_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# SEC-2 outer bound on a single request body, checked from Content-Length before
+# anything is read. Derived from the per-file cap so the two can never drift:
+# a full batch of maximum-size files, plus 1 MB of multipart framing and the
+# other form fields. Requests over this are refused with 413 without touching
+# the body — a reverse proxy should carry the same limit, but the app must not
+# depend on one being there.
+MAX_REQUEST_BYTES = (
+    config.runtime.upload_max_file_bytes * config.runtime.upload_batch_limit + 1_000_000
+)
 OIDC_STATE_COOKIE_NAME = "oidc_state"
 OIDC_STATE_COOKIE_MAX_AGE = 10 * 60
 OIDC_HTTP_TIMEOUT = 10.0
@@ -118,6 +127,47 @@ def configure_logging() -> None:
 configure_logging()
 logger = logging.getLogger(__name__)
 
+
+def assert_multipart_routes_check_csrf(application) -> None:
+    """Fail startup if a multipart route does not validate CSRF itself.
+
+    The CSRF middleware skips multipart bodies (SEC-2), which shifts the check
+    onto the route. That is a rule a future file-upload route could easily miss,
+    and missing it would be **silent** — the route would work fine and simply be
+    unprotected. Checking it at boot turns that into a loud, immediate failure.
+
+    A route counts as multipart when it declares an ``UploadFile`` parameter;
+    it counts as protected when it depends on ``verify_multipart_csrf``.
+    """
+    offenders: list[str] = []
+    for route in application.routes:
+        endpoint = getattr(route, "endpoint", None)
+        dependant = getattr(route, "dependant", None)
+        if endpoint is None or dependant is None:
+            continue
+        try:
+            hints = inspect.signature(endpoint).parameters
+        except (TypeError, ValueError):
+            continue
+        takes_upload = any(
+            UploadFile in (getattr(p.annotation, "__args__", ()) or (p.annotation,))
+            for p in hints.values()
+        )
+        if not takes_upload:
+            continue
+        protected = any(
+            dep.call is verify_multipart_csrf
+            for dep in getattr(dependant, "dependencies", [])
+        )
+        if not protected:
+            offenders.append(f"{getattr(route, 'path', '?')} ({endpoint.__name__})")
+    if offenders:
+        raise RuntimeError(
+            "multipart route(s) missing the verify_multipart_csrf dependency, so they "
+            f"would accept cross-site uploads: {', '.join(offenders)}"
+        )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Initialise shared resources on startup and tear them down on shutdown.
@@ -126,6 +176,7 @@ async def lifespan(_app: FastAPI):
     context manager (FastAPI 0.93+).
     """
     init_db()
+    assert_multipart_routes_check_csrf(_app)
     load_active_retrieval_profile()
     set_http_client(httpx.AsyncClient(timeout=None))
     sync_from_sqlite()
@@ -253,6 +304,26 @@ def _set_csrf_cookie(request: Request, response: Response) -> None:
     )
 
 
+def _request_content_length(request: Request) -> int | None:
+    raw = request.headers.get("content-length")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def csrf_token_matches(request: Request, submitted: str | None) -> bool:
+    """Double-submit check: the submitted token must equal the signed cookie."""
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+    return bool(
+        valid_csrf_token(cookie_token, SECRET)
+        and submitted is not None
+        and hmac.compare_digest(cookie_token, submitted)
+    )
+
+
 async def _submitted_csrf_token(request: Request) -> str | None:
     token = request.headers.get(CSRF_HEADER_NAME)
     if token:
@@ -263,32 +334,66 @@ async def _submitted_csrf_token(request: Request) -> str | None:
         values = parse_qs(body.decode("utf-8", errors="ignore"), keep_blank_values=True)
         token_values = values.get(CSRF_FORM_FIELD)
         return token_values[0] if token_values else None
-    if content_type == "multipart/form-data":
-        body = await request.body()
-        match = re.search(
-            rb'name="' + re.escape(CSRF_FORM_FIELD.encode("ascii")) + rb'"\r?\n\r?\n([^\r\n]+)',
-            body,
-        )
-        if match:
-            return match.group(1).decode("ascii", errors="ignore")
     return None
+
+
+def verify_multipart_csrf(request: Request, csrf_token: str = Form(default="")) -> None:
+    """CSRF check for multipart routes, run from the route's own parsed form.
+
+    The middleware below deliberately does **not** read multipart bodies, so a
+    file-upload route must validate the token itself. Declaring this dependency
+    is what makes that happen; `assert_multipart_routes_check_csrf` fails at
+    startup if a multipart route forgets it, so the requirement cannot be missed
+    silently.
+
+    Accepts the token from either the ``X-CSRF-Token`` header (HTMX and other
+    scripted callers) or the hidden form field (a plain browser form submit,
+    which cannot set headers) — the same two sources the middleware honours for
+    every other content type. Either way it must still equal the signed cookie,
+    so the double-submit guarantee is unchanged.
+    """
+    submitted = request.headers.get(CSRF_HEADER_NAME) or csrf_token
+    if not csrf_token_matches(request, submitted):
+        logger.warning("csrf_rejected method=%s path=%s kind=multipart", request.method, request.url.path)
+        raise HTTPException(status_code=403, detail="CSRF token invalid")
 
 
 @app.middleware("http")
 async def csrf_protection(request: Request, call_next):
-    """Reject unsafe requests unless they carry the page's signed CSRF token."""
+    """Reject unsafe requests unless they carry the page's signed CSRF token.
+
+    **Multipart bodies are never read here.** This used to call
+    ``await request.body()`` to regex the token out of the raw multipart body,
+    which materialised the entire upload in memory before the route ran — and
+    the upload form is a plain HTML form, so it never carries the header that
+    would have short-circuited that path. A handful of large files was enough to
+    exhaust memory (SEC-2). Multipart requests are instead let through to the
+    route, which validates the token from its own parsed form via
+    ``verify_multipart_csrf``; ``request.form()`` spools to disk rather than RAM.
+
+    Oversized requests are rejected from ``Content-Length`` *before* any body is
+    touched, so the cap costs nothing to enforce.
+    """
     if request.method.upper() in CSRF_UNSAFE_METHODS:
-        cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
-        submitted_token = await _submitted_csrf_token(request)
-        valid = (
-            valid_csrf_token(cookie_token, SECRET)
-            and submitted_token is not None
-            and hmac.compare_digest(cookie_token, submitted_token)
-        )
-        if not valid:
-            logger.warning("csrf_rejected method=%s path=%s", request.method, request.url.path)
-            return HTMLResponse("CSRF token invalid", status_code=403)
-        request.state.csrf_token = cookie_token
+        content_length = _request_content_length(request)
+        if content_length is not None and content_length > MAX_REQUEST_BYTES:
+            logger.warning(
+                "request_too_large method=%s path=%s content_length=%s limit=%s",
+                request.method, request.url.path, content_length, MAX_REQUEST_BYTES,
+            )
+            return HTMLResponse(i18n.t("upload.request_too_large"), status_code=413)
+
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type == "multipart/form-data":
+            # Deferred to the route (see verify_multipart_csrf). Keep the request
+            # rendering with a valid token so the follow-up page has one.
+            csrf_token_for_request(request)
+        else:
+            submitted_token = await _submitted_csrf_token(request)
+            if not csrf_token_matches(request, submitted_token):
+                logger.warning("csrf_rejected method=%s path=%s", request.method, request.url.path)
+                return HTMLResponse("CSRF token invalid", status_code=403)
+            request.state.csrf_token = request.cookies.get(CSRF_COOKIE_NAME)
     else:
         csrf_token_for_request(request)
 
@@ -1624,6 +1729,11 @@ def notebook_view(
             "cached_suggestions": cached_suggestions,
             "cached_briefing": cached_briefing,
             "upload_batch_limit": UPLOAD_BATCH_LIMIT,
+            # SEC-2: state the per-file cap up front. Discovering it as a 413
+            # after picking a large file is a worse experience than reading it
+            # next to the format list.
+            "max_upload_mb": UPLOAD_MAX_FILE_BYTES // 1_000_000,
+            "max_eager_upload_mb": config.runtime.extract_max_file_bytes // 1_000_000,
             "error": "",
             "wide": True,
             "breadcrumb": notebook["title"],
@@ -1697,16 +1807,56 @@ def delete_notebook(request: Request, notebook_id: int, user: Annotated[dict, De
 
 
 UPLOAD_BATCH_LIMIT = config.runtime.upload_batch_limit
+UPLOAD_MAX_FILE_BYTES = config.runtime.upload_max_file_bytes
+
+
+def _store_upload(upload: UploadFile, destination: Path, limit: int) -> int:
+    """Copy an upload to disk, aborting past ``limit``. Returns bytes written.
+
+    Copies in bounded chunks and counts as it goes rather than trusting
+    ``Content-Length`` or ``upload.size``: the former is client-supplied, and a
+    per-request check cannot bound a *per-file* limit inside a batch. A file that
+    goes over is removed before raising, so a rejected upload leaves nothing on
+    disk.
+    """
+    written = 0
+    try:
+        with destination.open("wb") as out:
+            while True:
+                chunk = upload.file.read(UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > limit:
+                    raise ValueError("upload exceeds the per-file size limit")
+                out.write(chunk)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    return written
+
+
+# Sized to stream steadily without holding much: the whole point of SEC-2 is that
+# no single request pins its upload in memory.
+UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 @app.post("/notebooks/{notebook_id}/sources/upload")
-async def upload_source(
+def upload_source(
     request: Request,
     notebook_id: int,
     user: Annotated[dict, Depends(require_login)],
+    _csrf: Annotated[None, Depends(verify_multipart_csrf)],
     files: list[UploadFile] = File(...),
 ):
-    """Store up to UPLOAD_BATCH_LIMIT uploaded sources and schedule background ingestion for each."""
+    """Store up to UPLOAD_BATCH_LIMIT uploaded sources and schedule background ingestion for each.
+
+    Deliberately a sync ``def``: every step here is blocking I/O (copying to
+    disk, several SQLite writes, enqueueing the ingest job) and none of it
+    awaits. As an ``async def`` it ran that work directly on the event loop, so
+    one large upload stalled every other request in the process (PERF-1).
+    FastAPI runs a sync route in the threadpool instead.
+    """
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
         llm_status = llm_settings_status(conn)
@@ -1735,8 +1885,26 @@ async def upload_source(
     for upload in files:
         safe_name = Path(upload.filename).name
         stored_path = user_dir / f"{uuid.uuid4().hex}_{safe_name}"
-        with stored_path.open("wb") as out:
-            shutil.copyfileobj(upload.file, out)
+        limit = upload_limit_for(safe_name)
+        try:
+            _store_upload(upload, stored_path, limit)
+        except ValueError:
+            logger.warning(
+                "source_upload_rejected user_id=%s notebook_id=%s filename=%s reason=too_large limit=%s",
+                user["id"], notebook_id, safe_name, limit,
+            )
+            # A format-specific cap needs its own wording: the upload widget
+            # advertises the general limit, so "too large" against a smaller
+            # number would just look wrong without saying why.
+            key = (
+                "upload.file_too_large_eager_format"
+                if limit < UPLOAD_MAX_FILE_BYTES
+                else "upload.file_too_large"
+            )
+            raise HTTPException(
+                status_code=413,
+                detail=i18n.t(key, filename=safe_name, limit_mb=limit // 1_000_000),
+            )
         with connect() as conn:
             cursor = conn.execute(
                 """

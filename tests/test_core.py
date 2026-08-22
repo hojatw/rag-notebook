@@ -673,3 +673,27 @@ def test_ingest_records_diagnostics_and_failed_stage(fresh_modules, tmp_path):
     assert diag["chars"] == 0
     assert diag["chunks"] == 0
     assert any(w["code"] == "low_text" for w in diag["warnings"])
+
+
+def test_upload_limit_uses_the_stricter_cap_for_eagerly_parsed_formats():
+    """Spreadsheets/slides are capped at upload by the *extract* limit.
+
+    They are zip containers (or read whole into memory), so the worker would
+    refuse an oversized one anyway. Applying that cap at upload turns a confusing
+    two-stage rejection — upload succeeds, ingest fails minutes later — into one
+    immediate error.
+    """
+    import app.ingest as ingest
+    from app.config import config
+
+    upload_cap = config.runtime.upload_max_file_bytes
+    extract_cap = config.runtime.extract_max_file_bytes
+    assert extract_cap < upload_cap, "fixture assumption: extract cap is the stricter one"
+
+    # Streamed formats get the general cap.
+    for name in ("report.pdf", "notes.docx", "page.html", "plain.txt"):
+        assert ingest.upload_limit_for(name) == upload_cap, name
+
+    # Eagerly-parsed formats get the stricter one, case-insensitively.
+    for name in ("data.xlsx", "deck.pptx", "rows.csv", "DATA.XLSX"):
+        assert ingest.upload_limit_for(name) == extract_cap, name

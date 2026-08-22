@@ -47,6 +47,18 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deliberate
 
 ---
 
+### [x] P1-4 · Upload ran its blocking I/O on the event loop
+- **Issue:** `upload_source` (`app/main.py`) was an `async def` whose body was entirely **blocking**: copying each file to disk, several SQLite writes, and `enqueue_source()`. Nothing in it awaited.
+- **Impact:** for the duration of an upload, the web process could serve nothing else — the event loop was held by a synchronous file copy. A bulk upload of large sources stalled every other user's requests.
+- **Fix:** **Done (with SEC-2).** Changed to a sync `def`, which FastAPI runs in its threadpool. Copying is now chunked through `_store_upload` rather than one `shutil.copyfileobj`, so a single file is never held in memory either.
+
+### [ ] P1-5 · CSV ingest materialises the file ~5.7x over
+- **Issue:** `_read_csv_sheet` (`app/ingest.py`) does `path.read_bytes()` → full `str` decode → `text.splitlines()`, so the whole file exists three times before a single row is parsed. **Measured: 27.6 MB peak for a 4.8 MB Big5 export (~5.7x).** At the `extract_max_file_bytes` cap of 20 MB that is ~114 MB for one source.
+- **Not caused by encoding detection**, despite an earlier comment here saying so — detection is just one consumer of a buffer that is already fully read. Note also that `.xlsx` does *not* have this problem: openpyxl runs `read_only=True` and streams rows. This is CSV-specific.
+- **Fix:** stream it — an incremental decoder (`codecs.iterdecode`) feeding `csv.reader` from the file object, so memory tracks a few rows rather than the file. Detection then samples the first chunk, with a re-read fallback if the incremental decode later fails.
+- **Why sampling the *detection* alone is not the fix:** it would save nothing (the read and `splitlines` dominate) and would weaken correctness. The strict whole-file `raw.decode("utf-8")` in `_decode_csv_bytes` is a **verification**, not a guess: valid UTF-8 in the first 64 KB does not imply the rest is, and a mostly-ASCII CSV whose Big5 characters start at row 5000 would sample as ASCII.
+- **Deferred — bounded, not urgent.** `extract_max_file_bytes` (20 MB) now caps this at upload, the worker handles one job at a time, and a failure is one failed source rather than a dead process. **Restart condition:** raise `extract_max_file_bytes` above ~20 MB, run more than one worker per host, or see worker memory pressure in a real deployment.
+
 ## P2 — scale / cleanup
 
 ### [-] P2-1 · Reduce the SQLite vector copy (`embedding_json`) — *decided: keep as-is*

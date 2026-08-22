@@ -3,6 +3,7 @@ import json
 import time
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 from fastapi.testclient import TestClient as FastAPITestClient
 
 
@@ -3366,3 +3367,187 @@ def test_forced_change_rejects_a_bad_confirmation(monkeypatch, tmp_path):
             ).fetchone()
         assert row["must_change_password"] == 1
         assert client.get("/notebooks", follow_redirects=False).status_code == 303
+# --- SEC-2: upload size limits, and no multipart body buffering ---------------
+
+
+def _upload(client, notebook_id, name, payload, *, headers=None):
+    return client.post(
+        f"/notebooks/{notebook_id}/sources/upload",
+        files={"files": (name, payload, "text/plain")},
+        headers=headers,
+        follow_redirects=False,
+    )
+
+
+def _ready_notebook(main, db, client):
+    """A notebook on a deployment whose LLM settings pass the upload gate."""
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE llm_settings SET base_url = 'http://llm.test/v1', chat_model = 'm',"
+            " embedding_base_url = 'http://llm.test/v1', embedding_model = 'e' WHERE id = 1"
+        )
+    client.post("/notebooks/new", data={"title": "N"}, follow_redirects=False)
+    with db.connect() as conn:
+        return conn.execute("SELECT id FROM notebooks ORDER BY id DESC LIMIT 1").fetchone()["id"]
+
+
+def test_oversized_file_is_rejected_and_leaves_nothing_on_disk(monkeypatch, tmp_path):
+    """A file past the per-file cap gets 413, and its partial write is cleaned up."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "UPLOAD_MAX_FILE_BYTES", 1024)
+    monkeypatch.setattr(main.config.runtime, "upload_max_file_bytes", 1024)
+    with TestClient(main.app) as client:
+        _login(client)
+        notebook_id = _ready_notebook(main, db, client)
+
+        response = _upload(client, notebook_id, "big.txt", b"x" * 5000)
+        assert response.status_code == 413
+
+        # Nothing recorded, and nothing left behind.
+        with db.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) AS n FROM sources").fetchone()["n"] == 0
+        upload_root = tmp_path / "data" / "uploads"
+        leftovers = list(upload_root.rglob("*")) if upload_root.exists() else []
+        assert [p for p in leftovers if p.is_file()] == []
+
+
+def test_file_at_the_limit_is_accepted(monkeypatch, tmp_path):
+    """The cap is an upper bound, not an off-by-one that rejects the boundary."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "UPLOAD_MAX_FILE_BYTES", 1024)
+    monkeypatch.setattr(main.config.runtime, "upload_max_file_bytes", 1024)
+    with TestClient(main.app) as client:
+        _login(client)
+        notebook_id = _ready_notebook(main, db, client)
+
+        assert _upload(client, notebook_id, "ok.txt", b"x" * 1024).status_code == 303
+        with db.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) AS n FROM sources").fetchone()["n"] == 1
+
+
+def test_oversized_request_is_refused_from_content_length(monkeypatch, tmp_path):
+    """The whole request is refused up front, before any body is read.
+
+    This is the memory guard: `Content-Length` is checked in the middleware, so
+    an oversized upload never reaches the point of being buffered or spooled.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "MAX_REQUEST_BYTES", 512)
+    with TestClient(main.app) as client:
+        _login(client)
+        notebook_id = _ready_notebook(main, db, client)
+
+        response = _upload(client, notebook_id, "big.txt", b"x" * 4000)
+        assert response.status_code == 413
+
+
+def test_csrf_middleware_never_reads_a_multipart_body(monkeypatch, tmp_path):
+    """The core of SEC-2: uploads must not be materialised in memory.
+
+    `request.body()` is what used to buffer the entire upload before the route
+    ran. Making it explode proves the middleware no longer calls it — if this
+    test starts failing, the buffering regression is back.
+    """
+    from starlette.requests import Request as StarletteRequest
+
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def exploding_body(self):
+        raise AssertionError("multipart body was buffered into memory")
+
+    with TestClient(main.app) as client:
+        _login(client)
+        notebook_id = _ready_notebook(main, db, client)
+        monkeypatch.setattr(StarletteRequest, "body", exploding_body)
+
+        assert _upload(client, notebook_id, "a.txt", b"hello").status_code == 303
+
+
+def test_multipart_csrf_accepts_the_form_field_and_rejects_a_bad_token(monkeypatch, tmp_path):
+    """A browser form submit carries the token as a field, not a header."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+        notebook_id = _ready_notebook(main, db, client)
+        token = client.cookies.get("csrf_token")
+
+        # The plain-form path: token as a multipart field, no header at all.
+        accepted = client.post(
+            f"/notebooks/{notebook_id}/sources/upload",
+            files={"files": ("a.txt", b"hello", "text/plain")},
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        assert accepted.status_code == 303
+
+        forged = client.post(
+            f"/notebooks/{notebook_id}/sources/upload",
+            files={"files": ("b.txt", b"hello", "text/plain")},
+            data={"csrf_token": "not-a-signed-token"},
+            headers={"X-CSRF-Token": ""},
+            follow_redirects=False,
+        )
+        assert forged.status_code == 403
+
+        with db.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) AS n FROM sources").fetchone()["n"] == 1
+
+
+def test_startup_refuses_a_multipart_route_without_the_csrf_dependency(monkeypatch, tmp_path):
+    """The fail-closed guard: forgetting the check breaks the boot, loudly.
+
+    Because the middleware no longer validates multipart requests, a new upload
+    route that omits `verify_multipart_csrf` would be silently unprotected. This
+    pins that it cannot start at all.
+    """
+    from fastapi import FastAPI, File, UploadFile
+
+    main, _ = _fresh_app(monkeypatch, tmp_path)
+
+    unguarded = FastAPI()
+
+    @unguarded.post("/unguarded-upload")
+    def _unguarded(files: list[UploadFile] = File(...)):  # pragma: no cover - never runs
+        return {}
+
+    with pytest.raises(RuntimeError, match="verify_multipart_csrf"):
+        main.assert_multipart_routes_check_csrf(unguarded)
+
+    # And the real app passes the same check.
+    main.assert_multipart_routes_check_csrf(main.app)
+
+
+def test_oversized_spreadsheet_is_refused_at_upload_not_in_the_worker(monkeypatch, tmp_path):
+    """The two-stage-rejection fix: a big .xlsx fails immediately, with a reason.
+
+    Before this, a spreadsheet under the upload cap but over the extract cap
+    uploaded successfully and then failed in the worker minutes later. It is now
+    one 413 at upload, worded so the stricter number does not contradict the
+    limit the upload widget advertises.
+    """
+    import app.i18n as i18n
+
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(main.config.runtime, "upload_max_file_bytes", 8000)
+    monkeypatch.setattr(main.config.runtime, "extract_max_file_bytes", 1000)
+    monkeypatch.setattr(main, "UPLOAD_MAX_FILE_BYTES", 8000)
+    with TestClient(main.app) as client:
+        _login(client)
+        notebook_id = _ready_notebook(main, db, client)
+
+        # A PDF of the same size is fine: it only meets the general cap.
+        assert _upload(client, notebook_id, "ok.pdf", b"x" * 5000).status_code == 303
+
+        response = client.post(
+            f"/notebooks/{notebook_id}/sources/upload",
+            files={"files": ("rows.csv", b"x" * 5000, "text/csv")},
+            follow_redirects=False,
+        )
+        assert response.status_code == 413
+        # The wording must explain *why* this format's number is smaller.
+        assert "試算表" in response.text or "壓縮檔" in response.text
+        assert i18n.t("upload.file_too_large_eager_format", filename="rows.csv", limit_mb=1) != ""
+
+        with db.connect() as conn:
+            rows = conn.execute("SELECT filename FROM sources").fetchall()
+        assert [r["filename"] for r in rows] == ["ok.pdf"]

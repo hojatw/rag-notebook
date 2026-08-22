@@ -102,7 +102,7 @@
       <div id="nb-file-summary" class="upload-file-summary" aria-live="polite"></div>
       <button type="submit" class="wide" data-loading-text="上傳中..."
               {% if not llm_status.ready %}disabled{% endif %}>上傳</button>
-      <p class="hint">{{ t('upload.formats', count=upload_batch_limit) }}</p>
+      <p class="hint">{{ t('upload.formats', count=upload_batch_limit, limit_mb=max_upload_mb, eager_mb=max_eager_upload_mb) }}</p>
     </form>
 
     <ul class="source-list">
