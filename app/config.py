@@ -108,17 +108,26 @@ class RuntimeConfig:
     # cannot wedge the ingest queue forever.
     index_migration_lock_timeout_s: float = 600.0
     upload_batch_limit: int = 5
-    # Hard size cap for source formats the extractor parses eagerly or loads
-    # whole into memory: .xlsx / .pptx (zip containers — a small archive can
-    # decompress to gigabytes) and .csv (read in one go for encoding
-    # detection). PDF/DOCX stream and are not covered here.
-    max_source_bytes: int = 20_000_000
-    # SEC-2: per-file cap enforced at **upload** time, for every format. This is
-    # a different control from max_source_bytes above, which only guards the
-    # eagerly-parsed formats and only once the file is already on disk. 50 MB is
-    # ~2.4x the largest file seen in a real corpus (p95 was 6.6 MB), so it blocks
-    # nothing legitimate while bounding what one request can write.
-    max_upload_bytes: int = 50_000_000
+    # Two file-size caps, named for the **pipeline stage** that enforces them.
+    # They protect different things, which is why both exist:
+    #
+    #   upload_max_file_bytes   web request, while streaming to disk, ALL formats
+    #                           -> protects the host: disk fill, request memory
+    #   extract_max_file_bytes  ingest worker, file already stored, .xlsx/.pptx/.csv
+    #                           -> protects the parser: those are zip containers
+    #                              (a small archive can decompress to gigabytes)
+    #                              or read whole into memory for encoding
+    #                              detection, so on-disk size does not bound the
+    #                              parse cost. PDF/DOCX stream and are exempt.
+    #
+    # The upload path applies whichever of the two is stricter for the file's
+    # format (see `ingest.upload_limit_for`), so an oversized spreadsheet is
+    # refused up front instead of failing later in the worker.
+    #
+    # 50 MB is ~2.4x the largest file in a real corpus (p95 was 6.6 MB), so it
+    # blocks nothing legitimate while bounding what one request can write.
+    upload_max_file_bytes: int = 50_000_000
+    extract_max_file_bytes: int = 20_000_000
     suggestions_ttl_hours: int = 24
     briefing_ttl_hours: int = 24
 
@@ -184,6 +193,18 @@ def _coerce(raw: Any, field_type: type) -> Any:
     return raw
 
 
+#: (group, current field) -> the field name it used to have. A deployment that
+#: set the old key keeps working; it is read only when the new key is absent,
+#: and each use is logged once so the setting can be migrated deliberately
+#: rather than discovered later.
+DEPRECATED_FIELD_ALIASES: dict[tuple[str, str], str] = {
+    # Renamed because `max_upload_bytes` / `max_source_bytes` read as near
+    # synonyms while meaning different pipeline stages. The names now lead with
+    # the stage: upload-time vs extract-time.
+    ("runtime", "extract_max_file_bytes"): "max_source_bytes",
+}
+
+
 def _load_group(group_cls, group_name: str, toml_data: dict):
     """Build one config group, applying TOML then env overrides over defaults."""
     toml_group = toml_data.get(group_name) or {}
@@ -194,6 +215,23 @@ def _load_group(group_cls, group_name: str, toml_data: dict):
             values[f.name] = _coerce(os.environ[env_key], f.type)
         elif f.name in toml_group:
             values[f.name] = _coerce(toml_group[f.name], f.type)
+            continue
+        else:
+            legacy = DEPRECATED_FIELD_ALIASES.get((group_name, f.name))
+            if legacy is None:
+                continue
+            legacy_env = f"{ENV_PREFIX}{group_name.upper()}_{legacy.upper()}"
+            if legacy_env in os.environ:
+                values[f.name] = _coerce(os.environ[legacy_env], f.type)
+            elif legacy in toml_group:
+                values[f.name] = _coerce(toml_group[legacy], f.type)
+            else:
+                continue
+            logger.warning(
+                "config_deprecated_key group=%s old=%s new=%s "
+                "detail=still honoured; rename it to silence this",
+                group_name, legacy, f.name,
+            )
     return group_cls(**values)
 
 

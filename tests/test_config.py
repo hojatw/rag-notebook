@@ -122,3 +122,31 @@ def test_example_toml_matches_code_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(tmp_path / "absent.toml"))
     defaults = cfg.load_config()
     assert from_example == defaults
+
+
+def test_deprecated_max_source_bytes_key_is_still_honoured(tmp_path, monkeypatch):
+    """A deployment that set the pre-rename key keeps working.
+
+    `max_source_bytes` shipped in 0.3.0 and was renamed to
+    `extract_max_file_bytes` because it read as a near-synonym of
+    `upload_max_file_bytes` while meaning a different pipeline stage. Renaming a
+    released config key must not silently reset it to the default.
+    """
+    toml = tmp_path / "legacy.toml"
+    toml.write_text("[runtime]\nmax_source_bytes = 1234567\n", encoding="utf-8")
+    monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(toml))
+    assert cfg.load_config().runtime.extract_max_file_bytes == 1234567
+
+    monkeypatch.setenv("NOTEBOOKLM_RUNTIME_MAX_SOURCE_BYTES", "7654321")
+    assert cfg.load_config().runtime.extract_max_file_bytes == 7654321
+
+
+def test_new_key_wins_over_the_deprecated_one(tmp_path, monkeypatch):
+    """The alias is a fallback, not an override — the current name takes priority."""
+    toml = tmp_path / "both.toml"
+    toml.write_text(
+        "[runtime]\nmax_source_bytes = 1111111\nextract_max_file_bytes = 2222222\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(toml))
+    assert cfg.load_config().runtime.extract_max_file_bytes == 2222222

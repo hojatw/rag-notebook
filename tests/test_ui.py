@@ -3394,7 +3394,8 @@ def _ready_notebook(main, db, client):
 def test_oversized_file_is_rejected_and_leaves_nothing_on_disk(monkeypatch, tmp_path):
     """A file past the per-file cap gets 413, and its partial write is cleaned up."""
     main, db = _fresh_app(monkeypatch, tmp_path)
-    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 1024)
+    monkeypatch.setattr(main, "UPLOAD_MAX_FILE_BYTES", 1024)
+    monkeypatch.setattr(main.config.runtime, "upload_max_file_bytes", 1024)
     with TestClient(main.app) as client:
         _login(client)
         notebook_id = _ready_notebook(main, db, client)
@@ -3413,7 +3414,8 @@ def test_oversized_file_is_rejected_and_leaves_nothing_on_disk(monkeypatch, tmp_
 def test_file_at_the_limit_is_accepted(monkeypatch, tmp_path):
     """The cap is an upper bound, not an off-by-one that rejects the boundary."""
     main, db = _fresh_app(monkeypatch, tmp_path)
-    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 1024)
+    monkeypatch.setattr(main, "UPLOAD_MAX_FILE_BYTES", 1024)
+    monkeypatch.setattr(main.config.runtime, "upload_max_file_bytes", 1024)
     with TestClient(main.app) as client:
         _login(client)
         notebook_id = _ready_notebook(main, db, client)
@@ -3513,3 +3515,39 @@ def test_startup_refuses_a_multipart_route_without_the_csrf_dependency(monkeypat
 
     # And the real app passes the same check.
     main.assert_multipart_routes_check_csrf(main.app)
+
+
+def test_oversized_spreadsheet_is_refused_at_upload_not_in_the_worker(monkeypatch, tmp_path):
+    """The two-stage-rejection fix: a big .xlsx fails immediately, with a reason.
+
+    Before this, a spreadsheet under the upload cap but over the extract cap
+    uploaded successfully and then failed in the worker minutes later. It is now
+    one 413 at upload, worded so the stricter number does not contradict the
+    limit the upload widget advertises.
+    """
+    import app.i18n as i18n
+
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(main.config.runtime, "upload_max_file_bytes", 8000)
+    monkeypatch.setattr(main.config.runtime, "extract_max_file_bytes", 1000)
+    monkeypatch.setattr(main, "UPLOAD_MAX_FILE_BYTES", 8000)
+    with TestClient(main.app) as client:
+        _login(client)
+        notebook_id = _ready_notebook(main, db, client)
+
+        # A PDF of the same size is fine: it only meets the general cap.
+        assert _upload(client, notebook_id, "ok.pdf", b"x" * 5000).status_code == 303
+
+        response = client.post(
+            f"/notebooks/{notebook_id}/sources/upload",
+            files={"files": ("rows.csv", b"x" * 5000, "text/csv")},
+            follow_redirects=False,
+        )
+        assert response.status_code == 413
+        # The wording must explain *why* this format's number is smaller.
+        assert "試算表" in response.text or "壓縮檔" in response.text
+        assert i18n.t("upload.file_too_large_eager_format", filename="rows.csv", limit_mb=1) != ""
+
+        with db.connect() as conn:
+            rows = conn.execute("SELECT filename FROM sources").fetchall()
+        assert [r["filename"] for r in rows] == ["ok.pdf"]

@@ -32,7 +32,7 @@ from joserfc.errors import JoseError
 from .config import config
 from .db import UPLOAD_DIR, connect, dumps, init_db, load_llm_settings, loads
 from .governance import record_ai_safety_events
-from .ingest import supported
+from .ingest import supported, upload_limit_for
 from .jobs import enqueue_source
 from .worker import run_worker_loop
 from . import i18n
@@ -88,7 +88,7 @@ CSRF_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # the body — a reverse proxy should carry the same limit, but the app must not
 # depend on one being there.
 MAX_REQUEST_BYTES = (
-    config.runtime.max_upload_bytes * config.runtime.upload_batch_limit + 1_000_000
+    config.runtime.upload_max_file_bytes * config.runtime.upload_batch_limit + 1_000_000
 )
 OIDC_STATE_COOKIE_NAME = "oidc_state"
 OIDC_STATE_COOKIE_MAX_AGE = 10 * 60
@@ -1732,7 +1732,8 @@ def notebook_view(
             # SEC-2: state the per-file cap up front. Discovering it as a 413
             # after picking a large file is a worse experience than reading it
             # next to the format list.
-            "max_upload_mb": MAX_UPLOAD_BYTES // 1_000_000,
+            "max_upload_mb": UPLOAD_MAX_FILE_BYTES // 1_000_000,
+            "max_eager_upload_mb": config.runtime.extract_max_file_bytes // 1_000_000,
             "error": "",
             "wide": True,
             "breadcrumb": notebook["title"],
@@ -1806,11 +1807,11 @@ def delete_notebook(request: Request, notebook_id: int, user: Annotated[dict, De
 
 
 UPLOAD_BATCH_LIMIT = config.runtime.upload_batch_limit
-MAX_UPLOAD_BYTES = config.runtime.max_upload_bytes
+UPLOAD_MAX_FILE_BYTES = config.runtime.upload_max_file_bytes
 
 
-def _store_upload(upload: UploadFile, destination: Path) -> int:
-    """Copy an upload to disk, aborting past MAX_UPLOAD_BYTES. Returns bytes written.
+def _store_upload(upload: UploadFile, destination: Path, limit: int) -> int:
+    """Copy an upload to disk, aborting past ``limit``. Returns bytes written.
 
     Copies in bounded chunks and counts as it goes rather than trusting
     ``Content-Length`` or ``upload.size``: the former is client-supplied, and a
@@ -1826,7 +1827,7 @@ def _store_upload(upload: UploadFile, destination: Path) -> int:
                 if not chunk:
                     break
                 written += len(chunk)
-                if written > MAX_UPLOAD_BYTES:
+                if written > limit:
                     raise ValueError("upload exceeds the per-file size limit")
                 out.write(chunk)
     except Exception:
@@ -1884,20 +1885,25 @@ def upload_source(
     for upload in files:
         safe_name = Path(upload.filename).name
         stored_path = user_dir / f"{uuid.uuid4().hex}_{safe_name}"
+        limit = upload_limit_for(safe_name)
         try:
-            _store_upload(upload, stored_path)
+            _store_upload(upload, stored_path, limit)
         except ValueError:
             logger.warning(
                 "source_upload_rejected user_id=%s notebook_id=%s filename=%s reason=too_large limit=%s",
-                user["id"], notebook_id, safe_name, MAX_UPLOAD_BYTES,
+                user["id"], notebook_id, safe_name, limit,
+            )
+            # A format-specific cap needs its own wording: the upload widget
+            # advertises the general limit, so "too large" against a smaller
+            # number would just look wrong without saying why.
+            key = (
+                "upload.file_too_large_eager_format"
+                if limit < UPLOAD_MAX_FILE_BYTES
+                else "upload.file_too_large"
             )
             raise HTTPException(
                 status_code=413,
-                detail=i18n.t(
-                    "upload.file_too_large",
-                    filename=safe_name,
-                    limit_mb=MAX_UPLOAD_BYTES // 1_000_000,
-                ),
+                detail=i18n.t(key, filename=safe_name, limit_mb=limit // 1_000_000),
             )
         with connect() as conn:
             cursor = conn.execute(

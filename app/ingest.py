@@ -542,14 +542,41 @@ CJK_TARGET_CHARS = config.chunking.cjk_target_chars
 DEFAULT_OVERLAP_SENTENCES = config.chunking.overlap_sentences
 
 
+#: Formats the extractor parses eagerly or loads whole into memory, so their
+#: on-disk size does not bound the parse cost: `.xlsx` / `.pptx` are zip
+#: containers (a small archive can decompress to gigabytes) and `.csv` is read
+#: in one go for encoding detection. PDF/DOCX stream and are not listed.
+EAGERLY_PARSED_SUFFIXES = frozenset({".xlsx", ".pptx", ".csv"})
+
+
+def upload_limit_for(filename: str) -> int:
+    """Effective per-file upload cap for this filename, in bytes.
+
+    Normally `upload_max_file_bytes`, but the eagerly-parsed formats fall back to
+    the stricter `extract_max_file_bytes` because that is what the worker would
+    enforce anyway. Applying it at upload time turns a confusing two-stage
+    rejection — upload succeeds, then ingest fails minutes later — into one
+    immediate, explainable error.
+
+    Lives here rather than in `app/main.py` so the "which formats are expensive
+    to parse" knowledge stays next to the parsers that make it true.
+    """
+    limit = config.runtime.upload_max_file_bytes
+    if Path(filename).suffix.lower() in EAGERLY_PARSED_SUFFIXES:
+        return min(limit, config.runtime.extract_max_file_bytes)
+    return limit
+
+
 def _guard_source_size(path: Path) -> None:
     """Refuse sources the extractor would parse eagerly beyond a sane size.
 
-    `.xlsx` / `.pptx` are zip containers, so the on-disk size says nothing about
-    what they expand to; `.csv` is read into memory whole for encoding
-    detection. The cap bounds all three before a parser is handed the file.
+    The upload path already applies the same cap (`upload_limit_for`), so in
+    normal operation this never fires. It stays as the backstop for files that
+    did not arrive through an upload — reindexing a source stored before the cap
+    existed, or a file placed in `data/uploads/` by hand — because this is the
+    check that actually stands between a zip bomb and a parser.
     """
-    limit = config.runtime.max_source_bytes
+    limit = config.runtime.extract_max_file_bytes
     size = path.stat().st_size
     if size > limit:
         raise ValueError(f"Source file is too large to ingest ({size} bytes > {limit}).")

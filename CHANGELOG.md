@@ -42,11 +42,23 @@
   所以**每一次上傳都必定把整包內容完整讀進記憶體**。一個正常登入的使用者傳幾個大檔
   就能把記憶體吃光，不需要任何漏洞。
 
-  現在：新增 `[runtime].max_upload_bytes`（預設 50 MB）作為**每個檔案**在上傳當下的上限，
+  現在：新增 `[runtime].upload_max_file_bytes`（預設 50 MB）作為**每個檔案**在上傳當下的上限，
   涵蓋所有格式，且是邊寫入磁碟邊計數，超過就中止、刪掉半個檔案並回 413。整個請求另外以
-  `max_upload_bytes × upload_batch_limit` 為界，直接從 `Content-Length` 判斷，
+  `upload_max_file_bytes × upload_batch_limit` 為界，直接從 `Content-Length` 判斷，
   **在讀取任何 body 之前**就拒絕。上傳區的格式提示也會直接寫出單檔上限，
   不用等挑完檔案才被拒絕。
+
+  上傳時會取「一般上限」與「該格式的抽取上限」兩者中較嚴的一個。試算表與簡報是壓縮檔、
+  CSV 會整份讀進記憶體，這三種格式本來就有較嚴的抽取上限；以前一個 30 MB 的試算表會
+  **上傳成功、然後在 worker 裡失敗**，現在會在上傳當下就被擋下並說明原因。
+
+### 變更
+
+- **設定鍵改名，舊名稱仍可用**：`max_source_bytes` → `extract_max_file_bytes`，
+  並新增 `upload_max_file_bytes`。原本兩個名字讀起來像同義詞，實際上是管線中不同階段的
+  兩種保護（上傳時／抽取時），新名稱以階段當前綴，看名字就知道誰先誰後。
+  舊的 `max_source_bytes`（`config.toml` 與 `NOTEBOOKLM_RUNTIME_MAX_SOURCE_BYTES`）
+  仍會被讀取，只是啟動時會記一筆 deprecation 警告，**既有部署不需要改設定**。
 
   中介層不再讀取 multipart body；上傳路由改為透過 `verify_multipart_csrf` 從自己解析出的
   表單驗證 token（header 與表單欄位都接受），`request.form()` 會溢寫到磁碟而非常駐記憶體。

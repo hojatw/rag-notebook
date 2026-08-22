@@ -174,7 +174,7 @@ def test_oversized_deck_is_refused(tmp_path, monkeypatch):
     prs = _deck(tmp_path)
     prs.slides.add_slide(prs.slide_layouts[6])
     path = _save(prs, tmp_path)
-    monkeypatch.setattr(app_config.config.runtime, "max_source_bytes", 10)
+    monkeypatch.setattr(app_config.config.runtime, "extract_max_file_bytes", 10)
 
     with pytest.raises(ValueError, match="too large"):
         extract_sections(path)

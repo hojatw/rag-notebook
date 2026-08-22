@@ -71,8 +71,13 @@ poll_interval_s = 2.0         # worker idle poll interval
 briefing_lock_timeout_s = 90.0
 index_migration_lock_timeout_s = 600.0   # O0: a stale dimension-migration lock is reclaimed after this
 upload_batch_limit = 5        # max files per upload request
-max_source_bytes = 20000000   # hard cap for eagerly-parsed sources (.xlsx/.pptx/.csv)
-max_upload_bytes = 50000000   # SEC-2: per-file cap at upload time, every format
+# Two file-size caps, named for the pipeline stage that enforces them:
+upload_max_file_bytes = 50000000    # upload time, every format (protects disk + request memory)
+extract_max_file_bytes = 20000000   # extract time, .xlsx/.pptx/.csv only (protects the parser)
+# The upload path applies whichever is stricter for the file's format, so an
+# oversized spreadsheet is refused up front rather than failing in the worker.
+# (extract_max_file_bytes was named max_source_bytes before 0.4; the old key is
+#  still read, with a deprecation warning.)
 suggestions_ttl_hours = 24
 briefing_ttl_hours = 24
 
