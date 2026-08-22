@@ -1,13 +1,13 @@
-fastapi==0.139.2
-uvicorn==0.51.0
+fastapi==0.141.1
+uvicorn==0.52.0
 jinja2==3.1.6
 python-multipart==0.0.32
 httpx==0.28.1
 itsdangerous==2.2.0
-cryptography==49.0.0
+cryptography==50.0.0
 authlib==1.7.2
-joserfc==1.7.2
-pypdf==6.14.2
+joserfc==1.7.4
+pypdf==6.15.0
 pdfplumber==0.11.10
 python-docx==1.2.0
 openpyxl==3.1.5
@@ -21,6 +21,6 @@ python-pptx==1.0.2
 Pillow==12.3.0
 # Pinned explicitly (A6c): it was already present transitively, but ingest now
 # imports it for CSV encoding detection (Big5/CP950 is common in zh-TW exports).
-charset-normalizer==3.4.7
+charset-normalizer==3.4.9
 beautifulsoup4==4.15.0
 chromadb==1.5.9
