@@ -2357,6 +2357,30 @@ def test_high_risk_admin_actions_are_audited(monkeypatch, tmp_path):
         assert "audited-profile" in audit.text
 
 
+def test_admin_index_page_warns_clear_does_not_reset_dimension(monkeypatch, tmp_path):
+    """O0: the index page must not sell Clear/Rebuild as a dimension migration.
+
+    Chroma keeps a collection's locked dimension after every vector is deleted,
+    so an admin who clears in order to switch embedding models ends up with an
+    empty index that still rejects the new dimension. Until the permanent O0
+    fix lands this page is the last thing they read before pressing Clear, so
+    it has to say so and point at the operator script instead.
+    """
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        page = client.get("/admin/index")
+        assert page.status_code == 200
+
+        # The empty-collection hint must not claim the dimension is unlocked.
+        assert "尚未鎖定維度" not in page.text
+        # Clear's confirm dialog carries the warning, not just the page prose.
+        assert "清除不會解除集合已鎖定的向量維度" in page.text
+        # And the page routes dimension changes to the workaround script.
+        assert "scripts/reset_chroma_dimension.py" in page.text
+
+
 def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_path):
     """O1 Phase 1: admins can test chat/embedding without storing prompts or secrets."""
     main, db = _fresh_app(monkeypatch, tmp_path)

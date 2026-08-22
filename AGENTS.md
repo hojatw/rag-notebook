@@ -88,7 +88,12 @@ For Docker/runtime changes, build the image and smoke-test at least `/` and `/lo
 - **Chat and embedding are configured as independent connections** (separate provider / base URL / API key / Azure api-version, plus their own model). They can point at different services — e.g. Gemma chat on one host and e5 embedding on another. Build requests via `chat_settings()` / `embedding_settings()` in `app/llm.py`; do not reintroduce a single shared connection.
 - **The API key is optional** on both connections. Local services (e5, Ollama, vLLM, TEI) accept requests without one — a blank key sends no auth header; readiness is decided by the model being set, not the key. Do not re-add `not api_key` to the "configured" guards.
 - Embedding responses must provide OpenAI-compatible `data[].embedding`; chat responses must provide `choices[0].message.content`.
-- Changing embedding models can change vector dimensions. Preserve the existing dimension check and require clearing/rebuilding the Chroma index when needed.
+- Changing embedding models can change vector dimensions. Preserve the existing
+  dimension check. **Known P0 defect:** the current `/admin/index` Clear action
+  removes vectors but does not reset the Chroma collection's locked dimension;
+  do not describe Clear/Rebuild as a valid dimension-migration path until O0 is
+  fixed. Use `scripts/reset_chroma_dimension.py` with all app/worker processes
+  stopped, then Reindex the sources the tool reports.
 - Before changing query rewrite, hybrid retrieval, reranking, chunking, or scoring, read `docs/RETRIEVAL.md` and update eval expectations where appropriate.
 
 ## Security Expectations

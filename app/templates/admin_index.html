@@ -4,13 +4,13 @@
   <header class="settings-head">
     <p class="eyebrow">管理主控台</p>
     <h1>向量索引</h1>
-    <p class="muted">比對 Chroma 集合與 SQLite 中已索引來源的分塊。從備份還原後請用<strong>重建</strong>；要清空 Chroma 重來則用<strong>清除</strong>。</p>
+    <p class="muted">比對 Chroma 集合與 SQLite 中已索引來源的分塊。從備份還原或懷疑索引漂移時請用<strong>重建</strong>；<strong>清除</strong>只刪掉向量內容，<strong>不會</strong>解除集合已鎖定的向量維度。</p>
   </header>
 
   {% if msg.startswith('rebuilt-') %}
     <div class="notice">索引已重建 — 已寫入 {{ msg.split('-', 1)[1] }} 個分塊。</div>
   {% elif msg.startswith('cleared-') %}
-    <div class="notice">已清除 {{ msg.split('-', 1)[1] }} 個向量。執行「重建」即可重新建立。</div>
+    <div class="notice">已清除 {{ msg.split('-', 1)[1] }} 個向量。沿用<strong>同一個</strong> embedding 模型時，執行「重建」即可重新建立；若你是為了更換 embedding 維度而清除，「重建」會因維度不符而失敗 — 請改用下方的維度遷移程序。</div>
   {% endif %}
 
   {% if not status.chroma_available %}
@@ -43,7 +43,7 @@
       <div class="index-stat">
         <span class="index-stat-label">向量維度</span>
         <span class="index-stat-value">{{ status.dimension if status.dimension is not none else "—" }}</span>
-        <span class="muted small">{% if status.dimension is not none %}（由第一次寫入鎖定）{% else %}（集合為空 — 尚未鎖定維度）{% endif %}</span>
+        <span class="muted small">{% if status.dimension is not none %}（由第一次寫入鎖定）{% else %}（讀不到向量 — 集合可能仍鎖定舊維度，清除不會解鎖）{% endif %}</span>
       </div>
     </div>
 
@@ -68,13 +68,21 @@
         <button type="submit" data-loading-text="重建中...">重建索引</button>
       </form>
       <form method="post" action="/admin/index/clear"
-            data-confirm="刪除 Chroma 中的所有向量？SQLite 資料不受影響，之後執行「重建」即可恢復搜尋。"
+            data-confirm="刪除 Chroma 中的所有向量？SQLite 資料不受影響，沿用同一個 embedding 模型時可用「重建」恢復搜尋。注意：清除不會解除集合已鎖定的向量維度，因此無法用來更換 embedding 模型的維度。"
             data-loading-form>
         {{ csrf_input() }}
         <button type="submit" class="danger" data-loading-text="清除中...">清除向量</button>
       </form>
     </div>
     <p class="hint muted small">每次啟動都會自動執行差異同步 — 這些按鈕只在懷疑索引漂移時手動修復用。</p>
+  </section>
+
+  <section class="settings-section">
+    <h2>更換 embedding 維度</h2>
+    <div class="alert">
+      <p><strong>「清除」不是維度遷移的方法。</strong>Chroma 在第一次寫入時鎖定集合維度，刪光向量並不會解除鎖定 — 集合看起來是空的，之後卻仍會以 <code>Collection expecting embedding with dimension of N</code> 拒絕新維度的寫入，且反覆清除／重建無法修復。</p>
+      <p class="small">要更換 embedding 模型的維度，請<strong>停掉所有 app 與 worker 程序</strong>，再執行 <code>scripts/reset_chroma_dimension.py</code>（預設為 dry-run，會先備份 SQLite 與 Chroma），完成後回到本頁對工具列出的來源執行 Reindex。詳細步驟見 <code>docs/DEVELOPMENT.md</code>。</p>
+    </div>
   </section>
 
   <div class="settings-foot">
