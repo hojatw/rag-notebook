@@ -114,11 +114,19 @@ class RuntimeConfig:
     #   upload_max_file_bytes   web request, while streaming to disk, ALL formats
     #                           -> protects the host: disk fill, request memory
     #   extract_max_file_bytes  ingest worker, file already stored, .xlsx/.pptx/.csv
-    #                           -> protects the parser: those are zip containers
-    #                              (a small archive can decompress to gigabytes)
-    #                              or read whole into memory for encoding
-    #                              detection, so on-disk size does not bound the
-    #                              parse cost. PDF/DOCX stream and are exempt.
+    #                           -> protects the parser. On-disk size does not
+    #                              bound these formats' parse cost, but for three
+    #                              different reasons:
+    #                                .xlsx  zip expansion only — openpyxl reads it
+    #                                       with read_only=True, so rows stream
+    #                                .pptx  zip expansion, and python-pptx builds
+    #                                       the whole presentation object
+    #                                .csv   not a zip: read_bytes -> decode ->
+    #                                       splitlines each materialises the whole
+    #                                       file, measured at ~5.7x its size for
+    #                                       Big5. See QUALITY/PERFORMANCE backlog
+    #                                       for the streaming rewrite.
+    #                              PDF/DOCX stream and are exempt.
     #
     # The upload path applies whichever of the two is stricter for the file's
     # format (see `ingest.upload_limit_for`), so an oversized spreadsheet is

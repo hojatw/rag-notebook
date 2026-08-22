@@ -542,10 +542,22 @@ CJK_TARGET_CHARS = config.chunking.cjk_target_chars
 DEFAULT_OVERLAP_SENTENCES = config.chunking.overlap_sentences
 
 
-#: Formats the extractor parses eagerly or loads whole into memory, so their
-#: on-disk size does not bound the parse cost: `.xlsx` / `.pptx` are zip
-#: containers (a small archive can decompress to gigabytes) and `.csv` is read
-#: in one go for encoding detection. PDF/DOCX stream and are not listed.
+#: Formats whose on-disk size does not bound their parse cost — each for its own
+#: reason, so do not collapse these into one sentence:
+#:
+#: * ``.xlsx`` — zip expansion only. openpyxl opens it ``read_only=True``, so the
+#:   rows themselves stream; the risk is a small archive decompressing to
+#:   gigabytes.
+#: * ``.pptx`` — zip expansion, *plus* python-pptx materialises the whole
+#:   presentation object rather than streaming slides.
+#: * ``.csv`` — not an archive at all. ``_read_csv_sheet`` materialises the file
+#:   three times over (``read_bytes`` → full ``str`` decode → ``splitlines``),
+#:   measured at ~5.7x the file size on a Big5 export. Encoding *detection* is
+#:   not the cause — it is only one consumer of an already-fully-read buffer —
+#:   though the strict whole-file UTF-8 attempt in ``_decode_csv_bytes`` is a
+#:   deliberate verification that sampling could not replace.
+#:
+#: PDF/DOCX stream and are not listed.
 EAGERLY_PARSED_SUFFIXES = frozenset({".xlsx", ".pptx", ".csv"})
 
 
