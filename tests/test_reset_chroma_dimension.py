@@ -103,7 +103,7 @@ def test_apply_migration_rebuilds_target_dimension_and_backs_up(fresh_modules, l
     assert vs.collection().count() == 1
     # Startup diff-sync must not replay the old 384-dimension source and lock
     # the new collection back to the previous schema.
-    assert vs.sync_from_sqlite(mode="diff") == {"upserted": 0, "deleted": 0}
+    assert vs.sync_from_sqlite(mode="diff") == {"upserted": 0, "deleted": 0, "skipped_dimension": 0}
     assert vs.current_dimension() == 1536
     with db.connect() as connection:
         statuses = {

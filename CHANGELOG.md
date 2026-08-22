@@ -17,6 +17,15 @@
   回填可安全沿用的目標維度 vectors，並把仍是舊維度的 indexed 來源改為待 Reindex。
   Docker 與本機操作步驟見 `docs/DEVELOPMENT.md`。
 
+- **O0 Phase B — `stale_embedding` 來源狀態與 startup sync 維度守衛**：新增
+  `app/index_migration.py`，依照既有向量的維度把來源分類（可沿用／只因鎖定而失敗
+  可復原／需重新 embed／不受影響）。維度不符的來源改為新狀態 `stale_embedding`，
+  被所有 `status = 'indexed'` 查詢排除，因此 startup sync 不會把舊維度向量重新
+  寫回去、把剛重設的 collection 又鎖回舊維度。狀態獨立於 `failed`，因為「檔案壞了」
+  與「需要重新 embed」是兩回事，修法是「重新索引」而非重新上傳。
+  `sync_from_sqlite()` 另加一層守衛：維度不符的分塊會被跳過而非寫入，並在回傳值
+  多一個 `skipped_dimension` 計數與一筆 warning log。
+
 ### 修正
 
 - **`/admin/index` 不再把「清除／重建」當成更換 embedding 維度的方法**：原本空集合會顯示
