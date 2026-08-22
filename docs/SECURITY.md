@@ -42,7 +42,13 @@ Audit metadata is intentionally compact: store action identifiers, target ids, f
 
 ## Hardening status
 
-A full review on **2026-08-22** surfaced hardening items beyond `SEC-1` (bootstrap accounts, fixed above). They are triaged and tracked in `docs/REVIEW_BACKLOG_2026-08-22.md` with priorities and locations, and are folded back into this file as each lands. The open ones at the time of writing: **no upload size limit** (a multipart body is also fully buffered in memory by the CSRF middleware — the highest-severity item still open), **session tokens that never expire and cannot be revoked** (changing a password does not end other sessions), **no login rate limiting**, **prompt-injection detection with English-only patterns** on a zh-TW deployment, and two low-severity hygiene items. Keep treating the app as a POC and re-audit before any untrusted-network exposure.
+A full review on **2026-08-22** surfaced a set of hardening items. They are triaged and tracked in `docs/REVIEW_BACKLOG_2026-08-22.md` with priorities and locations, and are folded back into this file as each lands.
+
+**Fixed:** `SEC-1` bootstrap accounts (above) and `SEC-2` upload size limits / multipart buffering (see the parser note below) — the two rated P0.
+
+**Still open:** **session tokens that never expire and cannot be revoked** (changing a password does not end other sessions — the highest-severity item remaining), **no login rate limiting**, **prompt-injection detection with English-only patterns** on a zh-TW deployment, and two low-severity hygiene items (a `SELECT *` that carries `password_hash` into the template context, and a raw exception string echoed to an admin).
+
+Keep treating the app as a POC and re-audit before any untrusted-network exposure.
 
 ### Attack surface note: uploaded-file parsers (A6b / A6c, 2026-07-25)
 
