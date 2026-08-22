@@ -21,6 +21,6 @@ python-pptx==1.0.2
 Pillow==12.3.0
 # Pinned explicitly (A6c): it was already present transitively, but ingest now
 # imports it for CSV encoding detection (Big5/CP950 is common in zh-TW exports).
-charset-normalizer==3.4.9
+charset-normalizer==3.5.1
 beautifulsoup4==4.15.0
 chromadb==1.5.9
