@@ -91,8 +91,15 @@ Copy [`config.example.toml`](../config.example.toml) to `config.toml` for local
 or deployment-specific overrides. Changing `[chunking]` — or the chunk-shaping
 values in `[spreadsheet]` (`rows_per_chunk_max`, `embed_token_budget`) — requires
 re-indexing existing sources. `[diagnostics]` thresholds only affect what the
-source preview *displays*, so they never require a re-index. `[runtime].max_source_bytes`
-is the hard size cap for eagerly-parsed sources (`.xlsx` / `.pptx` / `.csv`).
+source preview *displays*, so they never require a re-index. There are **two** independent size caps, and they answer different questions.
+`[runtime].max_upload_bytes` (50 MB) is the **per-file cap at upload time**, applied
+to every format and enforced while streaming to disk, so an oversized file is
+refused with 413 and never lands. `[runtime].max_source_bytes` (20 MB) is the
+**parse-time** cap for the formats the extractor loads eagerly (`.xlsx` / `.pptx` /
+`.csv` — zip containers and whole-file reads), applied in the worker once the file
+is already stored. Raising the upload cap does not raise the parse cap.
+A whole request is additionally bounded at `max_upload_bytes * upload_batch_limit`
+(plus 1 MB of framing), refused from `Content-Length` before any body is read.
 
 ## Logging
 

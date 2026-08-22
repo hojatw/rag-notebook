@@ -171,6 +171,9 @@ MESSAGES: dict[str, dict[str, str]] = {
         # --- Account page · forced password change (SEC-1) --------------------
         "account.force_change_title": "請先變更密碼",
         "account.force_change_body": "這個帳號目前使用的是系統建立的初始密碼。設定新密碼之後才能使用其他功能。",
+        # --- Upload size limits (SEC-2) ---------------------------------------
+        "upload.file_too_large": "「{filename}」超過單檔上限 {limit_mb} MB，已略過。請壓縮或拆分後再上傳。",
+        "upload.request_too_large": "這次上傳的總量超過單次請求上限，請減少檔案數或改用較小的檔案。",
         "auth_admin.title": "認證狀態",
         "auth_admin.intro": "檢查目前啟用的登入方式、SSO 設定完整度與操作注意事項。",
         "auth_admin.modes": "登入模式",
@@ -527,7 +530,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "js.provider_hint_openai": "請填入相容 /v1 的 base URL；模型欄位填模型名稱。",
         "js.provider_hint_azure": "請填入 Azure 資源端點；模型欄位填部署（deployment）名稱。",
         # upload formats hint (template-side, Phase 1c)
-        "upload.formats": "PDF · TXT · Markdown · DOCX · HTML · 簡報(PPTX) · 字幕(SRT/VTT) · 試算表(XLSX/CSV) · 一次最多 {count} 個",
+        "upload.formats": "PDF · TXT · Markdown · DOCX · HTML · 簡報(PPTX) · 字幕(SRT/VTT) · 試算表(XLSX/CSV) · 一次最多 {count} 個 · 單檔上限 {limit_mb} MB",
     },
 }
 

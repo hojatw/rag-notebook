@@ -113,6 +113,12 @@ class RuntimeConfig:
     # decompress to gigabytes) and .csv (read in one go for encoding
     # detection). PDF/DOCX stream and are not covered here.
     max_source_bytes: int = 20_000_000
+    # SEC-2: per-file cap enforced at **upload** time, for every format. This is
+    # a different control from max_source_bytes above, which only guards the
+    # eagerly-parsed formats and only once the file is already on disk. 50 MB is
+    # ~2.4x the largest file seen in a real corpus (p95 was 6.6 MB), so it blocks
+    # nothing legitimate while bounding what one request can write.
+    max_upload_bytes: int = 50_000_000
     suggestions_ttl_hours: int = 24
     briefing_ttl_hours: int = 24
 

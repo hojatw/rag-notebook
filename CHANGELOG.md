@@ -33,6 +33,32 @@
   強制變更的閘門放在 `require_login`，因此自動涵蓋所有需要登入的路由，包含管理後台；
   被鎖住的帳號只能到 `/account`、送出 `/account/password` 與登出，導覽列也一併隱藏，
   不會出現點了只會彈回來的連結。完成變更會寫入 `bootstrap_password_changed` 稽核事件。
+- **上傳大小上限與記憶體上限（SEC-2）**：先前**完全沒有**任何上傳大小限制——只限制
+  一次幾個檔（5 個），而 `max_source_bytes` 是**解析階段**才檢查，那時檔案早就寫進磁碟了，
+  而且只涵蓋 `.xlsx` / `.pptx` / `.csv`，PDF 與 DOCX 根本不在範圍內。
+
+  更嚴重的是 CSRF 中介層對 multipart 請求會呼叫 `await request.body()`，用正規表達式
+  從原始 body 撈 token；而上傳表單是純 HTML form，不會帶 `X-CSRF-Token` header，
+  所以**每一次上傳都必定把整包內容完整讀進記憶體**。一個正常登入的使用者傳幾個大檔
+  就能把記憶體吃光，不需要任何漏洞。
+
+  現在：新增 `[runtime].max_upload_bytes`（預設 50 MB）作為**每個檔案**在上傳當下的上限，
+  涵蓋所有格式，且是邊寫入磁碟邊計數，超過就中止、刪掉半個檔案並回 413。整個請求另外以
+  `max_upload_bytes × upload_batch_limit` 為界，直接從 `Content-Length` 判斷，
+  **在讀取任何 body 之前**就拒絕。上傳區的格式提示也會直接寫出單檔上限，
+  不用等挑完檔案才被拒絕。
+
+  中介層不再讀取 multipart body；上傳路由改為透過 `verify_multipart_csrf` 從自己解析出的
+  表單驗證 token（header 與表單欄位都接受），`request.form()` 會溢寫到磁碟而非常駐記憶體。
+  由於這把檢查責任移到了路由上，另加一道**啟動時檢查**：任何宣告 `UploadFile` 卻沒有
+  掛上該相依的路由會讓程式直接啟動失敗——否則漏掉就是靜默不設防。
+
+### 效能
+
+- **上傳不再卡住事件迴圈（P1-4）**：`upload_source` 原本是 `async def`，但內容全是同步
+  阻塞 I/O（複製檔案、多次 SQLite 寫入、排入攝取佇列），沒有任何 await。也就是說上傳期間
+  整個網頁程序服務不了其他請求。改為同步 `def`，交由 FastAPI 的 threadpool 執行；
+  複製改為分塊串流，單一檔案也不會整份留在記憶體。
 
 ## [0.3.0] - 2026-08-22
 

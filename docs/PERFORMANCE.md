@@ -47,6 +47,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deliberate
 
 ---
 
+### [x] P1-4 · Upload ran its blocking I/O on the event loop
+- **Issue:** `upload_source` (`app/main.py`) was an `async def` whose body was entirely **blocking**: copying each file to disk, several SQLite writes, and `enqueue_source()`. Nothing in it awaited.
+- **Impact:** for the duration of an upload, the web process could serve nothing else — the event loop was held by a synchronous file copy. A bulk upload of large sources stalled every other user's requests.
+- **Fix:** **Done (with SEC-2).** Changed to a sync `def`, which FastAPI runs in its threadpool. Copying is now chunked through `_store_upload` rather than one `shutil.copyfileobj`, so a single file is never held in memory either.
+
 ## P2 — scale / cleanup
 
 ### [-] P2-1 · Reduce the SQLite vector copy (`embedding_json`) — *decided: keep as-is*
