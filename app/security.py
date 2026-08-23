@@ -18,6 +18,13 @@ ENCRYPTION_SALT = b"notebooklm-rag-poc.api-key.v1"
 APP_SECRET_ENV = "NOTEBOOKLM_SECRET"
 ALLOW_INSECURE_DEV_SECRET_ENV = "NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET"
 INSECURE_DEV_SECRET = "dev-secret-change-me"
+# Used only to keep missing-account login checks on the same bounded PBKDF2
+# path as real accounts. It is a fixed hash of a non-credential string, carries
+# no secret value, and must never be accepted as an application password.
+DUMMY_PASSWORD_HASH = (
+    "pbkdf2_sha256$200000$bG9naW4tZHVtbXktc2FsdA==$"
+    "5DFwyclYlYMGEwlBj/TxIFT/aF3GH229bPvjCKMyt/4="
+)
 
 
 def _truthy(value: str | None) -> bool:

@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from .config import config
-from .governance import normalize_usage, record_llm_usage_event
+from .governance import count_cjk_chars, estimate_tokens, normalize_usage, record_llm_usage_event
 
 
 SYSTEM_PROMPT = """You are a source-grounded RAG assistant.
@@ -474,6 +474,7 @@ async def probe_embedding_diagnostics(
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
     input_chars = sum(len(text) for text in texts)
+    input_cjk_chars = sum(count_cjk_chars(text) for text in texts)
     retry_stats: dict[str, Any] = {}
     try:
         data = await _post_json_with_retry(
@@ -494,6 +495,7 @@ async def probe_embedding_diagnostics(
             latency_ms=elapsed_ms,
             input_chars=input_chars,
             output_chars=0,
+            input_cjk_chars=input_cjk_chars,
             usage=None,
             usage_context=usage_context,
             error_class=exc.__class__.__name__,
@@ -513,6 +515,7 @@ async def probe_embedding_diagnostics(
         latency_ms=elapsed_ms,
         input_chars=input_chars,
         output_chars=0,
+        input_cjk_chars=input_cjk_chars,
         usage=data.get("usage"),
         usage_context=usage_context,
         metadata=_usage_metadata(
@@ -632,7 +635,9 @@ async def _probe_chat_once(
         request["json"]["messages"] = messages_override
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
-    input_chars = _message_chars(request["json"].get("messages") or [])
+    request_messages = request["json"].get("messages") or []
+    input_chars = _message_chars(request_messages)
+    input_cjk_chars = _message_cjk_chars(request_messages)
     retry_stats: dict[str, Any] = {}
     json_valid = False
     json_object: dict[str, Any] = {}
@@ -654,6 +659,7 @@ async def _probe_chat_once(
             latency_ms=elapsed_ms,
             input_chars=input_chars,
             output_chars=0,
+            input_cjk_chars=input_cjk_chars,
             usage=None,
             usage_context=usage_context,
             error_class=exc.__class__.__name__,
@@ -686,6 +692,8 @@ async def _probe_chat_once(
         latency_ms=elapsed_ms,
         input_chars=input_chars,
         output_chars=len(content),
+        input_cjk_chars=input_cjk_chars,
+        output_cjk_chars=count_cjk_chars(content),
         usage=data.get("usage"),
         usage_context=usage_context,
         metadata=_usage_metadata(
@@ -815,8 +823,11 @@ async def _probe_chat_stream(
     request["json"]["stream_options"] = {"include_usage": True}
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
-    input_chars = _message_chars(request["json"].get("messages") or [])
+    request_messages = request["json"].get("messages") or []
+    input_chars = _message_chars(request_messages)
+    input_cjk_chars = _message_cjk_chars(request_messages)
     chars = 0
+    cjk_chars = 0
     usage: dict[str, Any] | None = None
     retry_stats: dict[str, Any] = {}
     stream_usage_requested = True
@@ -848,6 +859,7 @@ async def _probe_chat_stream(
                     if choices:
                         delta = choices[0].get("delta", {}).get("content") or ""
                         chars += len(delta)
+                        cjk_chars += count_cjk_chars(delta)
             break
         except httpx.HTTPStatusError as exc:
             retry_stats["last_error_class"] = exc.__class__.__name__
@@ -862,7 +874,9 @@ async def _probe_chat_stream(
                 settings,
                 started,
                 input_chars,
+                input_cjk_chars,
                 chars,
+                cjk_chars,
                 usage_context,
                 exc.__class__.__name__,
                 request,
@@ -876,7 +890,9 @@ async def _probe_chat_stream(
                 settings,
                 started,
                 input_chars,
+                input_cjk_chars,
                 chars,
+                cjk_chars,
                 usage_context,
                 exc.__class__.__name__,
                 request,
@@ -894,6 +910,8 @@ async def _probe_chat_stream(
         latency_ms=elapsed_ms,
         input_chars=input_chars,
         output_chars=chars,
+        input_cjk_chars=input_cjk_chars,
+        output_cjk_chars=cjk_chars,
         usage=usage,
         usage_context=usage_context,
         metadata=_stream_usage_metadata(
@@ -918,7 +936,9 @@ def _finish_stream_probe_failure(
     settings: dict[str, Any],
     started: float,
     input_chars: int,
+    input_cjk_chars: int,
     chars: int,
+    cjk_chars: int,
     usage_context: dict[str, Any] | None,
     error_class: str,
     request: dict[str, Any],
@@ -934,6 +954,8 @@ def _finish_stream_probe_failure(
         latency_ms=elapsed_ms,
         input_chars=input_chars,
         output_chars=chars,
+        input_cjk_chars=input_cjk_chars,
+        output_cjk_chars=cjk_chars,
         usage=None,
         usage_context=usage_context,
         error_class=error_class,
@@ -1004,6 +1026,19 @@ def _message_chars(messages: list[dict[str, Any]]) -> int:
     return total
 
 
+def _message_cjk_chars(messages: list[dict[str, Any]]) -> int:
+    total = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            total += count_cjk_chars(content)
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    total += count_cjk_chars(item["text"])
+    return total
+
+
 async def embed_text_batch(
     texts: list[str],
     settings: dict[str, Any],
@@ -1016,6 +1051,7 @@ async def embed_text_batch(
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
     input_chars = sum(len(text) for text in texts)
+    input_cjk_chars = sum(count_cjk_chars(text) for text in texts)
     call_type = f"embedding_{role}" if role in {"query", "passage"} else "embedding"
     retry_stats: dict[str, Any] = {}
     try:
@@ -1035,6 +1071,7 @@ async def embed_text_batch(
             latency_ms=elapsed_ms,
             input_chars=input_chars,
             output_chars=0,
+            input_cjk_chars=input_cjk_chars,
             usage=None,
             usage_context=usage_context,
             error_class=exc.__class__.__name__,
@@ -1056,6 +1093,7 @@ async def embed_text_batch(
         latency_ms=elapsed_ms,
         input_chars=input_chars,
         output_chars=0,
+        input_cjk_chars=input_cjk_chars,
         usage=data.get("usage"),
         usage_context=usage_context,
         metadata=_usage_metadata({"text_count": len(texts), "role": role or ""}, retry_stats),
@@ -1719,6 +1757,7 @@ async def chat_completion(
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
     input_chars = len(system_prompt) + len(user_prompt)
+    input_cjk_chars = count_cjk_chars(system_prompt) + count_cjk_chars(user_prompt)
     retry_stats: dict[str, Any] = {}
     try:
         data = await _post_json_with_retry(
@@ -1738,6 +1777,7 @@ async def chat_completion(
             latency_ms=elapsed_ms,
             input_chars=input_chars,
             output_chars=0,
+            input_cjk_chars=input_cjk_chars,
             usage=None,
             usage_context=usage_context,
             error_class=exc.__class__.__name__,
@@ -1759,22 +1799,22 @@ async def chat_completion(
         latency_ms=elapsed_ms,
         input_chars=input_chars,
         output_chars=len(content),
+        input_cjk_chars=input_cjk_chars,
+        output_cjk_chars=count_cjk_chars(content),
         usage=data.get("usage"),
         usage_context=usage_context,
         metadata=_usage_metadata({"temperature": request["json"].get("temperature")}, retry_stats),
         model_key="chat_model",
     )
-    # Token estimates are chars/4 — accurate enough for cost monitoring
-    # without pulling in a tokenizer dependency. Used by the per-message
-    # cost badge in the chat UI.
+    # Use the same dependency-free CJK-aware fallback as persisted telemetry.
     logger.info(
         "chat_completion_completed provider=%s model=%s prompt_chars=%s prompt_tokens_est=%s response_chars=%s response_tokens_est=%s elapsed_ms=%.1f",
         settings.get("provider") or "openai_compatible",
         settings.get("chat_model"),
-        len(user_prompt),
-        len(user_prompt) // 4,
+        input_chars,
+        estimate_tokens(input_chars, cjk_chars=input_cjk_chars),
         len(content),
-        len(content) // 4,
+        estimate_tokens(len(content), cjk_chars=count_cjk_chars(content)),
         elapsed_ms,
     )
     return content
@@ -1796,7 +1836,9 @@ async def chat_completion_stream(
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
     input_chars = len(system_prompt) + len(user_prompt)
+    input_cjk_chars = count_cjk_chars(system_prompt) + count_cjk_chars(user_prompt)
     chars = 0
+    cjk_chars = 0
     usage: dict[str, Any] | None = None
     retry_stats: dict[str, Any] = {}
     stream_usage_requested = True
@@ -1835,6 +1877,7 @@ async def chat_completion_stream(
                     delta = choices[0].get("delta", {}).get("content") or ""
                     if delta:
                         chars += len(delta)
+                        cjk_chars += count_cjk_chars(delta)
                         yield delta
             break
         except httpx.HTTPStatusError as exc:
@@ -1858,7 +1901,9 @@ async def chat_completion_stream(
                     call_type=call_type,
                     started=started,
                     input_chars=input_chars,
+                    input_cjk_chars=input_cjk_chars,
                     chars=chars,
+                    cjk_chars=cjk_chars,
                     usage_context=usage_context,
                     error_class=exc.__class__.__name__,
                     request=request,
@@ -1876,7 +1921,9 @@ async def chat_completion_stream(
                     call_type=call_type,
                     started=started,
                     input_chars=input_chars,
+                    input_cjk_chars=input_cjk_chars,
                     chars=chars,
+                    cjk_chars=cjk_chars,
                     usage_context=usage_context,
                     error_class=exc.__class__.__name__,
                     request=request,
@@ -1892,7 +1939,9 @@ async def chat_completion_stream(
                 call_type=call_type,
                 started=started,
                 input_chars=input_chars,
+                input_cjk_chars=input_cjk_chars,
                 chars=chars,
+                cjk_chars=cjk_chars,
                 usage_context=usage_context,
                 error_class=exc.__class__.__name__,
                 request=request,
@@ -1916,6 +1965,8 @@ async def chat_completion_stream(
         latency_ms=elapsed_ms,
         input_chars=input_chars,
         output_chars=chars,
+        input_cjk_chars=input_cjk_chars,
+        output_cjk_chars=cjk_chars,
         usage=usage,
         usage_context=usage_context,
         metadata=_stream_usage_metadata(
@@ -1943,7 +1994,9 @@ def _record_stream_usage_failure(
     call_type: str,
     started: float,
     input_chars: int,
+    input_cjk_chars: int,
     chars: int,
+    cjk_chars: int,
     usage_context: dict[str, Any] | None,
     error_class: str,
     request: dict[str, Any],
@@ -1959,6 +2012,8 @@ def _record_stream_usage_failure(
         latency_ms=elapsed_ms,
         input_chars=input_chars,
         output_chars=chars,
+        input_cjk_chars=input_cjk_chars,
+        output_cjk_chars=cjk_chars,
         usage=None,
         usage_context=usage_context,
         error_class=error_class,
@@ -2022,6 +2077,8 @@ def _record_usage_event(
     latency_ms: float,
     input_chars: int,
     output_chars: int,
+    input_cjk_chars: int = 0,
+    output_cjk_chars: int = 0,
     usage: dict[str, Any] | None,
     usage_context: dict[str, Any] | None,
     error_class: str = "",
@@ -2036,7 +2093,13 @@ def _record_usage_event(
     else:
         provider = settings.get("provider") or "openai_compatible"
     model = settings.get(model_key) or ""
-    normalized = normalize_usage(usage, input_chars=input_chars, output_chars=output_chars)
+    normalized = normalize_usage(
+        usage,
+        input_chars=input_chars,
+        output_chars=output_chars,
+        input_cjk_chars=input_cjk_chars,
+        output_cjk_chars=output_cjk_chars,
+    )
     record_llm_usage_event(
         call_type=call_type,
         provider=provider,

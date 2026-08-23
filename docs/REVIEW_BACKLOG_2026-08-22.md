@@ -10,13 +10,12 @@
 
 **進度**：**文件批（DOC-1~15）全數完成**；安全性 `SEC-1`~`SEC-3` 與 LLM 相容性
 `LLM-1`~`LLM-3` 亦已完成，`PERF-1` 同時解決。全部溶解進權威 backlog。
+2026-08-23 再完成 `SEC-4`~`SEC-6`、`LLM-4` 與 `MNT-1`。
 
-**仍待排（12 項，全為 P2/P3）**：`SEC-4`~`SEC-8`、`PERF-2`、`PERF-3`、`QLT-1`、
-`LLM-4`、`LLM-5`、`MNT-1`、`MNT-2`。**沒有一項是上線前必須**。
+**仍待排（7 項，全為 P2/P3）**：`SEC-7`、`SEC-8`、`PERF-2`、`PERF-3`、`QLT-1`、
+`LLM-5`、`MNT-2`。
 
-其中兩項的順序建議：
-- **`LLM-4`（`estimate_tokens` 中文低估 4 倍）先做** —— 它很小，而且 `LLM-3` 的
-  上限值要改用實測數字時會依賴它修好（`is_estimated=1` 的資料不可用）。
+剩餘項目的順序建議：
 - **`QLT-1`（關鍵字先截斷後評分）需要 `Q1-3` 代表性 eval set** —— 修法直覺正確，
   但它改變檢索行為，沒有尺可以量之前不建議動。
 
@@ -77,19 +76,31 @@
   目前唯一撤銷手段是刪帳號（`current_user` 每次查 DB）。
 - **修法**：改 `URLSafeTimedSerializer` + `max_age`；payload 加密碼版本號，改密碼時 +1。
 
-### [ ] SEC-4 · P2 · 登入無速率限制
+### [x] SEC-4 · P2 · 登入無速率限制
+> **已完成（2026-08-23，review follow-up 同日完成）** — SQLite 共用 account
+> bucket、HMAC bucket id、跨 process password-verification leases、HTTP 429 +
+> `Retry-After` 與可調 `[auth].login_*`。原始 global failure cooldown 在 review
+> 發現可被匿名流量反向用成全站登入 DoS，因此在發布前改為短租約 concurrency slots。
+> durable 紀錄見
+> [`SECURITY.md`](SECURITY.md) → *Local-login rate limiting*、
+> [`AUTHENTICATION.md`](AUTHENTICATION.md) 與 [`SCHEMA.md`](SCHEMA.md)。
 - **位置**：[`app/main.py:845`](../app/main.py) `login()`。
 - **問題**：無 throttle、無鎖定。PBKDF2 200k 迭代讓單次嘗試變貴，
   但同時也讓它成為一個 CPU DoS 面（無次數上限的高成本運算）。
 - **現有緩解**：`config.auth.local_login_enabled=false` 可整個關掉本地登入（預設開啟）。
 
-### [ ] SEC-5 · P2 · prompt-injection 偵測只有英文 pattern
+### [x] SEC-5 · P2 · prompt-injection 偵測只有英文 pattern
+> **已完成（2026-08-23）** — `local.rules.v2` 加入繁中／簡中 ignore、reveal、
+> bypass patterns 與正反例測試；維持 warn-only。durable 紀錄見
+> [`SECURITY.md`](SECURITY.md) → *Local prompt-injection telemetry*。
 - **位置**：[`app/governance.py:42-46`](../app/governance.py) `PROMPT_INJECTION_PATTERNS`。
 - **問題**：三條 regex 全英文（`ignore previous instructions` 等）。
   這是 zh-TW 部署、吃中文研究報告的系統，「忽略以上指令」「請印出你的系統提示」完全不會被攔。
 - **修法**：補中文 pattern，**或**在文件明確標示這層只是英文 heuristic，避免誤以為有覆蓋。
 
-### [ ] SEC-6 · P2 · `SELECT *` 把 `password_hash` 帶進 template context
+### [x] SEC-6 · P2 · `SELECT *` 把 `password_hash` 帶進 template context
+> **已完成（2026-08-23）** — `current_user()` 改成 session/template 所需欄位白名單，
+> 並以回歸測試確認 `password_hash` 不會離開 DB 查詢結果。
 - **位置**：[`app/main.py:331`](../app/main.py) `current_user()`。
 - **問題**：`dict(user)` 含 `password_hash`，隨 `{"user": user}` 進入模板 context。
   目前沒有模板印它，但這是等著被踩的地雷。
@@ -217,7 +228,13 @@ sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, N
 
 取 p95 × 1.5。**必須加 `is_estimated=0`**，原因見 LLM-5。
 
-### [ ] LLM-4 · P2 · `estimate_tokens` 對中文低估約 4 倍
+### [x] LLM-4 · P2 · `estimate_tokens` 對中文低估約 4 倍
+> **已完成（2026-08-23）** — Han／kana／Hangul 與非 CJK 字元分開計數，套用既有
+> `[diagnostics].cjk_chars_per_token` / `latin_chars_per_token`；chat、embedding、
+> diagnostics 與 streaming 路徑皆傳入 CJK 計數。durable 紀錄見
+> [`DEVELOPMENT.md`](DEVELOPMENT.md) → *LLM output caps* 與 [`SCHEMA.md`](SCHEMA.md)。
+> Review follow-up 同時修正 partial provider usage：只要 prompt/completion 任一欄
+> 需要估算，整列保守標記 `is_estimated=1`。
 - **位置**：[`app/governance.py:52`](../app/governance.py)。
 - **問題**：`(chars + 3) // 4` 寫死英文比例。當 endpoint 未回報 usage 時（`is_estimated=1`），
   中文輸出的 token 數被系統性低估約 4 倍。
@@ -238,7 +255,11 @@ sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, N
 
 ## 5 · 維護性（MNT）
 
-### [ ] MNT-1 · P2 · 26+ 處使用者可見字串繞過 i18n catalog
+### [x] MNT-1 · P2 · 26+ 處使用者可見字串繞過 i18n catalog
+> **已完成（2026-08-23）** — web route modules 的使用者可見
+> `HTTPException.detail` 已移入 catalog；完成時的跨檔掃描另補上原 inventory 漏列的
+> `app/evals.py` / `app/settings.py`，AST 回歸測試禁止 literal/f-string 倒退。
+> durable 紀錄見 [`I18N.md`](I18N.md) → *Add a new UI string*。
 - **位置**：`app/main.py` 的 `raise HTTPException(detail="找不到來源")` 類共 26 處以上；
   `app/admin.py` 另 4 處。
 - **問題**：這些會被 `render_error` 印在 error page 上，是實打實的 user-facing copy。
@@ -387,12 +408,12 @@ sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, N
 | 5 | `docs` | DOC-3 + DOC-4 + DOC-5 + DOC-15 | archive 三份 + handover 瘦身，純搬移與狀態修正 |
 | 6 | `docs` | DOC-9～DOC-14 | 索引與架構圖補洞，純機械性 |
 | 7 | `fix(auth)` | SEC-3 | 補上「改密碼能踢人」這個基本能力 |
-| 8 | `refactor(i18n)` | MNT-1 | 純機械性，讓文件與程式一致 |
-| 9 | 後續輪次 | SEC-4～SEC-8、PERF-2、PERF-3、QLT-1、LLM-4 | 記進對應 backlog |
+| 8 | `refactor(i18n)` | MNT-1（已完成 2026-08-23） | 純機械性，讓文件與程式一致 |
+| 9 | 後續輪次 | SEC-7、SEC-8、PERF-2、PERF-3、QLT-1 | 記進對應 backlog |
 | 10 | 獨立一輪 | MNT-2 | `app/web.py` 抽離，不要跟其他改動混在同一 diff |
 
 **硬相依**：
 - DOC-1 → SEC-1（安全修法決定文件怎麼寫）
 - DOC-2 → SEC-1～SEC-8 全部（要先知道哪些會修、哪些延後）
-- LLM-3 的實測值 → LLM-4（`estimate_tokens` 修好前，`is_estimated=1` 的資料不可用）
+- LLM-3 的實測值 → LLM-4（**已滿足 2026-08-23**；估算值仍非 provider 實測）
 - QLT-1 的效果驗證 → `QUALITY.md` Q1-3（代表性 eval set，目前未做）

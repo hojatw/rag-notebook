@@ -9,6 +9,33 @@
 
 ## [未發布]
 
+### 安全性
+
+- **登入速率限制（SEC-4）**：本機帳密登入新增 SQLite 共用的帳號失敗桶與短租約
+  password-verification slots；預設帳號 15 分鐘 5 次、整個部署同時最多 4 個
+  PBKDF2，且同帳號一次只驗證一個。達門檻或容量忙碌時回通用 HTTP 429；bucket id
+  以 `NOTEBOOKLM_SECRET` 做 HMAC，不保存原始帳號或 `X-Forwarded-For`。未採用可被
+  任意帳號流量填滿的全域 cooldown，避免登入保護本身成為全站 DoS。
+- **中文 prompt-injection 訊號（SEC-5）**：`local.rules.v2` 增加繁中／簡中
+  ignore、reveal、bypass 規則與正反例測試；維持 warn-only，不把 heuristic
+  誤當成阻擋式安全邊界。
+- **縮小登入使用者 context（SEC-6）**：`current_user()` 改成欄位白名單，
+  `password_hash` 不再隨使用者資料進入 template/session request context。
+
+### 修正
+
+- **CJK-aware token 估算（LLM-4）**：provider 未提供完整 usage 時，改依 Han、kana、
+  Hangul 與非 CJK 字元分別套用既有 diagnostics 比例；包含 chat、embedding、
+  diagnostics 與 streaming 路徑，不再用固定 `chars/4` 系統性低估中文。只要
+  prompt/completion 任一欄需估算，整列即保守標記 `is_estimated=1`；可由
+  prompt/completion 與 total 相減得到的欄位則仍視為 provider 精確值。
+
+### 維護
+
+- **HTTP error i18n（MNT-1）**：`app/main.py`、`app/admin.py`、`app/evals.py` 與
+  `app/settings.py` 的使用者可見 `HTTPException.detail` 移入 catalog，並加 AST
+  測試防止重新硬編碼。Embedding endpoint 連線錯誤也不再把原始 exception 回顯給管理員。
+
 ## [0.4.0] - 2026-08-23
 
 ### 新增

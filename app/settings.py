@@ -94,9 +94,9 @@ def candidate_settings_from_form(
     embedding_api_version: str,
 ) -> dict[str, Any]:
     if provider not in {"openai_compatible", "azure_openai"}:
-        raise HTTPException(status_code=400, detail="Unsupported LLM provider")
+        raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_llm_provider"))
     if embedding_provider not in {"openai_compatible", "azure_openai"}:
-        raise HTTPException(status_code=400, detail="Unsupported embedding provider")
+        raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_embedding_provider"))
     return {
         "provider": provider,
         "base_url": base_url.strip(),
@@ -390,9 +390,9 @@ async def update_settings(
     first ingest.
     """
     if provider not in {"openai_compatible", "azure_openai"}:
-        raise HTTPException(status_code=400, detail="Unsupported LLM provider")
+        raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_llm_provider"))
     if embedding_provider not in {"openai_compatible", "azure_openai"}:
-        raise HTTPException(status_code=400, detail="Unsupported embedding provider")
+        raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_embedding_provider"))
 
     with connect() as conn:
         existing_row = conn.execute("SELECT * FROM llm_settings WHERE id = 1").fetchone()
@@ -440,19 +440,16 @@ async def update_settings(
             logger.warning("settings_probe_failed user_id=%s err=%s", user["id"], exc)
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"Could not reach the embedding endpoint: {exc}. "
-                    "Verify base URL / embedding base URL, API key, and model name before saving."
-                ),
+                detail=i18n.t("error.embedding_endpoint_unreachable"),
             )
         current_dim = vector_probe_index_dimension()["dimension"]
         if current_dim is not None and current_dim != new_dim:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"Embedding dimension mismatch: existing index is {current_dim}-dim, "
-                    f"new model returns {new_dim}-dim. Open /admin/index, click Clear, "
-                    "then save these settings again and Rebuild."
+                detail=i18n.t(
+                    "error.embedding_dimension_mismatch",
+                    current_dim=current_dim,
+                    new_dim=new_dim,
                 ),
             )
 

@@ -110,8 +110,12 @@ numbers once a deployment has traffic:
 sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, NTILE(20) OVER (PARTITION BY call_type ORDER BY completion_tokens) AS b FROM llm_usage_events WHERE status='succeeded' AND completion_tokens IS NOT NULL AND is_estimated=0) SELECT call_type, COUNT(*) n, MAX(completion_tokens) p95 FROM ranked WHERE b<=19 GROUP BY call_type ORDER BY p95 DESC;"
 ```
 
-Take p95 × 1.5. The `is_estimated = 0` filter matters — estimated counts use a
-Latin ratio and under-count CJK (tracked as `LLM-4`).
+Take p95 × 1.5. The `is_estimated = 0` filter still matters: fallback counts are
+now CJK-aware (`[diagnostics].cjk_chars_per_token` and
+`latin_chars_per_token`) but remain approximations rather than provider/tokenizer
+measurements. A row is also marked estimated when a provider returns only part of
+the usage shape and the missing prompt/completion component must be synthesized;
+prompt + total or completion + total can be completed exactly by subtraction.
 
 ### Session lifetime
 
@@ -121,6 +125,18 @@ trades exposure for fewer re-logins; the effective value is printed in the
 `app_started` log line so it is visible per deployment. Changing a password (or an
 admin resetting one) revokes that account's other sessions immediately, regardless
 of this setting — see [`SECURITY.md`](SECURITY.md) → *Sessions*.
+
+### Local-login rate limiting
+
+`[auth].login_*` controls the SEC-4 account failure bucket and password-check
+leases. Defaults are 5 failures per username in 15 minutes, at most 4 concurrent
+PBKDF2 checks deployment-wide, one active check per account, and a 30-second
+crash-recovery lease. State lives in SQLite and is shared across web workers;
+account identifiers are HMACs, not usernames. There is no deployment-wide
+failure cooldown because arbitrary unknown usernames could turn it into a
+persistent login denial of service. A network deployment must still enforce a
+verified client-IP limit at the reverse proxy; do not derive an IP bucket from
+untrusted forwarding headers in the app.
 
 ### File size caps
 

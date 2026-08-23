@@ -448,7 +448,7 @@ def admin_reset_password(
 ):
     """Reset another user's password to a new value."""
     if len(new_password) < 6:
-        raise HTTPException(status_code=400, detail="密碼至少需要 6 個字元。")
+        raise HTTPException(status_code=400, detail=i18n.t("error.password_min_length"))
     with connect() as conn:
         target = conn.execute(
             """
@@ -461,7 +461,7 @@ def admin_reset_password(
             (target_id,),
         ).fetchone()
         if target is None:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail=i18n.t("error.user_not_found"))
         if target["external_identity_count"]:
             raise HTTPException(status_code=400, detail=i18n.t("auth.password_reset_sso_blocked"))
         # SEC-3: an admin reset must also end that user's live sessions —
@@ -474,7 +474,7 @@ def admin_reset_password(
             (hash_password(new_password), target_id),
         )
         if result.rowcount == 0:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail=i18n.t("error.user_not_found"))
     record_audit_event(
         request,
         user,
@@ -499,7 +499,7 @@ def admin_toggle_admin(
 ):
     """Flip the is_admin flag for another user. Refuses to demote the last admin."""
     if target_id == user["id"]:
-        raise HTTPException(status_code=400, detail="You cannot change your own admin flag.")
+        raise HTTPException(status_code=400, detail=i18n.t("error.cannot_change_own_admin"))
     with connect() as conn:
         target = conn.execute(
             """
@@ -512,7 +512,7 @@ def admin_toggle_admin(
             (target_id,),
         ).fetchone()
         if target is None:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail=i18n.t("error.user_not_found"))
         if target["external_identity_count"]:
             raise HTTPException(status_code=400, detail=i18n.t("auth.sso_role_managed"))
         new_flag = 0 if target["is_admin"] else 1
@@ -522,7 +522,7 @@ def admin_toggle_admin(
                 (target_id,),
             ).fetchone()["c"]
             if other_admins == 0:
-                raise HTTPException(status_code=400, detail="Cannot remove the last admin.")
+                raise HTTPException(status_code=400, detail=i18n.t("error.last_admin_required"))
         conn.execute("UPDATE users SET is_admin = ? WHERE id = ?", (new_flag, target_id))
     record_audit_event(
         request,
@@ -545,18 +545,18 @@ def admin_delete_user(
 ):
     """Delete a user account (cascades notebooks/sources/conversations/notes/chunks)."""
     if target_id == user["id"]:
-        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+        raise HTTPException(status_code=400, detail=i18n.t("error.cannot_delete_self"))
     with connect() as conn:
         target = conn.execute("SELECT username, is_admin FROM users WHERE id = ?", (target_id,)).fetchone()
         if target is None:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail=i18n.t("error.user_not_found"))
         if target["is_admin"]:
             other_admins = conn.execute(
                 "SELECT COUNT(*) c FROM users WHERE is_admin = 1 AND id != ?",
                 (target_id,),
             ).fetchone()["c"]
             if other_admins == 0:
-                raise HTTPException(status_code=400, detail="Cannot delete the last admin.")
+                raise HTTPException(status_code=400, detail=i18n.t("error.last_admin_required"))
         conn.execute("DELETE FROM users WHERE id = ?", (target_id,))
     record_audit_event(
         request,

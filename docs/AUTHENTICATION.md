@@ -12,6 +12,8 @@ Local accounts:
 
 - users sign in with username/password at `/login`;
 - passwords are PBKDF2-SHA256 hashes stored in `users.password_hash`;
+- failed logins use a shared SQLite account bucket, while short verification
+  leases serialize one account and bound deployment-wide PBKDF2 concurrency;
 - a signed `session` cookie carries the local user id;
 - `users.is_admin` controls access to `/settings` and `/admin/*`;
 - admin user management can create users, reset passwords, toggle admin, and
@@ -137,6 +139,13 @@ Configuration lives in `config.toml` / `NOTEBOOKLM_AUTH_*` env vars:
 ```toml
 [auth]
 local_login_enabled = true
+login_rate_limit_enabled = true
+login_account_attempt_limit = 5
+login_account_window_seconds = 900
+login_account_cooldown_seconds = 900
+login_verification_max_concurrency = 4
+login_verification_lease_seconds = 30
+login_verification_busy_retry_after_seconds = 1
 trusted_header_enabled = false
 trusted_header_secret = ""
 trusted_header_secret_header = "X-NotebookLM-Auth-Secret"
@@ -154,6 +163,22 @@ The proxy must strip inbound identity headers from clients, authenticate the
 user itself, then set both the identity headers and the shared-secret header
 when forwarding to the app. The app deliberately does not implement Kerberos,
 SPNEGO, or NTLM itself.
+
+Local username/password login combines an account failure bucket with short
+verification leases. The HMAC-keyed account bucket defaults to 5 failed attempts
+per 15 minutes followed by a 15-minute cooldown. `login_verification_leases`
+allows at most 4 concurrent password checks deployment-wide and only one for the
+same opaque account id; a 30-second expiry recovers capacity after a web-process
+crash. Busy or blocked requests return the same generic HTTP 429 response. A
+missing username follows the same bounded PBKDF2 path using a fixed non-credential
+dummy hash but does not create persistent failure rows.
+
+There is deliberately no deployment-wide failed-attempt cooldown: arbitrary
+unknown usernames must not let an unauthenticated actor lock out every local
+account after a small request burst. The app never trusts `X-Forwarded-For` for
+this control; a network-exposed deployment must also rate-limit by verified
+client address at its reverse proxy. Set `login_rate_limit_enabled = false` only
+for isolated diagnostics—the normal and recommended default is enabled.
 
 For Linux/container customer environments, keep the Python app as a plain
 FastAPI service and put the enterprise web/auth layer in front of it instead of

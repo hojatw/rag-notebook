@@ -9,6 +9,7 @@ import secrets
 import sqlite3
 import inspect
 import logging
+import math
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
@@ -59,7 +60,17 @@ from .retrieval import (  # noqa: F401
     keyword_score,
     merge_candidates,
 )
-from .security import INSECURE_DEV_SECRET, get_app_secret, hash_password, new_csrf_token, sign_user_id, unsign_user_id, valid_csrf_token, verify_password
+from .security import (
+    DUMMY_PASSWORD_HASH,
+    INSECURE_DEV_SECRET,
+    get_app_secret,
+    hash_password,
+    new_csrf_token,
+    sign_user_id,
+    unsign_user_id,
+    valid_csrf_token,
+    verify_password,
+)
 from .version import app_version, build_label, git_revision
 from .vector_store import delete_source as delete_source_vectors
 from .vector_store import sync_from_sqlite
@@ -357,7 +368,7 @@ def verify_multipart_csrf(request: Request, csrf_token: str = Form(default="")) 
     submitted = request.headers.get(CSRF_HEADER_NAME) or csrf_token
     if not csrf_token_matches(request, submitted):
         logger.warning("csrf_rejected method=%s path=%s kind=multipart", request.method, request.url.path)
-        raise HTTPException(status_code=403, detail="CSRF token invalid")
+        raise HTTPException(status_code=403, detail=i18n.t("error.csrf_invalid"))
 
 
 @app.middleware("http")
@@ -445,7 +456,13 @@ def current_user(request: Request) -> dict:
         raise HTTPException(status_code=401)
     user_id, token_password_version = decoded
     with connect() as conn:
-        user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        # SEC-6: only session/template-safe fields leave the DB layer. In
+        # particular, password_hash must never be carried in request context.
+        user = conn.execute(
+            "SELECT id, username, is_admin, theme, must_change_password, password_version"
+            " FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
     if user is None:
         raise HTTPException(status_code=401)
     if int(user["password_version"]) != token_password_version:
@@ -490,7 +507,7 @@ def require_login(request: Request) -> dict:
 def require_admin(user: Annotated[dict, Depends(require_login)]) -> dict:
     """Require the authenticated user to have administrator privileges."""
     if not user["is_admin"]:
-        raise HTTPException(status_code=403, detail="僅限管理員")
+        raise HTTPException(status_code=403, detail=i18n.t("error.admin_only"))
     return user
 
 
@@ -1028,6 +1045,157 @@ def _external_identity_count(user_id: int) -> int:
         ).fetchone()[0]
 
 
+def _login_bucket_hash(bucket_type: str, value: str) -> str:
+    """Return an opaque, deployment-scoped identifier for a rate-limit bucket."""
+    material = f"{bucket_type}\0{value}".encode("utf-8")
+    return hmac.new(SECRET.encode("utf-8"), material, hashlib.sha256).hexdigest()
+
+
+def _login_account_rate_limit_spec(username: str) -> tuple[str, int, int, int]:
+    """Build the opaque account-bucket definition from config."""
+    auth = config.auth
+    normalized_username = (username or "").strip().casefold()
+    return (
+        _login_bucket_hash("account", normalized_username),
+        max(1, int(auth.login_account_attempt_limit)),
+        max(1, int(auth.login_account_window_seconds)),
+        max(1, int(auth.login_account_cooldown_seconds)),
+    )
+
+
+def _login_rate_limit_retry_after(username: str, *, now: float | None = None) -> int:
+    """Return seconds until local login is allowed, or zero when not blocked."""
+    if not config.auth.login_rate_limit_enabled:
+        return 0
+    checked_at = time.time() if now is None else float(now)
+    bucket_hash, _limit, _window, _cooldown = _login_account_rate_limit_spec(username)
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT blocked_until FROM login_rate_limits"
+            " WHERE bucket_type = 'account' AND bucket_hash = ?",
+            (bucket_hash,),
+        ).fetchone()
+    if row is not None and float(row["blocked_until"]) > checked_at:
+        return math.ceil(float(row["blocked_until"]) - checked_at)
+    return 0
+
+
+def _record_login_failure(username: str, *, now: float | None = None) -> int:
+    """Atomically count one failed local login and return any cooldown seconds."""
+    if not config.auth.login_rate_limit_enabled:
+        return 0
+    failed_at = time.time() if now is None else float(now)
+    bucket_hash, limit, window, cooldown = _login_account_rate_limit_spec(username)
+    retention_seconds = (window + cooldown) * 2
+    with connect() as conn:
+        # A write lock keeps independent uvicorn workers from losing increments.
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM login_rate_limits WHERE updated_at < ?",
+            (failed_at - retention_seconds,),
+        )
+        row = conn.execute(
+            "SELECT failure_count, window_started, blocked_until"
+            " FROM login_rate_limits WHERE bucket_type = 'account' AND bucket_hash = ?",
+            (bucket_hash,),
+        ).fetchone()
+        if row is not None and float(row["blocked_until"]) > failed_at:
+            return math.ceil(float(row["blocked_until"]) - failed_at)
+        if row is None or failed_at >= float(row["window_started"]) + window:
+            failure_count = 1
+            window_started = failed_at
+        else:
+            failure_count = int(row["failure_count"]) + 1
+            window_started = float(row["window_started"])
+        blocked_until = failed_at + cooldown if failure_count >= limit else 0.0
+        conn.execute(
+            """
+            INSERT INTO login_rate_limits (
+                bucket_type, bucket_hash, failure_count, window_started,
+                blocked_until, updated_at
+            ) VALUES ('account', ?, ?, ?, ?, ?)
+            ON CONFLICT(bucket_type, bucket_hash) DO UPDATE SET
+                failure_count = excluded.failure_count,
+                window_started = excluded.window_started,
+                blocked_until = excluded.blocked_until,
+                updated_at = excluded.updated_at
+            """,
+            (bucket_hash, failure_count, window_started, blocked_until, failed_at),
+        )
+    return math.ceil(blocked_until - failed_at) if blocked_until > failed_at else 0
+
+
+def _acquire_login_verification_lease(
+    username: str,
+    *,
+    now: float | None = None,
+) -> tuple[str | None, int]:
+    """Acquire one cross-process PBKDF2 slot and serialize one account check."""
+    if not config.auth.login_rate_limit_enabled:
+        return "", 0
+    acquired_at = time.time() if now is None else float(now)
+    account_hash, _limit, _window, _cooldown = _login_account_rate_limit_spec(username)
+    max_concurrency = max(1, int(config.auth.login_verification_max_concurrency))
+    lease_seconds = max(1, int(config.auth.login_verification_lease_seconds))
+    retry_after = max(1, int(config.auth.login_verification_busy_retry_after_seconds))
+    lease_id = uuid.uuid4().hex
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM login_verification_leases WHERE expires_at <= ?",
+            (acquired_at,),
+        )
+        account_busy = conn.execute(
+            "SELECT 1 FROM login_verification_leases WHERE account_hash = ?",
+            (account_hash,),
+        ).fetchone()
+        active_count = conn.execute(
+            "SELECT COUNT(*) FROM login_verification_leases"
+        ).fetchone()[0]
+        if account_busy is not None or int(active_count) >= max_concurrency:
+            return None, retry_after
+        conn.execute(
+            "INSERT INTO login_verification_leases"
+            " (lease_id, account_hash, expires_at, created_at) VALUES (?, ?, ?, ?)",
+            (lease_id, account_hash, acquired_at + lease_seconds, acquired_at),
+        )
+    return lease_id, 0
+
+
+def _release_login_verification_lease(lease_id: str) -> None:
+    """Release a successful lease; expired rows are recovered on next acquire."""
+    if not lease_id:
+        return
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM login_verification_leases WHERE lease_id = ?",
+            (lease_id,),
+        )
+
+
+def _clear_login_account_bucket(username: str) -> None:
+    """Forget account-specific failures after a successful local login."""
+    if not config.auth.login_rate_limit_enabled:
+        return
+    bucket_hash = _login_bucket_hash("account", (username or "").strip().casefold())
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM login_rate_limits WHERE bucket_type = 'account' AND bucket_hash = ?",
+            (bucket_hash,),
+        )
+
+
+def _login_rate_limited_response(request: Request, retry_after: int) -> HTMLResponse:
+    response = render(
+        request,
+        "login.html",
+        _login_template_context(i18n.t("auth.login_rate_limited")),
+        429,
+    )
+    response.headers["Retry-After"] = str(max(1, int(retry_after)))
+    return response
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_form(request: Request):
     """Render the login form.
@@ -1049,11 +1217,43 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
             _login_template_context(i18n.t("auth.local_login_disabled")),
             403,
         )
-    with connect() as conn:
-        user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    if not user or not verify_password(password, user["password_hash"]):
-        logger.warning("login_failed username=%s", username)
-        return render(request, "login.html", _login_template_context(i18n.t("auth.login_failed")), 400)
+    retry_after = _login_rate_limit_retry_after(username)
+    if retry_after:
+        logger.warning(
+            "login_rate_limited account_bucket=%s retry_after=%s",
+            _login_bucket_hash("account", (username or "").strip().casefold())[:12],
+            retry_after,
+        )
+        return _login_rate_limited_response(request, retry_after)
+    lease_id, retry_after = _acquire_login_verification_lease(username)
+    if lease_id is None:
+        logger.warning("login_rate_limited reason=verification_busy")
+        return _login_rate_limited_response(request, retry_after)
+    try:
+        # The previous verification for this account may have failed between
+        # the first check and lease acquisition. Re-check after serialization.
+        retry_after = _login_rate_limit_retry_after(username)
+        if retry_after:
+            return _login_rate_limited_response(request, retry_after)
+        with connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        password_matches = verify_password(
+            password,
+            user["password_hash"] if user is not None else DUMMY_PASSWORD_HASH,
+        )
+        if user is None or not password_matches:
+            retry_after = _record_login_failure(username) if user is not None else 0
+            logger.warning(
+                "login_failed account_bucket=%s rate_limited=%s",
+                _login_bucket_hash("account", (username or "").strip().casefold())[:12],
+                bool(retry_after),
+            )
+            if retry_after:
+                return _login_rate_limited_response(request, retry_after)
+            return render(request, "login.html", _login_template_context(i18n.t("auth.login_failed")), 400)
+        _clear_login_account_bucket(username)
+    finally:
+        _release_login_verification_lease(lease_id)
     redirect = RedirectResponse("/notebooks", status_code=303)
     _set_session_cookie(request, redirect, user["id"])
     logger.info("login_succeeded user_id=%s username=%s", user["id"], username)
@@ -1598,7 +1798,7 @@ def get_notebook(conn, notebook_id: int, user_id: int) -> dict:
         (notebook_id, user_id),
     ).fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="找不到筆記本")
+        raise HTTPException(status_code=404, detail=i18n.t("error.notebook_not_found"))
     return dict(row)
 
 
@@ -1761,7 +1961,7 @@ def notebook_view(
                 (conversation_id, notebook_id, user["id"]),
             ).fetchone()
             if convo_row is None:
-                raise HTTPException(status_code=404, detail="找不到對話")
+                raise HTTPException(status_code=404, detail=i18n.t("error.conversation_not_found"))
             conversation = dict(convo_row)
             recent, messages_truncated = fetch_capped(
                 conn,
@@ -1937,16 +2137,25 @@ def upload_source(
         logger.warning("source_upload_rejected user_id=%s notebook_id=%s reason=llm_not_configured", user["id"], notebook_id)
         raise HTTPException(
             status_code=400,
-            detail="尚未完成 LLM 設定。請管理員先到 /settings 設定 embedding 模型與聊天模型，才能索引來源。",
+            detail=i18n.t("error.llm_not_configured_for_ingest"),
         )
     if not files:
-        raise HTTPException(status_code=400, detail="尚未選擇檔案。")
+        raise HTTPException(status_code=400, detail=i18n.t("error.no_files_selected"))
     if len(files) > UPLOAD_BATCH_LIMIT:
-        raise HTTPException(status_code=400, detail=f"一次最多上傳 {UPLOAD_BATCH_LIMIT} 個檔案。")
+        raise HTTPException(
+            status_code=400,
+            detail=i18n.t("error.upload_batch_limit", count=UPLOAD_BATCH_LIMIT),
+        )
     for upload in files:
         if not upload.filename or not supported(upload.filename):
             logger.warning("source_upload_rejected user_id=%s notebook_id=%s filename=%s", user["id"], notebook_id, upload.filename)
-            raise HTTPException(status_code=400, detail=f"不支援的檔案格式：{upload.filename or '(未命名)'}")
+            raise HTTPException(
+                status_code=400,
+                detail=i18n.t(
+                    "error.unsupported_file_type",
+                    filename=upload.filename or i18n.t("error.unnamed_file"),
+                ),
+            )
 
     user_dir = UPLOAD_DIR / str(user["id"])
     user_dir.mkdir(parents=True, exist_ok=True)
@@ -2028,7 +2237,7 @@ def reindex_source(
         ).fetchone()
         if source is None:
             logger.warning("source_reindex_missing user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
-            raise HTTPException(status_code=404, detail="找不到來源")
+            raise HTTPException(status_code=404, detail=i18n.t("error.source_not_found"))
         touch_notebook(conn, notebook_id)
     enqueue_source(source_id)
     record_audit_event(
@@ -2055,7 +2264,7 @@ def delete_source(request: Request, notebook_id: int, source_id: int, user: Anno
         ).fetchone()
         if source is None:
             logger.warning("source_delete_missing user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
-            raise HTTPException(status_code=404, detail="找不到來源")
+            raise HTTPException(status_code=404, detail=i18n.t("error.source_not_found"))
         conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         touch_notebook(conn, notebook_id)
     cleanup_source_artifacts({"id": source_id, "stored_path": source["stored_path"], "user_id": user["id"]})
@@ -2091,7 +2300,7 @@ def source_partial(
             (source_id, notebook_id, user["id"]),
         ).fetchone()
         if row is None:
-            raise HTTPException(status_code=404, detail="找不到來源")
+            raise HTTPException(status_code=404, detail=i18n.t("error.source_not_found"))
     response = render(
         request, "_source_item.html",
         {"notebook": notebook, "source": source_with_diagnostics(row)},
@@ -2129,7 +2338,7 @@ def source_preview(
             (source_id, notebook_id, user["id"]),
         ).fetchone()
         if source_row is None:
-            raise HTTPException(status_code=404, detail="找不到來源")
+            raise HTTPException(status_code=404, detail=i18n.t("error.source_not_found"))
         chunks = [
             dict(r)
             for r in conn.execute(
@@ -2517,7 +2726,7 @@ def add_note(
     """Create a raw note (no source message). Used by Save-to-shelf on tool results."""
     cleaned_content = (content or "").strip()
     if not cleaned_content:
-        raise HTTPException(status_code=400, detail="筆記內容不可為空。")
+        raise HTTPException(status_code=400, detail=i18n.t("error.note_empty"))
     cleaned_title = " ".join((title or "").split())[:80] or "已儲存筆記"
     # The kind only ever comes from our own templates, so an unknown value means
     # a bug rather than user input: keep the note, log it, badge it generically.
@@ -2568,7 +2777,7 @@ def pin_note(
             (message_id, user["id"], notebook_id),
         ).fetchone()
         if message is None:
-            raise HTTPException(status_code=404, detail="找不到訊息")
+            raise HTTPException(status_code=404, detail=i18n.t("error.message_not_found"))
         # Idempotent: pinning the same message twice is a no-op.
         existing = conn.execute(
             "SELECT id FROM notes WHERE notebook_id = ? AND source_message_id = ?",
@@ -2635,7 +2844,7 @@ def delete_note(
             (note_id, notebook_id, user["id"]),
         ).fetchone()
         if deleted is None:
-            raise HTTPException(status_code=404, detail="找不到筆記")
+            raise HTTPException(status_code=404, detail=i18n.t("error.note_not_found"))
         source_message_id = deleted["source_message_id"]
         notes = [dict(r) for r in conn.execute(
             "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
@@ -2669,7 +2878,7 @@ def edit_note(
     """Update a note's title/content in place (U8) and return the refreshed shelf."""
     cleaned_content = (content or "").strip()
     if not cleaned_content:
-        raise HTTPException(status_code=400, detail="筆記內容不可為空。")
+        raise HTTPException(status_code=400, detail=i18n.t("error.note_empty"))
     cleaned_title = " ".join((title or "").split())[:80]
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
@@ -2679,7 +2888,7 @@ def edit_note(
             (cleaned_title, cleaned_content, note_id, notebook_id, user["id"]),
         ).fetchone()
         if updated is None:
-            raise HTTPException(status_code=404, detail="找不到筆記")
+            raise HTTPException(status_code=404, detail=i18n.t("error.note_not_found"))
         notes = [dict(r) for r in conn.execute(
             "SELECT * FROM notes WHERE notebook_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC",
             (notebook_id, user["id"]),
@@ -2717,13 +2926,13 @@ def delete_conversation(
             (conversation_id, notebook_id, user["id"]),
         ).fetchone()
         if convo is None:
-            raise HTTPException(status_code=404, detail="找不到對話")
+            raise HTTPException(status_code=404, detail=i18n.t("error.conversation_not_found"))
         result = conn.execute(
             "DELETE FROM conversations WHERE id = ? AND notebook_id = ? AND user_id = ?",
             (conversation_id, notebook_id, user["id"]),
         )
         if result.rowcount == 0:
-            raise HTTPException(status_code=404, detail="找不到對話")
+            raise HTTPException(status_code=404, detail=i18n.t("error.conversation_not_found"))
         touch_notebook(conn, notebook_id)
     record_audit_event(
         request,
@@ -2759,7 +2968,7 @@ def rename_conversation(
             (clean_title, conversation_id, notebook_id, user["id"]),
         )
         if result.rowcount == 0:
-            raise HTTPException(status_code=404, detail="找不到對話")
+            raise HTTPException(status_code=404, detail=i18n.t("error.conversation_not_found"))
         touch_notebook(conn, notebook_id)
     record_audit_event(
         request,
@@ -2843,7 +3052,7 @@ def _prepare_question(
                 (conversation_id, notebook_id, user["id"]),
             ).fetchone()
             if convo is None:
-                raise HTTPException(status_code=404, detail="找不到對話")
+                raise HTTPException(status_code=404, detail=i18n.t("error.conversation_not_found"))
         conn.execute(
             "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'user', ?)",
             (conversation_id, user["id"], question),
@@ -3088,7 +3297,7 @@ async def ask_stream(
     question = question.strip()
     normalized_conversation_id = _normalize_conversation_id(conversation_id)
     if not question:
-        raise HTTPException(status_code=400, detail="請先輸入問題。")
+        raise HTTPException(status_code=400, detail=i18n.t("error.question_empty"))
 
     async def events():
         conversation = normalized_conversation_id
@@ -3324,7 +3533,7 @@ def export_conversation(
             (conversation_id, notebook_id, user["id"]),
         ).fetchone()
         if convo is None:
-            raise HTTPException(status_code=404, detail="找不到對話")
+            raise HTTPException(status_code=404, detail=i18n.t("error.conversation_not_found"))
         rows = conn.execute(
             "SELECT * FROM messages WHERE conversation_id = ? AND user_id = ? ORDER BY created_at, id",
             (conversation_id, user["id"]),
@@ -3402,7 +3611,7 @@ def export_note(
             (note_id, notebook_id, user["id"]),
         ).fetchone()
         if note is None:
-            raise HTTPException(status_code=404, detail="找不到筆記")
+            raise HTTPException(status_code=404, detail=i18n.t("error.note_not_found"))
     title = note["title"] or note["content"][:40] or i18n.t("export.notes_suffix")
     kind_label = i18n.t("note.kind_" + (note["kind"] or "note"))
     lines = [f"# {title}", "", note["content"], "", f"_{kind_label} · {note['created_at']}_", ""]
@@ -3684,7 +3893,7 @@ def tool_panel(
 ):
     """Return one tool's config panel, loaded into the preview-modal by a tile."""
     if kind not in TOOL_MIN_INDEXED:
-        raise HTTPException(status_code=404, detail="未知的工具")
+        raise HTTPException(status_code=404, detail=i18n.t("error.unknown_tool"))
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
         sources_indexed = [dict(r) for r in conn.execute(
@@ -3721,7 +3930,7 @@ async def notebook_artifact(
     whole notebook could not be narrowed at all.
     """
     if kind not in ARTIFACT_PROMPTS:
-        raise HTTPException(status_code=404, detail="未知的產出類型")
+        raise HTTPException(status_code=404, detail=i18n.t("error.unknown_artifact_type"))
     label = ARTIFACT_LABELS.get(kind, kind)
     # Checkboxes only submit when checked, so an empty list is the user having
     # deselected everything — an error, not an invitation to use the whole
@@ -3813,7 +4022,7 @@ async def translate_source_summary(
     The result is shown in the modal with a manual save-to-notes button.
     """
     if target_language not in TRANSLATE_LANGUAGES:
-        raise HTTPException(status_code=400, detail="不支援的目標語言")
+        raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_target_language"))
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user["id"])
         summaries = _fetch_source_summaries(conn, notebook_id, user["id"], [source_id])

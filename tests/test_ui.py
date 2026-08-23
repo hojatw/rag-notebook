@@ -119,6 +119,151 @@ def test_csrf_token_required_for_login_post(monkeypatch, tmp_path):
         assert accepted.status_code == 303
 
 
+def test_local_login_rate_limit_blocks_and_stores_only_hashed_buckets(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOTEBOOKLM_AUTH_LOGIN_ACCOUNT_ATTEMPT_LIMIT", "2")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        first = client.post("/login", data={"username": "admin", "password": "wrong"})
+        second = client.post("/login", data={"username": "admin", "password": "wrong"})
+        blocked_correct_password = client.post(
+            "/login",
+            data={"username": "admin", "password": "admin123"},
+            follow_redirects=False,
+        )
+
+    assert first.status_code == 400
+    assert second.status_code == 429
+    assert int(second.headers["Retry-After"]) > 0
+    assert blocked_correct_password.status_code == 429
+    assert "登入嘗試過於頻繁" in second.text
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT bucket_type, bucket_hash FROM login_rate_limits ORDER BY bucket_type"
+        ).fetchall()
+        active_leases = conn.execute("SELECT COUNT(*) FROM login_verification_leases").fetchone()[0]
+    assert {row["bucket_type"] for row in rows} == {"account"}
+    assert all("admin" not in row["bucket_hash"] for row in rows)
+    assert active_leases == 0
+
+
+def test_successful_login_clears_the_account_failure_bucket(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        failed = client.post("/login", data={"username": "admin", "password": "wrong"})
+        succeeded = client.post(
+            "/login",
+            data={"username": "admin", "password": "admin123"},
+            follow_redirects=False,
+        )
+
+    assert failed.status_code == 400
+    assert succeeded.status_code == 303
+    with db.connect() as conn:
+        bucket_count = conn.execute("SELECT COUNT(*) FROM login_rate_limits").fetchone()[0]
+        active_leases = conn.execute("SELECT COUNT(*) FROM login_verification_leases").fetchone()[0]
+    assert bucket_count == 0
+    assert active_leases == 0
+
+
+def test_unknown_username_spray_does_not_block_or_persist_buckets(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        for index in range(8):
+            failed = client.post(
+                "/login",
+                data={"username": f"missing-{index}", "password": "wrong"},
+            )
+            assert failed.status_code == 400
+        succeeded = client.post(
+            "/login",
+            data={"username": "admin", "password": "admin123"},
+            follow_redirects=False,
+        )
+
+    assert succeeded.status_code == 303
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM login_rate_limits").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM login_verification_leases").fetchone()[0] == 0
+
+
+def test_login_verification_leases_bound_capacity_serialize_accounts_and_expire(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    db.init_db()
+    main.config.auth.login_verification_max_concurrency = 2
+    main.config.auth.login_verification_lease_seconds = 10
+    main.config.auth.login_verification_busy_retry_after_seconds = 3
+
+    first, retry_after = main._acquire_login_verification_lease("first", now=100.0)
+    assert first and retry_after == 0
+    duplicate, retry_after = main._acquire_login_verification_lease("first", now=100.0)
+    assert duplicate is None and retry_after == 3
+    second, retry_after = main._acquire_login_verification_lease("second", now=100.0)
+    assert second and retry_after == 0
+    full, retry_after = main._acquire_login_verification_lease("third", now=100.0)
+    assert full is None and retry_after == 3
+
+    main._release_login_verification_lease(first)
+    third, retry_after = main._acquire_login_verification_lease("third", now=101.0)
+    assert third and retry_after == 0
+
+    recovered, retry_after = main._acquire_login_verification_lease("recovered", now=111.0)
+    assert recovered and retry_after == 0
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT lease_id, account_hash FROM login_verification_leases ORDER BY lease_id"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["lease_id"] == recovered
+    assert "recovered" not in rows[0]["account_hash"]
+
+
+def test_active_account_verification_lease_returns_429_without_hashing(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    db.init_db()
+    lease_id, _retry_after = main._acquire_login_verification_lease("admin", now=time.time())
+    assert lease_id
+
+    def unexpected_verify(_password, _encoded):
+        raise AssertionError("busy account must not reach PBKDF2")
+
+    monkeypatch.setattr(main, "verify_password", unexpected_verify)
+    try:
+        with TestClient(main.app) as client:
+            blocked = client.post(
+                "/login",
+                data={"username": "admin", "password": "admin123"},
+                follow_redirects=False,
+            )
+    finally:
+        main._release_login_verification_lease(lease_id)
+
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"] == "1"
+
+
+def test_current_user_context_excludes_password_hash(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+        session = client.cookies.get("session")
+
+    user = main.current_user(SimpleNamespace(cookies={"session": session}))
+    assert set(user) == {
+        "id",
+        "username",
+        "is_admin",
+        "theme",
+        "must_change_password",
+        "password_version",
+    }
+    assert "password_hash" not in user
+
+
 def test_trusted_header_auth_is_disabled_by_default(monkeypatch, tmp_path):
     main, _db = _fresh_app(monkeypatch, tmp_path)
 

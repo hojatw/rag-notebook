@@ -40,6 +40,13 @@ def test_defaults_match_the_previously_hardcoded_values(tmp_path, monkeypatch):
     assert c.ui.language == "zh-TW"
 
     assert c.auth.local_login_enabled is True
+    assert c.auth.login_rate_limit_enabled is True
+    assert c.auth.login_account_attempt_limit == 5
+    assert c.auth.login_account_window_seconds == 900
+    assert c.auth.login_account_cooldown_seconds == 900
+    assert c.auth.login_verification_max_concurrency == 4
+    assert c.auth.login_verification_lease_seconds == 30
+    assert c.auth.login_verification_busy_retry_after_seconds == 1
     assert c.auth.trusted_header_enabled is False
     assert c.auth.trusted_header_secret == ""
     assert c.auth.trusted_header_secret_header == "X-NotebookLM-Auth-Secret"

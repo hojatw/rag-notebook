@@ -29,6 +29,8 @@ users ─┬─< notebooks ─┬─< sources ─┬─< chunks
        └─< external_identities
 llm_settings : single row (id = 1), global
 vector_index_state : single row (id = 1), global
+login_rate_limits : global table of opaque per-account throttle buckets (no user/content FK)
+login_verification_leases : short cross-process PBKDF2 admission leases (no user/content FK)
 
 eval_sets ─< eval_items
           └─< eval_runs ─< eval_results
@@ -63,6 +65,43 @@ is why that distinction matters.
 | `must_change_password` | INTEGER NOT NULL DEFAULT 0 | SEC-1. 1 = this account may reach only `/account`, `POST /account/password`, and `/logout` until it sets a new password (gate lives in `require_login`, so it covers the admin routers too). Set on the bootstrap `admin` seeded outside local development, and back-filled by `_flag_default_passwords` onto any account whose password still verifies against its seeded default — that back-fill is what neutralises databases created before this column existed. Only the two seeded usernames are examined (this is not a weak-password sweep), and **SSO-linked accounts are skipped**: `POST /account/password` refuses external identities, so flagging one would leave it with no way out. That case is logged instead. Cleared by a successful `POST /account/password`, which also writes a `bootstrap_password_changed` audit event |
 | `password_version` | INTEGER NOT NULL DEFAULT 1 | SEC-3. Incremented on **every** password change: self-service, SEC-1's forced bootstrap change, and admin reset. Session cookies embed the version they were issued under (`sign_user_id`) and `current_user` compares it against this column, so a bump invalidates every session for that account. The self-service paths re-issue the actor's cookie afterwards, so changing your own password signs out your *other* devices, not the one you are using; an admin reset re-issues nothing, so the target is signed out everywhere. This is what makes revocation work without a server-side session table |
 | `created_at` | TEXT | |
+
+## `login_rate_limits`
+
+Cross-process per-account failed-login buckets for SEC-4. The table is globally
+shared so all web workers observe the same counters and state survives a process
+restart. It stores no raw username, password, IP address, or forwarded header.
+`bucket_hash` is an HMAC-SHA256 identifier scoped by `NOTEBOOKLM_SECRET`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `bucket_type` | TEXT NOT NULL | `account`; retained as part of the composite key |
+| `bucket_hash` | TEXT NOT NULL | opaque HMAC bucket identifier; never a raw username |
+| `failure_count` | INTEGER NOT NULL DEFAULT 0 | failed attempts in the current window |
+| `window_started` | REAL NOT NULL | Unix timestamp for the current counting window |
+| `blocked_until` | REAL NOT NULL DEFAULT 0 | Unix timestamp; values in the future cause HTTP 429 |
+| `updated_at` | REAL NOT NULL | Unix timestamp used to remove stale buckets |
+
+Primary key: `(bucket_type, bucket_hash)`. Index:
+`idx_login_rate_limits_updated`. A successful local login removes that account's
+bucket. Missing usernames do not create persistent rows.
+
+## `login_verification_leases`
+
+Short cross-process admission leases around local password verification. The
+active row count limits deployment-wide PBKDF2 concurrency, while
+`UNIQUE(account_hash)` ensures concurrent requests for one username cannot all
+pass the account failure check. Expired rows are deleted during acquisition, so
+a process crash cannot consume capacity permanently.
+
+| Column | Type | Notes |
+|---|---|---|
+| `lease_id` | TEXT PK | random opaque lease id, deleted in `finally` after verification |
+| `account_hash` | TEXT NOT NULL **UNIQUE** | HMAC account id; serializes one username without storing it |
+| `expires_at` | REAL NOT NULL | Unix timestamp for crash recovery |
+| `created_at` | REAL NOT NULL | Unix timestamp used for diagnostics |
+
+Index: `idx_login_verification_leases_expires`.
 
 ## `external_identities`
 Enterprise-auth identity links (I1a trusted-header mode, I1b OIDC, future SAML).
@@ -139,14 +178,14 @@ High-volume AI governance telemetry for LLM and embedding calls (G1a/G1b). This 
 | `latency_ms` | REAL NOT NULL DEFAULT 0 | end-to-end provider call latency |
 | `prompt_tokens` / `completion_tokens` / `total_tokens` | INTEGER | normalized provider-reported usage when available, otherwise estimates |
 | `input_chars` / `output_chars` | INTEGER NOT NULL DEFAULT 0 | character counts used for fallback estimates and sanity checks |
-| `is_estimated` | INTEGER NOT NULL DEFAULT 1 | 0 = provider usage was present; 1 = char/4 estimate |
+| `is_estimated` | INTEGER NOT NULL DEFAULT 1 | 0 = prompt/completion are provider values or exact values derived from provider total; 1 = either component required a CJK-aware character estimate using `[diagnostics].cjk_chars_per_token` / `latin_chars_per_token` |
 | `error_class` | TEXT NOT NULL DEFAULT `''` | compact exception class for failed calls |
 | `metadata_json` | TEXT NOT NULL DEFAULT `'{}'` | compact scalar metadata only (e.g. text count, role, temperature, retry count, stream usage flags); prompt/source/output/API-key style keys are dropped |
 | `created_at` | TEXT | |
 
 Indexes: `idx_llm_usage_events_created`, `idx_llm_usage_events_call_created`, `idx_llm_usage_events_user_created`, `idx_llm_usage_events_notebook_created`, `idx_llm_usage_events_eval_run_created`.
 
-Usage normalization accepts OpenAI-compatible / Azure-style `prompt_tokens`, `completion_tokens`, and `total_tokens`, common `input_tokens` / `output_tokens`, camelCase token-count fields, and nested `usage`, `token_usage`, or `tokens` objects. Streaming chat requests ask providers for usage; if an endpoint rejects `stream_options` before any output is emitted, the call is retried without stream usage and the row remains estimated.
+Usage normalization accepts OpenAI-compatible / Azure-style `prompt_tokens`, `completion_tokens`, and `total_tokens`, common `input_tokens` / `output_tokens`, camelCase token-count fields, and nested `usage`, `token_usage`, or `tokens` objects. When usage is absent, Han/kana/Hangul and non-CJK characters are counted separately and converted with the configured ratios; the raw text is not persisted. Streaming chat requests ask providers for usage; if an endpoint rejects `stream_options` before any output is emitted, the call is retried without stream usage and the row remains estimated.
 
 ## `ai_safety_events`
 High-volume AI safety / guardrail telemetry for local scanner findings (G1c). This table is separate from both `audit_events` and `llm_usage_events`: it records review signals such as input length, invisible/control text, likely secrets, and prompt-injection-style phrases without copying raw prompts, source text, model output, retrieved snippets, or API keys. Context ids are nullable and use `ON DELETE SET NULL`.
@@ -166,7 +205,7 @@ High-volume AI safety / guardrail telemetry for local scanner findings (G1c). Th
 | `category` | TEXT NOT NULL | `input_length`, `invisible_or_control_text`, `secret_or_credential`, `prompt_injection` |
 | `severity` | TEXT NOT NULL | `medium` or `high` in the local rules MVP |
 | `decision` | TEXT NOT NULL | `warn` or `block_candidate`; the MVP records signals but does not block the user flow |
-| `detector_version` | TEXT NOT NULL DEFAULT `''` | local detector version, currently `local.rules.v1` |
+| `detector_version` | TEXT NOT NULL DEFAULT `''` | local detector version, currently `local.rules.v2` (English plus Traditional/Simplified Chinese prompt-injection patterns) |
 | `rule_id` | TEXT NOT NULL DEFAULT `''` | stable local rule id |
 | `content_hash` | TEXT NOT NULL DEFAULT `''` | SHA-256 of the scanned input for correlation without storing content |
 | `redacted_summary` | TEXT NOT NULL DEFAULT `''` | short non-sensitive explanation |

@@ -77,7 +77,7 @@ def load_eval_set(conn, eval_set_id: int) -> dict:
         (eval_set_id,),
     ).fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="找不到 eval set")
+        raise HTTPException(status_code=404, detail=i18n.t("error.eval_set_not_found"))
     return dict(row)
 
 
@@ -706,7 +706,7 @@ def eval_run_context(run_id: int) -> dict[str, Any]:
             (run_id,),
         ).fetchone()
         if run is None:
-            raise HTTPException(status_code=404, detail="找不到 eval run")
+            raise HTTPException(status_code=404, detail=i18n.t("error.eval_run_not_found"))
         results = [
             dict(row)
             for row in conn.execute(
@@ -1066,7 +1066,7 @@ def admin_create_eval_set(
     with connect() as conn:
         notebook = conn.execute("SELECT id, user_id FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
         if notebook is None:
-            raise HTTPException(status_code=404, detail="找不到筆記本")
+            raise HTTPException(status_code=404, detail=i18n.t("error.notebook_not_found"))
         cursor = conn.execute(
             """
             INSERT INTO eval_sets (name, description, target_user_id, notebook_id, created_by)
@@ -1094,7 +1094,7 @@ def admin_delete_eval_set(
             (eval_set_id,),
         ).fetchone()
         if active_run is not None:
-            raise HTTPException(status_code=400, detail="Eval run 仍在執行，不能刪除此 eval set。")
+            raise HTTPException(status_code=400, detail=i18n.t("error.eval_set_run_active"))
         conn.execute("DELETE FROM eval_sets WHERE id = ?", (eval_set_id,))
     logger.info("eval_set_deleted admin_user_id=%s eval_set_id=%s", user["id"], eval_set_id)
     return RedirectResponse("/admin/evals", status_code=303)
@@ -1373,11 +1373,11 @@ def admin_add_eval_item(
 ):
     question = " ".join(question.split())[:500]
     if not question:
-        raise HTTPException(status_code=400, detail="問題不可為空。")
+        raise HTTPException(status_code=400, detail=i18n.t("error.eval_question_empty"))
     try:
         source_id = int(expected_source_id) if str(expected_source_id).strip() else None
     except ValueError:
-        raise HTTPException(status_code=400, detail="預期來源格式不正確。") from None
+        raise HTTPException(status_code=400, detail=i18n.t("error.eval_expected_source_invalid")) from None
     snippets = split_expected_substrings(expected_substrings)
     with connect() as conn:
         eval_set_context = load_eval_set(conn, eval_set_id)
@@ -1396,7 +1396,7 @@ def admin_add_eval_item(
                 (source_id, eval_set["notebook_id"], eval_set["target_user_id"]),
             ).fetchone()
             if row is None:
-                raise HTTPException(status_code=400, detail="預期來源不屬於此 eval set。")
+                raise HTTPException(status_code=400, detail=i18n.t("error.eval_expected_source_wrong_set"))
         conn.execute(
             """
             INSERT INTO eval_items
@@ -1429,7 +1429,7 @@ def admin_approve_eval_item(
             (item_id, eval_set_id),
         ).fetchone()
         if updated is None:
-            raise HTTPException(status_code=404, detail="找不到 eval item")
+            raise HTTPException(status_code=404, detail=i18n.t("error.eval_item_not_found"))
         conn.execute("UPDATE eval_sets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (eval_set_id,))
     logger.info("eval_item_approved admin_user_id=%s eval_set_id=%s item_id=%s", user["id"], eval_set_id, item_id)
     return eval_set_items_response(request, user, eval_set_id)
@@ -1449,13 +1449,13 @@ def admin_delete_eval_item(
             (item_id,),
         ).fetchone()
         if used_in_run is not None:
-            raise HTTPException(status_code=400, detail="此題目已有 run result，不能刪除以免破壞歷史紀錄。")
+            raise HTTPException(status_code=400, detail=i18n.t("error.eval_item_has_history"))
         deleted = conn.execute(
             "DELETE FROM eval_items WHERE id = ? AND eval_set_id = ? RETURNING id",
             (item_id, eval_set_id),
         ).fetchone()
         if deleted is None:
-            raise HTTPException(status_code=404, detail="找不到 eval item")
+            raise HTTPException(status_code=404, detail=i18n.t("error.eval_item_not_found"))
         conn.execute("UPDATE eval_sets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (eval_set_id,))
     logger.info("eval_item_deleted admin_user_id=%s eval_set_id=%s item_id=%s", user["id"], eval_set_id, item_id)
     return eval_set_items_response(request, user, eval_set_id)
@@ -1480,14 +1480,14 @@ def admin_start_eval_run(
                 "SELECT * FROM retrieval_profiles WHERE id = ?", (profile_id,)
             ).fetchone()
             if chosen is None:
-                raise HTTPException(status_code=404, detail="找不到 retrieval profile")
+                raise HTTPException(status_code=404, detail=i18n.t("error.retrieval_profile_not_found"))
             profile = dict(chosen)
         approved_count = conn.execute(
             "SELECT COUNT(*) AS n FROM eval_items WHERE eval_set_id = ? AND approved = 1",
             (eval_set_id,),
         ).fetchone()["n"]
         if approved_count == 0:
-            raise HTTPException(status_code=400, detail="至少需要一題 approved eval item。")
+            raise HTTPException(status_code=400, detail=i18n.t("error.eval_no_approved_items"))
         cursor = conn.execute(
             """
             INSERT INTO eval_runs
@@ -1580,7 +1580,7 @@ def admin_export_eval_run_full(
     confirm: int = 0,
 ):
     if confirm != 1:
-        raise HTTPException(status_code=400, detail="Full internal report export requires explicit confirmation.")
+        raise HTTPException(status_code=400, detail=i18n.t("error.eval_full_export_confirmation"))
     context = eval_run_context(run_id)
     payload = full_run_export_payload(context)
     record_audit_event(
@@ -1616,7 +1616,7 @@ def admin_export_profile(
     with connect() as conn:
         profile = conn.execute("SELECT * FROM retrieval_profiles WHERE id = ?", (profile_id,)).fetchone()
     if profile is None:
-        raise HTTPException(status_code=404, detail="找不到 retrieval profile")
+        raise HTTPException(status_code=404, detail=i18n.t("error.retrieval_profile_not_found"))
     payload = profile_export_payload(dict(profile))
     record_audit_event(
         request,
@@ -1651,7 +1651,7 @@ def admin_create_profile(
     """Create a candidate retrieval profile (runtime-safe params only, inactive)."""
     name = name.strip()[:120]
     if not name:
-        raise HTTPException(status_code=400, detail="Profile 名稱不可為空。")
+        raise HTTPException(status_code=400, detail=i18n.t("error.profile_name_empty"))
     params = coerce_profile_params({
         "low_confidence_threshold": low_confidence_threshold,
         "vector_weight": vector_weight,
@@ -1695,11 +1695,11 @@ def admin_delete_profile(
             "SELECT * FROM retrieval_profiles WHERE id = ?", (profile_id,)
         ).fetchone()
         if row is None:
-            raise HTTPException(status_code=404, detail="找不到 retrieval profile")
+            raise HTTPException(status_code=404, detail=i18n.t("error.retrieval_profile_not_found"))
         if row["is_default"]:
-            raise HTTPException(status_code=400, detail="系統預設 profile 不能刪除，它是回復預設值的保底。")
+            raise HTTPException(status_code=400, detail=i18n.t("error.profile_default_delete"))
         if row["is_active"]:
-            raise HTTPException(status_code=400, detail="作用中的 profile 不能刪除，請先套用其他 profile。")
+            raise HTTPException(status_code=400, detail=i18n.t("error.profile_active_delete"))
         conn.execute("DELETE FROM retrieval_profiles WHERE id = ?", (profile_id,))
     record_audit_event(
         request,
@@ -1726,11 +1726,11 @@ def admin_apply_profile(
             "SELECT * FROM retrieval_profiles WHERE id = ?", (profile_id,)
         ).fetchone()
         if row is None:
-            raise HTTPException(status_code=404, detail="找不到 retrieval profile")
+            raise HTTPException(status_code=404, detail=i18n.t("error.retrieval_profile_not_found"))
         if row["requires_reindex"]:
             raise HTTPException(
                 status_code=400,
-                detail="此 profile 含需重建索引的參數，不能直接套用；請改用 Clear/Rebuild 流程。",
+                detail=i18n.t("error.profile_requires_reindex"),
             )
         previous = conn.execute(
             "SELECT id, name, params_json FROM retrieval_profiles WHERE is_active = 1 ORDER BY id ASC LIMIT 1"
@@ -1768,10 +1768,10 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
     candidate = eval_run_context(candidate_id)
     base_run, candidate_run = base["run"], candidate["run"]
     if base_run["eval_set_id"] != candidate_run["eval_set_id"]:
-        raise HTTPException(status_code=400, detail="只能比較同一個 eval set 的 run。")
+        raise HTTPException(status_code=400, detail=i18n.t("error.eval_compare_same_set"))
     for run in (base_run, candidate_run):
         if run["status"] != "succeeded":
-            raise HTTPException(status_code=400, detail="只能比較已成功完成的 run。")
+            raise HTTPException(status_code=400, detail=i18n.t("error.eval_compare_succeeded"))
 
     # Param diff: union of both snapshots, flag changed rows.
     base_params = base_run["profile_snapshot"]
