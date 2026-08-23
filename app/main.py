@@ -32,6 +32,20 @@ from joserfc.errors import JoseError
 
 from .config import config
 from .db import UPLOAD_DIR, connect, dumps, init_db, load_llm_settings, loads
+from .domain_policy import (
+    DomainPolicyValidationError,
+    create_domain_hint,
+    delete_domain_hint,
+    domain_config_summary,
+    limits as domain_policy_limits,
+    load_domain_config,
+    match_domain_hints,
+    matched_answer_notes,
+    save_domain_config,
+    snapshot_domain_config,
+    spreadsheet_answer_guard,
+    update_domain_hint,
+)
 from .governance import record_ai_safety_events
 from .ingest import supported, upload_limit_for
 from .jobs import enqueue_source
@@ -39,7 +53,7 @@ from .worker import run_worker_loop
 from . import i18n
 import httpx
 
-from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, generate_answer, generate_answer_stream, generate_artifact, generate_briefing, generate_meeting_minutes, generate_starter_questions, set_http_client, suggest_followup_questions, translate_summary
+from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, generate_answer_result, generate_answer_stream, generate_artifact, generate_briefing, generate_meeting_minutes, generate_starter_questions, set_http_client, suggest_followup_questions, translate_summary
 # Used by main itself (chat/ask flow, lifespan, message rendering):
 from .retrieval import (
     active_low_confidence_threshold,
@@ -100,6 +114,15 @@ CSRF_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # depend on one being there.
 MAX_REQUEST_BYTES = (
     config.runtime.upload_max_file_bytes * config.runtime.upload_batch_limit + 1_000_000
+)
+# E2's text-only mutation surfaces need a much smaller independent bound than
+# uploads. Requiring Content-Length closes the chunked-transfer path that could
+# otherwise make Form parsing consume an unbounded body before field validation.
+E2_FORM_MAX_BYTES = 64 * 1024
+E2_FORM_PATH_PATTERNS = (
+    re.compile(r"^/notebooks/\d+/domain-settings(?:/hints(?:/\d+/(?:edit|delete))?)?$"),
+    re.compile(r"^/admin/evals/sets/\d+/run$"),
+    re.compile(r"^/admin/evals/runs/\d+/export/full$"),
 )
 OIDC_STATE_COOKIE_NAME = "oidc_state"
 OIDC_STATE_COOKIE_MAX_AGE = 10 * 60
@@ -327,6 +350,10 @@ def _request_content_length(request: Request) -> int | None:
         return None
 
 
+def _is_e2_bounded_form_path(path: str) -> bool:
+    return any(pattern.fullmatch(path) for pattern in E2_FORM_PATH_PATTERNS)
+
+
 def csrf_token_matches(request: Request, submitted: str | None) -> bool:
     """Double-submit check: the submitted token must equal the signed cookie."""
     cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
@@ -389,6 +416,23 @@ async def csrf_protection(request: Request, call_next):
     """
     if request.method.upper() in CSRF_UNSAFE_METHODS:
         content_length = _request_content_length(request)
+        if _is_e2_bounded_form_path(request.url.path):
+            if content_length is None:
+                logger.warning(
+                    "request_length_required method=%s path=%s",
+                    request.method,
+                    request.url.path,
+                )
+                return HTMLResponse(i18n.t("error.request_length_required"), status_code=411)
+            if content_length < 0 or content_length > E2_FORM_MAX_BYTES:
+                logger.warning(
+                    "request_too_large method=%s path=%s content_length=%s limit=%s",
+                    request.method,
+                    request.url.path,
+                    content_length,
+                    E2_FORM_MAX_BYTES,
+                )
+                return HTMLResponse(i18n.t("error.domain_request_too_large"), status_code=413)
         if content_length is not None and content_length > MAX_REQUEST_BYTES:
             logger.warning(
                 "request_too_large method=%s path=%s content_length=%s limit=%s",
@@ -1802,6 +1846,106 @@ def get_notebook(conn, notebook_id: int, user_id: int) -> dict:
     return dict(row)
 
 
+_DOMAIN_POLICY_ERROR_KEYS = {
+    "policy_too_long": "error.domain_policy_too_long",
+    "policy_token_budget": "error.domain_policy_token_budget",
+    "term_required": "error.domain_term_required",
+    "term_too_long": "error.domain_term_too_long",
+    "too_many_synonyms": "error.domain_too_many_synonyms",
+    "synonym_too_long": "error.domain_synonym_too_long",
+    "definition_too_long": "error.domain_definition_too_long",
+    "too_many_query_expansions": "error.domain_too_many_query_expansions",
+    "query_expansion_too_long": "error.domain_query_expansion_too_long",
+    "answer_note_too_long": "error.domain_answer_note_too_long",
+    "too_many_hints": "error.domain_too_many_hints",
+    "duplicate_term": "error.domain_duplicate_term",
+}
+
+
+def _domain_policy_error(exc: DomainPolicyValidationError) -> str:
+    """Return a safe, localised validation error without echoing raw input."""
+    return i18n.t(_DOMAIN_POLICY_ERROR_KEYS.get(exc.code, "error.domain_invalid"))
+
+
+def _domain_audit_metadata(domain_config: dict, *, changed_kind: str) -> dict[str, Any]:
+    """Build the allowlisted domain-settings audit metadata contract."""
+    summary = domain_config_summary(domain_config)
+    return {
+        "revision": summary["revision"],
+        "version_fingerprint": summary["version_fingerprint"],
+        "hint_count": summary["hint_count"],
+        "enabled_hint_count": summary["enabled_hint_count"],
+        "hints_enabled": summary["hints_enabled"],
+        "answer_policy_enabled": summary["answer_policy_enabled"],
+        "policy_present": summary["policy_present"],
+        "policy_chars": summary["policy_chars"],
+        "changed_kind": changed_kind,
+    }
+
+
+def _record_domain_input_scan(
+    *,
+    user: dict,
+    notebook_id: int,
+    domain_config: dict,
+    text: str,
+) -> None:
+    """Warn-only scanning with identifiers/counts only in persisted metadata."""
+    summary = domain_config_summary(domain_config)
+    record_ai_safety_events(
+        text=text,
+        event_type="domain_config_input_scan",
+        surface="notebook.domain_settings",
+        context={"user_id": user["id"], "notebook_id": notebook_id},
+        metadata={
+            "hint_count": summary["hint_count"],
+            "policy_chars": summary["policy_chars"],
+            "input_chars": len(text),
+        },
+    )
+
+
+def _domain_settings_context(
+    *,
+    user: dict,
+    notebook: dict,
+    domain_config: dict,
+    saved: bool = False,
+    error: str = "",
+    hint_form: dict | None = None,
+) -> dict[str, Any]:
+    return {
+        "user": user,
+        "notebook": notebook,
+        "domain_config": domain_config,
+        "limits": domain_policy_limits(),
+        "saved": saved,
+        "error": error,
+        "hint_form": hint_form or {},
+        "breadcrumb_items": [
+            {"label": i18n.t("nav.notebooks"), "href": "/notebooks"},
+            {"label": notebook["title"], "href": f"/notebooks/{notebook['id']}"},
+            {"label": i18n.t("domain.title"), "href": ""},
+        ],
+    }
+
+
+def _bounded_domain_hint_form(values: dict[str, Any]) -> dict[str, Any]:
+    """Bound validation re-render data even when a client bypasses HTML limits."""
+    field_limits = domain_policy_limits()
+    result = dict(values)
+    result["term"] = str(values.get("term") or "")[: field_limits["max_term_chars"]]
+    result["synonyms"] = str(values.get("synonyms") or "")[
+        : field_limits["max_synonyms"] * (field_limits["max_synonym_chars"] + 1)
+    ].splitlines()
+    result["definition"] = str(values.get("definition") or "")[: field_limits["max_definition_chars"]]
+    result["query_expansions"] = str(values.get("query_expansions") or "")[
+        : field_limits["max_query_expansions"] * (field_limits["max_query_expansion_chars"] + 1)
+    ].splitlines()
+    result["answer_note"] = str(values.get("answer_note") or "")[: field_limits["max_answer_note_chars"]]
+    return result
+
+
 def touch_notebook(conn, notebook_id: int) -> None:
     """Bump a notebook's updated_at so it bubbles to the top of the home grid."""
     conn.execute(
@@ -2009,6 +2153,274 @@ def notebook_view(
             "breadcrumb": notebook["title"],
         },
     )
+
+
+@app.get("/notebooks/{notebook_id}/domain-settings", response_class=HTMLResponse)
+def notebook_domain_settings(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    saved: int = 0,
+):
+    """Render owner-only notebook domain hints and answer policy settings."""
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        domain_config = load_domain_config(conn, notebook_id)
+    return render(
+        request,
+        "notebook_domain_settings.html",
+        _domain_settings_context(
+            user=user,
+            notebook=notebook,
+            domain_config=domain_config,
+            saved=bool(saved),
+        ),
+    )
+
+
+@app.post("/notebooks/{notebook_id}/domain-settings")
+def save_notebook_domain_settings(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    _csrf: Annotated[None, Depends(verify_multipart_csrf)],
+    hints_enabled: str | None = Form(None),
+    answer_policy_enabled: str | None = Form(None),
+    answer_policy: str = Form(""),
+):
+    """Save notebook-scoped settings without exposing policy text in telemetry."""
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        try:
+            domain_config = save_domain_config(
+                conn,
+                notebook_id,
+                hints_enabled=hints_enabled == "1",
+                answer_policy_enabled=answer_policy_enabled == "1",
+                answer_policy=answer_policy,
+                updated_by=user["id"],
+            )
+            touch_notebook(conn, notebook_id)
+        except DomainPolicyValidationError as exc:
+            current = load_domain_config(conn, notebook_id)
+            current.update(
+                {
+                    "hints_enabled": hints_enabled == "1",
+                    "answer_policy_enabled": answer_policy_enabled == "1",
+                    "answer_policy": answer_policy.strip()[: domain_policy_limits()["max_policy_chars"]],
+                }
+            )
+            return render(
+                request,
+                "notebook_domain_settings.html",
+                _domain_settings_context(
+                    user=user,
+                    notebook=notebook,
+                    domain_config=current,
+                    error=_domain_policy_error(exc),
+                ),
+                status_code=400,
+            )
+    _record_domain_input_scan(
+        user=user,
+        notebook_id=notebook_id,
+        domain_config=domain_config,
+        text=answer_policy,
+    )
+    record_audit_event(
+        request,
+        user,
+        "notebook_domain_config_updated",
+        "notebook",
+        notebook_id,
+        _domain_audit_metadata(domain_config, changed_kind="config"),
+        "normal",
+    )
+    return RedirectResponse(f"/notebooks/{notebook_id}/domain-settings?saved=1", status_code=303)
+
+
+def _domain_hint_values(
+    *,
+    term: str,
+    synonyms: str,
+    definition: str,
+    query_expansions: str,
+    answer_note: str,
+    enabled: str | None,
+) -> dict[str, Any]:
+    return {
+        "term": term,
+        "synonyms": synonyms,
+        "definition": definition,
+        "query_expansions": query_expansions,
+        "answer_note": answer_note,
+        "enabled": enabled == "1",
+    }
+
+
+def _render_domain_hint_validation_error(
+    request: Request,
+    *,
+    user: dict,
+    notebook: dict,
+    domain_config: dict,
+    error: DomainPolicyValidationError,
+    hint_form: dict[str, Any],
+) -> HTMLResponse:
+    return render(
+        request,
+        "notebook_domain_settings.html",
+        _domain_settings_context(
+            user=user,
+            notebook=notebook,
+            domain_config=domain_config,
+            error=_domain_policy_error(error),
+            hint_form=hint_form,
+        ),
+        status_code=400,
+    )
+
+
+@app.post("/notebooks/{notebook_id}/domain-settings/hints")
+def create_notebook_domain_hint(
+    request: Request,
+    notebook_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    _csrf: Annotated[None, Depends(verify_multipart_csrf)],
+    term: str = Form(""),
+    synonyms: str = Form(""),
+    definition: str = Form(""),
+    query_expansions: str = Form(""),
+    answer_note: str = Form(""),
+    enabled: str | None = Form(None),
+):
+    """Create one owner-scoped query-time domain hint."""
+    values = _domain_hint_values(
+        term=term,
+        synonyms=synonyms,
+        definition=definition,
+        query_expansions=query_expansions,
+        answer_note=answer_note,
+        enabled=enabled,
+    )
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        try:
+            create_domain_hint(conn, notebook_id, updated_by=user["id"], **values)
+            touch_notebook(conn, notebook_id)
+            domain_config = load_domain_config(conn, notebook_id)
+        except DomainPolicyValidationError as exc:
+            return _render_domain_hint_validation_error(
+                request,
+                user=user,
+                notebook=notebook,
+                domain_config=load_domain_config(conn, notebook_id),
+                error=exc,
+                hint_form=_bounded_domain_hint_form(values),
+            )
+    _record_domain_input_scan(
+        user=user,
+        notebook_id=notebook_id,
+        domain_config=domain_config,
+        text="\n".join(str(values[key]) for key in ("term", "synonyms", "definition", "query_expansions", "answer_note")),
+    )
+    record_audit_event(
+        request,
+        user,
+        "notebook_domain_hint_created",
+        "notebook",
+        notebook_id,
+        _domain_audit_metadata(domain_config, changed_kind="hint_created"),
+        "normal",
+    )
+    return RedirectResponse(f"/notebooks/{notebook_id}/domain-settings?saved=1", status_code=303)
+
+
+@app.post("/notebooks/{notebook_id}/domain-settings/hints/{hint_id}/edit")
+def update_notebook_domain_hint(
+    request: Request,
+    notebook_id: int,
+    hint_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    _csrf: Annotated[None, Depends(verify_multipart_csrf)],
+    term: str = Form(""),
+    synonyms: str = Form(""),
+    definition: str = Form(""),
+    query_expansions: str = Form(""),
+    answer_note: str = Form(""),
+    enabled: str | None = Form(None),
+):
+    """Update a hint identified by both notebook and hint ID."""
+    values = _domain_hint_values(
+        term=term,
+        synonyms=synonyms,
+        definition=definition,
+        query_expansions=query_expansions,
+        answer_note=answer_note,
+        enabled=enabled,
+    )
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user["id"])
+        try:
+            update_domain_hint(conn, notebook_id, hint_id, updated_by=user["id"], **values)
+            touch_notebook(conn, notebook_id)
+            domain_config = load_domain_config(conn, notebook_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=i18n.t("error.domain_hint_not_found"))
+        except DomainPolicyValidationError as exc:
+            return _render_domain_hint_validation_error(
+                request,
+                user=user,
+                notebook=notebook,
+                domain_config=load_domain_config(conn, notebook_id),
+                error=exc,
+                hint_form={**_bounded_domain_hint_form(values), "id": hint_id},
+            )
+    _record_domain_input_scan(
+        user=user,
+        notebook_id=notebook_id,
+        domain_config=domain_config,
+        text="\n".join(str(values[key]) for key in ("term", "synonyms", "definition", "query_expansions", "answer_note")),
+    )
+    record_audit_event(
+        request,
+        user,
+        "notebook_domain_hint_updated",
+        "notebook",
+        notebook_id,
+        _domain_audit_metadata(domain_config, changed_kind="hint_updated"),
+        "normal",
+    )
+    return RedirectResponse(f"/notebooks/{notebook_id}/domain-settings?saved=1", status_code=303)
+
+
+@app.post("/notebooks/{notebook_id}/domain-settings/hints/{hint_id}/delete")
+def delete_notebook_domain_hint(
+    request: Request,
+    notebook_id: int,
+    hint_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    _csrf: Annotated[None, Depends(verify_multipart_csrf)],
+):
+    """Delete one hint without placing its content in audit metadata."""
+    with connect() as conn:
+        get_notebook(conn, notebook_id, user["id"])
+        try:
+            delete_domain_hint(conn, notebook_id, hint_id, updated_by=user["id"])
+            touch_notebook(conn, notebook_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=i18n.t("error.domain_hint_not_found"))
+        domain_config = load_domain_config(conn, notebook_id)
+    record_audit_event(
+        request,
+        user,
+        "notebook_domain_hint_deleted",
+        "notebook",
+        notebook_id,
+        _domain_audit_metadata(domain_config, changed_kind="hint_deleted"),
+        "normal",
+    )
+    return RedirectResponse(f"/notebooks/{notebook_id}/domain-settings?saved=1", status_code=303)
 
 
 @app.post("/notebooks/{notebook_id}/rename")
@@ -3077,6 +3489,41 @@ def _prepare_question(
     return conversation_id, history, settings or {}
 
 
+def _effective_domain_context(
+    notebook_id: int,
+    user_id: int,
+    question: str,
+    history: list[dict[str, str]],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """Load one owner-scoped, validated E2 runtime view for this question."""
+    with connect() as conn:
+        # Pin config + hints to one WAL read snapshot so a concurrent owner edit
+        # cannot mix a new revision with an old hint list for this question.
+        conn.execute("BEGIN")
+        get_notebook(conn, notebook_id, user_id)
+        live_config = load_domain_config(conn, notebook_id)
+    snapshot = snapshot_domain_config(live_config, use_hints=True, use_answer_policy=True)
+    match_text = "\n".join(
+        [
+            *(str(item.get("content") or "") for item in history[-6:] if item.get("role") == "user"),
+            question,
+        ]
+    )
+    matched_hints = (
+        match_domain_hints(match_text, snapshot.get("hints", []))
+        if snapshot.get("hints_enabled")
+        else []
+    )
+    summary = domain_config_summary(snapshot)
+    metadata = {
+        "domain_config_revision": summary["revision"],
+        "domain_hints_enabled": summary["hints_enabled"],
+        "answer_policy_enabled": summary["answer_policy_enabled"],
+        "matched_hint_count": len(matched_hints),
+    }
+    return snapshot, matched_hints, metadata
+
+
 async def _answer_question(
     question: str,
     settings: dict[str, Any],
@@ -3089,8 +3536,21 @@ async def _answer_question(
     """Run retrieval and non-streaming answer generation."""
     metadata: dict[str, Any] = {}
     usage_context = {"user_id": user_id, "notebook_id": notebook_id, "conversation_id": conversation_id}
+    domain_snapshot, matched_hints, domain_metadata = _effective_domain_context(
+        notebook_id, user_id, question, history
+    )
+    metadata.update(domain_metadata)
     retrieve_started = time.perf_counter()
-    retrieved = await retrieve(question, None, settings, history, user_id, source_ids, usage_context=usage_context)
+    retrieved = await retrieve(
+        question,
+        None,
+        settings,
+        history,
+        user_id,
+        source_ids,
+        usage_context=usage_context,
+        domain_hints=matched_hints,
+    )
     metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
     metadata["retrieved_chunks"] = len(retrieved)
     top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -3108,11 +3568,20 @@ async def _answer_question(
         return i18n.t("chat.abstain"), [], metadata
 
     generate_started = time.perf_counter()
-    answer = await generate_answer(question, retrieved, settings, usage_context=usage_context)
+    result = await generate_answer_result(
+        question,
+        retrieved,
+        settings,
+        usage_context=usage_context,
+        answer_policy=str(domain_snapshot.get("answer_policy") or ""),
+        answer_notes=matched_answer_notes(matched_hints),
+        spreadsheet_guard=spreadsheet_answer_guard(retrieved),
+    )
+    answer = i18n.t("chat.abstain") if result.abstained else result.text
     metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
     metadata["answer_chars"] = len(answer)
-    citations = _referenced_citations(answer, retrieved)
-    metadata["outcome"] = "answered"
+    citations = [] if result.abstained else _referenced_citations(answer, retrieved)
+    metadata["outcome"] = "abstained" if result.abstained else "answered"
     return answer, citations, metadata
 
 
@@ -3319,8 +3788,21 @@ async def ask_stream(
             yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
             yield sse_event("status", {"text": i18n.t("js.retrieving")})
 
+            domain_snapshot, matched_hints, domain_metadata = _effective_domain_context(
+                notebook_id, user["id"], question, history
+            )
+            metadata.update(domain_metadata)
             retrieve_started = time.perf_counter()
-            retrieved = await retrieve(question, None, settings, history, user["id"], source_ids, usage_context=usage_context)
+            retrieved = await retrieve(
+                question,
+                None,
+                settings,
+                history,
+                user["id"],
+                source_ids,
+                usage_context=usage_context,
+                domain_hints=matched_hints,
+            )
             metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
             metadata["retrieved_chunks"] = len(retrieved)
             top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -3335,13 +3817,27 @@ async def ask_stream(
             else:
                 yield sse_event("status", {"text": i18n.t("js.generating")})
                 generate_started = time.perf_counter()
-                async for piece in generate_answer_stream(question, retrieved, settings, usage_context=usage_context):
+                result_state: dict[str, Any] = {}
+                async for piece in generate_answer_stream(
+                    question,
+                    retrieved,
+                    settings,
+                    usage_context=usage_context,
+                    answer_policy=str(domain_snapshot.get("answer_policy") or ""),
+                    answer_notes=matched_answer_notes(matched_hints),
+                    spreadsheet_guard=spreadsheet_answer_guard(retrieved),
+                    abstain_text=i18n.t("chat.abstain"),
+                    result_state=result_state,
+                ):
                     answer += piece
                     yield sse_event("chunk", {"text": piece})
                 metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
+                abstained = bool(result_state.get("abstained"))
+                if abstained:
+                    answer = i18n.t("chat.abstain")
                 metadata["answer_chars"] = len(answer)
-                citations = _referenced_citations(answer, retrieved)
-                metadata["outcome"] = "answered"
+                citations = [] if abstained else _referenced_citations(answer, retrieved)
+                metadata["outcome"] = "abstained" if abstained else "answered"
 
             assistant_message_id = _save_assistant_message(notebook_id, user["id"], conversation, question, answer, citations, metadata)
             _attach_usage_events_to_message(

@@ -4,6 +4,7 @@ aggregation, run wiring, and full regression when judging is off."""
 import asyncio
 import importlib
 import json
+from types import SimpleNamespace
 
 
 def _fresh_modules(monkeypatch, tmp_path):
@@ -54,13 +55,13 @@ def test_judge_eval_item_abstains_and_skips_generation(monkeypatch, tmp_path):
 
     async def fake_generate(*args, **kwargs):
         calls["generate"] += 1
-        return "should never run"
+        return SimpleNamespace(text="should never run", abstained=False)
 
     async def fake_judge(**kwargs):
         calls["judge"] += 1
         return _answered_judge()
 
-    monkeypatch.setattr(evals, "generate_answer", fake_generate)
+    monkeypatch.setattr(evals.llm, "generate_answer_result", fake_generate)
     monkeypatch.setattr(evals, "judge_answer", fake_judge)
 
     item = {"id": 1, "item_type": "unanswerable", "expected_substrings": [], "expected_answer": ""}
@@ -82,12 +83,12 @@ def test_judge_eval_item_generates_and_judges_answerable(monkeypatch, tmp_path):
     evals, _ = _fresh_modules(monkeypatch, tmp_path)
 
     async def fake_generate(question, chunks, settings, **kwargs):
-        return "The value is 2024-02 [1]."
+        return SimpleNamespace(text="The value is 2024-02 [1].", abstained=False)
 
     async def fake_judge(**kwargs):
         return _answered_judge()
 
-    monkeypatch.setattr(evals, "generate_answer", fake_generate)
+    monkeypatch.setattr(evals.llm, "generate_answer_result", fake_generate)
     monkeypatch.setattr(evals, "judge_answer", fake_judge)
 
     item = {"id": 2, "item_type": "answerable", "expected_substrings": ["2024-02"], "expected_answer": "2024-02"}
@@ -113,12 +114,12 @@ def test_answer_quality_not_scored_without_a_reference_answer(monkeypatch, tmp_p
     evals, _ = _fresh_modules(monkeypatch, tmp_path)
 
     async def fake_generate(question, chunks, settings, **kwargs):
-        return "some grounded answer [1]."
+        return SimpleNamespace(text="some grounded answer [1].", abstained=False)
 
     async def fake_judge(**kwargs):
         return _answered_judge()  # judge insists on "correct"
 
-    monkeypatch.setattr(evals, "generate_answer", fake_generate)
+    monkeypatch.setattr(evals.llm, "generate_answer_result", fake_generate)
     monkeypatch.setattr(evals, "judge_answer", fake_judge)
 
     retrieved = [{"filename": "f", "location": "l", "text": "t", "score": 0.9}]
@@ -166,14 +167,12 @@ def test_judge_metrics_exclude_unreferenced_items_from_quality_rate(monkeypatch,
     assert metrics["groundedness_avg"] == round((1.0 + 0.5 * 3) / 4, 4)
 
 
-def test_answer_is_refusal_matches_pinned_wording(monkeypatch, tmp_path):
-    """Deterministic detection of the refusal SYSTEM_PROMPT pins, tolerant of surrounding
-    prose/whitespace/case but never firing on a real answer."""
+def test_answer_is_refusal_uses_only_the_structural_marker(monkeypatch, tmp_path):
+    """Natural-language refusals no longer drive E2 abstention metrics."""
     evals, _ = _fresh_modules(monkeypatch, tmp_path)
 
-    assert evals.answer_is_refusal("I cannot determine that from the selected sources.") is True
-    # tolerant of case, collapsed whitespace, and trailing prose
-    assert evals.answer_is_refusal("  I Cannot Determine That From The\n Selected Sources. Sorry.") is True
+    assert evals.answer_is_refusal(" [[RAG_ABSTAIN]] trailing protocol violation") is True
+    assert evals.answer_is_refusal("I cannot determine that from the selected sources.") is False
     assert evals.answer_is_refusal("The API version is 2024-02 [1].") is False
     assert evals.answer_is_refusal("") is False
 
@@ -188,12 +187,12 @@ def test_judge_eval_item_counts_generation_stage_refusal(monkeypatch, tmp_path):
     evals, _ = _fresh_modules(monkeypatch, tmp_path)
 
     async def fake_generate(question, chunks, settings, **kwargs):
-        return "I cannot determine that from the selected sources."
+        return SimpleNamespace(text="", abstained=True)
 
     async def fake_judge(**kwargs):
         return _answered_judge()
 
-    monkeypatch.setattr(evals, "generate_answer", fake_generate)
+    monkeypatch.setattr(evals.llm, "generate_answer_result", fake_generate)
     monkeypatch.setattr(evals, "judge_answer", fake_judge)
 
     item = {"id": 9, "item_type": "unanswerable", "expected_substrings": [], "expected_answer": ""}
@@ -239,7 +238,7 @@ def test_judge_eval_item_generate_failure_is_isolated(monkeypatch, tmp_path):
     async def boom(*args, **kwargs):
         raise RuntimeError("provider down")
 
-    monkeypatch.setattr(evals, "generate_answer", boom)
+    monkeypatch.setattr(evals.llm, "generate_answer_result", boom)
     monkeypatch.setattr(evals, "judge_answer", boom)
 
     item = {"id": 3, "item_type": "answerable", "expected_substrings": [], "expected_answer": "a"}
@@ -341,14 +340,14 @@ def _patch_llm(monkeypatch, evals, source_id, calls):
 
     async def fake_generate(question, chunks, settings, **kwargs):
         calls["generate"] += 1
-        return "alpha is the answer [1]."
+        return SimpleNamespace(text="alpha is the answer [1].", abstained=False)
 
     async def fake_judge(**kwargs):
         calls["judge"] += 1
         return _answered_judge()
 
     monkeypatch.setattr(evals, "retrieve", fake_retrieve)
-    monkeypatch.setattr(evals, "generate_answer", fake_generate)
+    monkeypatch.setattr(evals.llm, "generate_answer_result", fake_generate)
     monkeypatch.setattr(evals, "judge_answer", fake_judge)
 
 

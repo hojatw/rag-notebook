@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block content %}
+{% macro hint_editor(hint, action, submit_key, heading_key) -%}
+  <article class="domain-hint-card">
+    <h3>{{ t(heading_key) }}</h3>
+    <form method="post" action="{{ action }}" class="stacked-form" data-loading-form>
+      {{ csrf_input() }}
+      <label>
+        {{ t("domain.term") }}
+        <input name="term" value="{{ hint.term or '' }}" required maxlength="{{ limits.max_term_chars }}">
+      </label>
+      <label>
+        {{ t("domain.synonyms") }}
+        <textarea name="synonyms" rows="3" maxlength="{{ limits.max_synonyms * limits.max_synonym_chars }}" placeholder="{{ t('domain.one_per_line') }}">{{ hint.synonyms|join('\n') }}</textarea>
+        <small class="hint">{{ t("domain.synonyms_hint", count=limits.max_synonyms, chars=limits.max_synonym_chars) }}</small>
+      </label>
+      <label>
+        {{ t("domain.definition") }}
+        <textarea name="definition" rows="3" maxlength="{{ limits.max_definition_chars }}">{{ hint.definition or '' }}</textarea>
+        <small class="hint">{{ t("domain.definition_hint") }}</small>
+      </label>
+      <label>
+        {{ t("domain.query_expansions") }}
+        <textarea name="query_expansions" rows="3" maxlength="{{ limits.max_query_expansions * limits.max_query_expansion_chars }}" placeholder="{{ t('domain.one_per_line') }}">{{ hint.query_expansions|join('\n') }}</textarea>
+        <small class="hint">{{ t("domain.query_expansions_hint", count=limits.max_query_expansions, chars=limits.max_query_expansion_chars) }}</small>
+      </label>
+      <label>
+        {{ t("domain.answer_note") }}
+        <textarea name="answer_note" rows="3" maxlength="{{ limits.max_answer_note_chars }}">{{ hint.answer_note or '' }}</textarea>
+        <small class="hint">{{ t("domain.answer_note_hint") }}</small>
+      </label>
+      <label class="setting-check">
+        <input type="checkbox" name="enabled" value="1" {% if hint.enabled|default(true) %}checked{% endif %}>
+        <span>{{ t("domain.hint_enabled") }}</span>
+      </label>
+      <button type="submit" class="secondary" data-loading-text="{{ t('domain.saving') }}">{{ t(submit_key) }}</button>
+    </form>
+  </article>
+{%- endmacro %}
+
+<section class="settings domain-settings">
+  <header class="settings-head">
+    <p class="eyebrow">{{ t("domain.eyebrow") }}</p>
+    <h1>{{ t("domain.title") }}</h1>
+    <p class="muted">{{ t("domain.intro") }}</p>
+  </header>
+
+  {% if saved %}<div class="notice">{{ t("domain.saved") }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+
+  <form method="post" action="/notebooks/{{ notebook.id }}/domain-settings" class="settings-grid" data-loading-form>
+    {{ csrf_input() }}
+    <section class="settings-section">
+      <h2>{{ t("domain.answer_policy_title") }}</h2>
+      <p class="muted">{{ t("domain.answer_policy_intro") }}</p>
+      <label class="setting-check">
+        <input type="checkbox" name="answer_policy_enabled" value="1" {% if domain_config.answer_policy_enabled %}checked{% endif %}>
+        <span>{{ t("domain.answer_policy_enabled") }}</span>
+      </label>
+      <label>
+        {{ t("domain.answer_policy") }}
+        <textarea name="answer_policy" rows="7" maxlength="{{ limits.max_policy_chars }}" aria-describedby="domain-policy-hint">{{ domain_config.answer_policy or '' }}</textarea>
+      </label>
+      <small id="domain-policy-hint" class="hint">{{ t("domain.answer_policy_hint", chars=limits.max_policy_chars, tokens=limits.max_policy_tokens) }}</small>
+    </section>
+
+    <section class="settings-section">
+      <h2>{{ t("domain.hints_title") }}</h2>
+      <p class="muted">{{ t("domain.hints_intro") }}</p>
+      <label class="setting-check">
+        <input type="checkbox" name="hints_enabled" value="1" {% if domain_config.hints_enabled %}checked{% endif %}>
+        <span>{{ t("domain.hints_enabled") }}</span>
+      </label>
+    </section>
+
+    <div class="settings-foot">
+      <a class="ghost" href="/notebooks/{{ notebook.id }}">{{ t("domain.back_to_notebook") }}</a>
+      <button type="submit" data-loading-text="{{ t('domain.saving') }}">{{ t("domain.save_settings") }}</button>
+    </div>
+  </form>
+
+  <section class="settings-section domain-hints-section">
+    <div class="domain-section-head">
+      <div>
+        <h2>{{ t("domain.hint_list_title") }}</h2>
+        <p class="muted">{{ t("domain.hint_list_intro", count=limits.max_hints) }}</p>
+      </div>
+      <span class="status uploaded">{{ domain_config.hints|length }} / {{ limits.max_hints }}</span>
+    </div>
+
+    <div class="domain-hint-list">
+      {% for hint in domain_config.hints %}
+        {% set editor_hint = hint_form if hint_form.id|default(-1) == hint.id else hint %}
+        {{ hint_editor(editor_hint, '/notebooks/' ~ notebook.id ~ '/domain-settings/hints/' ~ hint.id ~ '/edit', 'domain.update_hint', 'domain.edit_hint') }}
+        <form method="post" action="/notebooks/{{ notebook.id }}/domain-settings/hints/{{ hint.id }}/delete" class="domain-hint-delete" data-confirm="{{ t('domain.delete_confirm') }}">
+          {{ csrf_input() }}
+          <button type="submit" class="ghost small danger-link" data-loading-text="{{ t('domain.deleting') }}">{{ t("domain.delete_hint") }}</button>
+        </form>
+      {% else %}
+        <p class="empty-state">{{ t("domain.no_hints") }}</p>
+      {% endfor %}
+    </div>
+
+    {% if not hint_form.id %}
+      {{ hint_editor(hint_form, '/notebooks/' ~ notebook.id ~ '/domain-settings/hints', 'domain.create_hint', 'domain.add_hint') }}
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

@@ -159,6 +159,13 @@
 - 表單底部主要動作 + 返回放 `.page-foot`(或現行 `.settings-foot`)。
 - 送出鎖見 §4。
 
+E2 的 Notebook domain settings 使用獨立的 `.settings` 頁面，不把多筆
+hints 編輯器塞進 Notebook dropdown。頁面提供兩個獨立 enable toggle、bounded
+answer policy，以及垂直 hint cards；term/synonyms/definition/query
+expansions/answer note 均由真正的 `<label>` 包住。Hint delete 必須是帶
+`data-confirm` 的 POST。窄螢幕下長 term/policy 使用可換行 textarea、按鈕可
+堆疊，不得產生水平捲軸；所有 copy 走 `domain.*` / `error.*` catalog keys。
+
 ### 3.8 分頁 tabs（單一視覺,兩種機制）
 視覺統一 `.eval-tab`(目前命名綁 eval,**重構時更名 `.tab`**)。兩種語意分清楚:
 - **跨頁導覽** → `<a href>`(如 `_eval_nav.html`:評測集 / Retrieval Profiles)。

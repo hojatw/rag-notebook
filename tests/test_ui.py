@@ -2343,6 +2343,27 @@ def test_admin_eval_run_results_explain_miss(monkeypatch, tmp_path):
 def test_eval_run_exports_sanitized_and_full_report_with_audit(monkeypatch, tmp_path):
     """E1d: sanitized export omits evidence text; full export is explicit and audited."""
     main, db = _fresh_app(monkeypatch, tmp_path)
+    from app.domain_policy import limits as domain_limits
+
+    domain_snapshot = {
+        "schema_version": 1,
+        "prompt_version": "notebook-domain-policy.v1",
+        "revision": 3,
+        "version_token": "c" * 32,
+        "hints_enabled": True,
+        "answer_policy_enabled": True,
+        "hints": [{
+            "id": 1,
+            "term": "PRIVATE-TERM",
+            "synonyms": ["PRIVATE-ALIAS"],
+            "definition": "PRIVATE-DEFINITION",
+            "query_expansions": ["PRIVATE-QUERY"],
+            "answer_note": "PRIVATE-NOTE",
+            "enabled": True,
+        }],
+        "answer_policy": "PRIVATE-POLICY",
+        "limits": domain_limits(),
+    }
 
     with TestClient(main.app) as client:
         _login(client)
@@ -2369,14 +2390,16 @@ def test_eval_run_exports_sanitized_and_full_report_with_audit(monkeypatch, tmp_
                 """
                 INSERT INTO eval_runs
                 (eval_set_id, created_by, status, progress_total, progress_current,
-                 profile_snapshot_json, metrics_json)
-                VALUES (?, ?, 'succeeded', 1, 1, ?, ?)
+                 profile_snapshot_json, metrics_json, domain_config_snapshot_json,
+                 domain_hints_enabled, answer_policy_enabled)
+                VALUES (?, ?, 'succeeded', 1, 1, ?, ?, ?, 1, 1)
                 """,
                 (
                     eval_set_id,
                     admin_user["id"],
                     db.dumps(main.current_retrieval_profile_params()),
                     db.dumps({"recall_at_k": 1.0, "mrr": 1.0, "hits": 1}),
+                    db.dumps(domain_snapshot),
                 ),
             ).lastrowid
             conn.execute(
@@ -2405,8 +2428,24 @@ def test_eval_run_exports_sanitized_and_full_report_with_audit(monkeypatch, tmp_
         page = client.get(f"/admin/evals/runs/{run_id}")
         assert page.status_code == 200
         assert f"/admin/evals/runs/{run_id}/export/sanitized" in page.text
-        assert f"/admin/evals/runs/{run_id}/export/full?confirm=1" in page.text
-        assert "Full internal report 會包含題目、預期依據與 retrieved snippets" in page.text
+        assert f'action="/admin/evals/runs/{run_id}/export/full"' in page.text
+        assert "完整 domain 設定快照" in page.text
+
+        forged_run = client.post(
+            f"/admin/evals/sets/{eval_set_id}/run",
+            data={"judge_enabled": "on"},
+            files={"probe": ("probe.txt", b"x", "text/plain")},
+            headers={"X-CSRF-Token": ""},
+            follow_redirects=False,
+        )
+        forged_export = client.post(
+            f"/admin/evals/runs/{run_id}/export/full",
+            data={"confirm": "1"},
+            files={"probe": ("probe.txt", b"x", "text/plain")},
+            headers={"X-CSRF-Token": ""},
+        )
+        assert forged_run.status_code == 403
+        assert forged_export.status_code == 403
 
         sanitized = client.get(f"/admin/evals/runs/{run_id}/export/sanitized")
         assert sanitized.status_code == 200
@@ -2415,17 +2454,30 @@ def test_eval_run_exports_sanitized_and_full_report_with_audit(monkeypatch, tmp_
         assert "where is secret alpha?" not in sanitized.text
         assert "expected alpha" not in sanitized.text
         assert "retrieved customer secret alpha" not in sanitized.text
+        assert "PRIVATE-TERM" not in sanitized.text
+        assert "PRIVATE-POLICY" not in sanitized.text
+        assert "c" * 32 not in sanitized.text
 
         refused = client.get(f"/admin/evals/runs/{run_id}/export/full")
-        assert refused.status_code == 400
+        assert refused.status_code == 405
 
-        full = client.get(f"/admin/evals/runs/{run_id}/export/full?confirm=1")
+        missing_confirmation = client.post(
+            f"/admin/evals/runs/{run_id}/export/full",
+            data={"confirm": ""},
+        )
+        assert missing_confirmation.status_code == 400
+
+        full = client.post(
+            f"/admin/evals/runs/{run_id}/export/full",
+            data={"confirm": "1"},
+        )
         assert full.status_code == 200
         full_json = full.json()
         assert full_json["export_type"] == "full_internal_run_report"
         assert full_json["results"][0]["question"] == "where is secret alpha?"
         assert full_json["results"][0]["expected"]["substrings"] == ["expected alpha"]
         assert full_json["results"][0]["retrieved"][0]["snippet"] == "retrieved customer secret alpha"
+        assert full_json["run"]["domain_config_snapshot"]["answer_policy"] == "PRIVATE-POLICY"
 
         with db.connect() as conn:
             events = [
@@ -2437,6 +2489,10 @@ def test_eval_run_exports_sanitized_and_full_report_with_audit(monkeypatch, tmp_
         assert [event["action"] for event in events] == ["eval_run_export_sanitized", "eval_run_export_full"]
         assert events[1]["sensitivity"] == "high"
         assert json.loads(events[1]["metadata_json"])["contains_retrieved_snippets"] is True
+        audit_blob = "\n".join(event["metadata_json"] for event in events)
+        assert "PRIVATE-TERM" not in audit_blob
+        assert "PRIVATE-POLICY" not in audit_blob
+        assert "c" * 32 not in audit_blob
 
 
 def test_profile_export_and_audit_page(monkeypatch, tmp_path):

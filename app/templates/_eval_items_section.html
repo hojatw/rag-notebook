@@ -20,10 +20,21 @@
         <input type="checkbox" name="judge_enabled" value="1">
         {{ t('evalr.judge_toggle_label') }}
       </label>
+      <label class="run-judge-label" title="{{ t('evalr.domain_mode_hint') }}">
+        <input type="checkbox" name="domain_hints_enabled" value="1"
+               {% if not live_domain_summary.hints_enabled or live_domain_summary.hint_count == 0 %}disabled{% endif %}>
+        {{ t('evalr.domain_hints_toggle') }}
+      </label>
+      <label class="run-judge-label" title="{{ t('evalr.domain_mode_hint') }}">
+        <input type="checkbox" name="answer_policy_enabled" value="1"
+               {% if not live_domain_summary.answer_policy_enabled or not live_domain_summary.policy_present %}disabled{% endif %}>
+        {{ t('evalr.answer_policy_toggle') }}
+      </label>
       <button type="submit" {% if approved_count == 0 %}disabled{% endif %} data-loading-text="{{ t('evalr.run_starting') }}">{{ t('evalr.run_btn') }}</button>
     </form>
   </div>
   <p class="hint muted small run-judge-hint">{{ t('evalr.judge_toggle_hint') }}</p>
+  <p class="hint muted small run-judge-hint">{{ t('evalr.domain_mode_hint') }}</p>
   {% if eval_notice %}<div class="notice">{{ eval_notice }}</div>{% endif %}
   {% if eval_error %}<div class="alert">{{ eval_error }}</div>{% endif %}
   {% if items %}

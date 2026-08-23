@@ -24,6 +24,8 @@ users ─┬─< notebooks ─┬─< sources ─┬─< chunks
        │              │            └─1 ingest_jobs   (UNIQUE source_id)
        │              ├─< conversations ─< messages ─< notes  (notes.source_message_id, SET NULL)
        │              ├─< notes
+       │              ├─1 notebook_domain_config       (PK notebook_id)
+       │              ├─< notebook_domain_hints
        │              └─1 briefing_locks               (PK notebook_id)
        ├─< sources / chunks / conversations / messages / notes   (user_id on every row, per-user scoping)
        └─< external_identities
@@ -229,6 +231,44 @@ A workspace owned by a user. Holds cached Studio outputs.
 | `suggestions_json` / `suggestions_at` | TEXT DEFAULT `''` | cached starter questions + timestamp (24 h TTL) |
 | `briefing` / `briefing_at` | TEXT DEFAULT `''` | cached cross-source briefing + timestamp (24 h TTL) |
 
+## `notebook_domain_config`
+Notebook-owner configuration for E2 domain hints and answer policy. This is a
+one-to-one child of `notebooks`; the route layer still enforces the notebook
+owner before reading or writing it.
+
+| Column | Type | Notes |
+|---|---|---|
+| `notebook_id` | INTEGER PK → `notebooks(id)` CASCADE | |
+| `hints_enabled` | INTEGER NOT NULL DEFAULT 0 | query-time hint expansion switch |
+| `answer_policy_enabled` | INTEGER NOT NULL DEFAULT 0 | final-answer policy switch |
+| `answer_policy` | TEXT NOT NULL DEFAULT `''` | bounded owner guidance; never source evidence |
+| `revision` | INTEGER NOT NULL DEFAULT 0 | incremented with config or hint mutations |
+| `version_token` | TEXT NOT NULL DEFAULT `''` | generated 32-character lowercase-hex token kept in live config/full internal snapshots; sanitized exports and audit metadata expose only a short SHA-256 fingerprint |
+| `updated_by` | INTEGER → `users(id)` SET NULL | last owner actor |
+| `created_at` / `updated_at` | TEXT | |
+
+## `notebook_domain_hints`
+Bounded, structured hints owned by a notebook. They are applied at query time;
+they do not create Chroma vectors or change indexed source content.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `notebook_id` | INTEGER NOT NULL → `notebooks(id)` CASCADE | |
+| `term` | TEXT NOT NULL | match term |
+| `synonyms_json` | TEXT NOT NULL DEFAULT `'[]'` | bounded synonym list; also matchable |
+| `definition` | TEXT NOT NULL DEFAULT `''` | rewrite/disambiguation only; not evidence |
+| `query_expansions_json` | TEXT NOT NULL DEFAULT `'[]'` | rewrite candidates only |
+| `answer_note` | TEXT NOT NULL DEFAULT `''` | matched-only, lower-priority answer guidance |
+| `enabled` | INTEGER NOT NULL DEFAULT 1 | disabled hints are ignored at runtime |
+| `created_at` / `updated_at` | TEXT | |
+
+Indexes: `idx_notebook_domain_hints_notebook` on `(notebook_id, enabled, id)` and
+the unique `uq_notebook_domain_hints_term` on
+`(notebook_id, term COLLATE NOCASE)`. The unique index is the final
+cross-connection duplicate-term guard; service writes also run their
+check/revision/write sequence under `BEGIN IMMEDIATE`.
+
 ## `sources`
 An uploaded document. `notebook_id` is nullable for legacy rows (backfilled by the default-notebook migration).
 
@@ -393,6 +433,9 @@ Background retrieval-only eval run. Progress fields drive the admin UI while the
 | `progress_current` / `progress_total` | INTEGER DEFAULT 0 | item progress |
 | `current_step` | TEXT DEFAULT `''` | visible progress message |
 | `profile_snapshot_json` | TEXT DEFAULT `'{}'` | immutable parameter snapshot used for this run |
+| `domain_config_snapshot_json` | TEXT DEFAULT `'{}'` | immutable E2 notebook domain snapshot captured when the run is created |
+| `domain_hints_enabled` | INTEGER DEFAULT 0 | independent Eval flag for the frozen hints snapshot |
+| `answer_policy_enabled` | INTEGER DEFAULT 0 | independent Eval flag for the frozen policy snapshot |
 | `metrics_json` | TEXT DEFAULT `'{}'` | aggregate metrics; E1e-2 judge metrics live under the nested `judge` key, kept separate from retrieval Recall/MRR |
 | `judge_enabled` | INTEGER DEFAULT 0 | E1e-2: 1 when this run also generated answers and ran the LLM answer-quality judge (~2× LLM cost). Default off → retrieval-only |
 | `error` | TEXT DEFAULT `''` | failure summary |

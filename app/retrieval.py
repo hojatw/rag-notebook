@@ -57,6 +57,8 @@ async def retrieve(
     source_ids: list[int] | None = None,
     params: dict | None = None,
     usage_context: dict[str, Any] | None = None,
+    domain_hints: list[dict[str, Any]] | None = None,
+    domain_limits: dict[str, int] | None = None,
 ) -> list[dict]:
     """Retrieve chunks with query rewriting, hybrid search, and optional LLM reranking.
 
@@ -72,7 +74,14 @@ async def retrieve(
     keyword_weight = float(p["keyword_weight"])
     rerank_weight = float(p["rerank_weight"])
     rerank_base_weight = float(p["rerank_base_weight"])
-    queries = await rewrite_search_queries(question, history or [], settings, usage_context=usage_context)
+    queries = await rewrite_search_queries(
+        question,
+        history or [],
+        settings,
+        usage_context=usage_context,
+        domain_hints=domain_hints,
+        domain_limits=domain_limits,
+    )
     query_embeddings = await embed_texts(queries, settings, role="query", usage_context=usage_context)
     if user_id is not None:
         try:

@@ -25,6 +25,20 @@ def test_defaults_match_the_previously_hardcoded_values(tmp_path, monkeypatch):
     assert c.embedding.batch_size == 64
     assert c.embedding.max_concurrency == 4
 
+    assert c.domain_policy.max_hints == 50
+    assert c.domain_policy.max_term_chars == 100
+    assert c.domain_policy.max_synonyms == 8
+    assert c.domain_policy.max_synonym_chars == 100
+    assert c.domain_policy.max_definition_chars == 300
+    assert c.domain_policy.max_query_expansions == 4
+    assert c.domain_policy.max_query_expansion_chars == 120
+    assert c.domain_policy.max_answer_note_chars == 300
+    assert c.domain_policy.max_policy_chars == 1000
+    assert c.domain_policy.max_policy_tokens == 800
+    assert c.domain_policy.max_matched_hints == 8
+    assert c.domain_policy.max_hint_tokens == 600
+    assert c.domain_policy.max_rewrite_queries == 5
+
     assert c.llm_retry.max_attempts == 3
     assert c.llm_retry.backoff_base_s == 0.5
 

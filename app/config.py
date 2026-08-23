@@ -67,6 +67,28 @@ class SpreadsheetConfig:
 
 
 @dataclasses.dataclass
+class DomainPolicyConfig:
+    """E2 Notebook-scoped domain hints and answer-policy safety limits.
+
+    These bounds apply to owner-authored operational guidance. Domain hints are
+    query-time only and never alter stored chunks or vectors.
+    """
+    max_hints: int = 50
+    max_term_chars: int = 100
+    max_synonyms: int = 8
+    max_synonym_chars: int = 100
+    max_definition_chars: int = 300
+    max_query_expansions: int = 4
+    max_query_expansion_chars: int = 120
+    max_answer_note_chars: int = 300
+    max_policy_chars: int = 1000
+    max_policy_tokens: int = 800
+    max_matched_hints: int = 8
+    max_hint_tokens: int = 600
+    max_rewrite_queries: int = 5
+
+
+@dataclasses.dataclass
 class DiagnosticsConfig:
     """A6a ingestion diagnostics — thresholds for the per-source warnings.
 
@@ -245,6 +267,7 @@ class AppConfig:
     retrieval: RetrievalConfig = dataclasses.field(default_factory=RetrievalConfig)
     chunking: ChunkingConfig = dataclasses.field(default_factory=ChunkingConfig)
     spreadsheet: SpreadsheetConfig = dataclasses.field(default_factory=SpreadsheetConfig)
+    domain_policy: DomainPolicyConfig = dataclasses.field(default_factory=DomainPolicyConfig)
     diagnostics: DiagnosticsConfig = dataclasses.field(default_factory=DiagnosticsConfig)
     embedding: EmbeddingConfig = dataclasses.field(default_factory=EmbeddingConfig)
     llm_retry: LLMRetryConfig = dataclasses.field(default_factory=LLMRetryConfig)
@@ -330,6 +353,7 @@ def load_config() -> AppConfig:
         retrieval=_load_group(RetrievalConfig, "retrieval", toml_data),
         chunking=_load_group(ChunkingConfig, "chunking", toml_data),
         spreadsheet=_load_group(SpreadsheetConfig, "spreadsheet", toml_data),
+        domain_policy=_load_group(DomainPolicyConfig, "domain_policy", toml_data),
         diagnostics=_load_group(DiagnosticsConfig, "diagnostics", toml_data),
         embedding=_load_group(EmbeddingConfig, "embedding", toml_data),
         llm_retry=_load_group(LLMRetryConfig, "llm_retry", toml_data),

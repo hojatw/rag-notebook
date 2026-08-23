@@ -29,7 +29,7 @@ question
   │     graceful fallback to hybrid order if rerank fails / not configured
   │
   ▼ (6) low-confidence gate    app/main.py:ask  (NOT retrieve)
-  │     if top.score < 0.25  →  "I cannot determine that..."
+  │     if top.score < 0.25  →  localized app-side abstention
   │
   ▼ (7) answer generation      app/llm.py:generate_answer
         SYSTEM_PROMPT enforces grounding + language match + [N] citations
@@ -63,6 +63,15 @@ Known limitation: "Mr. Smith" splits at "Mr." — acceptable for a POC.
 [`app/llm.py:rewrite_search_queries`](../app/llm.py:138). Sends the question + last 6 history turns to the chat model with `QUERY_REWRITE_PROMPT`; the model returns 1–4 retrieval-focused rewrites as a JSON array. Cleaned and deduped via `unique_nonempty`, then prepended with the original question and capped at 5.
 
 Skipped (`return [question]`) when no chat key/model is configured, or on any parse/HTTP failure — degrades to single-query retrieval rather than failing the request.
+
+When E2 hints are enabled for a notebook, matching `term`/`synonyms` are used
+at query time for bounded deterministic expansion. `definition` supplies only
+rewrite/disambiguation context and `query_expansions` supplies rewrite
+candidates; none is inserted into source excerpts, citations, scores, or the
+vector index. Hints never require re-indexing or an extra LLM call. The
+`[domain_policy]` limits are 50 hints, 8 synonyms, 4 expansions per hint, at
+most 8 matched hints / 600 estimated hint tokens, and at most 5 final rewrite
+queries. Invalid or over-budget data falls back to the baseline query pipeline.
 
 ### 3a. Vector search
 
@@ -125,9 +134,9 @@ Full chunk text is sent (no `text[:900]` truncation) because chunks are already 
 
 ### 6. Low-confidence abstain
 
-[`app/main.py:ask`](../app/main.py:1984), threshold `LOW_CONFIDENCE_THRESHOLD = 0.25` ([app/retrieval.py:34](../app/retrieval.py:34), read live via `active_low_confidence_threshold()`). When `not retrieved` or `top.score < 0.25` we skip `generate_answer` entirely and return the canned "I cannot determine that from the selected sources." This avoids paying for a generation call that would either hallucinate or echo the same refusal back.
+[`app/main.py:ask`](../app/main.py:1984), threshold `LOW_CONFIDENCE_THRESHOLD = 0.25` ([app/retrieval.py:34](../app/retrieval.py:34), read live via `active_low_confidence_threshold()`). When `not retrieved` or `top.score < 0.25` we skip `generate_answer` entirely and return the localized app-side abstention. This avoids paying for a generation call that would either hallucinate or echo the same refusal back; generation-stage abstention uses the structural marker described below.
 
-`metadata.outcome` is set to `low_confidence` / `no_retrieval` / `answered` / `error` so the per-message debug pane can render the reason.
+`metadata.outcome` is set to `low_confidence` / `no_retrieval` / `abstained` / `answered` / `error` so the per-message debug pane can render the reason.
 
 ### 7. Answer generation
 
@@ -135,10 +144,35 @@ Full chunk text is sent (no `text[:900]` truncation) because chunks are already 
 
 - "Answer only from the provided source excerpts." (grounding)
 - "Reply in the same language as the user's question (Traditional Chinese question → Traditional Chinese answer)." (stops the CJK-question / EN-answer regression)
-- "If the excerpts do not contain enough information, say: 'I cannot determine that...'" (matches the abstain string)
+- If the excerpts do not contain enough information, emit the provider/app
+  protocol marker `[[RAG_ABSTAIN]]`. The app buffers the provider completion up
+  to 100,000 characters, then parses the full marker or any truncated reserved
+  prefix before SSE, database persistence, HTML, citations, or exports. It
+  renders localized `chat.abstain` copy and records
+  `answer_outcome=abstained`; neither earlier text nor the marker may leave the
+  protocol boundary.
 - "Keep the answer concise and include bracket citations like [1], [2] for the excerpts you used."
 
-User prompt is `"Source excerpts:\n{numbered chunks}\n\nQuestion: {question}"`.
+An enabled notebook answer policy and matched `answer_note` are untrusted,
+non-evidence instructions. Precedence is immutable grounding, security, and
+citation rules > the app's spreadsheet aggregation guard > notebook answer
+policy > matched answer notes > user formatting preferences. Policy and notes
+cannot remove citations, turn unsupported content into evidence, or weaken the
+spreadsheet guard. Answer notes are included only for matched hints and remain
+lower priority than the policy. The system role contains only immutable
+application instructions and the spreadsheet guard; notebook guidance is
+serialized as bounded JSON in the user-role prompt.
+
+User prompt is `"Source excerpts:\n{numbered chunks}"`, followed when needed by
+an explicitly labelled untrusted JSON object containing `answer_policy` and
+`matched_answer_notes`, then `"Question: {question}"`.
+
+Eval runs store an immutable domain snapshot. A snapshot is used only after
+raw-size, exact schema/prompt-version, opaque-token, per-field, list-count, token
+budget, and static hard-ceiling validation succeeds as one unit. The frozen
+limits, rather than current deployment defaults, control that run's matching,
+rewrite, and answer-guidance budgets. Invalid or pre-E2 snapshots fail closed to
+the baseline and never fall back to the notebook's live configuration.
 
 ### 8. Citation filtering & UI
 

@@ -42,6 +42,23 @@ wide_sheet_cols = 25          # above this, warn that the sheet is wide
 qa_question_synonyms = "question,q,問題,提問,問句,客戶提問"
 qa_answer_synonyms = "answer,a,答案,回覆,回答,解答,回覆內容"
 
+# --- E2 Notebook domain hints and answer policy -----------------------------
+# Query-time only: changing these limits never requires re-indexing.
+[domain_policy]
+max_hints = 50
+max_term_chars = 100
+max_synonyms = 8
+max_synonym_chars = 100
+max_definition_chars = 300
+max_query_expansions = 4
+max_query_expansion_chars = 120
+max_answer_note_chars = 300
+max_policy_chars = 1000
+max_policy_tokens = 800
+max_matched_hints = 8
+max_hint_tokens = 600
+max_rewrite_queries = 5
+
 # --- A6a ingestion diagnostics (display thresholds only, no re-indexing) -----
 [diagnostics]
 low_text_chars = 200          # extracted total below this -> "almost no text" warning

@@ -31,6 +31,34 @@
   </section>
 
   <section class="settings-section">
+    <h2>{{ t('evalr.domain_diff_heading') }}</h2>
+    <div class="table-wrap">
+      <table class="diff-table">
+        <thead>
+          <tr><th>{{ t('evalr.setting') }}</th><th>{{ t('evalr.baseline') }} #{{ base_run.id }}</th><th>{{ t('evalr.candidate') }} #{{ candidate_run.id }}</th></tr>
+        </thead>
+        <tbody>
+          <tr class="{{ 'diff-changed' if domain_config_diff.hints_changed else '' }}">
+            <td data-label="{{ t('evalr.setting') }}">{{ t('evalr.domain_hints') }}</td>
+            <td data-label="{{ t('evalr.baseline') }}">{{ t('evalr.enabled') if domain_config_diff.base.hints_enabled else t('evalr.disabled') }} ({{ domain_config_diff.base.enabled_hint_count }})</td>
+            <td data-label="{{ t('evalr.candidate') }}">{{ t('evalr.enabled') if domain_config_diff.candidate.hints_enabled else t('evalr.disabled') }} ({{ domain_config_diff.candidate.enabled_hint_count }})</td>
+          </tr>
+          <tr class="{{ 'diff-changed' if domain_config_diff.answer_policy_changed else '' }}">
+            <td data-label="{{ t('evalr.setting') }}">{{ t('evalr.domain_policy') }}</td>
+            <td data-label="{{ t('evalr.baseline') }}">{{ t('evalr.enabled') if domain_config_diff.base.answer_policy_enabled else t('evalr.disabled') }}</td>
+            <td data-label="{{ t('evalr.candidate') }}">{{ t('evalr.enabled') if domain_config_diff.candidate.answer_policy_enabled else t('evalr.disabled') }}</td>
+          </tr>
+          <tr class="{{ 'diff-changed' if domain_config_diff.snapshot_changed else '' }}">
+            <td data-label="{{ t('evalr.setting') }}">{{ t('evalr.domain_revision') }}</td>
+            <td data-label="{{ t('evalr.baseline') }}">{{ domain_config_diff.base.revision }}</td>
+            <td data-label="{{ t('evalr.candidate') }}">{{ domain_config_diff.candidate.revision }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="settings-section">
     <h2>指標差異</h2>
     <div class="table-wrap">
       <table class="diff-table">

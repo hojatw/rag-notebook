@@ -22,6 +22,11 @@ POST /notebooks/new                                       create a notebook
 GET  /notebooks/{id}                                      three-pane workspace
 POST /notebooks/{id}/rename                               rename / change emoji
 POST /notebooks/{id}/delete                               delete (cascades sources + chats + notes)
+GET  /notebooks/{id}/domain-settings                      owner-only E2 domain hints and answer policy editor
+POST /notebooks/{id}/domain-settings                     owner-only save bounded policy and independent enable flags
+POST /notebooks/{id}/domain-settings/hints               owner-only create a bounded domain hint
+POST /notebooks/{id}/domain-settings/hints/{hint_id}/edit owner-only edit a notebook-scoped hint
+POST /notebooks/{id}/domain-settings/hints/{hint_id}/delete owner-only delete a notebook-scoped hint
 
 POST /notebooks/{id}/sources/upload                       upload + queue ingest
 POST /notebooks/{id}/sources/{sid}/reindex                requeue ingest
@@ -84,12 +89,12 @@ POST /admin/evals/sets/{eval_set_id}/generate/llm         generate LLM-assisted 
 POST /admin/evals/sets/{eval_set_id}/items                add an approved manual retrieval-eval item
 POST /admin/evals/sets/{eval_set_id}/items/{item_id}/approve approve a draft eval item
 POST /admin/evals/sets/{eval_set_id}/items/{item_id}/delete delete an eval item
-POST /admin/evals/sets/{eval_set_id}/run                  queue a retrieval-only eval run (optional profile_id)
+POST /admin/evals/sets/{eval_set_id}/run                  queue an eval run (optional profile_id, independent domain_hints_enabled and answer_policy_enabled flags; policy requires judge_enabled; freezes the notebook domain snapshot)
 GET  /admin/evals/runs/{run_id}                           eval-run detail with metrics and per-question results
 GET  /admin/evals/runs/{run_id}/_status                   HTMX polling: eval-run progress and summary metrics
 GET  /admin/evals/runs/{run_id}/_results                  HTMX polling: eval-run per-question results
-GET  /admin/evals/runs/{run_id}/export/sanitized          JSON report without questions/evidence/retrieved snippets
-GET  /admin/evals/runs/{run_id}/export/full?confirm=1     full internal JSON report; audited as high sensitivity
+GET  /admin/evals/runs/{run_id}/export/sanitized          JSON report without questions/evidence/retrieved snippets or domain text; only flags/counts/revision/version fingerprint summary
+POST /admin/evals/runs/{run_id}/export/full               CSRF-protected explicit-confirmation form; full internal JSON including the frozen domain snapshot; admin-only and audited as high sensitivity
 GET  /admin/evals/profiles                                retrieval profiles page (list, create, apply, delete)
 GET  /admin/evals/profiles/{profile_id}/export            sanitized retrieval-profile JSON export
 POST /admin/evals/profiles                                create a candidate retrieval profile (runtime-safe params)
