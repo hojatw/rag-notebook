@@ -32,6 +32,22 @@ SENSITIVE_METADATA_KEYS = {
     "content",
     "api_key",
     "secret",
+    "policy",
+    "answer_policy",
+    "answer_note",
+    "domain_hints",
+    "definition",
+    "synonyms",
+    "query_expansions",
+}
+SAFE_AGGREGATE_METADATA_KEYS = {
+    "hint_count",
+    "enabled_hint_count",
+    "matched_hint_count",
+    "hint_payload_tokens_est",
+    "policy_present",
+    "policy_chars",
+    "policy_tokens_est",
 }
 SAFETY_DETECTOR_VERSION = "local.rules.v2"
 SAFETY_MAX_INPUT_CHARS = 12000
@@ -419,6 +435,8 @@ def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 def _metadata_key_is_sensitive(key: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
+    if normalized in SAFE_AGGREGATE_METADATA_KEYS:
+        return False
     compact = normalized.replace("_", "")
     compact_sensitive_keys = {sensitive.replace("_", "") for sensitive in SENSITIVE_METADATA_KEYS}
     return normalized in SENSITIVE_METADATA_KEYS or any(sensitive in compact for sensitive in compact_sensitive_keys)

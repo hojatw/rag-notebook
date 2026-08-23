@@ -16,9 +16,21 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import i18n
 from .db import connect, dumps, load_llm_settings, loads
+from .domain_policy import (
+    MAX_SNAPSHOT_JSON_CHARS,
+    DomainPolicyValidationError,
+    domain_config_summary,
+    load_domain_config,
+    match_domain_hints,
+    matched_answer_notes,
+    snapshot_domain_config,
+    spreadsheet_answer_guard,
+    validate_domain_snapshot,
+)
+from . import llm
 from .governance import record_ai_safety_events
-from .llm import REFUSAL_MARKERS, generate_answer, generate_eval_candidates, judge_answer
-from .main import _json_download, record_audit_event, render, require_admin
+from .llm import generate_eval_candidates, judge_answer
+from .main import _json_download, record_audit_event, render, require_admin, verify_multipart_csrf
 from .retrieval import (
     ACTIVE_RETRIEVAL_PARAMS,
     FINAL_CHUNK_COUNT,
@@ -37,6 +49,87 @@ from .retrieval import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+def _form_flag(value: str | None) -> bool:
+    """Interpret an HTML checkbox without accepting client-side configuration."""
+    return (value or "").strip().lower() in {"1", "on", "true", "yes"}
+
+
+def _frozen_domain_snapshot(value: str | None) -> tuple[dict[str, Any], str]:
+    """Parse a stored E2 snapshot without ever falling back to live configuration.
+
+    Old runs legitimately have an empty snapshot.  A malformed or structurally
+    incomplete value is also treated as the safe baseline, but gets a distinct
+    status so admin diagnostics can distinguish it from a pre-E2 run.
+    """
+    raw = (value or "").strip()
+    if not raw or raw == "{}":
+        return {}, "unavailable"
+    if len(raw) > MAX_SNAPSHOT_JSON_CHARS:
+        return {}, "invalid"
+    try:
+        snapshot = validate_domain_snapshot(loads(raw))
+    except (DomainPolicyValidationError, TypeError, ValueError):
+        return {}, "invalid"
+    return snapshot, "available"
+
+
+def _run_domain_context(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Return frozen snapshot, safe compact summary, and parse status for a run."""
+    snapshot, snapshot_status = _frozen_domain_snapshot(run.get("domain_config_snapshot_json"))
+    summary = domain_config_summary(snapshot)
+    summary["snapshot_status"] = snapshot_status
+    # A run's persisted flags are part of its immutable execution contract.  They
+    # remain authoritative even if a malformed snapshot claims otherwise.
+    summary["hints_enabled"] = bool(run.get("domain_hints_enabled")) and bool(snapshot.get("hints_enabled"))
+    summary["answer_policy_enabled"] = bool(run.get("answer_policy_enabled")) and bool(
+        snapshot.get("answer_policy_enabled")
+    )
+    return snapshot, summary, snapshot_status
+
+
+async def _retrieve_for_eval(
+    question: str,
+    settings: dict,
+    user_id: int,
+    source_ids: list[int],
+    params: dict[str, Any],
+    usage_context: dict[str, Any],
+    matched_hints: list[dict[str, Any]],
+    domain_limits: dict[str, int] | None = None,
+) -> list[dict]:
+    kwargs: dict[str, Any] = {"params": params, "usage_context": usage_context}
+    if matched_hints:
+        kwargs["domain_hints"] = matched_hints
+    if domain_limits:
+        kwargs["domain_limits"] = domain_limits
+    return await retrieve(question, None, settings, [], user_id, source_ids, **kwargs)
+
+
+async def _generate_eval_answer_result(
+    question: str,
+    retrieved: list[dict],
+    settings: dict,
+    usage_context: dict[str, Any],
+    *,
+    answer_policy: str,
+    answer_notes: list[str],
+    spreadsheet_guard: bool,
+    domain_limits: dict[str, int] | None = None,
+) -> tuple[str, bool]:
+    """Generate an Eval answer and consume E2's structural abstention result."""
+    result = await llm.generate_answer_result(
+        question,
+        retrieved,
+        settings,
+        call_type="eval_answer",
+        usage_context=usage_context,
+        answer_policy=answer_policy,
+        answer_notes=answer_notes,
+        spreadsheet_guard=spreadsheet_guard,
+        domain_limits=domain_limits,
+    )
+    return result.text, result.abstained
 
 
 def ensure_default_retrieval_profile(conn, admin_user_id: int | None = None) -> dict:
@@ -283,19 +376,8 @@ def _not_applicable_judge() -> dict[str, Any]:
 
 
 def answer_is_refusal(answer_text: str) -> bool:
-    """Deterministically detect a generation-stage refusal in a generated answer.
-
-    ``ask()`` refuses on two independent paths and the eval must count both:
-    ① the retrieval-score gate (``top_score < threshold``), and ② the model itself
-    declining per ``SYSTEM_PROMPT``. Path ② is what catches an *on-topic* question whose
-    specific fact is simply absent — those still retrieve high-scoring chunks, so no
-    threshold can gate them. Matching is done against the wording SYSTEM_PROMPT pins
-    (`REFUSAL_MARKERS`), so this stays deterministic rather than asking the judge.
-    """
-    normalized = " ".join((answer_text or "").split()).casefold()
-    if not normalized:
-        return False
-    return any(marker.casefold() in normalized for marker in REFUSAL_MARKERS)
+    """Backward-compatible helper backed only by E2's structural protocol."""
+    return llm.parse_answer_result(answer_text).abstained
 
 
 # NOTE (E1e-2, removed 2026-07-25): there used to be a `substring_hit_rate` here that
@@ -318,6 +400,11 @@ async def judge_eval_item(
     threshold: float,
     settings: dict,
     usage_context: dict[str, Any],
+    *,
+    answer_policy: str = "",
+    answer_notes: list[str] | None = None,
+    spreadsheet_guard: bool = False,
+    domain_limits: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """E1e-2: deterministically decide abstain, then optionally generate + judge one answer.
 
@@ -355,9 +442,20 @@ async def judge_eval_item(
         return {"answer_text": i18n.t("chat.abstain"), "answer_outcome": "abstained", "judge": judge}
     expected_answer = item.get("expected_answer") or ""
     try:
-        answer_text = await generate_answer(
-            question, retrieved, settings, call_type="eval_answer", usage_context=usage_context,
+        answer_text, refused_at_generation = await _generate_eval_answer_result(
+            question,
+            retrieved,
+            settings,
+            usage_context,
+            answer_policy=answer_policy,
+            answer_notes=answer_notes or [],
+            spreadsheet_guard=spreadsheet_guard,
+            domain_limits=domain_limits,
         )
+        if refused_at_generation:
+            judge = _not_applicable_judge()
+            judge["abstain"] = _abstain_block(True)
+            return {"answer_text": i18n.t("chat.abstain"), "answer_outcome": "abstained", "judge": judge}
         judge = await judge_answer(
             question=question,
             generated_answer=answer_text,
@@ -383,7 +481,7 @@ async def judge_eval_item(
         judge["abstain"] = _abstain_block(False)
         judge["error"] = str(exc)[:300]
         return {"answer_text": "", "answer_outcome": "error", "judge": judge}
-    judge["abstain"] = _abstain_block(answer_is_refusal(answer_text))
+    judge["abstain"] = _abstain_block(False)
     return {"answer_text": answer_text, "answer_outcome": "answered", "judge": judge}
 
 
@@ -476,6 +574,12 @@ async def run_eval_job(run_id: int) -> None:
             # not the live applied profile, so candidate vs baseline comparisons
             # are meaningful without mutating real chat retrieval.
             run_params = resolve_retrieval_params(loads(run["profile_snapshot_json"] or "{}"))
+            domain_snapshot, domain_summary, domain_snapshot_status = _run_domain_context(dict(run))
+            domain_limits = domain_snapshot.get("limits", {}) if domain_snapshot_status == "available" else {}
+            use_hints = domain_snapshot_status == "available" and bool(domain_summary["hints_enabled"])
+            use_answer_policy = domain_snapshot_status == "available" and bool(
+                domain_summary["answer_policy_enabled"]
+            )
             eval_set = load_eval_set(conn, run["eval_set_id"])
             items = [
                 dict(row)
@@ -552,15 +656,20 @@ async def run_eval_job(run_id: int) -> None:
             started = time.perf_counter()
             try:
                 item["expected_substrings"] = loads(item["expected_substrings_json"] or "[]")
-                retrieved = await retrieve(
+                matched_hints = (
+                    match_domain_hints(question, domain_snapshot.get("hints", []), domain_limits)
+                    if use_hints
+                    else []
+                )
+                retrieved = await _retrieve_for_eval(
                     question,
-                    None,
                     settings,
-                    [],
                     eval_set["target_user_id"],
                     source_ids,
-                    params=run_params,
-                    usage_context=usage_context,
+                    run_params,
+                    usage_context,
+                    matched_hints if use_hints else [],
+                    domain_limits if use_hints else {},
                 )
                 latency_ms = round((time.perf_counter() - started) * 1000, 1)
                 top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -621,6 +730,10 @@ async def run_eval_job(run_id: int) -> None:
                     float(run_params["low_confidence_threshold"]),
                     settings,
                     usage_context,
+                    answer_policy=str(domain_snapshot.get("answer_policy") or "") if use_answer_policy else "",
+                    answer_notes=matched_answer_notes(matched_hints) if use_hints else [],
+                    spreadsheet_guard=spreadsheet_answer_guard(retrieved),
+                    domain_limits=domain_limits if (use_hints or use_answer_policy) else {},
                 )
                 result["answer_text"] = judged["answer_text"]
                 result["answer_outcome"] = judged["answer_outcome"]
@@ -729,6 +842,10 @@ def eval_run_context(run_id: int) -> dict[str, Any]:
     run_dict["metrics"] = loads(run_dict.get("metrics_json") or "{}")
     run_dict["profile_snapshot"] = loads(run_dict.get("profile_snapshot_json") or "{}")
     run_dict["profile_params"] = profile_param_rows(run_dict["profile_snapshot"])
+    domain_snapshot, domain_summary, domain_snapshot_status = _run_domain_context(run_dict)
+    run_dict["domain_config_snapshot"] = domain_snapshot
+    run_dict["domain_config_summary"] = domain_summary
+    run_dict["domain_config_snapshot_status"] = domain_snapshot_status
     for result in results:
         result["retrieved"] = loads(result.get("retrieved_json") or "[]")
         result["expected_substrings"] = loads(result.get("expected_substrings_json") or "[]")
@@ -773,6 +890,7 @@ def sanitized_run_export_payload(context: dict[str, Any]) -> dict[str, Any]:
             "status": run["status"],
             "profile_id": run["profile_id"],
             "profile_snapshot": run["profile_snapshot"],
+            "domain_config": run["domain_config_summary"],
             "metrics": run["metrics"],
             "progress_current": run["progress_current"],
             "progress_total": run["progress_total"],
@@ -805,7 +923,11 @@ def sanitized_run_export_payload(context: dict[str, Any]) -> dict[str, Any]:
 def full_run_export_payload(context: dict[str, Any]) -> dict[str, Any]:
     payload = sanitized_run_export_payload(context)
     payload["export_type"] = "full_internal_run_report"
-    payload["warning"] = "Contains eval questions, expected evidence, and retrieved snippets. Keep inside the deployment unless explicitly approved."
+    payload["warning"] = (
+        "Contains eval questions, expected evidence, retrieved snippets, generated answers, "
+        "judge details, and the complete Notebook domain configuration snapshot. Keep inside "
+        "the deployment unless explicitly approved."
+    )
     payload["results"] = [
         {
             "eval_item_id": item["eval_item_id"],
@@ -833,6 +955,7 @@ def full_run_export_payload(context: dict[str, Any]) -> dict[str, Any]:
         }
         for item in context["results"]
     ]
+    payload["run"]["domain_config_snapshot"] = context["run"]["domain_config_snapshot"]
     return payload
 
 
@@ -880,6 +1003,9 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
                 "SELECT id, name, is_active FROM retrieval_profiles ORDER BY is_active DESC, id DESC LIMIT 50"
             ).fetchall()
         ]
+        live_domain_summary = domain_config_summary(
+            load_domain_config(conn, eval_set["notebook_id"])
+        )
     for item in items:
         item["expected_substrings"] = loads(item.get("expected_substrings_json") or "[]")
         item["metadata"] = loads(item.get("metadata_json") or "{}")
@@ -903,6 +1029,7 @@ def eval_set_detail_context(eval_set_id: int) -> dict[str, Any]:
         "runs": runs,
         "runs_truncated": runs_truncated,
         "profiles": profiles,
+        "live_domain_summary": live_domain_summary,
         "item_type_options": eval_item_type_options(),
     }
 
@@ -1466,14 +1593,21 @@ def admin_start_eval_run(
     eval_set_id: int,
     background_tasks: BackgroundTasks,
     user: Annotated[dict, Depends(require_admin)],
+    _csrf: Annotated[None, Depends(verify_multipart_csrf)],
     profile_id: int | None = Form(None),
     judge_enabled: str | None = Form(None),
+    domain_hints_enabled: str | None = Form(None),
+    answer_policy_enabled: str | None = Form(None),
 ):
     # E1e-2: opt-in answer-quality judging (~2× LLM cost). Absent/unchecked → retrieval
     # only, so the default run is unchanged. Checkbox form values arrive as "on"/"1".
-    judge_flag = 1 if (judge_enabled or "").strip().lower() in {"1", "on", "true", "yes"} else 0
+    judge_flag = int(_form_flag(judge_enabled))
+    hints_flag = int(_form_flag(domain_hints_enabled))
+    policy_flag = int(_form_flag(answer_policy_enabled))
+    if policy_flag and not judge_flag:
+        raise HTTPException(status_code=400, detail=i18n.t("error.eval_policy_requires_judge"))
     with connect() as conn:
-        load_eval_set(conn, eval_set_id)
+        eval_set = load_eval_set(conn, eval_set_id)
         profile = ensure_default_retrieval_profile(conn, user["id"])
         if profile_id is not None:
             chosen = conn.execute(
@@ -1488,20 +1622,48 @@ def admin_start_eval_run(
         ).fetchone()["n"]
         if approved_count == 0:
             raise HTTPException(status_code=400, detail=i18n.t("error.eval_no_approved_items"))
+        # Freeze config + hints and create the run in one transaction. BEGIN
+        # IMMEDIATE prevents an owner edit from interleaving between the config
+        # row and hint-list reads while keeping the resulting snapshot immutable.
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        # The route accepts only independent boolean mode flags.  The notebook and
+        # its config come exclusively from the server-owned eval set, then become
+        # immutable run data; callers cannot submit a notebook id or JSON snapshot.
+        live_domain_config = load_domain_config(conn, eval_set["notebook_id"])
+        # Retain the current config in the immutable internal snapshot. Run flags
+        # decide which stages use it: answer notes belong to the hints mode, so a
+        # policy-only run never applies them.
+        domain_snapshot = snapshot_domain_config(
+            live_domain_config,
+            use_hints=True,
+            use_answer_policy=True,
+        )
         cursor = conn.execute(
             """
             INSERT INTO eval_runs
             (eval_set_id, profile_id, created_by, status, progress_total, profile_snapshot_json,
-             judge_enabled, current_step)
-            VALUES (?, ?, ?, 'queued', ?, ?, ?, '等待背景執行')
+             judge_enabled, domain_config_snapshot_json, domain_hints_enabled,
+             answer_policy_enabled, current_step)
+            VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, '等待背景執行')
             """,
-            (eval_set_id, profile["id"], user["id"], approved_count, profile["params_json"], judge_flag),
+            (
+                eval_set_id,
+                profile["id"],
+                user["id"],
+                approved_count,
+                profile["params_json"],
+                judge_flag,
+                dumps(domain_snapshot),
+                hints_flag,
+                policy_flag,
+            ),
         )
         run_id = cursor.lastrowid
     background_tasks.add_task(run_eval_job, run_id)
     logger.info(
-        "eval_run_queued admin_user_id=%s eval_set_id=%s run_id=%s judge_enabled=%s",
-        user["id"], eval_set_id, run_id, judge_flag,
+        "eval_run_queued admin_user_id=%s eval_set_id=%s run_id=%s judge_enabled=%s domain_hints_enabled=%s answer_policy_enabled=%s",
+        user["id"], eval_set_id, run_id, judge_flag, hints_flag, policy_flag,
     )
     return RedirectResponse(f"/admin/evals/runs/{run_id}", status_code=303)
 
@@ -1555,6 +1717,7 @@ def admin_export_eval_run_sanitized(
 ):
     context = eval_run_context(run_id)
     payload = sanitized_run_export_payload(context)
+    domain_summary = context["run"]["domain_config_summary"]
     record_audit_event(
         request,
         user,
@@ -1565,6 +1728,11 @@ def admin_export_eval_run_sanitized(
             "eval_set_id": context["run"]["eval_set_id"],
             "status": context["run"]["status"],
             "result_count": len(context["results"]),
+            "contains_domain_config": bool(domain_summary["snapshot_available"]),
+            "contains_domain_hints": bool(domain_summary["hint_count"]),
+            "contains_answer_policy": bool(domain_summary["policy_present"]),
+            "domain_config_revision": domain_summary["revision"],
+            "domain_config_snapshot_status": domain_summary["snapshot_status"],
         },
         "normal",
     )
@@ -1572,17 +1740,19 @@ def admin_export_eval_run_sanitized(
     return _json_download(payload, f"eval-run-{run_id}-sanitized.json")
 
 
-@router.get("/admin/evals/runs/{run_id}/export/full")
+@router.post("/admin/evals/runs/{run_id}/export/full")
 def admin_export_eval_run_full(
     request: Request,
     run_id: int,
     user: Annotated[dict, Depends(require_admin)],
-    confirm: int = 0,
+    _csrf: Annotated[None, Depends(verify_multipart_csrf)],
+    confirm: str = Form(""),
 ):
-    if confirm != 1:
+    if confirm != "1":
         raise HTTPException(status_code=400, detail=i18n.t("error.eval_full_export_confirmation"))
     context = eval_run_context(run_id)
     payload = full_run_export_payload(context)
+    domain_summary = context["run"]["domain_config_summary"]
     record_audit_event(
         request,
         user,
@@ -1598,6 +1768,11 @@ def admin_export_eval_run_full(
             "contains_retrieved_snippets": True,
             # E1e-2: a judged run's full export also carries generated answers + judge rationale.
             "contains_generated_answers": bool(context["run"].get("judge_enabled")),
+            "contains_domain_config": bool(domain_summary["snapshot_available"]),
+            "contains_domain_hints": bool(domain_summary["hint_count"]),
+            "contains_answer_policy": bool(domain_summary["policy_present"]),
+            "domain_config_revision": domain_summary["revision"],
+            "domain_config_snapshot_status": domain_summary["snapshot_status"],
         },
         "high",
     )
@@ -1788,6 +1963,24 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
             "changed": bval != cval,
         })
 
+    # E2d: compare only opaque/configuration summaries.  Full terms and policy
+    # text remain confined to the explicitly confirmed internal export.
+    base_domain = base_run["domain_config_summary"]
+    candidate_domain = candidate_run["domain_config_summary"]
+    domain_config_diff = {
+        "base": base_domain,
+        "candidate": candidate_domain,
+        "snapshot_changed": (
+            base_domain["snapshot_status"] != candidate_domain["snapshot_status"]
+            or base_domain["version_fingerprint"] != candidate_domain["version_fingerprint"]
+            or base_domain["revision"] != candidate_domain["revision"]
+        ),
+        "hints_changed": base_domain["hints_enabled"] != candidate_domain["hints_enabled"],
+        "answer_policy_changed": (
+            base_domain["answer_policy_enabled"] != candidate_domain["answer_policy_enabled"]
+        ),
+    }
+
     # Metric diff: lower-is-better for latency + low-confidence rate.
     base_metrics = base_run["metrics"]
     cand_metrics = candidate_run["metrics"]
@@ -1884,6 +2077,7 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
         "base_run": base_run,
         "candidate_run": candidate_run,
         "param_diff": param_diff,
+        "domain_config_diff": domain_config_diff,
         "metric_diff": metric_diff,
         "judge_compared": judge_compared,
         "judge_metric_diff": judge_metric_diff,

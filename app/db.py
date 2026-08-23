@@ -139,6 +139,37 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS notebook_domain_config (
+                notebook_id INTEGER PRIMARY KEY REFERENCES notebooks(id) ON DELETE CASCADE,
+                hints_enabled INTEGER NOT NULL DEFAULT 0,
+                answer_policy_enabled INTEGER NOT NULL DEFAULT 0,
+                answer_policy TEXT NOT NULL DEFAULT '',
+                revision INTEGER NOT NULL DEFAULT 0,
+                version_token TEXT NOT NULL DEFAULT '',
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS notebook_domain_hints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+                term TEXT NOT NULL,
+                synonyms_json TEXT NOT NULL DEFAULT '[]',
+                definition TEXT NOT NULL DEFAULT '',
+                query_expansions_json TEXT NOT NULL DEFAULT '[]',
+                answer_note TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_notebook_domain_hints_notebook
+            ON notebook_domain_hints(notebook_id, enabled, id);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_notebook_domain_hints_term
+            ON notebook_domain_hints(notebook_id, term COLLATE NOCASE);
+
             CREATE TABLE IF NOT EXISTS sources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -306,6 +337,9 @@ def init_db() -> None:
                 progress_total INTEGER NOT NULL DEFAULT 0,
                 current_step TEXT NOT NULL DEFAULT '',
                 profile_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                domain_config_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                domain_hints_enabled INTEGER NOT NULL DEFAULT 0,
+                answer_policy_enabled INTEGER NOT NULL DEFAULT 0,
                 metrics_json TEXT NOT NULL DEFAULT '{}',
                 error TEXT NOT NULL DEFAULT '',
                 started_at TEXT,
@@ -564,6 +598,9 @@ def init_db() -> None:
         # from retrieval metrics so the two never mix. answer_text is only ever
         # surfaced in full internal exports (never sanitized ones).
         _ensure_column(conn, "eval_runs", "judge_enabled", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "eval_runs", "domain_config_snapshot_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(conn, "eval_runs", "domain_hints_enabled", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "eval_runs", "answer_policy_enabled", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "eval_results", "judge_json", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(conn, "eval_results", "answer_text", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "eval_results", "answer_outcome", "TEXT NOT NULL DEFAULT ''")

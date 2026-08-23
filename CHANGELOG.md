@@ -11,6 +11,15 @@
 
 ### 安全性
 
+- **E2 Notebook domain hints / answer policy**：新增 owner-scoped、bounded
+  hints 與 answer policy；hints 僅在 query time 參與 rewrite，不需 re-index 或額外
+  LLM call。Eval run 凍結 domain snapshot，sanitized export 只含摘要，full internal
+  export 改為 CSRF-protected POST explicit confirmation，並延續 admin 與
+  high-sensitivity audit 邊界。Domain mutations 使用 64 KiB request 上限、序列化
+  revision 寫入及 case-insensitive unique term index；frozen snapshot 採 exact-version、
+  bounded canonical validation。Answer policy／notes 保持在 user role，provider stream
+  先完成 bounded classification，確保結構化 abstain marker 不會部分外洩。
+
 - **登入速率限制（SEC-4）**：本機帳密登入新增 SQLite 共用的帳號失敗桶與短租約
   password-verification slots；預設帳號 15 分鐘 5 次、整個部署同時最多 4 個
   PBKDF2，且同帳號一次只驗證一個。達門檻或容量忙碌時回通用 HTTP 429；bucket id

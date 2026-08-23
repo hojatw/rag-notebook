@@ -57,6 +57,45 @@ The app keeps a DB-backed admin audit trail in `audit_events`, viewable at `/adm
 
 Audit metadata is intentionally compact: store action identifiers, target ids, flags, and parameter summaries only. Do **not** copy API keys, source text, retrieved snippets, prompts, or full exported payloads into `audit_events`; the audit trail should prove that an action happened, not duplicate sensitive content.
 
+### E2 notebook domain hints and answer policy
+
+Domain settings are owner-scoped notebook data. `GET` and every mutation under
+`/notebooks/{id}/domain-settings` must resolve the notebook through the signed-in
+owner; an admin role does not grant the ability to edit another user's notebook.
+All mutations remain CSRF-protected POST requests, including crafted multipart
+bodies. E2 text forms require a valid `Content-Length` and reject bodies over
+64 KiB before parsing. Hints and policy are
+untrusted operational instructions, not source evidence: they cannot override
+grounding, authorization, citation requirements, or the spreadsheet aggregation
+guard. Query-oriented hint fields are query-time only and do not alter Chroma
+or source data.
+
+The structural `[[RAG_ABSTAIN]]` value is an internal provider/app protocol
+marker. Both streaming and non-streaming paths convert it to localized
+`chat.abstain` before SSE or persistence; the answer-stream wrapper buffers a
+bounded provider completion before classification and treats a truncated
+reserved prefix as abstention, so neither earlier normal-looking text nor a
+partial marker can escape. The marker must not appear in messages, citation
+payloads, HTML, or either export.
+
+Notebook answer policy and matched answer notes are serialized as bounded JSON
+inside the user-role prompt. They are never placed in the privileged system
+message. Immutable application grounding/citation rules and the spreadsheet
+guard remain system-role instructions; explicit answer policy outranks matched
+answer notes, but neither can weaken those application rules.
+
+Eval runs freeze the selected notebook domain configuration and store hints and
+policy only in the run snapshot. Before use, the snapshot is raw-size bounded,
+canonicalized, checked against the exact schema/prompt version and static hard
+ceilings, and rejected as a whole on any invalid field; old runs safely use the
+baseline. The sanitized export exposes flags, counts, character summaries,
+revision, and a short one-way version fingerprint; it does not expose terms,
+policy text, or the raw token. Only the explicitly confirmed, CSRF-protected
+POST full internal export may include the snapshot, and it remains admin-only
+and high-sensitivity. Domain
+audit metadata is allowlisted to identifiers, flags, counts, and character
+lengths/fingerprints; it must never contain domain text or snapshots.
+
 ## Hardening status
 
 A full review on **2026-08-22** surfaced a set of hardening items. They are triaged and tracked in `docs/REVIEW_BACKLOG_2026-08-22.md` with priorities and locations, and are folded back into this file as each lands.

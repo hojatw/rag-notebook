@@ -2240,6 +2240,57 @@ legend {
   margin-bottom: var(--sp-3);
 }
 
+/* E2 notebook domain settings stay in the regular settings width. Cards are
+   vertical by design: long terms and policy notes remain readable on phones. */
+.domain-settings textarea {
+  min-height: 0;
+  resize: vertical;
+}
+
+.domain-section-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.domain-section-head h2,
+.domain-section-head p {
+  margin-bottom: 0;
+}
+
+.domain-hint-list {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.domain-hint-card {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+  overflow-wrap: anywhere;
+}
+
+.domain-hint-card h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.domain-hint-delete {
+  display: flex;
+  justify-content: end;
+  margin-top: calc(var(--sp-3) * -1);
+}
+
+.notebook-menu-link {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+}
+
 .llm-diagnostics {
   gap: var(--sp-4);
 }
@@ -4505,6 +4556,27 @@ legend {
   .settings-foot a {
     width: 100%;
     margin-left: 0;
+  }
+
+  .domain-section-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .domain-section-head .status {
+    align-self: start;
+  }
+
+  .domain-hint-card {
+    padding: var(--sp-3);
+  }
+
+  .domain-hint-delete {
+    justify-content: stretch;
+  }
+
+  .domain-hint-delete button {
+    width: 100%;
   }
 
   .modal {

@@ -223,6 +223,8 @@
               <button type="submit" class="wide small" data-loading-text="儲存中...">儲存</button>
             </form>
             <hr>
+            <a href="/notebooks/{{ notebook.id }}/domain-settings" class="ghost small wide notebook-menu-link" role="menuitem">{{ t("domain.title") }}</a>
+            <hr>
             <form action="/notebooks/{{ notebook.id }}/delete" method="post" data-confirm="刪除這本筆記本？其中的來源、分塊、對話與筆記都會一併移除。">
               {{ csrf_input() }}
               <button type="submit" class="ghost small danger-link wide">刪除筆記本</button>

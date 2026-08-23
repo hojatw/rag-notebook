@@ -81,6 +81,14 @@ Values resolve in three layers:
 2. a TOML file such as `config.toml`,
 3. environment variables `NOTEBOOKLM_<GROUP>_<FIELD>`.
 
+E2 notebook domain hints and answer policy limits are in the `[domain_policy]`
+group in `config.example.toml` and resolve through the same layers. They bound
+owner-authored input and query-time expansion; changing them never requires
+re-indexing. Current defaults are: 50 hints; term 100 chars; 8 synonyms at 100
+chars each; definition 300 chars; 4 query expansions at 120 chars each; answer
+note 300 chars; policy 1,000 chars / 800 estimated tokens; at most 8 matched
+hints / 600 estimated hint tokens; and at most 5 rewrite queries.
+
 Example:
 
 ```bash
