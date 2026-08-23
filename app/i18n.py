@@ -243,7 +243,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         # --- Eval workbench — landing + nav (Phase 2b, hybrid naming) ---------
         # 評測 = the activity/section; "Eval Set" / "Eval run" kept as data terms.
         "eval.title": "評測工作台",
-        "eval.intro": "在部署內使用既有 DB 資料建立評測題組、執行 retrieval-only eval，避免客戶資料外流。",
+        "eval.intro": "在部署內使用既有 DB 資料建立評測題組、執行檢索評測與選填的回答／引用 judging，避免客戶資料外流。",
         "eval.tab_sets": "評測集",
         "eval.tab_profiles": "檢索 Profile",
         "eval.tab_help": "調參指南",
@@ -270,7 +270,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "eval.runs_heading": "歷史執行紀錄",
         "eval.col_latency": "延遲",
         "eval.empty_runs_title": "尚未執行任何評測",
-        "eval.empty_runs_body": "建立評測集並核准題目後即可執行 retrieval eval。",
+        "eval.empty_runs_body": "建立評測集並核准題目後即可執行 Eval run。",
         "evalr.domain_hints_toggle": "使用 Notebook domain hints",
         "evalr.answer_policy_toggle": "使用 Notebook answer policy（需同時評測答案品質）",
         "evalr.domain_mode_hint": "Hints 與 policy 可獨立比較；run 建立時會凍結當下設定。Policy run 必須同時啟用答案品質評測；未由筆記本擁有者啟用或沒有內容的選項不可使用。",
@@ -320,6 +320,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         # --- Eval run/result/item partials (Phase 2b-iii) --------------------
         "evalr.progress": "進度",
         "evalr.avg_latency": "平均延遲",
+        "evalr.retrieval_latency_note": "僅檢索階段",
         "evalr.per_question": "逐題結果",
         "evalr.no_results": "尚未產生逐題結果；執行進行中時本區塊會自動刷新。",
         "evalr.diagnosis": "診斷：",
@@ -328,9 +329,9 @@ MESSAGES: dict[str, dict[str, str]] = {
         "evalr.no_expected": "— 無預期依據（未評分）",
         "evalr.actual_top": "實際檢索 top",
         "evalr.items_heading": "題目管理",
-        "evalr.items_hint": "草稿題目需核准後才會進入執行；不可回答題目會在 retrieval-only 執行中標為未評分。",
+        "evalr.items_hint": "草稿題目需核准後才會進入執行；未啟用答案品質評測時，不可回答題目不計入 retrieval metrics，啟用後則評測 abstain correctness。",
         "evalr.active_suffix": "（作用中）",
-        "evalr.run_btn": "執行 retrieval eval",
+        "evalr.run_btn": "執行 Eval run",
         "evalr.run_starting": "啟動中...",
         "evalr.item_approved": "已核准",
         "evalr.item_draft": "草稿",
@@ -440,7 +441,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "error.admin_only": "僅限管理員。",
         "error.notebook_not_found": "找不到筆記本。",
         "error.conversation_not_found": "找不到對話。",
-        "error.llm_not_configured_for_ingest": "尚未完成 LLM 設定。請管理員先到 /settings 設定 embedding 模型與聊天模型，才能索引來源。",
+        "error.llm_not_configured_for_ingest": "尚未完成 embedding 設定。請管理員先到 /settings 設定 embedding 模型，才能索引來源。",
         "error.no_files_selected": "尚未選擇檔案。",
         "error.upload_batch_limit": "一次最多上傳 {count} 個檔案。",
         "error.unsupported_file_type": "不支援的檔案格式：{filename}",
@@ -663,6 +664,9 @@ MESSAGES: dict[str, dict[str, str]] = {
         "js.provider_hint_openai": "請填入相容 /v1 的 base URL；模型欄位填模型名稱。",
         "js.provider_hint_azure": "請填入 Azure 資源端點；模型欄位填部署（deployment）名稱。",
         # upload formats hint (template-side, Phase 1c)
+        "upload.embedding_required_before": "尚未完成 embedding 設定。請管理員先到",
+        "upload.embedding_required_link": "系統設定",
+        "upload.embedding_required_after": "設定 embedding 模型，才能上傳來源。",
         "upload.formats": "PDF · TXT · Markdown · DOCX · HTML · 簡報(PPTX) · 字幕(SRT/VTT) · 試算表(XLSX/CSV) · 一次最多 {count} 個 · 單檔上限 {limit_mb} MB（試算表／簡報 {eager_mb} MB）",
     },
 }

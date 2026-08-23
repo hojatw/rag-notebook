@@ -561,7 +561,7 @@ def judge_metrics_from_results(results: list[dict]) -> dict[str, Any]:
 
 
 async def run_eval_job(run_id: int) -> None:
-    """Background E1b retrieval-only eval runner."""
+    """Run retrieval metrics and optional E1e-2 answer/citation judging."""
     try:
         with connect() as conn:
             run = conn.execute("SELECT * FROM eval_runs WHERE id = ?", (run_id,)).fetchone()
@@ -607,7 +607,7 @@ async def run_eval_job(run_id: int) -> None:
                     current_step = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (len(items), "準備 retrieval eval", run_id),
+                (len(items), "準備 Eval run", run_id),
             )
         if not items:
             with connect() as conn:

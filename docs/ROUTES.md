@@ -37,7 +37,7 @@ GET  /notebooks/{id}/_chat-empty                          HTMX swap: chat empty-
 
 POST /notebooks/{id}/chat/new                             new conversation
 POST /notebooks/{id}/chat/ask                             ask a question (HTMX: returns messages partial; no-JS: 303)
-POST /notebooks/{id}/chat/ask-stream                      ask a question with streamed answer events
+POST /notebooks/{id}/chat/ask-stream                      stream retrieval/generation status, then one classified final-answer event
 POST /notebooks/{id}/chat/{cid}/rename                    rename a conversation
 POST /notebooks/{id}/chat/{cid}/delete                    delete a conversation
 GET  /notebooks/{id}/chat/{cid}/_followups?message_id=N   lazy-load follow-up question chips (cached in metadata)

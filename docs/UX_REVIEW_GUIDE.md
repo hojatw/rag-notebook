@@ -1,8 +1,11 @@
 # UX_REVIEW_GUIDE.md — how to run a UX/UI review (rubric + report format)
 
 The durable spec for **every** UX/UI review of this app, so each pass judges by
-the same directions and produces the same shaped report. The living findings log
-is [`UX_REVIEW.md`](archive/2026-06-19-UX_REVIEW.md); this file is the method behind it.
+the same directions and produces the same shaped report. The latest completed
+findings log is archived at
+[`archive/2026-06-19-UX_REVIEW.md`](archive/2026-06-19-UX_REVIEW.md); this file
+is the reusable method behind it. A new review gets its own findings log and
+must not rewrite that archived snapshot.
 
 ## The six directions (judge every surface against these)
 
@@ -24,7 +27,7 @@ is [`UX_REVIEW.md`](archive/2026-06-19-UX_REVIEW.md); this file is the method be
 3. 每頁對照「六大方向 + [`UI.md`](UI.md)」逐項記問題；用 text 工具（snapshot/inspect）確認文字與樣式，不只看截圖。
 4. 沙箱無外網：純前端可在 preview 驗；要打 LLM/embedding 需真實 uvicorn。
 
-## 報告格式（寫進 / 更新 `UX_REVIEW.md`）
+## 報告格式（寫進本輪 findings log）
 
 固定結構：
 1. **走查方法**（這次怎麼跑、涵蓋哪些頁）

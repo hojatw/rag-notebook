@@ -79,6 +79,10 @@ Studio 工具提供面向知識工作的常用產出：
 - 向量索引健康檢查與重建。
 - 稽核紀錄與治理事件資料。
 
+Notebook owner 也可以維護有界的 domain hints 與 answer policy。Domain hints
+用來對應領域術語、別名與 query expansion，只在檢索 query time 生效；answer
+policy 則約束回答方式，但不能取代來源證據或放寬系統的引用／grounding 規則。
+
 ### 4. Eval Workbench：把回答品質變成可討論的指標
 
 RAG 系統的品質通常不只取決於模型，也取決於文件抽取、分塊、檢索、reranking、語言、領域詞彙與回答規則。RAG Notebook 內建管理員 Eval Workbench，讓團隊可以在部署環境內建立 eval set、執行檢索評估、比較 retrieval profile，並保留歷史結果。
@@ -90,7 +94,11 @@ RAG 系統的品質通常不只取決於模型，也取決於文件抽取、分�
 - 是否因為信心門檻、語言或關鍵字而漏找？
 - 調整參數後是否真的改善？
 
-未來規劃會進一步加入 answer-quality 與 citation judging，讓回答品質、引用正確性與 abstain 行為也能被系統化評估。
+除 Recall/MRR 等 retrieval metrics 外，管理員也可以選擇執行 answer-quality、
+groundedness、citation correctness 與 abstain correctness judging。這些 judge
+metrics 與 retrieval metrics 分開呈現，作為參考訊號而非 ground truth；若沒有
+reference answer，answer-quality correctness 會標示為不適用。真正的客戶品質基準
+仍需在客戶環境內建立經核准的代表性 Eval Set。
 
 ## 企業價值
 
@@ -134,9 +142,10 @@ RAG Notebook 的治理原則是：必要資料留在正確位置，治理紀錄�
 - 客戶環境內的 PoC 或 pilot。
 - 搭配客戶既有 LLM/embedding endpoint 的封閉式部署。
 
-目前不建議直接作為公開網際網路服務使用。若要正式產品化，建議補強：
+目前不建議直接作為公開網際網路服務使用。Trusted reverse-proxy header SSO、
+OIDC 與本機 break-glass account 已有實作，但若要正式產品化，仍建議補強：
 
-- 企業級身分整合與權限模型。
+- 依客戶需求補齊 SAML／IdP logout 等身分整合與更細緻的權限模型。
 - 更完整的治理 dashboard。
 - 更成熟的 LLM 設定管理與多 profile 切換。
 - 部署監控、備份、復原與容量規劃。
@@ -152,16 +161,22 @@ RAG Notebook 的治理原則是：必要資料留在正確位置，治理紀錄�
 - DOCX
 - HTML
 - SRT/VTT 字幕逐字稿
+- PPTX（text-first：標題、內文、表格、講者備註）
+- XLSX/CSV（Q&A 偵測與有界的一般資料列分塊）
+
+所有支援格式都會留下 ingestion diagnostics，例如抽取字數、section/chunk
+數量、extractor path、警告、失敗階段與有界 preview，讓使用者能區分「抽取失敗」
+與「檢索／回答失敗」。
 
 規劃中的格式與能力：
 
 - Web URL 匯入，需具備 SSRF 防護與客戶 egress policy 控制。
-- PPTX text-first 匯入，先處理標題、內文、表格與講者備註。
-- XLSX/CSV 匯入，優先支援 Q&A 類型試算表。
-- Ingestion diagnostics，讓使用者知道實際抽取了多少文字、多少表格/頁面/分塊、是否有警告。
 - OCR 與圖片理解，依客戶需求與模型能力逐步加入。
+- 試算表的精確 filtering/counting/aggregation，另以受限制的 table-query
+  workflow 處理，不把 top-k RAG 當成完整資料分析工具。
 
-產品策略上，會先做能直接提升可信度與可診斷性的 ingestion diagnostics，再擴充新格式。
+產品策略上，下一個新來源格式是具 SSRF 防護的 Web URL；OCR、圖片理解與
+結構化表格查詢則依客戶需求和 serving capability 投入。
 
 ## 適合的使用情境
 
@@ -199,13 +214,16 @@ RAG Notebook 的治理原則是：必要資料留在正確位置，治理紀錄�
 
 - 用 Eval Workbench 建立代表性 eval set。
 - 比較不同 retrieval profile 的效果。
+- 以 baseline／hints／policy／combined 模式比較 domain 設定，必要時開啟
+  answer/citation judging；reference answer 不足時不得把 judge 分數當 ground truth。
 - 檢查 audit trail、usage telemetry 與安全事件紀錄是否符合治理需求。
 - 明確定義哪些問題適合回答、哪些情境應該 abstain。
 
 ### Phase 3：擴充資料來源與工作流
 
-- 依需求加入 Web URL、PPTX、XLSX/CSV、OCR 等格式。
-- 加入 domain hints 與 answer policy，讓 notebook 能反映客戶領域語彙與回答規則。
+- 依需求加入 Web URL、OCR、圖片理解與結構化表格查詢等能力。
+- 在客戶環境以核准的 Eval Set 驗證既有 domain hints 與 answer policy，避免把
+  自動產生的 draft 當成客戶 evidence。
 - 針對高頻工作流設計更完整的 artifact/report 產出流程。
 
 ## 衡量成功的指標
@@ -223,11 +241,11 @@ RAG Notebook 的治理原則是：必要資料留在正確位置，治理紀錄�
 
 近期建議優先方向：
 
-1. Answer-quality loop：加入回答品質與引用評估，並搭配 notebook domain hints / answer policy。
-2. Admin LLM operations：提供 chat/embedding 測試、能力偵測與未來多 profile 安全切換。
-3. Ingestion diagnostics：讓新格式支援前先具備抽取品質可視化。
-4. Source-format MVP：優先支援 Q&A 試算表，再加入 Web URL 與 PPTX text-first 匯入。
-5. Customer-driven capabilities：圖片理解、音訊轉錄與 TTS 依客戶需求與 serving 能力再投入。
+1. Customer Eval Set：在資料不離開客戶環境的前提下，建立經核准且含必要 reference answer 的代表性題集，形成可重複的 judged baseline。
+2. E2 validation：用相同 Eval Set 比較 baseline／hints／policy／combined，確認 domain 設定提升品質且不增加 false positive 或資料外洩。
+3. Admin LLM operations：在已完成 chat/embedding diagnostics 的基礎上，加入多 profile 管理與安全切換。
+4. Source-format next step：加入具 SSRF 防護與 egress policy 控制的 Web URL ingestion；文件結構、OCR 與圖片理解依實際語料／模型能力評估。
+5. Governance：依需求補上 aggregate dashboard、report export 與 retention policy；圖片理解、音訊轉錄與 TTS 維持 customer-driven。
 
 ## 結語
 

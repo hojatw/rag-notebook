@@ -113,7 +113,7 @@ CI 沒有額外的門檻，也沒有涵蓋本機沒跑到的東西。反過來�
 CI 只是幫你晚幾分鐘發現同一件事。
 
 CI **不會**做的事（需要人）：瀏覽器走查、檢索 eval（`tests.eval_retrieval` 需要
-可用的 LLM 設定）、Docker build 煙霧測試。這些的判準見
+已設定 embedding model；chat model 與 API key 選填）、Docker build 煙霧測試。這些的判準見
 [`AGENTS.md`](../AGENTS.md) 的 Verification 段落。
 
 ## 依賴更新

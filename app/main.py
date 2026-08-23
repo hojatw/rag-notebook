@@ -1955,15 +1955,16 @@ def touch_notebook(conn, notebook_id: int) -> None:
 
 
 def llm_settings_status(conn) -> dict:
-    """Return a small flag set describing whether the LLM provider is usable.
+    """Return readiness flags for embedding-only and chat-backed workflows.
 
-    Used by routes that should refuse to ingest (no embedding API => useless
-    chunks via the local fallback hash) and by templates that warn the user.
+    ``ready`` means both models are configured for the end-to-end chat workflow;
+    uploads use ``has_embedding_model`` because source summaries are best-effort
+    and deliberately skip when no chat model is configured.
     """
     settings = load_llm_settings(conn) or {}
     # API key is optional: local services (e5, Ollama, vLLM, TEI) accept
-    # requests without one. Readiness now hinges on having both models
-    # configured; the key, when present, is sent as a bearer/api-key header.
+    # requests without one. The key, when present, is sent as a bearer/api-key
+    # header; model presence controls the corresponding capability.
     has_api_key = bool(settings.get("api_key"))
     has_embedding_api_key = bool(settings.get("embedding_api_key"))
     has_chat_model = bool(settings.get("chat_model"))
@@ -2542,11 +2543,8 @@ def upload_source(
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
         llm_status = llm_settings_status(conn)
-    if not llm_status["ready"]:
-        # The local hash-based embedding fallback "works" but produces useless
-        # vectors — refusing here prevents users from indexing then wondering
-        # why retrieval is terrible.
-        logger.warning("source_upload_rejected user_id=%s notebook_id=%s reason=llm_not_configured", user["id"], notebook_id)
+    if not llm_status["has_embedding_model"]:
+        logger.warning("source_upload_rejected user_id=%s notebook_id=%s reason=embedding_not_configured", user["id"], notebook_id)
         raise HTTPException(
             status_code=400,
             detail=i18n.t("error.llm_not_configured_for_ingest"),

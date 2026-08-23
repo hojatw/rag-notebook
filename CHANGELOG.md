@@ -9,12 +9,20 @@
 
 ## [未發布]
 
+## [0.5.0] - 2026-08-24
+
+### 新增
+
+- **E2 Notebook domain hints / answer policy**：notebook owner 可維護有界的
+  terms、synonyms、definitions、query expansions、answer notes 與 answer policy。
+  Hints 只在 query time 參與 rewrite，不需 re-index 或額外 LLM call；answer policy
+  約束回答方式，但不能取代來源證據。Eval Workbench 可用 baseline／hints／policy／combined
+  模式執行同一題集，凍結 domain snapshot，並選擇 answer/citation judging。
+
 ### 安全性
 
-- **E2 Notebook domain hints / answer policy**：新增 owner-scoped、bounded
-  hints 與 answer policy；hints 僅在 query time 參與 rewrite，不需 re-index 或額外
-  LLM call。Eval run 凍結 domain snapshot，sanitized export 只含摘要，full internal
-  export 改為 CSRF-protected POST explicit confirmation，並延續 admin 與
+- **E2 prompt／export 邊界**：sanitized export 只含 domain 摘要，full internal
+  export 使用 CSRF-protected POST explicit confirmation，並延續 admin 與
   high-sensitivity audit 邊界。Domain mutations 使用 64 KiB request 上限、序列化
   revision 寫入及 case-insensitive unique term index；frozen snapshot 採 exact-version、
   bounded canonical validation。Answer policy／notes 保持在 user role，provider stream
@@ -38,12 +46,33 @@
   diagnostics 與 streaming 路徑，不再用固定 `chars/4` 系統性低估中文。只要
   prompt/completion 任一欄需估算，整列即保守標記 `is_estimated=1`；可由
   prompt/completion 與 total 相減得到的欄位則仍視為 provider 精確值。
+- **檢索評測啟動條件**：`tests.eval_retrieval` 不再錯誤要求 API key 與 chat model；
+  現在只要求 embedding model。Blank key 的本機 embedding service 可直接執行，
+  未設定 chat model 時則量測 production 的 single-query／hybrid fallback。
+- **Embedding-only ingestion readiness**：upload gate 不再錯誤要求 chat model；只要
+  embedding model 已設定即可上傳／索引，per-source summary 在沒有 chat model 時維持
+  best-effort skip。Chat、回答與其他生成式功能仍需 chat model。
 
 ### 維護
 
 - **HTTP error i18n（MNT-1）**：`app/main.py`、`app/admin.py`、`app/evals.py` 與
   `app/settings.py` 的使用者可見 `HTTPException.detail` 移入 catalog，並加 AST
   測試防止重新硬編碼。Embedding endpoint 連線錯誤也不再把原始 exception 回顯給管理員。
+- **發版前文件稽核**：重新對照 HTTP routes、SQLite schema、config、security、
+  retrieval、Eval Workbench 與 E2 行為，修正 README、操作／架構文件、backlog、
+  白皮書與封存設計紀錄中的過時或不完整敘述。
+
+### 升級注意事項
+
+- 啟動時會以既有 idempotent migration 自動建立 `login_rate_limits`、
+  `login_verification_leases`、`notebook_domain_config`、`notebook_domain_hints`，並補上
+  Eval run 的 domain snapshot／mode 欄位；不需手動 migration，也不需重新索引。
+- Domain hints 與 answer policy 預設停用，升級後不會自行改變既有 notebook 的檢索或回答；
+  owner 明確設定並啟用後才生效。限制值可由 `[domain_policy]` 調整。
+- 本機登入 rate limiting 預設啟用：同帳號預設 15 分鐘最多 5 次失敗，PBKDF2 預設全部署
+  最多 4 個並行 verification lease；可由 `[auth].login_*` 調整。
+- 為防止結構化 abstain marker 部分外洩，SSE 仍即時傳送 retrieval／generation 狀態，
+  但 provider answer 會完成 bounded buffering／classification 後才以單一 final event 顯示。
 
 ## [0.4.0] - 2026-08-23
 
