@@ -88,6 +88,13 @@ language = "zh-TW"            # default UI locale; the i18n catalog falls back t
 # --- Authentication / enterprise SSO ----------------------------------------
 [auth]
 local_login_enabled = true
+login_rate_limit_enabled = true
+login_account_attempt_limit = 5       # failed attempts per normalized username
+login_account_window_seconds = 900    # 15-minute account counting window
+login_account_cooldown_seconds = 900  # block that username for 15 minutes
+login_verification_max_concurrency = 4          # deployment-wide PBKDF2 leases
+login_verification_lease_seconds = 30           # crash-safe lease expiry
+login_verification_busy_retry_after_seconds = 1 # generic 429 Retry-After
 session_max_age_hours = 12.0   # SEC-3: absolute session lifetime, not extended by activity
 trusted_header_enabled = false
 trusted_header_secret = ""    # required when trusted_header_enabled = true

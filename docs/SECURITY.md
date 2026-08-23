@@ -13,7 +13,7 @@ The label currently carries **two different statements**, and only one of them i
 
 So the question is not "when does this become production", it is "when can the scope be stated as a scope, and the maturity gap be declared closed". Three conditions, all checkable — **not a judgement call**:
 
-1. **`SEC-4` (login rate limiting) is closed.** It is the last open item that decides whether this can face a network at all: `POST /login` has no throttle or lockout, and PBKDF2's 200k iterations make each attempt expensive to serve. Everything else still open is `P2`/`P3` hygiene.
+1. **Login rate limiting — satisfied 2026-08-23 (`SEC-4`).** `POST /login` now uses a shared SQLite account failure bucket plus short cross-process password-verification leases, returns a generic HTTP 429 with `Retry-After`, and stores HMAC account ids instead of usernames. A reverse proxy must still provide verified client-IP limiting for network deployments.
 2. **A representative eval set exists (`Q1-3` in [`QUALITY.md`](QUALITY.md)).** This is the important one. **Right now there is no way to measure whether a retrieval change helps.** Six items say so in their own text — `Q0-2` and `Q1-4` ("needs Q1-3"), `Q1-6` ("this is Q1-3's job"), `Q1-7` ("to prove the arm helps rather than merely changes results"), `QLT-1` in the review backlog, and `Q1-2`/`P1-2` (blocked on a representative CJK corpus) — plus `Q1-1` indirectly, since its restart condition runs through `Q1-6`. A retrieval system whose quality cannot be measured should not claim to be past proof-of-concept; that is a factual statement about what is known, not modesty.
 3. **Someone other than the author has completed an upgrade using only the documentation.** `RELEASE.md` and the CHANGELOG upgrade notes exist, but have never been executed by a second person. Until they have, "it is documented" is untested.
 
@@ -61,9 +61,47 @@ Audit metadata is intentionally compact: store action identifiers, target ids, f
 
 A full review on **2026-08-22** surfaced a set of hardening items. They are triaged and tracked in `docs/REVIEW_BACKLOG_2026-08-22.md` with priorities and locations, and are folded back into this file as each lands.
 
-**Fixed:** `SEC-1` bootstrap accounts (above), `SEC-2` upload size limits / multipart buffering (see the parser note below), and `SEC-3` session lifetime + revocation (below).
+**Fixed:** `SEC-1` bootstrap accounts (above), `SEC-2` upload size limits / multipart buffering (see the parser note below), `SEC-3` session lifetime + revocation (below), `SEC-4` shared login rate limiting, `SEC-5` Traditional/Simplified Chinese prompt-injection telemetry patterns, and `SEC-6` explicit session-user field projection that excludes `password_hash`.
 
-**Still open:** **no login rate limiting** (the highest-severity item remaining — `POST /login` has no throttle or lockout, and PBKDF2's 200k iterations make each attempt a costly one to serve), **prompt-injection detection with English-only patterns** on a zh-TW deployment, and two low-severity hygiene items (a `SELECT *` that carries `password_hash` into the template context, and a raw exception string echoed to an admin).
+**Still open:** two low-severity hygiene items: a raw exception string echoed to an admin (`SEC-7`) and logout-cookie deletion attributes that are not explicitly aligned with issuance (`SEC-8`).
+
+### Local-login rate limiting (SEC-4, 2026-08-23)
+
+The limiter has one configurable account failure bucket (default 5 attempts per
+15 minutes, followed by a 15-minute cooldown). State is persisted in
+`login_rate_limits` and updates run under a short SQLite `BEGIN IMMEDIATE`
+transaction, so multiple uvicorn workers cannot silently maintain independent
+counters. Successful authentication clears that account's bucket.
+
+Password hashing is protected separately by short SQLite leases in
+`login_verification_leases`: by default no more than 4 PBKDF2 checks run across
+the deployment, and the `account_hash` uniqueness constraint serializes checks
+for the same username so parallel requests cannot all pass the failure check.
+Leases expire after 30 seconds to recover from a crashed web process and are
+released in `finally` during normal operation. Missing accounts use a fixed
+dummy hash on this same bounded path, but do not create persistent failure rows.
+
+Bucket ids are HMAC-SHA256 values derived from `NOTEBOOKLM_SECRET`; usernames,
+passwords, IP addresses, and forwarded headers are not stored. The app does not
+trust `X-Forwarded-For`. Operators should keep the app behind a reverse proxy
+that applies a verified client-IP limit as the outer layer.
+
+**Review follow-up (2026-08-23):** the original implementation also had a
+deployment-wide failure cooldown. It was removed before release because an
+anonymous actor could fill it with arbitrary unknown usernames and repeatedly
+deny every valid local login. Concurrency leases retain the CPU-protection goal
+without leaving a cooldown active after the abusive requests finish. See
+[`AUTHENTICATION.md`](AUTHENTICATION.md) and `config.example.toml` for the
+`[auth].login_*` controls.
+
+### Local prompt-injection telemetry (SEC-5, 2026-08-23)
+
+`local.rules.v2` adds Traditional and Simplified Chinese patterns for ignoring
+prior instructions, revealing system/developer instructions, and bypassing
+safety rules. Findings remain **warn-only telemetry**: they are redacted and
+hashed before persistence and do not block the user flow. This heuristic is a
+review signal, not a security boundary, and its positive/negative regression
+examples live in `tests/test_governance.py`.
 
 ### Sessions (SEC-3, 2026-08-22)
 

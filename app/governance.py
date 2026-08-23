@@ -1,8 +1,10 @@
 import hashlib
 import logging
+import math
 import re
 from typing import Any
 
+from .config import config
 from .db import connect, dumps
 
 
@@ -31,10 +33,13 @@ SENSITIVE_METADATA_KEYS = {
     "api_key",
     "secret",
 }
-SAFETY_DETECTOR_VERSION = "local.rules.v1"
+SAFETY_DETECTOR_VERSION = "local.rules.v2"
 SAFETY_MAX_INPUT_CHARS = 12000
 SAFETY_BLOCK_CANDIDATE_CHARS = 24000
 CONTROL_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b\u200c\u200d\ufeff]")
+CJK_CHAR_RE = re.compile(
+    r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\u31f0-\u31ff\uac00-\ud7af]"
+)
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("openai_api_key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
     ("generic_api_key_assignment", re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password)\s*[:=]\s*['\"]?[^'\"\s]{12,}")),
@@ -44,13 +49,46 @@ PROMPT_INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("ignore_previous_instructions", re.compile(r"(?i)\bignore (?:all )?(?:previous|prior|above) instructions\b")),
     ("reveal_system_prompt", re.compile(r"(?i)\b(?:reveal|show|print|dump|repeat).{0,40}\b(?:system prompt|developer message|hidden instructions)\b")),
     ("bypass_rules", re.compile(r"(?i)\b(?:bypass|override|disable).{0,30}\b(?:rules|guardrails|safety|policy)\b")),
+    (
+        "zh_ignore_previous_instructions",
+        re.compile(
+            r"(?<!不要)(?<!不得)(?<!請勿)(?:忽略|無視|无视|忘記|忘掉|不理會|不理会)"
+            r".{0,20}(?:先前|之前|前面|以上|上述|前述).{0,12}(?:指令|指示|規則|规则|要求|提示)"
+        ),
+    ),
+    (
+        "zh_reveal_system_prompt",
+        re.compile(
+            r"(?:(?:顯示|显示|輸出|输出|列出|洩漏|泄露|透露|重複|重复).{0,40}"
+            r"(?:系統提示|系统提示|系統指令|系统指令|開發者訊息|开发者消息|隱藏指令|隐藏指令)"
+            r"|(?:系統提示|系统提示|系統指令|系统指令|開發者訊息|开发者消息|隱藏指令|隐藏指令)"
+            r".{0,40}(?:顯示|显示|輸出|输出|列出|洩漏|泄露|透露|重複|重复))"
+        ),
+    ),
+    (
+        "zh_bypass_rules",
+        re.compile(
+            r"(?:繞過|绕过|覆寫|覆盖|停用|禁用|解除|關閉|关闭).{0,30}"
+            r"(?:規則|规则|限制|安全|防護|防护|政策|護欄|护栏)"
+        ),
+    ),
 )
 
 
-def estimate_tokens(chars: int) -> int:
-    """Cheap token estimate for providers that omit usage details."""
+def count_cjk_chars(text: str | None) -> int:
+    """Count Han, kana, and Hangul characters without retaining the input."""
+    return len(CJK_CHAR_RE.findall(text or ""))
+
+
+def estimate_tokens(chars: int, *, cjk_chars: int = 0) -> int:
+    """Estimate tokens with separate CJK and non-CJK character ratios."""
     chars = max(0, int(chars or 0))
-    return (chars + 3) // 4 if chars else 0
+    cjk_chars = min(chars, max(0, int(cjk_chars or 0)))
+    if not chars:
+        return 0
+    cjk_ratio = max(0.01, float(config.diagnostics.cjk_chars_per_token))
+    latin_ratio = max(0.01, float(config.diagnostics.latin_chars_per_token))
+    return math.ceil(cjk_chars / cjk_ratio + (chars - cjk_chars) / latin_ratio)
 
 
 def normalize_usage(
@@ -58,6 +96,8 @@ def normalize_usage(
     *,
     input_chars: int,
     output_chars: int = 0,
+    input_cjk_chars: int = 0,
+    output_cjk_chars: int = 0,
 ) -> dict[str, Any]:
     """Normalize provider usage, falling back to explicit estimates.
 
@@ -68,6 +108,8 @@ def normalize_usage(
     """
     input_chars = max(0, int(input_chars or 0))
     output_chars = max(0, int(output_chars or 0))
+    input_cjk_chars = min(input_chars, max(0, int(input_cjk_chars or 0)))
+    output_cjk_chars = min(output_chars, max(0, int(output_cjk_chars or 0)))
     usage = usage if isinstance(usage, dict) else {}
 
     prompt_tokens = _usage_int(
@@ -111,16 +153,29 @@ def normalize_usage(
         ),
     )
 
-    if prompt_tokens is None and completion_tokens is None and total_tokens is None:
-        prompt_tokens = estimate_tokens(input_chars)
-        completion_tokens = estimate_tokens(output_chars)
+    any_estimated = False
+    if prompt_tokens is None:
+        if (
+            total_tokens is not None
+            and completion_tokens is not None
+            and total_tokens >= completion_tokens
+        ):
+            prompt_tokens = total_tokens - completion_tokens
+        else:
+            prompt_tokens = estimate_tokens(input_chars, cjk_chars=input_cjk_chars)
+            any_estimated = True
+    if completion_tokens is None:
+        if (
+            total_tokens is not None
+            and prompt_tokens is not None
+            and total_tokens >= prompt_tokens
+        ):
+            completion_tokens = total_tokens - prompt_tokens
+        else:
+            completion_tokens = estimate_tokens(output_chars, cjk_chars=output_cjk_chars)
+            any_estimated = True
+    if total_tokens is None:
         total_tokens = prompt_tokens + completion_tokens
-        is_estimated = 1
-    else:
-        prompt_tokens = prompt_tokens if prompt_tokens is not None else estimate_tokens(input_chars)
-        completion_tokens = completion_tokens if completion_tokens is not None else estimate_tokens(output_chars)
-        total_tokens = total_tokens if total_tokens is not None else prompt_tokens + completion_tokens
-        is_estimated = 0
 
     return {
         "prompt_tokens": prompt_tokens,
@@ -128,7 +183,7 @@ def normalize_usage(
         "total_tokens": total_tokens,
         "input_chars": input_chars,
         "output_chars": output_chars,
-        "is_estimated": is_estimated,
+        "is_estimated": int(any_estimated),
     }
 
 

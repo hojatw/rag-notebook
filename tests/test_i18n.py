@@ -1,4 +1,7 @@
 """i18n Phase 0: message catalog lookup, fallback, and the window.I18N feed."""
+import ast
+from pathlib import Path
+
 import app.i18n as i18n
 
 
@@ -38,3 +41,22 @@ def test_js_messages_strips_prefix_and_covers_all_js_keys():
 
 def test_js_messages_unknown_locale_uses_default_values():
     assert i18n.js_messages(locale="en")["thinking"] == "思考中"
+
+
+def test_route_http_exception_details_are_not_hardcoded():
+    """MNT-1 regression: rendered HTTP error copy must go through i18n."""
+    root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    for path in sorted((root / "app").glob("*.py")):
+        relative_path = str(path.relative_to(root))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function_name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if function_name != "HTTPException":
+                continue
+            detail = next((keyword.value for keyword in node.keywords if keyword.arg == "detail"), None)
+            if isinstance(detail, (ast.Constant, ast.JoinedStr)):
+                offenders.append(f"{relative_path}:{node.lineno}")
+    assert offenders == []

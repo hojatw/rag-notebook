@@ -195,6 +195,17 @@ class UIConfig:
 @dataclasses.dataclass
 class AuthConfig:
     local_login_enabled: bool = True
+    # SEC-4: account failures and short verification leases are DB-backed so
+    # every uvicorn worker observes the same limits. Leases bound concurrent
+    # PBKDF2 work without creating a deployment-wide cooldown that an anonymous
+    # attacker could turn into a persistent login denial of service.
+    login_rate_limit_enabled: bool = True
+    login_account_attempt_limit: int = 5
+    login_account_window_seconds: int = 900
+    login_account_cooldown_seconds: int = 900
+    login_verification_max_concurrency: int = 4
+    login_verification_lease_seconds: int = 30
+    login_verification_busy_retry_after_seconds: int = 1
     # SEC-3: absolute session lifetime. Counted from when the session was issued
     # and never extended by activity — a rolling window would keep a stolen
     # cookie alive for as long as it kept being used, which is the case this

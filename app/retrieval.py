@@ -15,6 +15,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from . import i18n
 from .config import config
 from .db import connect, dumps, loads
 from .llm import (
@@ -450,7 +451,10 @@ def coerce_profile_params(raw: dict[str, Any]) -> dict[str, Any]:
     params: dict[str, Any] = {}
     for key in PROFILE_PARAM_LABELS:
         if key not in raw or raw[key] in (None, ""):
-            raise HTTPException(status_code=400, detail=f"缺少參數：{PROFILE_PARAM_LABELS[key]}")
+            raise HTTPException(
+                status_code=400,
+                detail=i18n.t("error.profile_param_missing", label=PROFILE_PARAM_LABELS[key]),
+            )
         try:
             if key in PROFILE_PARAM_INT_KEYS:
                 value: Any = int(raw[key])
@@ -461,7 +465,10 @@ def coerce_profile_params(raw: dict[str, Any]) -> dict[str, Any]:
                 if value < 0:
                     raise ValueError
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=f"參數值無效：{PROFILE_PARAM_LABELS[key]}")
+            raise HTTPException(
+                status_code=400,
+                detail=i18n.t("error.profile_param_invalid", label=PROFILE_PARAM_LABELS[key]),
+            )
         params[key] = value
     return params
 

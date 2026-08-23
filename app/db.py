@@ -66,6 +66,34 @@ def init_db() -> None:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- SEC-4 cross-process failed-login limiter. Bucket identifiers are
+            -- HMACs, never raw usernames or client-controlled network headers.
+            CREATE TABLE IF NOT EXISTS login_rate_limits (
+                bucket_type TEXT NOT NULL,
+                bucket_hash TEXT NOT NULL,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                window_started REAL NOT NULL,
+                blocked_until REAL NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (bucket_type, bucket_hash)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_login_rate_limits_updated
+            ON login_rate_limits(updated_at);
+
+            -- Short cross-process leases bound concurrent PBKDF2 work and
+            -- serialize checks for the same opaque account bucket. Expiry
+            -- recovers capacity if a web process exits during verification.
+            CREATE TABLE IF NOT EXISTS login_verification_leases (
+                lease_id TEXT PRIMARY KEY,
+                account_hash TEXT NOT NULL UNIQUE,
+                expires_at REAL NOT NULL,
+                created_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_login_verification_leases_expires
+            ON login_verification_leases(expires_at);
+
             CREATE TABLE IF NOT EXISTS llm_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 provider TEXT NOT NULL DEFAULT 'openai_compatible',
