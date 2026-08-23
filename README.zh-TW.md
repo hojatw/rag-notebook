@@ -23,7 +23,9 @@ NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload -
 - Admin: `admin` / `admin123`
 - User: `user` / `user123`
 
-Demo 帳號與 insecure development secret 只供本機開發使用。在任何暴露於網路的部署前，請先變更或移除 demo 帳號。
+Demo 帳號與 insecure development secret 只供本機開發使用，絕對不可把此模式暴露於
+網路。使用真正 `NOTEBOOKLM_SECRET` 的部署只會建立一次性的 bootstrap `admin`，
+第一次登入必須變更密碼；詳見 [`docs/SECURITY.md`](docs/SECURITY.md)。
 
 ## Docker
 
@@ -55,8 +57,9 @@ rm -rf data/ logs/
 
 ## 設定 LLM
 
-以 admin 身分登入後開啟 `/settings`。Chat 與 embeddings 都需要已設定的
-OpenAI-compatible 或 Azure OpenAI endpoint。Embedding model 尚未設定前，上傳功能會停用。
+以 admin 身分登入後開啟 `/settings`。Chat 與 embedding 是彼此獨立的
+OpenAI-compatible 或 Azure OpenAI connection，依部署實際使用的能力分別設定。
+Embedding model 尚未設定前，上傳功能會停用；回答與其他生成式功能則需要 chat model。
 
 儲存時，app 會 probe embedding endpoint 一次，並拒絕和既有 Chroma index 維度不符的設定。API key 會使用以
 `NOTEBOOKLM_SECRET` 為基礎的 Fernet 靜態加密。
@@ -67,21 +70,35 @@ OpenAI-compatible 或 Azure OpenAI endpoint。Embedding model 尚未設定前，
 目標維度的向量，其餘標記為待重新索引。詳見
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#changing-the-embedding-dimension)。
 
-OpenAI-compatible 範例：
+同一頁也提供 admin-only diagnostics：chat 與 embedding model 可分開測試，
+顯示 latency/status/model 摘要與 embedding dimension，並可檢查 streaming、
+provider usage、JSON-following，以及選填的圖片理解能力。Diagnostics 只保存精簡
+status metadata，不保存 raw prompt、model output、API key 或 raw provider payload。
+
+設定頁有兩張彼此獨立的卡片；chat 與 embedding 可使用不同 provider、Base URL、
+API key、model 與 Azure API version。OpenAI-compatible chat card 範例：
 
 ```text
 Provider:           OpenAI-compatible
 Base URL:           https://api.openai.com/v1
-Embedding base URL: (blank - share the chat URL)
 API key:            sk-...
 Chat model:         gpt-4.1-mini
-Embedding model:    text-embedding-3-small
 Temperature:        0.2
-Timeout seconds:    60
+```
+
+Embedding card 範例（本機 e5、不需要 key）：
+
+```text
+Provider:           OpenAI-compatible
+Base URL:           http://10.0.0.1:8001/v1
+API key:            （留白）
+Embedding model:    intfloat/multilingual-e5-large
+Query prefix:       query:
+Passage prefix:     passage:
 ```
 
 Ollama、vLLM、TEI 這類本機 OpenAI-compatible 服務會透過 `/v1` endpoint
-支援。有些本機服務仍需要填入非空的 dummy API key。
+支援。API key 在 chat 與 embedding 兩邊都是選填；留白時不會送出 auth header。
 
 選填的 embedding query/passage prefix 可支援 `multilingual-e5-large` 這類模型：搜尋 query
 可用 `query: `，索引文字可用 `passage: `。Prefix 只會影響送到 embedding endpoint 的文字，不會改變儲存的 chunk。
@@ -90,10 +107,11 @@ Ollama、vLLM、TEI 這類本機 OpenAI-compatible 服務會透過 `/v1` endpoin
 
 - **Notebook workspace：** 每個 notebook 都有自己的來源、對話、釘選筆記與工具產出。
 - **Sources pane：** 拖放上傳、索引狀態輪詢、重新索引/刪除、來源預覽抽屜、citation-to-chunk 高亮。
-- **Grounded chat：** 串流回答、Markdown 轉譯、引用來源、複製/匯出、追問 chip、起始問題、中文 IME-safe 輸入，以及繁中 UI。
+- **Grounded chat：** 串流 retrieval/generation 狀態、完成後的 bounded answer classification、Markdown 轉譯、引用來源、複製/匯出、追問 chip、起始問題、中文 IME-safe 輸入，以及繁中 UI。
 - **Studio tools：** briefing strip、來源比較、會議記錄、學習指南、FAQ、時間軸、翻譯，以及手動存成筆記流程。
 - **Hybrid retrieval：** query rewrite、Chroma vector search、SQLite keyword search、LLM reranking、abstain threshold 與每則訊息的 retrieval debug details。
-- **Admin surfaces：** 使用者管理、vector-index console、LLM settings、audit trail，以及支援 retrieval profiles、run comparison、exports、調參指南的 in-deployment Eval Workbench。
+- **Notebook domain controls：** notebook owner 可維護有界的 terms、synonyms、query expansions、answer notes 與 answer policy；hints 只在 query time 生效，不需 re-index 或額外 LLM call。
+- **Admin surfaces：** 使用者管理、vector-index console、LLM settings、audit trail，以及支援 retrieval profiles、answer/citation judging、E2 mode comparison、exports 與調參指南的 in-deployment Eval Workbench。
 - **Governance backend：** 精簡 LLM usage 與 safety-event telemetry，不把 prompts、來源文字、retrieved snippets、模型輸出或 API keys 複製到 governance metadata。
 - **支援來源格式：** PDF、TXT、Markdown、DOCX、HTML、簡報（`.pptx`，只讀文字：標題、內文、表格、備忘稿）、字幕（`.srt` / `.vtt`）、試算表（`.xlsx` / `.csv`——問答表會被辨識，其他形狀以有界的資料列分塊攝取，詳見 [docs/SPREADSHEET_INGESTION.md](docs/SPREADSHEET_INGESTION.md)）。
 - **持久化：** `data/` 下的 SQLite metadata、本機 uploads、Chroma vectors，以及 `logs/` 下的輪替 logs。
@@ -125,7 +143,8 @@ Ollama、vLLM、TEI 這類本機 OpenAI-compatible 服務會透過 `/v1` endpoin
 git diff --check
 ```
 
-如果修改 retrieval，且目前有可用 LLM 設定，也請執行 eval harness：
+如果修改 retrieval，且目前有設定 embedding model，也請執行 eval harness；chat
+model 與 API key 都是選填：
 
 ```bash
 .venv/bin/python -m tests.eval_retrieval
@@ -135,9 +154,10 @@ git diff --check
 ## 已知後續事項
 
 - 沒有 offline embedding fallback：接受上傳前必須先設定 embedding model。
-- UI strings 仍 hardcoded zh-TW；i18n work 追蹤在 `ROADMAP.md` U15a/U15b。
-- Admin LLM settings 目前仍是單一全域設定；診斷測試與多 profile 安全切換追蹤在 `ROADMAP.md` O1。
-- 新來源格式支援應先做 ingestion diagnostics，再做 Q&A 試算表、SSRF-safe Web URL ingestion、PPTX text-first ingestion（`ROADMAP.md` A6a/A6c/A6/A6b）。
+- 共用／高頻 UI copy 已使用 `zh-TW` catalog（U15a）；既有 template 仍有 inline
+  zh-TW 文案，需在 U15b 加入 `en` 與 admin/per-user locale controls 前完成盤點與抽取。
+- Admin LLM settings 目前仍是單一全域設定；chat/embedding diagnostics 已完成，多 profile 管理與安全切換仍追蹤在 `ROADMAP.md` O1 Phase 2。
+- Ingestion diagnostics、Q&A/一般資料列試算表與 PPTX text-first ingestion 已完成；下一個來源格式是具 SSRF 防護的 Web URL ingestion（`ROADMAP.md` A6），OCR/vision 仍依模型能力與客戶需求投入。
 - Keyword search 仍使用 SQLite `LIKE`；FTS5 + BM25 追蹤在 `docs/QUALITY.md` / `docs/PERFORMANCE.md`。
 
 ## License

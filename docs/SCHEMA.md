@@ -414,14 +414,17 @@ One approved/manual eval question. Expected evidence can be a source, a chunk, s
 | `expected_chunk_id` | INTEGER → `chunks(id)` SET NULL | optional expected chunk |
 | `expected_substrings_json` | TEXT DEFAULT `'[]'` | JSON list; any matching substring counts as evidence hit |
 | `item_type` | TEXT DEFAULT `'answerable'` | E1e authoring type: `answerable`, `cross_lingual`, or `unanswerable` |
-| `expected_answer` | TEXT DEFAULT `''` | optional reference answer for future answer-quality judging |
+| `expected_answer` | TEXT DEFAULT `''` | optional reference answer used by E1e-2 answer-quality judging; without one, answer-quality correctness is `not_applicable` while groundedness/citation judging can still run |
 | `metadata_json` | TEXT DEFAULT `'{}'` | compact authoring metadata such as origin, prompt version, model, language, source ids; no copied prompts/source text |
 | `notes` | TEXT DEFAULT `''` | admin notes / rationale |
 | `approved` | INTEGER DEFAULT 1 | only approved items run |
 | `created_at` / `updated_at` | TEXT | |
 
 ## `eval_runs`
-Background retrieval-only eval run. Progress fields drive the admin UI while the run is executing; profile/metrics JSON fields make the result immutable and reviewable later.
+Background Eval Workbench run. Retrieval metrics always run; answer generation
+and judging are optional through `judge_enabled`. Progress fields drive the
+admin UI while the run is executing, and frozen profile/domain snapshots plus
+metrics make the result immutable and reviewable later.
 
 | Column | Type | Notes |
 |---|---|---|

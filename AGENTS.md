@@ -27,13 +27,13 @@ Treat it as a POC, not a production service. Keep changes scoped and behavior-pr
 
 The list above is task-gated: load a file when your change touches its area. For orientation, the whole directory groups as follows.
 
-- **Contracts** (read before changing that area): `RETRIEVAL.md`, `SCHEMA.md`, `ROUTES.md`, `UI.md`, `I18N.md`, `SECURITY.md`, `AUTHENTICATION.md`, and `UX_REVIEW_GUIDE.md` (the durable rubric every UX review is judged by — its findings log is `UX_REVIEW.md`).
+- **Contracts** (read before changing that area): `RETRIEVAL.md`, `SCHEMA.md`, `ROUTES.md`, `UI.md`, `I18N.md`, `SECURITY.md`, `AUTHENTICATION.md`, and `UX_REVIEW_GUIDE.md` (the durable rubric every UX review is judged by — the latest completed findings log is archived at `archive/2026-06-19-UX_REVIEW.md`).
 - **Operating**: `DEVELOPMENT.md`, `SSO_DEPLOYMENT.zh-TW.md`, `RELEASE.md`.
 - **Grounding facts**: `DEPLOYMENT_CONTEXT.md`.
 - **Backlogs** (living, tick-off format): `ROADMAP.md`, `QUALITY.md`, `PERFORMANCE.md`. `REVIEW_BACKLOG_2026-08-22.md` is a **temporary** staging list from one review pass — its items dissolve into the three above as they land, and the file is deleted once empty.
 - **Design deep-dives**: `SPREADSHEET_INGESTION.md`, `PRODUCT_DESIGN_NOTES.md` (unscheduled product exploration, deliberately kept out of `ROADMAP.md` so the backlog stays scannable).
 - **Customer-facing**: `PRODUCT_WHITEPAPER.zh-TW.md`.
-- **Closed implementation plans**, kept as design records rather than instructions: `O0_DIMENSION_RESET_PLAN.md`, `E1E2_ANSWER_JUDGING_PLAN.md`. Both describe work that is **already done** — read them for *why* a design is shaped the way it is, never as a to-do list.
+- **Closed implementation plans**, kept as design records rather than instructions: `archive/O0_DIMENSION_RESET_PLAN.md`, `archive/E1E2_ANSWER_JUDGING_PLAN.md`. Both describe work that is **already done** — read them for *why* a design is shaped the way it is, never as a to-do list.
 
 ## Runtime And Dependencies
 
@@ -76,7 +76,7 @@ width-specific and invisible in tests.
 CI runs the same `py_compile` + `pytest` pair on every PR, so a green local run is
 a green CI run; see [`docs/RELEASE.md`](docs/RELEASE.md).
 
-For retrieval changes, also run the eval harness when an LLM configuration is available:
+For retrieval changes, also run the eval harness when an embedding model is configured (chat model and API key are optional):
 
 ```bash
 .venv/bin/python -m tests.eval_retrieval
@@ -96,7 +96,7 @@ For Docker/runtime changes, build the image and smoke-test at least `/` and `/lo
 ## Implementation Conventions
 
 - Keep the app server-rendered with Jinja templates and progressive enhancement through HTMX and Alpine.
-- Prefer existing helper functions and route patterns in `app/main.py` (core routes + shared web helpers), `app/retrieval.py` (retrieval engine), the admin route modules (`app/evals.py`, `app/admin.py`, `app/settings.py`), `app/db.py`, `app/llm.py`, `app/ingest.py`, and `app/vector_store.py`. New routes mount on `app` via `app.include_router(...)` at the bottom of `app/main.py`; route modules import shared helpers (`render`, `require_admin`, `record_audit_event`) back from `app.main`, so reach the app only through `app.main` (the package import root).
+- Prefer existing helper functions and route patterns in `app/main.py` (core routes + shared web helpers), `app/retrieval.py` (retrieval engine), `app/domain_policy.py` (E2 validation, matching, snapshots), the admin route modules (`app/evals.py`, `app/admin.py`, `app/settings.py`), `app/db.py`, `app/llm.py`, `app/ingest.py`, and `app/vector_store.py`. New routes mount on `app` via `app.include_router(...)` at the bottom of `app/main.py`; route modules import shared helpers (`render`, `require_admin`, `record_audit_event`) back from `app.main`, so reach the app only through `app.main` (the package import root).
 - Schema changes are currently handled through idempotent SQLite setup/migration helpers in `app/db.py`; add tests for new persistence behavior. **When you change the schema (new table, column, index, or constraint), update [`docs/SCHEMA.md`](docs/SCHEMA.md) in the same change** — it is the human-readable reference and must not drift from `app/db.py`.
 - Keep generated UI fragments in `app/templates/_*.html` when they are HTMX partials.
 - Keep Markdown rendering sanitized through the existing marked + DOMPurify path.

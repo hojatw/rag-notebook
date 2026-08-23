@@ -232,8 +232,11 @@ available:
 .venv/bin/python -m tests.eval_retrieval --top-k 10
 ```
 
-The harness reports per-question hit rank, Recall@k, and MRR. It skips when no
-LLM key is configured.
+The harness reports per-question hit rank, Recall@k, and MRR. It requires an
+embedding model, but not an API key: local OpenAI-compatible embedding services
+may be configured with a blank key. A chat model is optional; without one the
+harness measures the single-query / hybrid-order fallback path, and
+`--no-rerank` forces that path even when chat is configured.
 
 ## Layout
 
@@ -241,6 +244,7 @@ LLM key is configured.
 app/main.py            Core routes (notebooks/sources/chat/notes/tools/account), auth + shared
                        web helpers, lifespan, logging; mounts the route modules below.
 app/retrieval.py       Retrieval engine: hybrid search, scoring, ACTIVE_RETRIEVAL_PARAMS state.
+app/domain_policy.py   E2 domain-hint/policy validation, matching, snapshots, export summaries.
 app/evals.py           Admin Eval Workbench router (/admin/evals/*).
 app/admin.py           Admin console router (/admin/index*, /admin/audit, /admin/users*).
 app/settings.py        Admin LLM settings router (/settings, connection diagnostics).
@@ -250,7 +254,7 @@ app/ingest.py          Text extraction (PDF/DOCX/HTML/subtitles/PPTX/XLSX/CSV), 
                        vector upsert, per-source summary, A6a ingestion diagnostics.
 app/jobs.py            DB-backed ingest queue (ingest_jobs): enqueue + atomic claim + retry.
 app/worker.py          Ingest worker loop (standalone or inline).
-app/llm.py             LLM/embedding HTTP, query rewrite, rerank, starter questions.
+app/llm.py             LLM/embedding HTTP, query rewrite, rerank, grounded answers and tools.
 app/governance.py      AI usage/safety telemetry normalization + sanitized recorders.
 app/index_migration.py O0 embedding-dimension migration: source classification by
                        vector dimension, the /admin/index flow, and the

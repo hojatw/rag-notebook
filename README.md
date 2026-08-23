@@ -29,8 +29,9 @@ Open `http://127.0.0.1:8000` and sign in:
 - User: `user` / `user123`
 
 These demo accounts and the insecure development secret are for local
-development only. Change or remove the demo accounts before any network-exposed
-deployment.
+development only. Never expose that mode on a network. A deployment with a real
+`NOTEBOOKLM_SECRET` seeds only a one-time bootstrap `admin` account and forces a
+password change at first login; see [`docs/SECURITY.md`](docs/SECURITY.md).
 
 ## Docker
 
@@ -63,9 +64,10 @@ For deployment details, worker mode, logging, tuning, and test commands, see
 
 ## Configure LLM
 
-Sign in as admin and open `/settings`. Chat and embeddings both require a
-configured OpenAI-compatible or Azure OpenAI endpoint. Uploads stay disabled
-until the embedding model is configured.
+Sign in as admin and open `/settings`. Chat and embedding are independent
+OpenAI-compatible or Azure OpenAI connections; configure the capabilities the
+deployment uses. Uploads stay disabled until the embedding model is configured,
+while chat-backed answering and generation require a chat model.
 
 On save, the app probes the embedding endpoint once and rejects settings that
 would mismatch the existing Chroma index dimension. API keys are encrypted at
@@ -131,17 +133,21 @@ endpoint, not stored chunks.
   notes, and generated artifacts.
 - **Sources pane:** drag-and-drop upload, indexing-status polling, reindex and
   delete controls, source preview drawer, citation-to-chunk highlighting.
-- **Grounded chat:** streaming answers, Markdown rendering, source citations,
-  copy/export, follow-up chips, starter questions, IME-safe input, and
-  Traditional Chinese UI strings.
+- **Grounded chat:** streamed retrieval/generation status, bounded final-answer
+  classification, Markdown rendering, source citations, copy/export, follow-up
+  chips, starter questions, IME-safe input, and Traditional Chinese UI strings.
 - **Studio tools:** briefing strip, source comparison, meeting minutes, study
   guide, FAQ, timeline, translation, and manual save-to-notes flow.
 - **Hybrid retrieval:** query rewrite, Chroma vector search, SQLite keyword
   search, LLM reranking, abstain threshold, and per-message retrieval debug
   details.
+- **Notebook domain controls:** owner-managed bounded terms, synonyms, query
+  expansions, answer notes, and answer policy; query-time only, with no
+  re-indexing or extra LLM call for hints.
 - **Admin surfaces:** user management, vector-index console, LLM settings,
   audit trail, and in-deployment Eval Workbench with retrieval profiles,
-  comparisons, exports, and tuning guide.
+  optional answer/citation judging, E2 mode comparisons, exports, and tuning
+  guide.
 - **Governance backend:** compact LLM usage and safety-event telemetry without
   copying prompts, source text, retrieved snippets, model output, or API keys
   into governance metadata.
@@ -181,6 +187,8 @@ endpoint, not stored chunks.
 - [`docs/SCHEMA.md`](docs/SCHEMA.md) - SQLite schema reference.
 - [`docs/UI.md`](docs/UI.md) - frontend design contract and component
   conventions.
+- [`docs/I18N.md`](docs/I18N.md) - UI message catalog, adding strings/locales,
+  deployment locale selection, and known exceptions.
 - [`docs/ROUTES.md`](docs/ROUTES.md) - full HTTP route reference.
 - [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) - setup, testing, logging,
   tuning, deployment notes, and repository layout.
@@ -195,8 +203,8 @@ endpoint, not stored chunks.
 git diff --check
 ```
 
-For retrieval changes, also run the eval harness when an LLM configuration is
-available:
+For retrieval changes, also run the eval harness when an embedding model is
+configured (chat model and API key are optional):
 
 ```bash
 .venv/bin/python -m tests.eval_retrieval
@@ -206,9 +214,10 @@ available:
 ## Known Follow-Ups
 
 - No offline embedding fallback: configure embeddings before uploads.
-- UI copy is routed through a `zh-TW` message catalog (i18n foundation done,
-  `ROADMAP.md` U15a); adding an `en` locale + admin/per-user language controls
-  is U15b. See [`docs/I18N.md`](docs/I18N.md).
+- Shared/high-churn UI copy uses a `zh-TW` message catalog (i18n foundation
+  done, `ROADMAP.md` U15a); legacy inline template prose still needs extraction
+  before adding an `en` locale and admin/per-user language controls in U15b.
+  See [`docs/I18N.md`](docs/I18N.md).
 - Enterprise authentication is now a high-priority customer requirement.
   Trusted reverse-proxy header mode (`I1a`), OIDC (`I1b`), and the `/admin/auth`
   operator diagnostics page (`I1d`) are implemented and disabled by default
@@ -218,9 +227,10 @@ available:
   [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) and `ROADMAP.md` `I1`.
 - Admin LLM settings still use one global configuration. O1 Phase 1 diagnostics
   are done; multi-profile management and safe activation remain O1 Phase 2.
-- New source-format support should start with ingestion diagnostics, then
-  Q&A-style spreadsheets, SSRF-safe Web URL ingestion, and PPTX text-first
-  ingestion (`ROADMAP.md` A6a/A6c/A6/A6b).
+- Ingestion diagnostics, Q&A/generic-record spreadsheets, and text-first PPTX
+  ingestion are implemented. The next source-format path is SSRF-safe Web URL
+  ingestion (`ROADMAP.md` A6); OCR/vision remain capability- and
+  customer-driven.
 - Image search v1 is tracked as `ROADMAP.md` A9: use OCR + vision captions as
   text, embed that derived text with the configured embedding model, and show
   image thumbnails/previews as the cited source. Image uploads are gated by the

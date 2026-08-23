@@ -5,6 +5,10 @@
 > 本檔保留為**設計紀錄**——讀它是為了理解「為什麼判分機制長這樣」，例如為何 judge 的
 > 標籤在缺少 reference answer 時要作廢、為何 groundedness 與 citation 不受影響。
 > 現況以 [`QUALITY.md`](../QUALITY.md) 與 [`ROADMAP.md`](../ROADMAP.md) 為準。
+> **實作後偏離（2026-07-25）：** §4 的 `substring_hit_rate` answer anchor
+> 已撤回，因為它錯把 retrieval evidence substring 套到生成答案；目前沒有這個
+> judge input/metric。生成階段的結構化 abstain 也已納入 `did_abstain`。保留下面
+> 原方案是為了決策追溯，現行語意見 `QUALITY.md` Q1-6 與 `app/evals.py`。
 >
 > *（封存前這裡寫的是「已規劃、待實作」——那在實作完成後就沒有更新過，會讓讀者
 > 以為這件事還沒做。）*
