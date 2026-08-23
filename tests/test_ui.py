@@ -985,14 +985,13 @@ def test_upload_enqueues_ingest_job_instead_of_running_inline(monkeypatch, tmp_p
 
     with TestClient(main.app) as client:
         _login(client)
-        # Seed llm_settings directly: the /settings route does a live network
-        # probe that can't run offline, but the upload route only needs a
-        # "ready" config. (Schema exists now — init_db ran in the lifespan.)
+        # Seed only the embedding model: upload/indexing must not require chat,
+        # because per-source summary generation is best-effort. The /settings
+        # route does a live network probe that cannot run in this test.
         with db.connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
-                "VALUES (1, 'openai_compatible', 'https://api.example.com/v1', ?, 'chat', 'embed')",
-                (db.encrypt_for_storage("sk-test"),),
+                "VALUES (1, 'openai_compatible', 'https://api.example.com/v1', '', '', 'embed')",
             )
         with db.connect() as conn:
             user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
@@ -1000,6 +999,10 @@ def test_upload_enqueues_ingest_job_instead_of_running_inline(monkeypatch, tmp_p
                 "INSERT INTO notebooks (user_id, title) VALUES (?, 'Q')",
                 (user["id"],),
             ).lastrowid
+
+        page = client.get(f"/notebooks/{notebook_id}")
+        assert page.status_code == 200
+        assert "llm-not-ready" not in page.text
 
         resp = client.post(
             f"/notebooks/{notebook_id}/sources/upload",
@@ -1795,7 +1798,7 @@ def test_admin_eval_workbench_search_generate_approve_and_delete(monkeypatch, tm
         assert "自動生成 draft 題目" in detail.text
         assert "draft" in detail.text
         assert "approve" in detail.text
-        assert "執行 retrieval eval</button>" in detail.text
+        assert "執行 Eval run</button>" in detail.text
         assert "disabled" in detail.text
 
         with db.connect() as conn:
@@ -1831,7 +1834,7 @@ def test_admin_eval_workbench_search_generate_approve_and_delete(monkeypatch, tm
         assert htmx_approved.status_code == 200
         assert 'id="eval-items"' in htmx_approved.text
         assert '<!doctype html>' not in htmx_approved.text
-        assert "執行 retrieval eval" in htmx_approved.text
+        assert "執行 Eval run" in htmx_approved.text
 
         deleted = client.post(f"/admin/evals/sets/{eval_set_id}/delete", follow_redirects=False)
         assert deleted.status_code == 303

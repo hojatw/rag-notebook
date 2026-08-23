@@ -395,10 +395,11 @@ async def embed_texts(
     indexed chunks, ``"query"`` for search queries (e5-style). It only changes
     the text sent to the embedding endpoint, never the stored chunk text.
 
-    Raises RuntimeError when the embedding model or API key is missing — we
-    no longer fall back to a local hash embedder because the resulting
-    vectors are incompatible with whatever real model the index was built
-    against, and silent-fallback masks misconfiguration as poor retrieval.
+    Raises RuntimeError when the embedding model is missing. API keys are
+    optional for local OpenAI-compatible services. We no longer fall back to a
+    local hash embedder because the resulting vectors are incompatible with
+    whatever real model the index was built against, and silent fallback masks
+    misconfiguration as poor retrieval.
     """
     if not settings.get("embedding_model"):
         raise RuntimeError(

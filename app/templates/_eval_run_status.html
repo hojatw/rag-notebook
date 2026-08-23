@@ -28,7 +28,7 @@
     <div class="index-stat">
       <span class="index-stat-label">{{ t('evalr.avg_latency') }}</span>
       <span class="index-stat-value">{% if run.metrics %}{{ run.metrics.avg_latency_ms }}ms{% else %}—{% endif %}</span>
-      <span class="muted small">retrieval only</span>
+      <span class="muted small">{{ t('evalr.retrieval_latency_note') }}</span>
     </div>
   </div>
   {% if run.metrics and run.metrics.judge %}

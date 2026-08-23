@@ -18,8 +18,9 @@ ANY-of semantics keeps the eval fair across chunk sizes — smaller chunks
 correctly hold less context per chunk, so requiring ALL substrings would
 penalise good small-chunk retrieval rather than measuring it.
 
-Skips silently when LLM settings are not configured (the production
-fallback embedding is too noisy to be worth measuring).
+Skips when no embedding model is configured. API keys are optional for local
+OpenAI-compatible services, and a chat model is optional: without one the
+harness measures the production single-query / hybrid-order fallback path.
 """
 from __future__ import annotations
 
@@ -62,10 +63,11 @@ async def run(top_k: int, disable_rerank: bool) -> int:
     with connect() as conn:
         settings = load_llm_settings(conn) or {}
 
-    if not settings.get("api_key") or not settings.get("chat_model"):
-        print("LLM not configured — skipping eval (would only measure local-fallback embedding noise).")
+    if not settings.get("embedding_model"):
+        print("Embedding model not configured — skipping eval.")
         return 1
 
+    chat_model_configured = bool(settings.get("chat_model"))
     if disable_rerank:
         # Strip chat model so rewrite/rerank both fall back to no-LLM paths.
         settings = {**settings, "chat_model": ""}
@@ -93,7 +95,13 @@ async def run(top_k: int, disable_rerank: bool) -> int:
         return 3
 
     print(f"Running {len(questions)} questions against notebook id={notebook_id} ({len(source_ids)} indexed sources)")
-    print(f"top_k={top_k}, rerank={'off' if disable_rerank else 'on'}")
+    if disable_rerank:
+        chat_path = "off (--no-rerank; query rewrite also disabled)"
+    elif chat_model_configured:
+        chat_path = "on"
+    else:
+        chat_path = "off (chat model not configured; production fallback)"
+    print(f"top_k={top_k}, chat rewrite/rerank={chat_path}")
     print("=" * 80)
 
     hits = 0
@@ -139,7 +147,11 @@ async def run(top_k: int, disable_rerank: bool) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--top-k", type=int, default=5, help="rank cutoff for hit/MRR (default: 5)")
-    parser.add_argument("--no-rerank", action="store_true", help="disable LLM rerank to measure raw hybrid recall")
+    parser.add_argument(
+        "--no-rerank",
+        action="store_true",
+        help="disable query rewrite and LLM rerank to measure the production hybrid fallback",
+    )
     args = parser.parse_args()
     return asyncio.run(run(top_k=args.top_k, disable_rerank=args.no_rerank))
 

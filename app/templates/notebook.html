@@ -62,10 +62,11 @@
       </div>
     </header>
 
-    {% if not llm_status.ready %}
+    {% if not llm_status.has_embedding_model %}
       <div class="alert llm-not-ready">
-        尚未完成 LLM 設定。請管理員先到 <a href="/settings">系統設定</a> 設定
-        embedding 模型與聊天模型，才能上傳來源。
+        {{ t('upload.embedding_required_before') }}
+        <a href="/settings">{{ t('upload.embedding_required_link') }}</a>
+        {{ t('upload.embedding_required_after') }}
       </div>
     {% endif %}
 
@@ -95,13 +96,13 @@
                data-file-label="#nb-selected-file"
                data-file-summary="#nb-file-summary"
                data-max-files="{{ upload_batch_limit }}"
-               {% if not llm_status.ready %}disabled{% endif %}>
+               {% if not llm_status.has_embedding_model %}disabled{% endif %}>
         <span class="file-picker-trigger" aria-hidden="true">＋ 選擇檔案</span>
       </label>
       <span id="nb-selected-file" class="file-name">{{ t('js.upload_hint', max=upload_batch_limit) }}</span>
       <div id="nb-file-summary" class="upload-file-summary" aria-live="polite"></div>
       <button type="submit" class="wide" data-loading-text="上傳中..."
-              {% if not llm_status.ready %}disabled{% endif %}>上傳</button>
+              {% if not llm_status.has_embedding_model %}disabled{% endif %}>上傳</button>
       <p class="hint">{{ t('upload.formats', count=upload_batch_limit, limit_mb=max_upload_mb, eager_mb=max_eager_upload_mb) }}</p>
     </form>
 
