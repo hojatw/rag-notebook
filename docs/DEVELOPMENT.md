@@ -175,6 +175,46 @@ framing), refused from `Content-Length` before any body is read.
 `extract_max_file_bytes` was called `max_source_bytes` before this rename; the old
 key is still read, with a deprecation warning at startup.
 
+### Answer-stream partial streaming
+
+`[runtime].answer_stream_gate_chars` decides how much of an answer is buffered
+before any of it reaches the browser. It defaults to `0` — buffer everything —
+because that is the strongest form of the `[[RAG_ABSTAIN]]` guarantee: a model
+that writes a plausible preamble and only then abstains puts nothing on screen.
+See `docs/SECURITY.md` for what a positive value gives up and what it keeps.
+
+**Measure the provider before enabling it.** Partial streaming only helps if the
+provider delivers text *during* generation, and several hosted endpoints do not:
+
+```bash
+NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/python -m tests.probe_provider_stream
+```
+
+It makes one chat call, prints chunk arrival times, and states a verdict. The
+number that matters is how far into the stream the **first** chunk arrives.
+Measured against Azure OpenAI, the first of 243 chunks landed at 90% of the
+stream span, with a median inter-chunk gap of 0 ms — the completion is buffered
+upstream and released in one burst, the shape synchronous content filtering
+produces. A gate there gains ~0.2 s. A self-hosted vLLM/Ollama endpoint streams
+token by token and is the case that benefits.
+
+If the verdict says the provider streams, `120` is the value derived from the
+reference corpus. Re-derive it if answers differ in shape — the method is:
+
+1. Fit latency against `completion_tokens` over `llm_usage_events` where
+   `call_type='answer_stream'`. **Exclude `is_estimated = 1` rows**: their token
+   counts are a chars/4 fallback, which pins the chars-per-token ratio at 4.00
+   and wrecks the fit.
+2. Convert the gate from tokens to characters using a **low** chars-per-token
+   percentile (p10), so the cost estimate assumes the slowest case — dense CJK
+   prose, where a character costs roughly a token.
+3. For coverage, take the distribution of **first-sentence lengths** across
+   existing assistant messages as the proxy for "how long a model rambles before
+   it gives up". Abstentions are too rare to measure directly.
+4. Pick the smallest N above the p95 first sentence. On this corpus that is 118,
+   hence 120: it covers 91% of "full first sentence + marker" cases while 25% of
+   answers still finish inside the gate and stay fully buffered.
+
 ## Logging
 
 ```bash
