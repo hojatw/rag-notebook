@@ -109,3 +109,64 @@ def test_non_owner_cannot_reach_notebook_domain_runtime(monkeypatch, tmp_path):
     # check still fails inside the stream before retrieval or domain loading.
     assert response.status_code == 200
     assert calls["retrieve"] == 0
+
+
+def test_stream_discards_shown_text_when_it_abstains_after_the_gate(monkeypatch, tmp_path):
+    """A late abstention must clear the browser, not just append the refusal.
+
+    The generator streams a preamble past the gate and only then abstains. The
+    SSE response has to carry a `discard` event before the refusal chunk, and
+    the persisted message must still be the canned refusal alone.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    preamble = "這份文件確實提到了相關的營收數字。" * 8
+
+    async def fake_retrieve(question, rows, settings, history, user_id, source_ids=None, **kwargs):
+        return [{
+            "id": 1,
+            "source_id": 10,
+            "filename": "evidence.pdf",
+            "location": "p.1",
+            "text": "evidence",
+            "score": 0.9,
+        }]
+
+    async def fake_stream(question, chunks, settings, **kwargs):
+        yield preamble
+        kwargs["result_state"]["discard_stream"] = True
+        kwargs["result_state"]["abstained"] = True
+        yield kwargs["abstain_text"]
+
+    monkeypatch.setattr(main, "retrieve", fake_retrieve)
+    monkeypatch.setattr(main, "generate_answer_stream", fake_stream)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings "
+                "(id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+
+        response = client.post(
+            f"/notebooks/{notebook_id}/chat/ask-stream",
+            data={"question": "營收成長多少？", "conversation_id": ""},
+        )
+
+        assert response.status_code == 200
+        body = response.text
+        assert "event: discard" in body
+        # Order matters: the client must be told to clear before the refusal.
+        assert body.index("event: discard") < body.rindex(main.i18n.t("chat.abstain"))
+
+        with db.connect() as conn:
+            saved = dict(conn.execute(
+                "SELECT content, metadata_json FROM messages "
+                "WHERE role = 'assistant' ORDER BY id DESC LIMIT 1"
+            ).fetchone())
+        assert saved["content"] == main.i18n.t("chat.abstain")
+        assert preamble not in saved["content"]
+        assert json.loads(saved["metadata_json"])["outcome"] == "abstained"

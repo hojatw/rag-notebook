@@ -3827,6 +3827,13 @@ async def ask_stream(
                     abstain_text=i18n.t("chat.abstain"),
                     result_state=result_state,
                 ):
+                    # The stream classified an abstention after it had already
+                    # shown text. Clear the client's buffer before appending the
+                    # refusal, so the ungrounded preamble does not linger until
+                    # the final `done` swap.
+                    if result_state.pop("discard_stream", False):
+                        answer = ""
+                        yield sse_event("discard", {})
                     answer += piece
                     yield sse_event("chunk", {"text": piece})
                 metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
