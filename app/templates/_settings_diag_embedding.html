@@ -1,0 +1,33 @@
+{# Embedding diagnostics card. Rendered inline by settings.html and swapped on
+   its own by /settings/test-embedding. The wrapper id is the hx-target. #}
+{% from "_status_macros.html" import status_class %}
+<div id="embedding-diagnostics" class="diagnostic-slot">
+  {% if diagnostic_notice and diagnostic_kind == 'embedding' %}<div class="notice">{{ diagnostic_notice }}</div>{% endif %}
+  {% set embedding_diag = (settings.diagnostics or {}).get('embedding', {}) %}
+  <article class="card card--flat diagnostic-card">
+    <div class="diagnostic-card-head">
+      <h3>{{ t('settings.embedding_diag') }}</h3>
+      {% if embedding_diag %}
+        <span class="status {{ status_class(embedding_diag.status) }}">{{ diagnostic_status_labels.get(embedding_diag.status, embedding_diag.status) }}</span>
+      {% endif %}
+    </div>
+    {% if embedding_diag %}
+      <dl class="diagnostic-list">
+        <div><dt>{{ t('settings.provider') }}</dt><dd>{{ embedding_diag.provider or '—' }}</dd></div>
+        <div><dt>{{ t('settings.model') }}</dt><dd>{{ embedding_diag.model or '—' }}</dd></div>
+        <div><dt>{{ t('settings.latency') }}</dt><dd>{{ embedding_diag.latency_ms }} ms</dd></div>
+        <div><dt>{{ t('settings.embedding_dimension') }}</dt><dd>{{ embedding_diag.embedding_dimension if embedding_diag.embedding_dimension is not none else '—' }}</dd></div>
+        <div><dt>{{ t('settings.current_index_dimension') }}</dt><dd>{{ embedding_diag.current_index_dimension if embedding_diag.current_index_dimension is not none else '—' }}</dd></div>
+        <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ embedding_diag.tested_at or '—' }}</dd></div>
+        {% if embedding_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ embedding_diag.error_class }}</dd></div>{% endif %}
+      </dl>
+      {% if embedding_diag.index_readable is defined and not embedding_diag.index_readable %}
+        <p class="notice failed">{{ t('settings.index_unreadable_warn') }}</p>
+      {% elif embedding_diag.embedding_dimension is not none and embedding_diag.current_index_dimension is not none and embedding_diag.embedding_dimension != embedding_diag.current_index_dimension %}
+        <p class="notice failed">{{ t('settings.dim_mismatch_warn') }}</p>
+      {% endif %}
+    {% else %}
+      <p class="muted">{{ t('settings.no_diag') }}</p>
+    {% endif %}
+  </article>
+</div>
