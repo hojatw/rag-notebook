@@ -256,6 +256,13 @@ expansions/answer note 均由真正的 `<label>` 包住。Hint delete 必須是�
   `data-confirm="清楚說明後果的一句話"`(`app.js:321` 觸發原生確認框)。
 - **HTMX 局部更新**:就地更新用 `hx-target`/`hx-swap="outerHTML"`,partial 命名 `_*.html`;
   跨片段連動用 `HX-Trigger` 事件(見 `CLAUDE.md` 的 `indexed-sources-changed` 等)。
+  - **一個表單裡的「測試/預覽」類動作不要用 `formaction` 整頁送出。** 那會重繪整頁,
+    同時丟掉兩樣使用者在意的東西:捲動位置(結果通常在摺線下方),以及**尚未儲存但剛
+    被拿去測試的輸入值**——表單會彈回資料庫裡的舊值。改成 `type="button"` + `hx-post`
+    + `hx-include="closest form"`,只把結果片段換回來(見 `/settings` 的兩顆測試鈕與
+    `_settings_diag_*.html`)。伺服器端以 `HX-Request` 判斷回傳 partial 或整頁,保留無 JS 時可用。
+  - **partial 要能單獨算繪**。父模板用 `{% macro %}` 定義的巨集在 partial 被單獨算繪時
+    不存在,共用的請放 `_status_macros.html` 之類的檔案再 `{% from ... import ... %}`。
 - **輪詢**:背景工作(如 eval run)用 `hx-trigger="load delay:1s, every 2s"`,完成後停止輪詢。
 - **hover/focus**:已由全域 token 統一(`:focus-visible` → `--shadow-focus`),元件不要各自覆寫。
 
