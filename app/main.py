@@ -2648,6 +2648,17 @@ def reindex_source(
         if source is None:
             logger.warning("source_reindex_missing user_id=%s notebook_id=%s source_id=%s", user["id"], notebook_id, source_id)
             raise HTTPException(status_code=404, detail=i18n.t("error.source_not_found"))
+        # Mirror the upload path, which inserts the row as 'uploaded' before
+        # enqueuing. A queued source has to *look* queued: `_source_item.html`
+        # only carries its HTMX polling attributes while the status is
+        # uploaded/processing, so leaving it at 'indexed' re-renders a row that
+        # never polls — the worker flips the status seconds later and nothing on
+        # the page is listening until a manual reload.
+        conn.execute(
+            "UPDATE sources SET status = 'uploaded', error = '', updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND notebook_id = ? AND user_id = ?",
+            (source_id, notebook_id, user["id"]),
+        )
         touch_notebook(conn, notebook_id)
     enqueue_source(source_id)
     record_audit_event(

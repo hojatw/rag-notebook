@@ -2614,6 +2614,11 @@ def test_admin_index_migration_requires_typing_the_dimension(monkeypatch, tmp_pa
     """A destructive action needs more than one click."""
     import json as json_module
 
+    def _diagnostic_status_succeeded():
+        from app.llm import DIAGNOSTIC_STATUS_SUCCEEDED
+
+        return DIAGNOSTIC_STATUS_SUCCEEDED
+
     main, db = _fresh_app(monkeypatch, tmp_path)
 
     with TestClient(main.app) as client:      # the schema is created by the lifespan
@@ -2622,7 +2627,15 @@ def test_admin_index_migration_requires_typing_the_dimension(monkeypatch, tmp_pa
             conn.execute("INSERT OR IGNORE INTO llm_settings (id) VALUES (1)")
             conn.execute(
                 "UPDATE llm_settings SET diagnostics_json = ? WHERE id = 1",
-                (json_module.dumps({"embedding": {"status": "ok", "embedding_dimension": 1536}}),),
+                # Must be the status a real probe writes. This said "ok" —
+                # matching the gate's old comparison but nothing the app ever
+                # stored — so the test passed while real admins were blocked.
+                (json_module.dumps({
+                    "embedding": {
+                        "status": _diagnostic_status_succeeded(),
+                        "embedding_dimension": 1536,
+                    }
+                }),),
             )
             conn.commit()
 
@@ -2710,8 +2723,16 @@ def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_p
 
         page = client.get("/settings")
         assert page.status_code == 200
-        assert 'formaction="/settings/test-chat"' in page.text
-        assert 'formaction="/settings/test-embedding"' in page.text
+        # The tests are HTMX swaps, not form submits — a full re-render would
+        # discard the scroll position and any unsaved values the probe just ran
+        # against. Pin the target ids too, since the swap silently no-ops if a
+        # partial's wrapper id and its button's hx-target drift apart.
+        assert 'hx-post="/settings/test-chat"' in page.text
+        assert 'hx-target="#chat-diagnostics"' in page.text
+        assert 'id="chat-diagnostics"' in page.text
+        assert 'hx-post="/settings/test-embedding"' in page.text
+        assert 'hx-target="#embedding-diagnostics"' in page.text
+        assert 'id="embedding-diagnostics"' in page.text
 
         chat = client.post(
             "/settings/test-chat",
@@ -3899,3 +3920,49 @@ def test_an_expired_session_is_refused(monkeypatch, tmp_path):
         assert client.get("/notebooks", follow_redirects=False).status_code == 303
     finally:
         client.__exit__(None, None, None)
+
+
+def test_reindex_marks_the_source_queued_so_its_row_keeps_polling(monkeypatch, tmp_path):
+    """A queued source must look queued, or the UI silently stops tracking it.
+
+    `_source_item.html` only carries its HTMX polling attributes while the
+    status is uploaded/processing. Reindex used to enqueue the job without
+    touching `sources.status`, so the row re-rendered as `indexed` with no
+    polling — the worker flipped the status seconds later and the page showed
+    stale text until a manual reload.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        _, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+            source_id = conn.execute(
+                """
+                INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, error)
+                VALUES (?, ?, 'stale.txt', '/tmp/missing-stale.txt', 'indexed', 'previous failure')
+                """,
+                (user["id"], notebook_id),
+            ).lastrowid
+            conn.commit()
+
+        row = client.get(f"/notebooks/{notebook_id}/sources/{source_id}/_partial")
+        assert "hx-trigger" not in row.text, "an indexed source should not poll"
+
+        assert client.post(
+            f"/notebooks/{notebook_id}/sources/{source_id}/reindex", follow_redirects=False
+        ).status_code == 303
+
+        with db.connect() as conn:
+            source = dict(conn.execute(
+                "SELECT status, error FROM sources WHERE id = ?", (source_id,)
+            ).fetchone())
+        assert source["status"] == "uploaded"
+        assert source["error"] == "", "the stale error must be cleared on retry"
+
+        # The rendered row now carries the polling attributes, which is the part
+        # the user actually sees fail.
+        row = client.get(f"/notebooks/{notebook_id}/sources/{source_id}/_partial")
+        assert 'hx-trigger="every 2s' in row.text
+        assert f"/notebooks/{notebook_id}/sources/{source_id}/_partial" in row.text
