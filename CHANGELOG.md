@@ -33,11 +33,18 @@
   改由 `llm.DIAGNOSTIC_STATUS_SUCCEEDED` 共用，兩端不會再漂移。
   相關測試原本自己偽造 `{"status": "ok"}` 餵給讀取端，等於把錯誤假設抄進
   測試；已改用真值，並新增一個串起「探測 → 存檔 → 閘門」的契約測試。
-- **重新索引後來源狀態不更新**：`enqueue_source()` 只寫 `ingest_jobs`，沒有
-  改 `sources.status`。而來源列只在狀態為 `uploaded`/`processing` 時才帶
-  HTMX 輪詢屬性，所以重新索引後那一列以 `indexed` 重繪且完全不輪詢——worker
-  幾秒後改了狀態，畫面卻要手動重新整理才看得到。重新索引改為在同一個請求內
-  把狀態設回 `uploaded` 並清除舊的錯誤訊息，與上傳路徑一致。
+- **重新索引後來源狀態不更新**（兩個獨立成因）：
+  1. `enqueue_source()` 只寫 `ingest_jobs`，沒有改 `sources.status`。而來源列
+     只在狀態為 `uploaded`/`processing` 時才帶 HTMX 輪詢屬性，所以重新索引後
+     那一列以 `indexed` 重繪且完全不輪詢。重新索引改為在同一個請求內把狀態
+     設回 `uploaded` 並清除舊的錯誤訊息，與上傳路徑一致。
+  2. 修好上面那點之後狀態會顯示「已上傳」，卻仍然不會變成「處理中」——因為
+     `extract_sections()` 是同步 CPU 密集工作卻直接跑在 event loop 上，開著
+     inline worker（預設）時**整個 app 在抽取期間停止回應**，實測一份 881
+     sections 的 PDF 凍住 32 秒，而那正好覆蓋 processing 狀態的整個存在期間。
+     抽取改用 `asyncio.to_thread`。修正後同一份 PDF 抽取的 34 秒內，伺服器
+     正常服務了 7 次狀態輪詢。副作用：該期間請求延遲從約 4ms 升到約 200ms
+     （GIL 競爭）；正式環境仍建議用獨立的 `python -m app.worker`。
 - **設定頁測試後跳回頁首、且還原未儲存的設定**：測試鈕原本是 `formaction`
   整頁送出，重繪時用資料庫的值填回表單——捲動位置與剛剛拿去測試的輸入值
   兩者都會消失。改為 HTMX 局部更新，只換回診斷卡片；表單完全不動，兩個問題

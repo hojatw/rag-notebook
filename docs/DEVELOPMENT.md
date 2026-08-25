@@ -35,6 +35,17 @@ worker alongside it:
 Docker Compose does this automatically with separate `app` and `worker`
 services. They share the same `./data` bind mount.
 
+**Anything blocking added to the ingest pipeline must go through
+`asyncio.to_thread`.** `process_source` is `async`, but with the inline worker it
+runs *inside* the web process, so a synchronous CPU-bound step there stops the
+server answering anything at all. Extraction used to be called directly and froze
+the app for 32 seconds on an 881-section PDF — long enough to swallow the entire
+`processing` window, so a reindexed source's row sat at "uploaded" until the user
+reloaded by hand. Nothing errored; the requests simply queued. Extraction now
+runs in a thread. Expect roughly 200 ms request latency (up from ~4 ms) while a
+large extraction is in flight — GIL contention with the worker thread — which is
+another reason a real deployment should run the worker out of process.
+
 ## Deployment Notes
 
 - Build on the target host when possible so the image matches the host
