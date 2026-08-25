@@ -37,6 +37,14 @@ class AnswerResult:
 
 MAX_STREAM_BUFFER_CHARS = 100_000
 
+# The status value a passing `/settings` probe writes into
+# `llm_settings.diagnostics_json`. Readers that gate on a successful probe must
+# compare against this rather than spelling the string themselves — the O0
+# dimension migration was unreachable for exactly that reason, comparing to a
+# literal "ok" that nothing ever wrote.
+DIAGNOSTIC_STATUS_SUCCEEDED = "succeeded"
+DIAGNOSTIC_STATUS_FAILED = "failed"
+
 QUERY_REWRITE_PROMPT = """You create retrieval queries for a source-grounded RAG system.
 Do not answer the user. Rewrite the user's question into 1 to 4 concise search queries.
 Resolve pronouns from the conversation context when possible.
@@ -465,7 +473,7 @@ async def probe_embedding_diagnostics(
     provider = settings.get("provider") or "openai_compatible"
     model = settings.get("embedding_model") or ""
     result: dict[str, Any] = {
-        "status": "failed",
+        "status": DIAGNOSTIC_STATUS_FAILED,
         "provider": provider,
         "model": model,
         "latency_ms": 0.0,
@@ -537,7 +545,7 @@ async def probe_embedding_diagnostics(
         model_key="embedding_model",
     )
     result.update({
-        "status": "succeeded",
+        "status": DIAGNOSTIC_STATUS_SUCCEEDED,
         "latency_ms": round(elapsed_ms, 1),
         "embedding_dimension": dimension,
     })

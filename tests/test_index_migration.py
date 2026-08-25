@@ -317,14 +317,59 @@ def test_target_dimension_requires_a_successful_embedding_test(fresh_modules):
             )
             conn.commit()
 
-    _store({"status": "failed", "embedding_dimension": 1536})
+    # Spell the status through the constant the probe writes, not a literal.
+    # These assertions used to hardcode "ok", a value nothing ever stored, so
+    # they passed while the real gate was permanently shut.
+    from app.llm import DIAGNOSTIC_STATUS_FAILED, DIAGNOSTIC_STATUS_SUCCEEDED
+
+    _store({"status": DIAGNOSTIC_STATUS_FAILED, "embedding_dimension": 1536})
     assert im.target_dimension_from_diagnostics()[0] is None      # a failed probe is not a target
 
-    _store({"status": "ok", "embedding_dimension": None})
+    _store({"status": DIAGNOSTIC_STATUS_SUCCEEDED, "embedding_dimension": None})
     assert im.target_dimension_from_diagnostics()[0] is None      # ok but no number
 
-    _store({"status": "ok", "embedding_dimension": 1536})
+    _store({"status": DIAGNOSTIC_STATUS_SUCCEEDED, "embedding_dimension": 1536})
     assert im.target_dimension_from_diagnostics() == (1536, "")
+
+
+def test_probe_output_actually_opens_the_migration_gate(fresh_modules, monkeypatch):
+    """Pin the writer/reader contract end to end, not each side's assumption.
+
+    The regression this guards was invisible to per-side tests: the probe wrote
+    `"succeeded"`, the gate compared to `"ok"`, and the gate's own test
+    fabricated `"ok"` — so every test passed while the migration flow could
+    never be reached. Drive a real probe result through the real storage path
+    and assert the gate opens.
+    """
+    import asyncio
+    import json as json_module
+
+    import app.index_migration as im
+    from app import llm
+
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        return {"data": [{"embedding": [0.0] * 1024}], "usage": {"total_tokens": 3}}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+    monkeypatch.setattr(llm, "_record_usage_event", lambda **kwargs: None)
+
+    # The real probe decides the status string; nothing here spells it out.
+    result = asyncio.run(llm.probe_embedding_diagnostics({
+        "provider": "openai_compatible",
+        "base_url": "https://example.invalid/v1",
+        "embedding_model": "test-embed",
+    }))
+    assert result["embedding_dimension"] == 1024
+
+    with fresh_modules.db.connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO llm_settings (id) VALUES (1)")
+        conn.execute(
+            "UPDATE llm_settings SET diagnostics_json = ? WHERE id = 1",
+            (json_module.dumps({"embedding": result}),),
+        )
+        conn.commit()
+
+    assert im.target_dimension_from_diagnostics() == (1024, "")
 
 
 # -------------------- end-to-end --------------------
