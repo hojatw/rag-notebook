@@ -2260,7 +2260,7 @@ def test_admin_eval_run_results_partial_polls_while_running(monkeypatch, tmp_pat
             )
             conn.execute(
                 "UPDATE eval_runs SET status = 'succeeded', metrics_json = ? WHERE id = ?",
-                (db.dumps({"recall_at_k": 1.0, "mrr": 1.0, "hits": 1, "scored": 1, "avg_latency_ms": 12.5}), run_id),
+                (db.dumps(_single_hit_metrics(main)), run_id),
             )
 
         results = client.get(f"/admin/evals/runs/{run_id}/_results")
@@ -2401,7 +2401,7 @@ def test_eval_run_exports_sanitized_and_full_report_with_audit(monkeypatch, tmp_
                     eval_set_id,
                     admin_user["id"],
                     db.dumps(main.current_retrieval_profile_params()),
-                    db.dumps({"recall_at_k": 1.0, "mrr": 1.0, "hits": 1}),
+                    db.dumps(_single_hit_metrics(main)),
                     db.dumps(domain_snapshot),
                 ),
             ).lastrowid
@@ -3358,6 +3358,39 @@ def test_source_preview_shows_ingestion_diagnostics(monkeypatch, tmp_path):
         assert "表格" in preview.text                  # section-kind breakdown
 
 
+def _single_hit_metrics(main=None):
+    """Run metrics for one hit, from the real producer.
+
+    Both call sites used to hand-write this blob — and disagreed with each other
+    (one carried `scored`/`avg_latency_ms`, the other did not), which is the
+    smell: two fabrications of one contract cannot both be right.
+    """
+    # Imported here, not at module scope: app.evals imports shared helpers back
+    # from app.main, so it is only safe to reach once main is fully loaded.
+    from app.evals import run_metrics_from_results
+
+    return run_metrics_from_results(
+        [{"status": "hit", "hit_rank": 1, "latency_ms": 12.5, "top_score": 0.91}]
+    )
+
+
+def _failed_extract_diagnostics() -> dict:
+    """The diagnostics blob ingest persists when extraction yields nothing.
+
+    Produced by `collect_ingest_diagnostics` so the drawer test is pinned to the
+    real shape. Hand-writing this is how a renderer and its producer drift apart
+    without any test noticing (AGENTS.md → Writing tests that actually hold).
+    """
+    from app import ingest as ingest_module
+
+    extraction = ingest_module.ExtractionResult(
+        sections=[], extractor="pdf_pypdf", notes=[]
+    )
+    diagnostics = ingest_module.collect_ingest_diagnostics(extraction, [])
+    diagnostics["failed_stage"] = "extract"
+    return diagnostics
+
+
 def test_failed_source_row_is_openable_and_flags_warnings(monkeypatch, tmp_path):
     """A failed source must be inspectable — its diagnostics are the only clue."""
     main, db = _fresh_app(monkeypatch, tmp_path)
@@ -3370,16 +3403,10 @@ def test_failed_source_row_is_openable_and_flags_warnings(monkeypatch, tmp_path)
             source_id = conn.execute(
                 "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, error, diagnostics_json) "
                 "VALUES (?, ?, 'broken.pdf', '/tmp/broken.pdf', 'failed', '解析失敗', ?)",
-                (user_id, nb_id, json.dumps({
-                    "extractor": "pdf_pypdf",
-                    "chars": 0,
-                    "sections": 0,
-                    "chunks": 0,
-                    "section_kinds": {},
-                    "warnings": [{"code": "low_text", "chars": 0, "threshold": 200}],
-                    "preview": "",
-                    "failed_stage": "extract",
-                })),
+                # Built by the real producer, not hand-written: a fabricated blob
+                # would keep this drawer test green even if the shape it renders
+                # stopped matching what ingest actually persists.
+                (user_id, nb_id, json.dumps(_failed_extract_diagnostics())),
             ).lastrowid
 
         row = client.get(f"/notebooks/{nb_id}/sources/{source_id}/_partial")

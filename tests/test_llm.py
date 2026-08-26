@@ -799,3 +799,61 @@ def test_unsupported_parameter_400_gets_an_actionable_message():
     )
     plain_exc = httpx.HTTPStatusError("400", request=plain.request, response=plain)
     assert main.friendly_error_message(plain_exc) != main.i18n.t("error.unsupported_parameter")
+
+
+def test_capability_probe_output_actually_reaches_build_chat_request(monkeypatch):
+    """Pin the probe → diagnostics → request-shape contract end to end.
+
+    `chat_sampling_support` had no test at all, yet every LLM call reads it: it
+    decides whether `temperature` is sent and whether the cap is `max_tokens` or
+    `max_completion_tokens`. Its inputs are capability statuses written by the
+    probe into `llm_settings.diagnostics_json` — the same untyped-blob contract
+    that let `/admin/index` compare against a `"ok"` no writer produced.
+
+    Nothing here spells a status string: the probe decides it, and the assertion
+    is on the request shape a caller would actually get.
+    """
+    import asyncio
+
+    from app import llm as llm_module
+
+    calls: list[dict] = []
+
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        calls.append(payload)
+        # A GPT-5-class model: rejects `temperature`, wants `max_completion_tokens`.
+        if "temperature" in payload:
+            raise RuntimeError("Unsupported parameter: 'temperature' is not supported")
+        if "max_tokens" in payload:
+            raise RuntimeError("Unsupported parameter: use 'max_completion_tokens'")
+        return {"choices": [{"message": {"content": "pong"}}]}
+
+    async def fake_post_status(url, headers, payload, timeout, retry_stats=None):
+        try:
+            return await fake_post(url, headers, payload, timeout, retry_stats)
+        except RuntimeError as exc:
+            raise httpx.HTTPStatusError(
+                str(exc),
+                request=httpx.Request("POST", url),
+                response=httpx.Response(400, text=str(exc)),
+            ) from None
+
+    monkeypatch.setattr(llm_module, "_post_json_with_retry", fake_post_status)
+
+    settings = {
+        "provider": "openai_compatible",
+        "base_url": "https://example.invalid/v1",
+        "chat_model": "reasoning-model",
+    }
+    capabilities = asyncio.run(llm_module._probe_sampling_params(settings, usage_context=None))
+
+    # Feed the probe's own output back the way the app stores it.
+    probed = {**settings, "diagnostics": {"chat": {"capabilities": capabilities}}}
+    support = llm_module.chat_sampling_support(probed)
+    assert support["temperature"] is False
+    assert support["max_tokens_field"] == "max_completion_tokens"
+
+    request = llm_module.build_chat_request(probed, "hi", call_type="answer_stream")
+    assert "temperature" not in request["json"], "a model that rejects it must not be sent it"
+    assert "max_completion_tokens" in request["json"]
+    assert "max_tokens" not in request["json"]
