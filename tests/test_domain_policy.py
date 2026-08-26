@@ -310,5 +310,99 @@ def test_streaming_never_emits_marker_even_after_normal_text(monkeypatch):
 
     output = asyncio.run(collect())
     assert llm.ABSTAIN_MARKER not in output
-    assert output.endswith("localized refusal")
+    # Exact equality, not endswith: the whole point of this test is that the
+    # earlier normal text is gone, and "partial normal text localized refusal"
+    # would satisfy endswith while failing the property the test is named for.
+    assert output == "localized refusal"
     assert state == {"abstained": True}
+
+
+# --- Partial streaming: prefix gate + tail hold ------------------------------
+
+
+def _run_stream(monkeypatch, pieces, *, gate=None, state=None):
+    """Drive generate_answer_stream over a canned provider stream."""
+    async def fake_stream(*args, **kwargs):
+        for piece in pieces:
+            yield piece
+
+    monkeypatch.setattr(llm, "chat_completion_stream", fake_stream)
+    if gate is not None:
+        monkeypatch.setattr(llm.config.runtime, "answer_stream_gate_chars", gate)
+
+    async def collect():
+        return [
+            piece
+            async for piece in llm.generate_answer_stream(
+                "q",
+                [{"filename": "f", "location": "l", "text": "t"}],
+                {"chat_model": "m"},
+                abstain_text="localized refusal",
+                result_state=state if state is not None else {},
+            )
+        ]
+
+    return asyncio.run(collect())
+
+
+def test_split_emittable_holds_any_suffix_that_could_grow_into_the_marker():
+    # A tail that is still a prefix of the marker must never be emitted.
+    assert llm._split_emittable("答案 [[RAG_") == ("答案 ", "[[RAG_")
+    assert llm._split_emittable("答案 [") == ("答案 ", "[")
+    assert llm._split_emittable("答案 [[") == ("答案 ", "[[")
+    # A completed citation is not a marker prefix and flows straight through.
+    assert llm._split_emittable("答案 [1]") == ("答案 [1]", "")
+    assert llm._split_emittable("") == ("", "")
+
+
+def test_gate_zero_restores_full_buffering(monkeypatch):
+    body = "正常答案。" * 60  # far past the default gate
+    pieces = _run_stream(monkeypatch, [body[:150], body[150:]], gate=0)
+    assert pieces == [body]  # exactly one emission, as before partial streaming
+
+
+def test_answer_shorter_than_the_gate_is_still_fully_buffered(monkeypatch):
+    pieces = _run_stream(monkeypatch, ["短答案 ", "[1]"], gate=120)
+    assert pieces == ["短答案 [1]"]
+
+
+def test_long_answer_streams_incrementally_and_loses_nothing(monkeypatch):
+    body = "".join(f"第{i}段內容。" for i in range(40))
+    chunks = [body[i:i + 25] for i in range(0, len(body), 25)]
+    pieces = _run_stream(monkeypatch, chunks, gate=120)
+    assert len(pieces) > 1, "a long answer should reach the browser in parts"
+    assert "".join(pieces) == body
+
+
+def test_marker_split_across_chunks_after_the_gate_never_leaks(monkeypatch):
+    # The gate opens on the preamble, then the provider splits the marker the
+    # way a real stream does. Neither half may reach the caller.
+    preamble = "這份文件確實提到了相關的營收數字。" * 8
+    state: dict = {}
+    pieces = _run_stream(
+        monkeypatch, [preamble, "[[RAG_", "ABSTAIN]]", " trailing"], gate=120, state=state
+    )
+    joined = "".join(pieces)
+    assert llm.ABSTAIN_MARKER not in joined
+    assert "[[RAG" not in joined
+    assert pieces[-1] == "localized refusal"
+    assert state["abstained"] is True
+    # Text was already on screen, so the caller must be told to clear it.
+    assert state["discard_stream"] is True
+
+
+def test_compliant_abstention_never_reaches_the_caller(monkeypatch):
+    # A compliant model emits the marker alone at position 0 — always inside
+    # the gate, so nothing is shown and no discard is needed.
+    state: dict = {}
+    pieces = _run_stream(monkeypatch, ["[[RAG_ABSTAIN]]"], gate=120, state=state)
+    assert pieces == ["localized refusal"]
+    assert state["abstained"] is True
+    assert "discard_stream" not in state
+
+
+def test_no_discard_signal_when_abstention_lands_inside_the_gate(monkeypatch):
+    state: dict = {}
+    pieces = _run_stream(monkeypatch, ["前言。", "[[RAG_ABSTAIN]]"], gate=120, state=state)
+    assert pieces == ["localized refusal"]
+    assert "discard_stream" not in state

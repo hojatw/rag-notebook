@@ -85,6 +85,7 @@
   --chip-neutral-text: #42464d;
   --code-bg: #1d1c22;                   /* markdown code block (inverted in light) */
   --code-text: #f0eef9;
+  --switch-knob: #ffffff;               /* toggle switch knob (track uses --line-strong / --accent) */
 
   /* motion */
   --ease: cubic-bezier(.2,.7,.2,1);
@@ -158,6 +159,7 @@
   --chip-neutral-text: #cdcad8;
   --code-bg: #0f0e14;
   --code-text: #e9e6f5;
+  --switch-knob: #f4f2fb;
 }
 
 * { box-sizing: border-box; }
@@ -1026,6 +1028,119 @@ li code {
   opacity: 0.55;
 }
 
+/* Inline checkbox + caption. Base `label` is a grid (text over control), which
+   is right for text fields but stacks a checkbox above its own caption and
+   stretches its hit box across the whole column — so any `.setting-check`
+   without a local rule silently rendered as a centred, full-width checkbox.
+   This global base is what makes the class safe to reuse anywhere. */
+.setting-check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.setting-check input[type="checkbox"] {
+  flex: none;
+}
+
+/* ---------------------------------------------------------------- switch field */
+
+/* Row-shaped on/off control: label + optional description on the left, switch
+   on the right, whole row clickable. Use it for "enable this feature" toggles
+   where the checkbox governs a block of settings, so the switch reads as a
+   mode and not as one more form field. */
+.switch-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  cursor: pointer;
+  font-weight: 400;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.switch-field:hover {
+  border-color: var(--line-strong);
+}
+
+.switch-field-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.switch-field-text strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.switch-field-text span {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* The input itself is the track; ::after is the knob. Keeping the native
+   checkbox (rather than hiding it behind a fake element) preserves keyboard
+   toggling, focus order, and form serialization for free. */
+.switch-field input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: none;
+  width: 40px;
+  min-width: 40px;
+  height: 22px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: var(--line-strong);
+  cursor: pointer;
+  transition: background 140ms var(--ease), border-color 140ms var(--ease);
+}
+
+.switch-field input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--switch-knob);
+  box-shadow: 0 1px 2px rgba(31, 27, 46, 0.3);
+  transition: transform 140ms var(--ease);
+}
+
+.switch-field input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch-field input[type="checkbox"]:checked::after {
+  transform: translateX(18px);
+}
+
+.switch-field input[type="checkbox"]:focus-visible {
+  outline: 0;
+  box-shadow: var(--shadow-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch-field input[type="checkbox"],
+  .switch-field input[type="checkbox"]::after {
+    transition: none;
+  }
+}
+
 .source-checkbox-list {
   max-height: 260px;
   overflow: auto;
@@ -1826,6 +1941,36 @@ td.empty {
   background: transparent;
 }
 
+/* UI.md §3.9. Quieter than `.empty` (no accent wash) because it marks an empty
+   list inside a section rather than a whole empty page. `.empty`,
+   `.run-compare-empty` and the bare muted paragraphs still converge here. */
+.empty-state {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-5);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+  text-align: center;
+}
+
+.empty-state h2,
+.empty-state h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text);
+}
+
+.empty-state p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 /* ---------------------------------------------------------------- chat */
 
 .chat-layout {
@@ -2241,22 +2386,81 @@ legend {
 }
 
 /* E2 notebook domain settings stay in the regular settings width. Cards are
-   vertical by design: long terms and policy notes remain readable on phones. */
+   vertical by design: long terms and policy notes remain readable on phones.
+
+   The page holds three independent POST scopes (notebook-level settings, each
+   existing hint, the new-hint form). Every scope is drawn as its own bordered
+   panel with its save row pinned inside that border, so "which button saves
+   what" is answered by the card boundary instead of by proximity. */
 .domain-settings textarea {
   min-height: 0;
   resize: vertical;
 }
 
-.domain-section-head {
-  display: flex;
+/* Section titles here are real headings, not the global 12px uppercase
+   overline `h2` — that eyebrow style is shorter than the 13px field labels
+   under it and collapses the hierarchy on a CJK page, where `text-transform`
+   does nothing. */
+.domain-settings .section-head {
   align-items: start;
-  justify-content: space-between;
-  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
 }
 
-.domain-section-head h2,
-.domain-section-head p {
+.domain-settings .section-head h2 {
+  margin-bottom: var(--sp-1);
+  color: var(--text);
+  letter-spacing: -0.005em;
+  text-transform: none;
+}
+
+.domain-settings .section-head p {
   margin-bottom: 0;
+  max-width: 52ch;
+}
+
+.domain-settings .section-head .pane-count {
+  flex: none;
+  margin-top: 2px;
+}
+
+.domain-panel {
+  padding: var(--sp-5);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.domain-panel-group + .domain-panel-group {
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--line);
+}
+
+/* The enable switch owns the block below it, so the dependent fields are
+   indented under it rather than sitting as its siblings. */
+.domain-panel-fields {
+  display: grid;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+.domain-panel-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+
+/* Back is navigation, save is the commit — opposite ends, never adjacent. */
+.domain-panel-foot .ghost {
+  margin-right: auto;
+}
+
+.domain-hints-section {
+  margin-top: var(--sp-6);
 }
 
 .domain-hint-list {
@@ -2266,7 +2470,7 @@ legend {
 
 .domain-hint-card {
   display: grid;
-  gap: var(--sp-3);
+  gap: var(--sp-4);
   padding: var(--sp-4);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -2276,13 +2480,42 @@ legend {
 
 .domain-hint-card h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
 }
 
-.domain-hint-delete {
+/* Delete lives in the card header, far from the save row: it is a sibling
+   form (forms cannot nest), and keeping the destructive action away from the
+   primary one is the point, not a side effect of the markup. */
+.domain-hint-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.domain-hint-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.domain-hint-foot {
   display: flex;
   justify-content: end;
-  margin-top: calc(var(--sp-3) * -1);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+
+.domain-hint-card .setting-check {
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.domain-hint-add {
+  background: var(--surface);
+  border-style: dashed;
+  border-color: var(--line-strong);
 }
 
 .notebook-menu-link {
@@ -3109,17 +3342,9 @@ legend {
   padding: 6px 10px;
 }
 
+/* Layout now comes from the global `.setting-check` base; only the tone is local. */
 .rename-form .setting-check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   color: var(--text-soft);
-}
-
-.rename-form .setting-check input {
-  width: 16px;
-  height: 16px;
-  flex: none;
 }
 
 .notebook-description {
@@ -4558,25 +4783,36 @@ legend {
     margin-left: 0;
   }
 
-  .domain-section-head {
-    align-items: stretch;
-    flex-direction: column;
+  .domain-panel {
+    padding: var(--sp-4);
   }
 
-  .domain-section-head .status {
-    align-self: start;
+  /* Stack the panel foot, but keep back below save: the commit stays under the
+     thumb and the nav link can't be hit on the way to it. */
+  .domain-panel-foot {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .domain-panel-foot .ghost,
+  .domain-panel-foot button {
+    width: 100%;
+    margin-right: 0;
   }
 
   .domain-hint-card {
     padding: var(--sp-3);
   }
 
-  .domain-hint-delete {
-    justify-content: stretch;
+  .domain-hint-foot button {
+    width: 100%;
   }
 
-  .domain-hint-delete button {
-    width: 100%;
+  /* The switch stays on its own line so a long caption never squeezes it. */
+  .switch-field {
+    align-items: start;
+    flex-direction: column;
+    gap: var(--sp-3);
   }
 
   .modal {

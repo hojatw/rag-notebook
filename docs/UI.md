@@ -105,6 +105,14 @@
 
 > 收斂對象(都改用 `.section-head`):`.settings-section>h2`、`.section-title-row`、
 > `.section-head`+`.pane-count`、`.section-heading`+eyebrow。
+>
+> **已採用**:`search`、notebook domain settings。數量 slot 目前用既有的 `.pane-count`
+> (不另立 `.count`,避免多一套 pill)。
+>
+> ⚠️ **CJK 注意**:全域 `h2` 是 12px/uppercase/letter-spacing 的 overline 樣式,設計給
+> 英文小標。中文沒有 uppercase 效果,12px 會**比它底下的 13px `<label>` 還小**,層級直接
+> 倒過來。`.section-head h2` 已覆寫為 18px,所以**區塊標題一律走 `.section-head`**,不要
+> 裸用 `<h2>`。
 
 ### 3.3 卡片 `.card` **[標準]**
 基礎卡(feature card,grid 磚):`background: --surface`、`border:1px solid --line`、
@@ -158,6 +166,13 @@
 - 選填說明用 `<span class="muted">（…）</span>`,範例值放 `placeholder`。
 - 表單底部主要動作 + 返回放 `.page-foot`(或現行 `.settings-foot`)。
 - 送出鎖見 §4。
+- **行內 checkbox 用 `.setting-check`**(全域基礎樣式已建立)。基礎 `label` 是 grid 直排,
+  checkbox 掉進去會被撐成整欄寬、文字被擠到第二列,所以**不要裸用 `<label>` 包 checkbox**。
+- **「啟用某個區塊」的開關用 `.switch-field`**:左標題 + 一行說明,右側 switch,整列可點。
+  它是原生 checkbox 用 `appearance: none` 畫成軌道 + `::after` 旋鈕,鍵盤與表單序列化都
+  照舊;軌道色走 `--line-strong` / `--accent`,旋鈕走 `--switch-knob`(深色模式有覆寫)。
+- **一頁多個 POST scope 時,每個 scope 各自畫成一張卡、儲存列收在卡片框線內**。單一頁尾
+  儲存列只有在整頁就是一個 form 時才成立;否則那條列會停在頁面中段,讀起來像「存全部」。
 
 E2 的 Notebook domain settings 使用獨立的 `.settings` 頁面，不把多筆
 hints 編輯器塞進 Notebook dropdown。頁面提供兩個獨立 enable toggle、bounded
@@ -166,21 +181,37 @@ expansions/answer note 均由真正的 `<label>` 包住。Hint delete 必須是�
 `data-confirm` 的 POST。窄螢幕下長 term/policy 使用可換行 textarea、按鈕可
 堆疊，不得產生水平捲軸；所有 copy 走 `domain.*` / `error.*` catalog keys。
 
+版面定案(2026-08):兩個 enable toggle 用 `.switch-field`;筆記本層級設定收在一張
+`.domain-panel` 卡裡、儲存列 `.domain-panel-foot` 在卡片框線內(返回靠左、儲存靠右,
+手機 `column-reverse` 讓儲存在上);提示清單是卡外的獨立 section,標題走 `.section-head`
++ `.pane-count`。每張 hint card 的標題顯示**該筆的 term**(空白才退回通用標題),刪除鍵
+在卡片右上、儲存鍵在卡片右下,兩者刻意分開。刪除表單與編輯表單是**同層 sibling**
+(HTML 不允許 form 巢狀),且只掛 `data-confirm`——與 `data-loading-form` 併用會在使用者
+取消確認後把按鈕永久留在 disabled。
+
 ### 3.8 分頁 tabs（單一視覺,兩種機制）
 視覺統一 `.eval-tab`(目前命名綁 eval,**重構時更名 `.tab`**)。兩種語意分清楚:
 - **跨頁導覽** → `<a href>`(如 `_eval_nav.html`:評測集 / Retrieval Profiles)。
 - **頁內切換** → Alpine `<button>` + `x-show`(如 `admin_eval_set.html` 的 Authoring/Runs)。
 兩者用同一組 class 與 `.is-current` 高亮,markup 對齊。
 
-### 3.9 空狀態 `.empty-state` **[待建立,收斂三種]**
+### 3.9 空狀態(兩級,依「空的是整頁還是一個區塊」選)
 ```html
 <div class="empty-state">
-  <h2>標題(沒有東西時的一句話)</h2>
+  <h3>標題(沒有東西時的一句話)</h3>
   <p>下一步提示,可含一個行動連結。</p>
 </div>
 ```
-> 收斂對象:`.empty`(home/search)、`.run-compare-empty`、以及裸 `<p class="muted">尚未…</p>`。
-> 表格/列表「目前是空的」一律用 `.empty-state`,不要用裸 muted 段落。
+
+| class | 用在 | 外觀 | 狀態 |
+|---|---|---|---|
+| `.empty` | **整頁**沒東西(home/search 的搜尋無結果) | 大留白 `--sp-7`、accent 徑向漸層底 | [標準] |
+| `.empty-state` | **區塊內**的清單是空的(領域提示清單) | `--sp-5`、虛線框、無漸層 | [標準] |
+
+> 兩者的差別是音量,不是語意:整頁空著要有存在感,區塊空著不該蓋過同區的其他內容。
+> **裸 `<p class="muted">尚未…</p>` 一律換成其中一個**,`.run-compare-empty` 待收斂。
+> (§6 對照表原本記「統一用 `.empty`」,那是 eval 頁那一輪的結論;`.empty` 的音量放進
+> 區塊裡太重,因此本節改記為兩級制。)
 
 ### 3.10 Alerts(補滿四語意)
 頁面層級訊息列,固定左側色條 + 文字:
@@ -225,6 +256,13 @@ expansions/answer note 均由真正的 `<label>` 包住。Hint delete 必須是�
   `data-confirm="清楚說明後果的一句話"`(`app.js:321` 觸發原生確認框)。
 - **HTMX 局部更新**:就地更新用 `hx-target`/`hx-swap="outerHTML"`,partial 命名 `_*.html`;
   跨片段連動用 `HX-Trigger` 事件(見 `CLAUDE.md` 的 `indexed-sources-changed` 等)。
+  - **一個表單裡的「測試/預覽」類動作不要用 `formaction` 整頁送出。** 那會重繪整頁,
+    同時丟掉兩樣使用者在意的東西:捲動位置(結果通常在摺線下方),以及**尚未儲存但剛
+    被拿去測試的輸入值**——表單會彈回資料庫裡的舊值。改成 `type="button"` + `hx-post`
+    + `hx-include="closest form"`,只把結果片段換回來(見 `/settings` 的兩顆測試鈕與
+    `_settings_diag_*.html`)。伺服器端以 `HX-Request` 判斷回傳 partial 或整頁,保留無 JS 時可用。
+  - **partial 要能單獨算繪**。父模板用 `{% macro %}` 定義的巨集在 partial 被單獨算繪時
+    不存在,共用的請放 `_status_macros.html` 之類的檔案再 `{% from ... import ... %}`。
 - **輪詢**:背景工作(如 eval run)用 `hx-trigger="load delay:1s, every 2s"`,完成後停止輪詢。
 - **hover/focus**:已由全域 token 統一(`:focus-visible` → `--shadow-focus`),元件不要各自覆寫。
 
@@ -251,7 +289,7 @@ expansions/answer note 均由真正的 `<label>` 包住。Hint delete 必須是�
 | 表格 RWD | 部分有 `data-label` | ✅ eval 全表已補 `data-label` | 所有 eval 表格 |
 | 狀態色 | `.status` 超載 | ✅ `.status`(狀態)/ `.tag`(分類)已上線 | `admin_users`、`_eval_items_section` |
 | 破壞性鈕 | `!important` on `.danger-link` | ✅ 保留兩級;已去 `!important` | `style.css` |
-| 空狀態 | 3 種 | ✅ 統一用 `.empty`(eval 頁與 `/admin/evals` 已換) | eval 頁 |
+| 空狀態 | 3 種 | ✅ 兩級制(§3.9):`.empty` 整頁 / `.empty-state` 區塊內 | eval 頁、domain settings |
 | Alert | 缺 warning | ✅ `.warn` 已補(紅/黃/綠/紫齊全) | `style.css` |
 | 分頁 | 2 套 class 對齊但命名綁 eval | `.tab`(更名) | `_eval_nav`、`admin_eval_set`〔P2 待辦,純更名〕 |
 | 語言 | eval 頁英文漂移 | ✅ zh-Hant(P0) | `eval_*` |

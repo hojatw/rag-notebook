@@ -697,3 +697,57 @@ def test_upload_limit_uses_the_stricter_cap_for_eagerly_parsed_formats():
     # Eagerly-parsed formats get the stricter one, case-insensitively.
     for name in ("data.xlsx", "deck.pptx", "rows.csv", "DATA.XLSX"):
         assert ingest.upload_limit_for(name) == extract_cap, name
+
+
+def test_extraction_does_not_block_the_event_loop(fresh_modules, local_embed, tmp_path, monkeypatch):
+    """A slow extract must not freeze the web process.
+
+    With the inline worker, ingestion runs inside the app. Extraction is
+    synchronous and can take tens of seconds (measured: 32s for an 881-section
+    PDF), so calling it directly on the event loop makes the server answer
+    nothing for that whole window — which is how it surfaced: a reindexed
+    source's row stayed at "uploaded" because not one of its 2s status polls
+    could be served until extraction finished.
+    """
+    import time
+
+    db, ingest = fresh_modules.db, fresh_modules.ingest
+    source_path = tmp_path / "slow.txt"
+    source_path.write_text("Alpha project revenue is 42 dollars.", encoding="utf-8")
+
+    real_extract = ingest.extract_sections
+
+    def slow_extract(path):
+        time.sleep(0.5)          # stands in for pdfplumber on a large PDF
+        return real_extract(path)
+
+    monkeypatch.setattr(ingest, "extract_sections", slow_extract)
+
+    with db.connect() as conn:
+        user = conn.execute("SELECT * FROM users WHERE username = 'user'").fetchone()
+        source_id = conn.execute(
+            """
+            INSERT INTO sources (user_id, filename, stored_path, content_type, status)
+            VALUES (?, 'slow.txt', ?, 'text/plain', 'uploaded')
+            """,
+            (user["id"], str(source_path)),
+        ).lastrowid
+
+    async def drive():
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.05)
+                ticks += 1
+
+        beat = asyncio.create_task(ticker())
+        await ingest.process_source(source_id)
+        beat.cancel()
+        return ticks
+
+    ticks = asyncio.run(drive())
+    # A blocking extract starves the loop and leaves this at ~0; off-thread it
+    # keeps ticking throughout the 0.5s sleep.
+    assert ticks >= 3, f"event loop was starved during extraction (ticks={ticks})"

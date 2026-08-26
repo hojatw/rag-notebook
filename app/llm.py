@@ -37,6 +37,14 @@ class AnswerResult:
 
 MAX_STREAM_BUFFER_CHARS = 100_000
 
+# The status value a passing `/settings` probe writes into
+# `llm_settings.diagnostics_json`. Readers that gate on a successful probe must
+# compare against this rather than spelling the string themselves — the O0
+# dimension migration was unreachable for exactly that reason, comparing to a
+# literal "ok" that nothing ever wrote.
+DIAGNOSTIC_STATUS_SUCCEEDED = "succeeded"
+DIAGNOSTIC_STATUS_FAILED = "failed"
+
 QUERY_REWRITE_PROMPT = """You create retrieval queries for a source-grounded RAG system.
 Do not answer the user. Rewrite the user's question into 1 to 4 concise search queries.
 Resolve pronouns from the conversation context when possible.
@@ -465,7 +473,7 @@ async def probe_embedding_diagnostics(
     provider = settings.get("provider") or "openai_compatible"
     model = settings.get("embedding_model") or ""
     result: dict[str, Any] = {
-        "status": "failed",
+        "status": DIAGNOSTIC_STATUS_FAILED,
         "provider": provider,
         "model": model,
         "latency_ms": 0.0,
@@ -537,7 +545,7 @@ async def probe_embedding_diagnostics(
         model_key="embedding_model",
     )
     result.update({
-        "status": "succeeded",
+        "status": DIAGNOSTIC_STATUS_SUCCEEDED,
         "latency_ms": round(elapsed_ms, 1),
         "embedding_dimension": dimension,
     })
@@ -1193,13 +1201,38 @@ async def generate_answer_stream(
     result_state: dict[str, Any] | None = None,
     domain_limits: dict[str, int] | None = None,
 ):
-    """Buffer the bounded provider stream, then emit only a classified result."""
+    """Emit the provider stream behind a prefix gate that classifies abstention.
+
+    Two things must stay true: the reserved marker never reaches the browser,
+    and the completion is classified on its *full* text before anything is
+    persisted. Buffering everything satisfied both but showed the user a blank
+    pane for the whole generation.
+
+    So: nothing is emitted until `runtime.answer_stream_gate_chars` have been
+    seen and classified. A compliant abstention is the marker alone at position
+    0 and never survives that gate. After the gate, text flows out except for
+    any tail that could still grow into the marker, and a reserved prefix
+    appearing later stops emission for the rest of the stream. The full
+    completion is classified again at the end, so persistence, citations and
+    the abstain outcome are unchanged.
+
+    The residual trade-off is deliberate and bounded: a model that writes a
+    preamble *longer than the gate* and only then abstains will have had that
+    preamble shown. `result_state["discard_stream"]` tells the caller to drop
+    it. Set the gate to 0 to buffer everything again.
+    """
     if not settings.get("chat_model"):
         raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
 
     logger.info("answer_stream_started chunks=%s question_chars=%s", len(chunks), len(question))
+    gate_chars = max(0, int(config.runtime.answer_stream_gate_chars))
     completion_parts: list[str] = []
     completion_chars = 0
+    pending = ""
+    emitting = False
+    # gate_chars == 0 is the kill switch: never emit early, buffer it all.
+    suppressed = gate_chars == 0
+    emitted_chars = 0
     async for chunk in chat_completion_stream(
         settings,
         answer_prompt(
@@ -1217,12 +1250,38 @@ async def generate_answer_stream(
         if completion_chars > MAX_STREAM_BUFFER_CHARS:
             raise RuntimeError("Answer stream exceeded the bounded classification buffer.")
         completion_parts.append(chunk)
+        if suppressed:
+            continue
+        pending += chunk
+        if not emitting:
+            if len(pending) < gate_chars:
+                continue
+            emitting = True
+        # A reserved prefix anywhere in the buffer means this completion is
+        # heading for an abstention. Stop emitting and let the final
+        # classification below decide; it sees the same text and agrees.
+        if _contains_abstain_protocol(pending):
+            suppressed = True
+            pending = ""
+            continue
+        emittable, pending = _split_emittable(pending)
+        if emittable:
+            emitted_chars += len(emittable)
+            yield emittable
 
     result = parse_answer_result("".join(completion_parts))
-    if result.abstained and abstain_text:
-        yield abstain_text
+    if result.abstained:
+        if emitted_chars and result_state is not None:
+            # Generators are lazy, so the caller reads this before it receives
+            # the refusal piece yielded just below — it can clear what it drew.
+            result_state["discard_stream"] = True
+        if abstain_text:
+            yield abstain_text
     elif result.text:
-        yield result.text
+        # Everything emitted so far is a prefix of result.text, in order.
+        remainder = result.text[emitted_chars:]
+        if remainder:
+            yield remainder
     if result_state is not None:
         result_state["abstained"] = result.abstained
 
@@ -1262,6 +1321,23 @@ def _contains_abstain_protocol(text: str) -> bool:
     # Fail closed on a truncated reserved marker at EOF. A lone '[' remains a
     # valid citation prefix; the reserved protocol prefix begins at '[[RAG'.
     return any(ABSTAIN_MARKER[:length] in text for length in range(len(ABSTAIN_MARKER) - 1, 4, -1))
+
+
+def _split_emittable(text: str) -> tuple[str, str]:
+    """Split buffered text into (safe to emit now, hold until more arrives).
+
+    The held part is the longest suffix that is still a prefix of the reserved
+    marker. Without it, a marker split across two provider chunks — the real
+    shape `[[RAG_` + `ABSTAIN]]` takes on the wire — would reach the browser one
+    half at a time, and neither half alone looks like anything to suppress.
+
+    Derived from the marker on purpose: this is a correctness invariant, not a
+    tunable. Holding one character less reopens the leak.
+    """
+    for length in range(min(len(text), len(ABSTAIN_MARKER) - 1), 0, -1):
+        if ABSTAIN_MARKER.startswith(text[-length:]):
+            return text[:-length], text[-length:]
+    return text, ""
 
 
 def _bounded_prompt_text(text: str, *, max_chars: int, max_tokens: int) -> str:

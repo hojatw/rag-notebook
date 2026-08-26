@@ -1,0 +1,61 @@
+{# Chat diagnostics card. Rendered inline by settings.html and swapped on its
+   own by /settings/test-chat, so a test keeps the admin's scroll position and
+   any unsaved form values. The wrapper id is the hx-target — keep it. #}
+{% from "_status_macros.html" import status_class %}
+<div id="chat-diagnostics" class="diagnostic-slot">
+  {% if diagnostic_notice and diagnostic_kind == 'chat' %}<div class="notice">{{ diagnostic_notice }}</div>{% endif %}
+  {% set chat_diag = (settings.diagnostics or {}).get('chat', {}) %}
+  <article class="card card--flat diagnostic-card">
+    <div class="diagnostic-card-head">
+      <h3>{{ t('settings.chat_diag') }}</h3>
+      {% if chat_diag %}
+        <span class="status {{ status_class(chat_diag.status) }}">{{ diagnostic_status_labels.get(chat_diag.status, chat_diag.status) }}</span>
+      {% endif %}
+    </div>
+    {% if chat_diag %}
+      <dl class="diagnostic-list">
+        <div><dt>{{ t('settings.provider') }}</dt><dd>{{ chat_diag.provider or '—' }}</dd></div>
+        <div><dt>{{ t('settings.model') }}</dt><dd>{{ chat_diag.model or '—' }}</dd></div>
+        <div><dt>{{ t('settings.latency') }}</dt><dd>{{ chat_diag.latency_ms }} ms</dd></div>
+        <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ chat_diag.tested_at or '—' }}</dd></div>
+        {% if chat_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ chat_diag.error_class }}</dd></div>{% endif %}
+      </dl>
+      {% set caps = chat_diag.capabilities or {} %}
+      <h4>{{ t('settings.capabilities') }}</h4>
+      <ul class="diagnostic-capabilities">
+        {% for key, label in [
+          ('streaming', t('settings.cap_streaming')),
+          ('usage_reporting', t('settings.cap_usage')),
+          ('json_following', t('settings.cap_json')),
+          ('image_understanding', t('settings.cap_image'))
+        ] %}
+          {% set cap = caps.get(key, {}) %}
+          <li>
+            <span>{{ label }}</span>
+            <span class="status {{ status_class(cap.status or 'not_tested') }}">{{ diagnostic_status_labels.get(cap.status or 'not_tested', cap.status or 'not_tested') }}</span>
+          </li>
+        {% endfor %}
+        {# LLM-2: deliberately not a pass/fail pill. A model that refuses
+           temperature is not broken, it just takes a different request
+           shape, and a red "failed" here would send admins chasing a
+           non-problem. Report the shape instead. #}
+        {% set sampling = caps.get('sampling_params', {}) %}
+        {% set field = (caps.get('max_tokens_field', {}).get('field')) or 'max_tokens' %}
+        <li>
+          <span>{{ t('settings.cap_sampling') }}</span>
+          <span class="muted">
+            {%- if sampling.status == 'succeeded' -%}
+              {{ t('settings.cap_sampling_full', field=field) }}
+            {%- elif sampling.status == 'failed' -%}
+              {{ t('settings.cap_sampling_limited', field=field) }}
+            {%- else -%}
+              {{ t('settings.cap_sampling_unknown') }}
+            {%- endif -%}
+          </span>
+        </li>
+      </ul>
+    {% else %}
+      <p class="muted">{{ t('settings.no_diag') }}</p>
+    {% endif %}
+  </article>
+</div>

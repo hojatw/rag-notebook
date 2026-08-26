@@ -1,8 +1,32 @@
 {% extends "base.html" %}
 {% block content %}
-{% macro hint_editor(hint, action, submit_key, heading_key) -%}
-  <article class="domain-hint-card">
-    <h3>{{ t(heading_key) }}</h3>
+{#
+  Three independent POST scopes live on this page: the notebook-level settings
+  form, one form per existing hint, and the new-hint form. Each is drawn as its
+  own bordered panel with its save row *inside* that border, so the card
+  boundary answers "which button saves what" — a single page-level foot used to
+  sit stranded above the hint list and read as a save-everything button.
+#}
+{% macro hint_editor(hint, action, submit_key, heading_key, delete_action='') -%}
+  <article class="domain-hint-card{% if not delete_action %} domain-hint-add{% endif %}">
+    <div class="domain-hint-head">
+      <div class="domain-hint-title">
+        {# Title falls back to the generic heading only while the term is blank;
+           otherwise every card in the list would carry the same heading. #}
+        <h3>{{ hint.term or t(heading_key) }}</h3>
+      </div>
+      {% if delete_action %}
+        {# Sibling form, not nested (HTML forbids nested forms), and deliberately
+           in the header: the destructive action never sits next to Save.
+           `data-confirm` only — pairing it with `data-loading-form` would leave
+           the button disabled after the user cancels the confirm. #}
+        <form method="post" action="{{ delete_action }}" data-confirm="{{ t('domain.delete_confirm') }}">
+          {{ csrf_input() }}
+          <button type="submit" class="ghost small danger-link">{{ t("domain.delete_hint") }}</button>
+        </form>
+      {% endif %}
+    </div>
+
     <form method="post" action="{{ action }}" class="stacked-form" data-loading-form>
       {{ csrf_input() }}
       <label>
@@ -33,7 +57,9 @@
         <input type="checkbox" name="enabled" value="1" {% if hint.enabled|default(true) %}checked{% endif %}>
         <span>{{ t("domain.hint_enabled") }}</span>
       </label>
-      <button type="submit" class="secondary" data-loading-text="{{ t('domain.saving') }}">{{ t(submit_key) }}</button>
+      <div class="domain-hint-foot">
+        <button type="submit" class="secondary" data-loading-text="{{ t('domain.saving') }}">{{ t(submit_key) }}</button>
+      </div>
     </form>
   </article>
 {%- endmacro %}
@@ -48,62 +74,84 @@
   {% if saved %}<div class="notice">{{ t("domain.saved") }}</div>{% endif %}
   {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
 
-  <form method="post" action="/notebooks/{{ notebook.id }}/domain-settings" class="settings-grid" data-loading-form>
+  <form method="post" action="/notebooks/{{ notebook.id }}/domain-settings" class="domain-panel" data-loading-form>
     {{ csrf_input() }}
-    <section class="settings-section">
-      <h2>{{ t("domain.answer_policy_title") }}</h2>
-      <p class="muted">{{ t("domain.answer_policy_intro") }}</p>
-      <label class="setting-check">
+
+    <div class="domain-panel-group">
+      <div class="section-head">
+        <div>
+          <h2>{{ t("domain.answer_policy_title") }}</h2>
+          <p class="muted">{{ t("domain.answer_policy_intro") }}</p>
+        </div>
+      </div>
+      <label class="switch-field">
+        <span class="switch-field-text">
+          <strong>{{ t("domain.answer_policy_enabled") }}</strong>
+          <span>{{ t("domain.answer_policy_enabled_hint") }}</span>
+        </span>
         <input type="checkbox" name="answer_policy_enabled" value="1" {% if domain_config.answer_policy_enabled %}checked{% endif %}>
-        <span>{{ t("domain.answer_policy_enabled") }}</span>
       </label>
-      <label>
-        {{ t("domain.answer_policy") }}
-        <textarea name="answer_policy" rows="7" maxlength="{{ limits.max_policy_chars }}" aria-describedby="domain-policy-hint">{{ domain_config.answer_policy or '' }}</textarea>
-      </label>
-      <small id="domain-policy-hint" class="hint">{{ t("domain.answer_policy_hint", chars=limits.max_policy_chars, tokens=limits.max_policy_tokens) }}</small>
-    </section>
+      <div class="domain-panel-fields">
+        <label>
+          {{ t("domain.answer_policy") }}
+          <textarea name="answer_policy" rows="7" maxlength="{{ limits.max_policy_chars }}" aria-describedby="domain-policy-hint">{{ domain_config.answer_policy or '' }}</textarea>
+        </label>
+        <small id="domain-policy-hint" class="hint">{{ t("domain.answer_policy_hint", chars=limits.max_policy_chars, tokens=limits.max_policy_tokens) }}</small>
+      </div>
+    </div>
 
-    <section class="settings-section">
-      <h2>{{ t("domain.hints_title") }}</h2>
-      <p class="muted">{{ t("domain.hints_intro") }}</p>
-      <label class="setting-check">
+    <div class="domain-panel-group">
+      <div class="section-head">
+        <div>
+          <h2>{{ t("domain.hints_title") }}</h2>
+          <p class="muted">{{ t("domain.hints_intro") }}</p>
+        </div>
+      </div>
+      <label class="switch-field">
+        <span class="switch-field-text">
+          <strong>{{ t("domain.hints_enabled") }}</strong>
+          <span>{{ t("domain.hints_enabled_hint") }}</span>
+        </span>
         <input type="checkbox" name="hints_enabled" value="1" {% if domain_config.hints_enabled %}checked{% endif %}>
-        <span>{{ t("domain.hints_enabled") }}</span>
       </label>
-    </section>
+    </div>
 
-    <div class="settings-foot">
+    <div class="domain-panel-foot">
       <a class="ghost" href="/notebooks/{{ notebook.id }}">{{ t("domain.back_to_notebook") }}</a>
       <button type="submit" data-loading-text="{{ t('domain.saving') }}">{{ t("domain.save_settings") }}</button>
     </div>
   </form>
 
-  <section class="settings-section domain-hints-section">
-    <div class="domain-section-head">
+  <section class="domain-hints-section">
+    <div class="section-head">
       <div>
         <h2>{{ t("domain.hint_list_title") }}</h2>
         <p class="muted">{{ t("domain.hint_list_intro", count=limits.max_hints) }}</p>
       </div>
-      <span class="status uploaded">{{ domain_config.hints|length }} / {{ limits.max_hints }}</span>
+      <span class="pane-count">{{ domain_config.hints|length }} / {{ limits.max_hints }}</span>
     </div>
 
     <div class="domain-hint-list">
       {% for hint in domain_config.hints %}
         {% set editor_hint = hint_form if hint_form.id|default(-1) == hint.id else hint %}
-        {{ hint_editor(editor_hint, '/notebooks/' ~ notebook.id ~ '/domain-settings/hints/' ~ hint.id ~ '/edit', 'domain.update_hint', 'domain.edit_hint') }}
-        <form method="post" action="/notebooks/{{ notebook.id }}/domain-settings/hints/{{ hint.id }}/delete" class="domain-hint-delete" data-confirm="{{ t('domain.delete_confirm') }}">
-          {{ csrf_input() }}
-          <button type="submit" class="ghost small danger-link" data-loading-text="{{ t('domain.deleting') }}">{{ t("domain.delete_hint") }}</button>
-        </form>
+        {{ hint_editor(
+             editor_hint,
+             '/notebooks/' ~ notebook.id ~ '/domain-settings/hints/' ~ hint.id ~ '/edit',
+             'domain.update_hint',
+             'domain.edit_hint',
+             '/notebooks/' ~ notebook.id ~ '/domain-settings/hints/' ~ hint.id ~ '/delete'
+        ) }}
       {% else %}
-        <p class="empty-state">{{ t("domain.no_hints") }}</p>
+        <div class="empty-state">
+          <h3>{{ t("domain.no_hints") }}</h3>
+          <p>{{ t("domain.no_hints_hint") }}</p>
+        </div>
       {% endfor %}
-    </div>
 
-    {% if not hint_form.id %}
-      {{ hint_editor(hint_form, '/notebooks/' ~ notebook.id ~ '/domain-settings/hints', 'domain.create_hint', 'domain.add_hint') }}
-    {% endif %}
+      {% if not hint_form.id %}
+        {{ hint_editor(hint_form, '/notebooks/' ~ notebook.id ~ '/domain-settings/hints', 'domain.create_hint', 'domain.add_hint') }}
+      {% endif %}
+    </div>
   </section>
 </section>
 {% endblock %}

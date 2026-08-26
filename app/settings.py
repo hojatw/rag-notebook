@@ -47,6 +47,33 @@ def settings_page(request: Request, user: Annotated[dict, Depends(require_admin)
     return render_settings(request, user, settings)
 
 
+def _settings_context(
+    user: dict,
+    settings: dict[str, Any],
+    *,
+    saved: bool = False,
+    diagnostic_notice: str = "",
+    diagnostic_kind: str = "",
+    active_tab: str = "chat",
+) -> dict[str, Any]:
+    return {
+        "user": user,
+        "settings": settings,
+        "saved": saved,
+        "diagnostic_notice": diagnostic_notice,
+        # Which card the notice belongs to, so the message lands next to the
+        # result the admin is looking at instead of at the top of the page.
+        "diagnostic_kind": diagnostic_kind,
+        "active_tab": active_tab,
+        "diagnostic_status_labels": {
+            "succeeded": i18n.t("settings.status_succeeded"),
+            "failed": i18n.t("settings.status_failed"),
+            "skipped": i18n.t("settings.status_skipped"),
+            "not_tested": i18n.t("settings.status_not_tested"),
+        },
+    }
+
+
 def render_settings(
     request: Request,
     user: dict,
@@ -54,24 +81,43 @@ def render_settings(
     *,
     saved: bool = False,
     diagnostic_notice: str = "",
+    diagnostic_kind: str = "",
     active_tab: str = "chat",
 ) -> HTMLResponse:
     return render(
         request,
         "settings.html",
-        {
-            "user": user,
-            "settings": settings,
-            "saved": saved,
-            "diagnostic_notice": diagnostic_notice,
-            "active_tab": active_tab,
-            "diagnostic_status_labels": {
-                "succeeded": i18n.t("settings.status_succeeded"),
-                "failed": i18n.t("settings.status_failed"),
-                "skipped": i18n.t("settings.status_skipped"),
-                "not_tested": i18n.t("settings.status_not_tested"),
-            },
-        },
+        _settings_context(
+            user,
+            settings,
+            saved=saved,
+            diagnostic_notice=diagnostic_notice,
+            diagnostic_kind=diagnostic_kind,
+            active_tab=active_tab,
+        ),
+    )
+
+
+def render_diagnostic_card(
+    request: Request,
+    user: dict,
+    settings: dict[str, Any],
+    *,
+    kind: str,
+    diagnostic_notice: str = "",
+) -> HTMLResponse:
+    """Return just one diagnostic card, for the HTMX swap after a test.
+
+    A test used to re-render the whole page, which threw away two things the
+    admin cared about: the scroll position (results sit well below the fold) and
+    any settings typed but not yet saved — the probe ran against them, then the
+    form snapped back to the stored values. Swapping only the card leaves the
+    form untouched, so neither problem can occur.
+    """
+    return render(
+        request,
+        f"_settings_diag_{kind}.html",
+        _settings_context(user, settings, diagnostic_notice=diagnostic_notice, diagnostic_kind=kind),
     )
 
 
@@ -295,7 +341,12 @@ async def test_chat_settings(
         compact["model"],
         include_image,
     )
-    return render_settings(request, user, settings, diagnostic_notice=i18n.t("settings.diag_notice_chat"))
+    notice = i18n.t("settings.diag_notice_chat")
+    if request.headers.get("HX-Request") == "true":
+        return render_diagnostic_card(request, user, settings, kind="chat", diagnostic_notice=notice)
+    # Non-HTMX fallback keeps the endpoint usable without JS (and keeps direct
+    # POSTs in tests meaningful), at the cost of the full re-render.
+    return render_settings(request, user, settings, diagnostic_notice=notice, diagnostic_kind="chat")
 
 
 @router.post("/settings/test-embedding", response_class=HTMLResponse)
@@ -359,7 +410,12 @@ async def test_embedding_settings(
         compact["model"],
         compact.get("embedding_dimension"),
     )
-    return render_settings(request, user, settings, diagnostic_notice=i18n.t("settings.diag_notice_embedding"), active_tab="embedding")
+    notice = i18n.t("settings.diag_notice_embedding")
+    if request.headers.get("HX-Request") == "true":
+        return render_diagnostic_card(request, user, settings, kind="embedding", diagnostic_notice=notice)
+    return render_settings(
+        request, user, settings, diagnostic_notice=notice, diagnostic_kind="embedding", active_tab="embedding"
+    )
 
 
 @router.post("/settings")
