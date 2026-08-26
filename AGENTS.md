@@ -85,6 +85,50 @@ For retrieval changes, also run the eval harness when an embedding model is conf
 
 For Docker/runtime changes, build the image and smoke-test at least `/` and `/login`.
 
+### Writing tests that actually hold
+
+Two rules, both learned from bugs that shipped **with green tests covering them**.
+
+**1. See every new test fail before you keep it.** Remove the fix (or break the
+behaviour by hand), run the test, confirm it goes red, restore. A test never
+observed failing is not known to test anything. This costs one minute and is the
+only check that catches all three failure modes below at once.
+
+**2. Every producer→reader contract needs one test that drives the real
+producer.** Not every fixture — one per contract is enough, and after that
+downstream fixtures may be hand-written freely.
+
+The distinction matters because a blanket "never fabricate" is unworkable: a
+comparison view needs two runs with *different* metrics, so those values have to
+be synthetic. That is safe **because** `metrics_json`'s shape is pinned elsewhere
+by tests that run the real eval pipeline and assert the key names. Rename a key in
+the producer and those two go red, which is what makes the synthetic fixtures
+downstream harmless.
+
+`llm_settings.diagnostics_json` had no such anchor. Every test that touched it
+wrote its own `{"status": "ok"}`, so nothing anywhere held the writer and the
+reader together, and the value the app actually stores (`"succeeded"`) was never
+once exercised against the gate that read it.
+
+So when you add a field that crosses a module boundary, ask: **if I rename this
+key or change this value, does any test go red?** If the answer is no, that field
+is unheld no matter how many tests mention it.
+
+The three shapes this took here, so they are recognisable:
+
+| Shape | What shipped | Why the suite stayed green |
+|---|---|---|
+| **Value-vocabulary drift** | `/admin/index` gated on `status != "ok"`; the probe writes `"succeeded"`. The dimension migration was unreachable from the UI. | Both tests wrote `{"status": "ok"}` by hand — the reader's assumption, not the writer's output. |
+| **Assertion weaker than the test name** | `test_streaming_never_emits_marker_even_after_normal_text` asserted `output.endswith(refusal)`, which a leaking implementation also satisfies. | The name promised a property the assertion did not check. Use `==` when the claim is "only this". |
+| **Right chain, wrong layer** | A reindex test covered route → DB → template and passed, while the real failure was that the server answered nothing for 32s. | The chosen layer could not observe the symptom. Assert the property the user sees, not the step you changed. |
+
+Consequences for JSON-blob columns specifically: their **inside** is an untyped
+contract between a writer and a reader in different modules. Those contracts are
+listed in [`docs/SCHEMA.md`](docs/SCHEMA.md) — when you add or change one, update
+that list and cover it with a round-trip test that drives the real producer.
+Prefer a shared constant over a repeated string literal so the two sides cannot
+drift in the first place.
+
 ## Persistence And Safety
 
 - Do not delete, rewrite, or commit runtime state from `data/` or `logs/`.

@@ -17,6 +17,39 @@ SQLite database at `data/app.sqlite3` (metadata; vectors also live in Chroma und
 - **Migrations** are idempotent: base tables via `CREATE TABLE IF NOT EXISTS`, later columns via `_ensure_column()` (a guarded `ALTER TABLE ADD COLUMN`, safe under concurrent startup — see the app/worker race fix). There is no migration-version table; the column set *is* the version.
 - WAL mode + tuning pragmas (`synchronous=NORMAL`, `cache_size`, `mmap_size`) are set in `connect()`.
 
+## Value contracts (what the untyped fields are allowed to contain)
+
+The column list below stops at `diagnostics_json TEXT`. What is *inside* those
+blobs — and which values a status column may hold — is a contract between a
+writer and a reader that usually live in **different modules**, with nothing in
+the type system holding them together. Every drift bug found so far has been
+here, and each stayed invisible because both sides' tests fabricated their own
+version of the value (see AGENTS.md → *Writing tests that actually hold*).
+
+When you add or change one of these, update this table and cover it with a test
+that drives the **real producer** rather than hand-writing the value.
+
+| Field | Written by | Read by | Allowed values | Contract test (drives the real producer) |
+|---|---|---|---|---|
+| `sources.status` | `main` upload + reindex (`uploaded`); `ingest.process_source`; `index_migration` | `_source_item.html` **polling gate**, `source_status_labels`, retrieval filters, `index_migration` | `uploaded` · `processing` · `indexed` · `failed` · `stale_embedding` | `test_reindex_marks_the_source_queued_so_its_row_keeps_polling` |
+| `llm_settings.diagnostics_json` → `chat.status`, `embedding.status` | `llm.probe_*_diagnostics` → `settings.store_llm_diagnostic` | `_settings_diag_*.html`, `index_migration.target_dimension_from_diagnostics` **(migration gate)** | `succeeded` · `failed` — use `llm.DIAGNOSTIC_STATUS_*`, never a literal | `test_probe_output_actually_opens_the_migration_gate` |
+| …`chat.capabilities.sampling_params.status` / `max_tokens_field.field` | `llm._probe_sampling_params` | `_settings_diag_chat.html`, **and `chat_sampling_support` → `build_chat_request` on every LLM call** | `succeeded` · `failed` · `not_tested` · `skipped`; field is `max_tokens` \| `max_completion_tokens` | `test_capability_probe_output_actually_reaches_build_chat_request` |
+| `ingest_jobs.status` | `jobs.enqueue_source` / `claim_next_job` / `mark_done` / `requeue_or_fail` | `jobs.claim_next_job` (visibility timeout) | `queued` · `running` · `done` · `failed` | `tests/test_jobs.py` (same module writes and reads) |
+| `eval_runs.status` | `evals.run_eval_job` | `evals` listing + compare (compare rejects non-`succeeded`) | `running` · `succeeded` · `failed` | `test_admin_eval_set_runner_records_results` |
+| `llm_usage_events.status` | `governance.record_llm_usage_event` | `/admin` usage views, cost reporting | `succeeded` · `failed` | `tests/test_governance.py` |
+| `eval_runs.domain_config_snapshot_json` | `domain_policy` snapshot builder | `domain_policy` validation — rejects the whole snapshot on mismatch | must carry `schema_version == SNAPSHOT_SCHEMA_VERSION` and `prompt_version == PROMPT_VERSION`; bump both together | `tests/test_domain_policy_evals.py` (snapshot rejection) |
+| `sources.diagnostics_json` | `ingest.collect_ingest_diagnostics` | source preview drawer (A6a) | `extractor`, `notes`, `warnings` — a new extractor must fill its own | `test_failed_source_row_is_openable_and_flags_warnings` |
+
+Two rules that follow from the table:
+
+1. **A status column that gates rendering is part of the UI contract.** `sources.status`
+   decides whether a row polls at all, so any code path that queues work must set
+   it in the same request — a row left at `indexed` re-renders with no polling and
+   the page silently goes stale.
+2. **Prefer a shared constant to a repeated literal.** `DIAGNOSTIC_STATUS_SUCCEEDED`
+   exists because a reader once compared against `"ok"`, which no writer ever
+   produced, and the migration flow was unreachable for it.
+
 ## Relationships
 
 ```
