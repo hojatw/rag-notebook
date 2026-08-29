@@ -79,6 +79,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deliberate
 - **Impact:** Cannot use multiple cores / horizontal scale; vertical scaling only.
 - **Fix:** **Done.** The lock now lives in a `briefing_locks` SQLite row (`app/db.py`), keyed by `notebook_id` with the same 90 s stale-timeout self-heal. `_acquire_briefing_lock` does the check-and-set inside a `BEGIN IMMEDIATE` write transaction so two workers can't both acquire (the dict couldn't guarantee this). Same single-machine constraint as P1-1: valid while all workers share one `data/app.sqlite3`. This *unblocks* multiple workers; **the actual uvicorn worker count is a deploy decision and is not changed here.**
 
+### [x] P2-4 · Keep async LLM routes from blocking on SQLite (PERF-2)
+- **Issue:** async routes that wait on LLM/network work also opened SQLite connections and ran their bounded query/write phases directly on the event loop. The affected surfaces included starter questions, briefing, comparison, chat and streaming chat, follow-ups, meeting minutes, artifacts, and summary translation.
+- **Impact:** SQLite is normally fast, but lock waits or slow local storage could pause every request handled by that worker. The problem becomes visible under concurrent use even though each individual query is small.
+- **Fix:** **Done.** Route-local SQLite phases now run through `asyncio.to_thread`; each synchronous helper opens and closes its own connection inside the worker thread, so no `sqlite3.Connection` crosses thread boundaries. Related queries stay grouped into one phase to avoid a thread handoff per SQL statement. LLM/network awaits and HTML rendering remain on the event loop. A route-level regression test delays the real connection boundary and confirms the event loop continues ticking; existing route behavior tests cover persistence, authorization, caching, streaming, and rendered results.
+
 ---
 
 ## P3 — UX / product tradeoffs

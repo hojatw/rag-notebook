@@ -46,6 +46,13 @@ runs in a thread. Expect roughly 200 ms request latency (up from ~4 ms) while a
 large extraction is in flight — GIL contention with the worker thread — which is
 another reason a real deployment should run the worker out of process.
 
+The same boundary applies to web routes declared with `async def`: synchronous
+SQLite work must run via `asyncio.to_thread` rather than on the event loop. Group
+related reads or writes into one small synchronous helper, and have that helper
+open and close its own connection inside the worker thread; never create a
+`sqlite3.Connection` on one thread and pass it to another. Purely synchronous
+routes can remain `def`, because FastAPI already runs them in its threadpool.
+
 ## Deployment Notes
 
 - Build on the target host when possible so the image matches the host

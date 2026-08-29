@@ -11,9 +11,9 @@
 **進度**：**文件批（DOC-1~15）全數完成**；安全性 `SEC-1`~`SEC-3` 與 LLM 相容性
 `LLM-1`~`LLM-3` 亦已完成，`PERF-1` 同時解決。全部溶解進權威 backlog。
 2026-08-23 再完成 `SEC-4`~`SEC-6`、`LLM-4` 與 `MNT-1`；2026-08-29 完成
-`SEC-7`、`SEC-8`。
+`SEC-7`、`SEC-8`、`LLM-5` 與 `PERF-2`。
 
-**仍待排（4 項，全為 P2/P3）**：`PERF-2`、`PERF-3`、`QLT-1`、`MNT-2`。
+**仍待排（3 項，全為 P2/P3）**：`PERF-3`、`QLT-1`、`MNT-2`。
 
 剩餘項目的順序建議：
 - **`QLT-1`（關鍵字先截斷後評分）需要 `Q1-3` 代表性 eval set** —— 修法直覺正確，
@@ -139,9 +139,13 @@
 - **修法**：改 `def`（FastAPI 自動丟 threadpool）或包 `run_in_threadpool`。
 - **一起做**：SEC-2（同一個函式）。
 
-### [ ] PERF-2 · P2 · 其他 `async def` route 在 event loop 上直接跑 SQLite
+### [x] PERF-2 · P2 · 其他 `async def` route 在 event loop 上直接跑 SQLite
+> **已完成（2026-08-29）** — async LLM routes 的 SQLite 階段改由
+> `asyncio.to_thread` 執行，連線在 worker thread 內建立與關閉；durable 紀錄見
+> [`PERFORMANCE.md`](PERFORMANCE.md) `P2-4` 與 [`DEVELOPMENT.md`](DEVELOPMENT.md)
+> 的 async route SQLite 邊界說明。
 - **位置**：`ask` / `notebook_briefing` / `notebook_compare` / `notebook_suggestions` 等。
-- **現況判定**：查詢短、POC 規模可接受。**記錄為「已知、規模到了再處理」**，非現在要修。
+- **原現況判定**：查詢短、POC 規模可接受，原先延後；本輪因已排入目標而完成。
 
 ### [ ] PERF-3 · P3 · OIDC discovery / JWKS 每次登入重抓
 - **位置**：[`app/main.py:1030`](../app/main.py) `_oidc_discover()`。
@@ -427,7 +431,7 @@ sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, N
 | 6 | `docs` | DOC-9～DOC-14 | 索引與架構圖補洞，純機械性 |
 | 7 | `fix(auth)` | SEC-3 | 補上「改密碼能踢人」這個基本能力 |
 | 8 | `refactor(i18n)` | MNT-1（已完成 2026-08-23） | 純機械性，讓文件與程式一致 |
-| 9 | 後續輪次 | PERF-2、PERF-3、QLT-1 | 記進對應 backlog；SEC-7、SEC-8 已於 2026-08-29 完成 |
+| 9 | 後續輪次 | PERF-3、QLT-1 | PERF-2 已於 2026-08-29 完成並記進對應 backlog |
 | 10 | 獨立一輪 | MNT-2 | `app/web.py` 抽離，不要跟其他改動混在同一 diff |
 
 **硬相依**：

@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import json
 import time
@@ -5,6 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient as FastAPITestClient
+from starlette.requests import Request
 
 
 class TestClient(FastAPITestClient):
@@ -1653,6 +1655,71 @@ def _seed_indexed_source(db, user_id, notebook_id, filename="a.pdf", summary="�
             (user_id, source_id, summary),
         )
     return source_id
+
+
+def test_async_llm_route_sqlite_does_not_block_event_loop(monkeypatch, tmp_path):
+    """A slow SQLite phase in an async LLM route must run off the event loop.
+
+    Compare is representative of suggestions, briefing, chat, follow-ups,
+    minutes, artifacts, and translation: each route does a bounded SQLite phase
+    before awaiting an LLM call.  A delayed connection used to freeze every
+    request on that worker until the synchronous query returned.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    db.init_db()
+    user, notebook_id = _seed_notebook(db)
+    source_ids = [
+        _seed_indexed_source(db, user["id"], notebook_id, "a.pdf", "摘要 A"),
+        _seed_indexed_source(db, user["id"], notebook_id, "b.pdf", "摘要 B"),
+    ]
+    with db.connect() as conn:
+        conn.execute("UPDATE llm_settings SET chat_model = 'chat' WHERE id = 1")
+
+    real_connect = main.connect
+
+    def slow_connect():
+        time.sleep(0.5)
+        return real_connect()
+
+    async def fake_compare(*_args, **_kwargs):
+        return "比較完成"
+
+    monkeypatch.setattr(main, "connect", slow_connect)
+    monkeypatch.setattr(main, "compare_sources", fake_compare)
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": f"/notebooks/{notebook_id}/compare",
+        "headers": [],
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "client": ("testclient", 50000),
+    })
+
+    async def drive():
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.05)
+                ticks += 1
+
+        beat = asyncio.create_task(ticker())
+        response = await main.notebook_compare(
+            request,
+            notebook_id,
+            user,
+            source_ids=source_ids,
+            focus="",
+        )
+        beat.cancel()
+        return response, ticks
+
+    response, ticks = asyncio.run(drive())
+    assert response.status_code == 200
+    assert ticks >= 3, f"event loop was starved during SQLite work (ticks={ticks})"
 
 
 def test_admin_eval_workbench_creates_default_profile(monkeypatch, tmp_path):
