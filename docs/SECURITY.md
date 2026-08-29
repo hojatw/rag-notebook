@@ -182,19 +182,54 @@ A Bleichenbacher oracle in **PKCS#7 `EnvelopedData` decryption**. This app's onl
 
 Unbounded memory/CPU on crafted `/ToUnicode` streams and CID font width ranges. Unlike the other two entries here this **is** reachable: the app parses user-uploaded PDFs. It is denial-of-service only (no code execution, no disclosure), and ingest runs in the worker behind `[runtime].extract_max_file_bytes` with per-source failure isolation, so the blast radius is one stuck ingest job rather than the web process. Patched to `6.15.0` — a direct application of the "keep these parsers patched" rule above.
 
-### PYSEC-2026-311 / CVE-2026-45829 — `chromadb==1.5.9` (critical) — not applicable
+### ChromaDB `1.5.9` advisory cluster — current application paths not affected; patched release pending
 
-The vulnerability is triggered through ChromaDB's **FastAPI server endpoint**. This application uses ChromaDB only as an **embedded library** via `chromadb.PersistentClient` (`app/vector_store.py`): it does **not** run a Chroma server, does not use `chromadb.HttpClient`, does not enable `allow_reset`, and exposes no Chroma HTTP endpoint. The only network port the app exposes is its own FastAPI/uvicorn server (`8000`).
+As of 2026-08-29, GitHub reports seven open Dependabot alerts for four unique
+ChromaDB advisories. The duplicate count comes from the same runtime dependency
+being represented in both `requirements.txt` and `requirements-dev.txt` (the
+latter includes the former with `-r`). The affected package is still pinned at
+`chromadb==1.5.9` in [`requirements.txt`](../requirements.txt).
 
-**Second, independent reason it is unreachable (added on the 2026-08-22 re-check).** The advisory's mechanism is specific: reaching collection creation with a *malicious model repository* plus `trust_remote_code=true`, which makes Chroma load attacker-controlled code while instantiating an embedding function. This app **never lets Chroma instantiate an embedding function at all** — `get_or_create_collection` is called with only `name` and `metadata={"hnsw:space": "cosine"}`, and every vector is computed by `app/llm.py` and handed over pre-computed via `upsert(embeddings=...)`. `trust_remote_code` appears nowhere in the codebase. So the code path that loads a model repository is never entered, independently of whether a server is exposed. The same reasoning covers the still-open client-side variant, [chroma-core/chroma#7439](https://github.com/chroma-core/chroma/issues/7439) ("Harden client EF poisoning"), which would otherwise be the one relevant to embedded users.
+The four advisories are:
 
-**Status re-checked 2026-08-24 — still no patched release.** `pip-audit 2.10.1`
-reports the advisory as `PYSEC-2026-311` with an empty fix-version list, and
-`pip index versions chromadb` still reports `1.5.9` as the latest release.
+- **CVE-2026-45829 / GHSA-f4j7-r4q5-qw2c** (critical): pre-authentication code
+  injection through the ChromaDB FastAPI collection endpoint, using a malicious
+  model repository and `trust_remote_code=true`.
+- **CVE-2026-45833 / GHSA-36p7-vc44-83pf** (critical): authenticated code
+  injection through the ChromaDB FastAPI collection endpoint when the attacker
+  has `UPDATE_COLLECTION` permission.
+- **CVE-2026-45830 / GHSA-2wm9-hf6c-p5cr** (high): authenticated users can read,
+  write, update, or delete collections across tenant boundaries.
+- **CVE-2026-45831 / GHSA-xph7-9rjv-w5fr** (high): `SimpleRBAC` does not verify
+  that a permission applies to the requested tenant, database, or collection.
 
-- **Upstream is fixed; the fix is unreleased.** [chroma-core/chroma#7237](https://github.com/chroma-core/chroma/pull/7237) ("block `trust_remote_code` in SentenceTransformer embedding function kwargs") **merged 2026-07-07**, closing tracking issue #7226 as completed. `main` now carries `chromadb/utils/embedding_functions/config_validation.py` and `chromadb/test/server/test_fastapi_security.py`.
-- **But PyPI's newest release is still `1.5.9` (published 2026-05-05)** — no release has shipped since the fix landed. The GitHub Advisory therefore still lists patched versions as `None` (last updated 2026-05-29), and Dependabot reports `first_patched: null`. Note the advisory's affected range is `>= 1.0.0, <= 1.5.9`, i.e. bounded — the next release is expected to fall outside it.
-- **Accepted risk** for the embedded-only usage pattern, unchanged.
-- **Action:** watch for the next `chromadb` release and bump `requirements.txt` when it ships; Dependabot will flag it. This is a *pending upgrade*, not an unfixable condition — do not re-investigate whether a fix exists, only whether it has been **released**.
-- **Re-evaluate sooner if** the app ever switches to `chromadb.HttpClient` / runs a Chroma server, or starts passing an `embedding_function` to Chroma instead of pre-computed vectors — either change removes one of the two reasons above.
-- References: [GitHub Advisory GHSA-f4j7-r4q5-qw2c](https://github.com/advisories/GHSA-f4j7-r4q5-qw2c), [NVD CVE-2026-45829](https://nvd.nist.gov/vuln/detail/CVE-2026-45829).
+All four advisories affect ChromaDB's HTTP server/authentication paths. This
+application uses ChromaDB only as an embedded library through
+`chromadb.PersistentClient` (`app/vector_store.py`): it does not run a Chroma
+server, use `chromadb.HttpClient`, enable `allow_reset`, pass an
+`embedding_function`, or accept `trust_remote_code`. Collections are created
+with only a name and metadata, while embeddings are calculated by the
+application and supplied to Chroma. The application also applies its own
+per-user metadata filters before vector queries and source deletion. Therefore
+these four advisories are **not reachable in the current repository's supported
+deployment path**.
+
+This is a deployment-scope assessment, not a claim that `chromadb==1.5.9` is
+clean. `pip-audit` reports all four advisories and GitHub lists no
+`first_patched_version`; PyPI's latest ChromaDB release remains `1.5.9`.
+Do not expose a Chroma HTTP server, switch to `HttpClient`, or allow untrusted
+users to control Chroma embedding-function configuration before a patched
+release is available. A future release must be tested before changing the pin;
+do not downgrade because the affected ranges include older ChromaDB versions.
+
+The ChromaDB fix for CVE-2026-45829 was merged in
+[chroma-core/chroma#7237](https://github.com/chroma-core/chroma/pull/7237), but
+it has not shipped in a PyPI release. The tenant-scope fix remains under review
+in [chroma-core/chroma#7602](https://github.com/chroma-core/chroma/pull/7602).
+Re-evaluate this assessment immediately if the application adopts a Chroma
+server or changes how embeddings are configured.
+
+References: [GHSA-f4j7-r4q5-qw2c](https://github.com/advisories/GHSA-f4j7-r4q5-qw2c),
+[GHSA-36p7-vc44-83pf](https://github.com/advisories/GHSA-36p7-vc44-83pf),
+[GHSA-2wm9-hf6c-p5cr](https://github.com/advisories/GHSA-2wm9-hf6c-p5cr),
+[GHSA-xph7-9rjv-w5fr](https://github.com/advisories/GHSA-xph7-9rjv-w5fr).
