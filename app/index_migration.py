@@ -27,7 +27,7 @@ import socket
 import time
 from dataclasses import dataclass
 
-from . import db
+from . import db, llm
 from .config import config
 
 
@@ -353,7 +353,11 @@ def target_dimension_from_diagnostics() -> tuple[int | None, str]:
     embedding = diagnostics.get("embedding") if isinstance(diagnostics, dict) else None
     if not isinstance(embedding, dict):
         return None, "尚未在「設定」頁測試 embedding 模型，無法得知目標維度。"
-    if embedding.get("status") != "ok":
+    # Compare against the constant the probe actually writes. This used to read
+    # `!= "ok"` — a value nothing in the codebase ever stored — so the gate never
+    # opened and the whole migration flow was unreachable from the UI no matter
+    # how many times the admin ran a successful test.
+    if embedding.get("status") != llm.DIAGNOSTIC_STATUS_SUCCEEDED:
         return None, "最近一次 embedding 測試未通過，請先在「設定」頁測試成功再遷移。"
     dimension = embedding.get("embedding_dimension")
     if not isinstance(dimension, int) or dimension <= 0:

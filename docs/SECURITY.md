@@ -72,11 +72,38 @@ or source data.
 
 The structural `[[RAG_ABSTAIN]]` value is an internal provider/app protocol
 marker. Both streaming and non-streaming paths convert it to localized
-`chat.abstain` before SSE or persistence; the answer-stream wrapper buffers a
-bounded provider completion before classification and treats a truncated
-reserved prefix as abstention, so neither earlier normal-looking text nor a
-partial marker can escape. The marker must not appear in messages, citation
-payloads, HTML, or either export.
+`chat.abstain` before SSE or persistence, and a truncated reserved prefix is
+treated as abstention. Two invariants hold in every configuration:
+
+- **The marker never escapes.** It must not appear in SSE output, messages,
+  citation payloads, HTML, or either export. In the streaming path this needs
+  more than a substring check: providers split `[[RAG_ABSTAIN]]` across chunks,
+  so `_split_emittable` holds back any tail that is still a prefix of the
+  marker. That hold-back is derived from the marker length and is deliberately
+  **not** configurable — one character less reopens the leak.
+- **Persistence is always classified on the full completion.** The saved
+  message, its citations, and `metadata.outcome` come from a final
+  `parse_answer_result` over the whole text, never from what was streamed.
+
+What `runtime.answer_stream_gate_chars` changes is only **what the user's screen
+saw in the meantime**:
+
+- `0` (default) — the whole completion is buffered before anything is emitted.
+  A model that writes normal-looking text and abstains afterwards puts nothing
+  on screen at all. This is the strongest form of the guarantee and the setting
+  to keep unless partial streaming has been shown to help; see
+  `docs/DEVELOPMENT.md`, since a provider that bursts its stream at the end
+  makes the trade below buy nothing.
+- `> N` — nothing is emitted until N characters have been buffered and
+  classified. A compliant abstention is the marker alone at position 0 and never
+  survives that gate; a reserved prefix appearing later stops emission for the
+  rest of the stream. The residual exposure is bounded and specific: a model
+  that writes a preamble **longer than N** and only then abstains will have had
+  that preamble displayed. The server then emits an SSE `discard` event so the
+  client clears it before the refusal is appended, rather than leaving it until
+  the final `done` swap. Streamed text is written with `textContent`, so this
+  path adds no markup-injection surface; the final render still goes through the
+  server-side sanitizer.
 
 Notebook answer policy and matched answer notes are serialized as bounded JSON
 inside the user-role prompt. They are never placed in the privileged system

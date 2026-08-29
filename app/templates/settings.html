@@ -1,11 +1,5 @@
 {% extends "base.html" %}
 {% block content %}
-{% macro status_class(status) -%}
-  {{- 'indexed' if status == 'succeeded' else 'failed' if status == 'failed' else 'uploaded' -}}
-{%- endmacro %}
-{% set diagnostics = settings.diagnostics or {} %}
-{% set chat_diag = diagnostics.get('chat', {}) %}
-{% set embedding_diag = diagnostics.get('embedding', {}) %}
 {% set is_azure_chat = settings.provider == 'azure_openai' %}
 {% set is_azure_embedding = settings.embedding_provider == 'azure_openai' %}
 <section class="settings">
@@ -15,7 +9,6 @@
     <p class="muted">所有使用者共用。聊天模型與 embedding 模型各自獨立設定連線；API key 儲存後即遮罩，不會再回傳到瀏覽器。</p>
   </header>
   {% if saved %}<div class="notice">設定已儲存。</div>{% endif %}
-  {% if diagnostic_notice %}<div class="notice">{{ diagnostic_notice }}</div>{% endif %}
   <form method="post" action="/settings" class="settings-grid" data-loading-form
         x-data="{ tab: '{{ active_tab or 'chat' }}' }">
     {{ csrf_input() }}
@@ -65,8 +58,19 @@
           <strong>{{ t('settings.test_chat') }}</strong>
           <p class="muted">{{ t('settings.test_chat_hint') }}</p>
         </div>
-        <button type="submit" class="secondary" formaction="/settings/test-chat" data-loading-text="{{ t('settings.test_chat_loading') }}">{{ t('settings.test_chat') }}</button>
+        {# type=button + hx-post, not a form submit: the test must not re-render
+           the page, or it discards the scroll position and any unsaved values
+           the probe just ran against. hx-include sends the whole form (CSRF
+           token included) while only the diagnostics card is swapped back. #}
+        <button type="button" class="secondary"
+                hx-post="/settings/test-chat"
+                hx-include="closest form"
+                hx-target="#chat-diagnostics"
+                hx-swap="outerHTML"
+                hx-disabled-elt="this"
+                hx-indicator="#chat-test-loading">{{ t('settings.test_chat') }}</button>
       </div>
+      <p id="chat-test-loading" class="hint htmx-indicator">{{ t('settings.test_chat_loading') }}</p>
       <label class="diagnostic-checkbox">
         <input type="checkbox" name="include_image_understanding" value="1">
         <span>
@@ -75,59 +79,7 @@
         </span>
       </label>
 
-      <article class="card card--flat diagnostic-card">
-        <div class="diagnostic-card-head">
-          <h3>{{ t('settings.chat_diag') }}</h3>
-          {% if chat_diag %}
-            <span class="status {{ status_class(chat_diag.status) }}">{{ diagnostic_status_labels.get(chat_diag.status, chat_diag.status) }}</span>
-          {% endif %}
-        </div>
-        {% if chat_diag %}
-          <dl class="diagnostic-list">
-            <div><dt>{{ t('settings.provider') }}</dt><dd>{{ chat_diag.provider or '—' }}</dd></div>
-            <div><dt>{{ t('settings.model') }}</dt><dd>{{ chat_diag.model or '—' }}</dd></div>
-            <div><dt>{{ t('settings.latency') }}</dt><dd>{{ chat_diag.latency_ms }} ms</dd></div>
-            <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ chat_diag.tested_at or '—' }}</dd></div>
-            {% if chat_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ chat_diag.error_class }}</dd></div>{% endif %}
-          </dl>
-          {% set caps = chat_diag.capabilities or {} %}
-          <h4>{{ t('settings.capabilities') }}</h4>
-          <ul class="diagnostic-capabilities">
-            {% for key, label in [
-              ('streaming', t('settings.cap_streaming')),
-              ('usage_reporting', t('settings.cap_usage')),
-              ('json_following', t('settings.cap_json')),
-              ('image_understanding', t('settings.cap_image'))
-            ] %}
-              {% set cap = caps.get(key, {}) %}
-              <li>
-                <span>{{ label }}</span>
-                <span class="status {{ status_class(cap.status or 'not_tested') }}">{{ diagnostic_status_labels.get(cap.status or 'not_tested', cap.status or 'not_tested') }}</span>
-              </li>
-            {% endfor %}
-            {# LLM-2: deliberately not a pass/fail pill. A model that refuses
-               temperature is not broken, it just takes a different request
-               shape, and a red "failed" here would send admins chasing a
-               non-problem. Report the shape instead. #}
-            {% set sampling = caps.get('sampling_params', {}) %}
-            {% set field = (caps.get('max_tokens_field', {}).get('field')) or 'max_tokens' %}
-            <li>
-              <span>{{ t('settings.cap_sampling') }}</span>
-              <span class="muted">
-                {%- if sampling.status == 'succeeded' -%}
-                  {{ t('settings.cap_sampling_full', field=field) }}
-                {%- elif sampling.status == 'failed' -%}
-                  {{ t('settings.cap_sampling_limited', field=field) }}
-                {%- else -%}
-                  {{ t('settings.cap_sampling_unknown') }}
-                {%- endif -%}
-              </span>
-            </li>
-          </ul>
-        {% else %}
-          <p class="muted">{{ t('settings.no_diag') }}</p>
-        {% endif %}
-      </article>
+      {% include "_settings_diag_chat.html" %}
     </section>
 
     {# ===== Embedding model card ===== #}
@@ -172,35 +124,17 @@
           <strong>{{ t('settings.test_embedding') }}</strong>
           <p class="muted">{{ t('settings.test_embedding_hint') }}</p>
         </div>
-        <button type="submit" class="secondary" formaction="/settings/test-embedding" data-loading-text="{{ t('settings.test_embedding_loading') }}">{{ t('settings.test_embedding') }}</button>
+        <button type="button" class="secondary"
+                hx-post="/settings/test-embedding"
+                hx-include="closest form"
+                hx-target="#embedding-diagnostics"
+                hx-swap="outerHTML"
+                hx-disabled-elt="this"
+                hx-indicator="#embedding-test-loading">{{ t('settings.test_embedding') }}</button>
       </div>
+      <p id="embedding-test-loading" class="hint htmx-indicator">{{ t('settings.test_embedding_loading') }}</p>
 
-      <article class="card card--flat diagnostic-card">
-        <div class="diagnostic-card-head">
-          <h3>{{ t('settings.embedding_diag') }}</h3>
-          {% if embedding_diag %}
-            <span class="status {{ status_class(embedding_diag.status) }}">{{ diagnostic_status_labels.get(embedding_diag.status, embedding_diag.status) }}</span>
-          {% endif %}
-        </div>
-        {% if embedding_diag %}
-          <dl class="diagnostic-list">
-            <div><dt>{{ t('settings.provider') }}</dt><dd>{{ embedding_diag.provider or '—' }}</dd></div>
-            <div><dt>{{ t('settings.model') }}</dt><dd>{{ embedding_diag.model or '—' }}</dd></div>
-            <div><dt>{{ t('settings.latency') }}</dt><dd>{{ embedding_diag.latency_ms }} ms</dd></div>
-            <div><dt>{{ t('settings.embedding_dimension') }}</dt><dd>{{ embedding_diag.embedding_dimension if embedding_diag.embedding_dimension is not none else '—' }}</dd></div>
-            <div><dt>{{ t('settings.current_index_dimension') }}</dt><dd>{{ embedding_diag.current_index_dimension if embedding_diag.current_index_dimension is not none else '—' }}</dd></div>
-            <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ embedding_diag.tested_at or '—' }}</dd></div>
-            {% if embedding_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ embedding_diag.error_class }}</dd></div>{% endif %}
-          </dl>
-          {% if embedding_diag.index_readable is defined and not embedding_diag.index_readable %}
-            <p class="notice failed">{{ t('settings.index_unreadable_warn') }}</p>
-          {% elif embedding_diag.embedding_dimension is not none and embedding_diag.current_index_dimension is not none and embedding_diag.embedding_dimension != embedding_diag.current_index_dimension %}
-            <p class="notice failed">{{ t('settings.dim_mismatch_warn') }}</p>
-          {% endif %}
-        {% else %}
-          <p class="muted">{{ t('settings.no_diag') }}</p>
-        {% endif %}
-      </article>
+      {% include "_settings_diag_embedding.html" %}
     </section>
 
     {# ===== Shared runtime params ===== #}

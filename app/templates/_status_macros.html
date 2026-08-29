@@ -1,0 +1,6 @@
+{# Shared presentational macros. Lives on its own so the settings diagnostic
+   partials can render standalone for their HTMX swaps — a macro defined in a
+   parent template is not available when the partial is rendered by itself. #}
+{% macro status_class(status) -%}
+  {{- 'indexed' if status == 'succeeded' else 'failed' if status == 'failed' else 'uploaded' -}}
+{%- endmacro %}

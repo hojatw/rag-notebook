@@ -207,6 +207,32 @@ class RuntimeConfig:
     extract_max_file_bytes: int = 20_000_000
     suggestions_ttl_hours: int = 24
     briefing_ttl_hours: int = 24
+    # How many characters the answer stream buffers before it may emit anything.
+    # 0 (the default) disables partial streaming: the whole completion is
+    # buffered and classified before any of it reaches the browser.
+    #
+    # Why off by default. The stream must classify the reserved
+    # `[[RAG_ABSTAIN]]` marker before text is shown, and full buffering is the
+    # strongest form of that — a model that writes a plausible preamble and only
+    # then abstains never puts a word on screen. Partial streaming trades a
+    # slice of that guarantee for responsiveness, so it should only be switched
+    # on where the trade actually buys something.
+    #
+    # It often does not. Measured against Azure OpenAI, the provider delivered
+    # 243 stream chunks with the FIRST arriving at 5.24s of a 5.85s generation —
+    # it buffers the completion upstream and releases it in one burst (the shape
+    # Azure's synchronous content filtering produces). A gate there gains ~0.2s
+    # and gives up the guarantee for nothing. A self-hosted vLLM/Ollama endpoint
+    # streams token by token and is the case that benefits.
+    #
+    # So: measure the provider before enabling — `python -m
+    # tests.probe_provider_stream` prints chunk arrival times, and the decision
+    # is whether they are spread across the generation or bunched at the end.
+    # If they are spread, 120 is the value derived from this corpus: just above
+    # the p95 first-sentence length (118 chars), covering 91% of "full first
+    # sentence + marker" cases, and short enough that 25% of historical answers
+    # still finish inside the gate. See docs/DEVELOPMENT.md for the procedure.
+    answer_stream_gate_chars: int = 0
 
 
 @dataclasses.dataclass

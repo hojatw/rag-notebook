@@ -48,6 +48,8 @@ Server-rendered Jinja with progressive enhancement via HTMX + Alpine — **no bu
 
 When adding a fragment that depends on indexed-source availability, listen for `indexed-sources-changed`, not the per-tick event.
 
+**Whatever queues ingestion must also set `sources.status` to a queued value in the same request.** `_source_item.html` only carries its polling attributes while the status is `uploaded`/`processing`, so a row left at `indexed` re-renders with no polling at all and the page goes stale until a manual reload — silently, since nothing errors. `enqueue_source()` writes only to `ingest_jobs`; the *route* owns the status update (see both the upload and reindex handlers in `app/main.py`).
+
 ## Guardrails (full list in AGENTS.md)
 
 - Never modify or commit `data/` or `logs/` (user state); keep `.env` and real secrets uncommitted. Changing `NOTEBOOKLM_SECRET` invalidates encrypted API keys.

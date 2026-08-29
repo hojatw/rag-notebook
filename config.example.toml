@@ -97,6 +97,16 @@ extract_max_file_bytes = 20000000   # extract time, .xlsx/.pptx/.csv only (prote
 #  still read, with a deprecation warning.)
 suggestions_ttl_hours = 24
 briefing_ttl_hours = 24
+# Characters buffered before the answer stream may show anything. 0 = buffer the
+# whole answer before showing any of it (default, and the strongest form of the
+# [[RAG_ABSTAIN]] guarantee: a model that abstains after a plausible preamble
+# never puts a word on screen). A positive value turns on partial streaming.
+# Only worth it if the provider really streams — Azure OpenAI buffers upstream
+# and releases in one burst, so a gate gains ~0.2s there and gives up the
+# guarantee for nothing. Check with `python -m tests.probe_provider_stream`
+# first; if chunks are spread across the generation, 120 is the measured value.
+# See docs/DEVELOPMENT.md.
+answer_stream_gate_chars = 0
 
 # --- UI / i18n ---------------------------------------------------------------
 [ui]

@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import logging
 import re
@@ -1549,7 +1550,16 @@ async def process_source(source_id: int) -> None:
             source["user_id"],
             source["filename"],
         )
-        extraction = extract_sections(Path(source["stored_path"]))
+        # Off the event loop: extraction is synchronous, CPU-bound, and can run
+        # for tens of seconds (measured: 32s for an 881-section PDF through
+        # pdfplumber). With the inline worker that time is spent inside the web
+        # process, so running it here would freeze every request — including the
+        # 2s source-row polls that are supposed to show "processing", which is
+        # exactly how this surfaced: the row sat at "uploaded" because the
+        # server could not answer a single poll until extraction finished.
+        # `extract_sections` only reads the file and returns text, so it holds
+        # no connection and is safe to hand to a thread.
+        extraction = await asyncio.to_thread(extract_sections, Path(source["stored_path"]))
         sections = extraction.sections
         stage = "chunk"
         # Pack sentences across sections up to the chunk target so formats that

@@ -166,6 +166,11 @@ function bindStreamingAskForms(root) {
             stream.answer += data.text || "";
             stream.body.textContent = stream.answer;
             stream.body.scrollIntoView({ behavior: "smooth", block: "end" });
+          } else if (eventName === "discard") {
+            // The server classified an abstention after streaming had started.
+            // Drop what we drew; the refusal arrives as the next chunk.
+            stream.answer = "";
+            stream.body.textContent = "";
           } else if (eventName === "error") {
             stream.status.textContent = data.text || tr("answer_failed", "回答生成失敗。");
           } else if (eventName === "done") {
