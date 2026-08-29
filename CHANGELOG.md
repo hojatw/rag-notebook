@@ -55,6 +55,15 @@
   條寬度都是點擊熱區。改為建立**全域** `.setting-check` 基礎樣式，這個 class
   以後在任何頁面都不會再是無樣式狀態。
 
+### 效能
+
+- **CSV ingestion 改為串流解析（P1-5）**：不再以 `read_bytes → decode → splitlines`
+  同時保留多份整檔內容；改由 64 KiB 樣本判斷 encoding／delimiter，再以 incremental
+  decoder `TextIOWrapper(newline="")` 將 physical lines 送入 `csv.reader`。即使超過
+  列數上限仍驗證到 EOF，後段才出現的 Big5 會觸發 bounded re-detection 與串流重讀；
+  quoted field 的內嵌換行也不再被 `splitlines()` 刪除。20 MB parser cap 仍保留以限制
+  總工作量與單一巨型 record。
+
 ### 變更
 
 - **領域提示與回答政策頁改版**：兩個「啟用」開關改用新的 `.switch-field`

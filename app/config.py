@@ -190,11 +190,10 @@ class RuntimeConfig:
     #                                       with read_only=True, so rows stream
     #                                .pptx  zip expansion, and python-pptx builds
     #                                       the whole presentation object
-    #                                .csv   not a zip: read_bytes -> decode ->
-    #                                       splitlines each materialises the whole
-    #                                       file, measured at ~5.7x its size for
-    #                                       Big5. See QUALITY/PERFORMANCE backlog
-    #                                       for the streaming rewrite.
+    #                                .csv   not a zip and parsed incrementally;
+    #                                       the cap bounds total parse work and a
+    #                                       pathological single record/field that
+    #                                       can approach the full file size.
     #                              PDF/DOCX stream and are exempt.
     #
     # The upload path applies whichever of the two is stricter for the file's
