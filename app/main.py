@@ -495,7 +495,9 @@ def current_user(request: Request) -> dict:
     mechanism — bumping the column signs out every session except one that gets
     re-issued afterwards.
     """
-    decoded = unsign_user_id(request.cookies.get("session"), SECRET, SESSION_MAX_AGE_SECONDS)
+    decoded = unsign_user_id(
+        request.cookies.get(SESSION_COOKIE_NAME), SECRET, SESSION_MAX_AGE_SECONDS
+    )
     if not decoded:
         raise HTTPException(status_code=401)
     user_id, token_password_version = decoded
@@ -717,7 +719,9 @@ def healthz():
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     """Send signed-in users to the notebook grid; everyone else to login."""
-    signed_in = unsign_user_id(request.cookies.get("session"), SECRET, SESSION_MAX_AGE_SECONDS)
+    signed_in = unsign_user_id(
+        request.cookies.get(SESSION_COOKIE_NAME), SECRET, SESSION_MAX_AGE_SECONDS
+    )
     return RedirectResponse("/notebooks" if signed_in else "/login", status_code=303)
 
 
@@ -919,6 +923,19 @@ def _external_auth_metadata(
 
 
 SESSION_MAX_AGE_SECONDS = int(config.auth.session_max_age_hours * 3600)
+SESSION_COOKIE_NAME = "session"
+SESSION_COOKIE_PATH = "/"
+SESSION_COOKIE_SAMESITE = "lax"
+
+
+def _session_cookie_attributes(request: Request) -> dict[str, Any]:
+    """Return the shared attributes used to issue and delete a session cookie."""
+    return {
+        "path": SESSION_COOKIE_PATH,
+        "httponly": True,
+        "samesite": SESSION_COOKIE_SAMESITE,
+        "secure": request.url.scheme == "https",
+    }
 
 
 def _password_version(conn, user_id: int) -> int:
@@ -940,12 +957,10 @@ def _set_session_cookie(
         with connect() as conn:
             password_version = _password_version(conn, user_id)
     response.set_cookie(
-        "session",
+        SESSION_COOKIE_NAME,
         sign_user_id(user_id, SECRET, password_version),
         max_age=SESSION_MAX_AGE_SECONDS,
-        httponly=True,
-        samesite="lax",
-        secure=request.url.scheme == "https",
+        **_session_cookie_attributes(request),
     )
 
 
@@ -1706,10 +1721,10 @@ def oidc_callback(
 
 
 @app.post("/logout")
-def logout():
+def logout(request: Request):
     """Clear the session cookie and return to the login page."""
     response = RedirectResponse("/login", status_code=303)
-    response.delete_cookie("session")
+    response.delete_cookie(SESSION_COOKIE_NAME, **_session_cookie_attributes(request))
     logger.info("logout")
     return response
 

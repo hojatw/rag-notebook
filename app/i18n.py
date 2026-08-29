@@ -206,6 +206,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "auth_admin.note_audit": "若登入失敗，請在稽核頁搜尋 trusted_header_login_rejected 或 oidc_login_rejected 查看原因碼。",
         "auth_admin.view_audit": "查看稽核",
         "auth_admin.manage_users": "管理使用者",
+        "admin_users.create_failed": "建立使用者失敗，請稍後再試。",
         "auth_diag.login_methods": "可用登入方式",
         "auth_diag.login_methods_ok": "至少一種登入方式已啟用。",
         "auth_diag.login_methods_bad": "未啟用任何登入方式。",

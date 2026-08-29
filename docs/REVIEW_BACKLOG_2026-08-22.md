@@ -10,10 +10,10 @@
 
 **進度**：**文件批（DOC-1~15）全數完成**；安全性 `SEC-1`~`SEC-3` 與 LLM 相容性
 `LLM-1`~`LLM-3` 亦已完成，`PERF-1` 同時解決。全部溶解進權威 backlog。
-2026-08-23 再完成 `SEC-4`~`SEC-6`、`LLM-4` 與 `MNT-1`。
+2026-08-23 再完成 `SEC-4`~`SEC-6`、`LLM-4` 與 `MNT-1`；2026-08-29 完成
+`SEC-7`、`SEC-8`。
 
-**仍待排（7 項，全為 P2/P3）**：`SEC-7`、`SEC-8`、`PERF-2`、`PERF-3`、`QLT-1`、
-`LLM-5`、`MNT-2`。
+**仍待排（5 項，全為 P2/P3）**：`PERF-2`、`PERF-3`、`QLT-1`、`LLM-5`、`MNT-2`。
 
 剩餘項目的順序建議：
 - **`QLT-1`（關鍵字先截斷後評分）需要 `Q1-3` 代表性 eval set** —— 修法直覺正確，
@@ -106,11 +106,17 @@
   目前沒有模板印它，但這是等著被踩的地雷。
 - **修法**：明列欄位，不用 `SELECT *`。
 
-### [ ] SEC-7 · P3 · 建立使用者失敗時回顯原始例外
+### [x] SEC-7 · P3 · 建立使用者失敗時回顯原始例外
+> **已完成（2026-08-29）** — 使用者端改為 i18n 通用錯誤，完整例外只寫入 server log；
+> durable 紀錄見 [`SECURITY.md`](SECURITY.md) → *Admin error and logout-cookie hygiene*。
 - **位置**：[`app/admin.py:423`](../app/admin.py) `error = f"建立使用者失敗：{exc}"`。
 - **問題**：原始 SQLite 例外字串回顯給 admin。僅限管理員可見，嚴重度低。
 
-### [ ] SEC-8 · P3 · `logout` 的 `delete_cookie` 屬性未對齊
+### [x] SEC-8 · P3 · `logout` 的 `delete_cookie` 屬性未對齊
+> **已完成（2026-08-29）** — session 發行與刪除共用 path、HttpOnly、SameSite 與
+> request-scheme-derived Secure 屬性；durable 紀錄見 [`SECURITY.md`](SECURITY.md) →
+> *Admin error and logout-cookie hygiene*。後續核對確認舊版 Starlette 的 deletion
+> 已預設 `Path=/`，因此這是契約硬化，未宣稱已重現實際登出失敗。
 - **位置**：[`app/main.py:1271`](../app/main.py)。
 - **問題**：`delete_cookie("session")` 未帶 set 時的 `samesite`/`secure`/`path`，
   某些瀏覽器組合下可能刪不掉。
@@ -409,7 +415,7 @@ sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, N
 | 6 | `docs` | DOC-9～DOC-14 | 索引與架構圖補洞，純機械性 |
 | 7 | `fix(auth)` | SEC-3 | 補上「改密碼能踢人」這個基本能力 |
 | 8 | `refactor(i18n)` | MNT-1（已完成 2026-08-23） | 純機械性，讓文件與程式一致 |
-| 9 | 後續輪次 | SEC-7、SEC-8、PERF-2、PERF-3、QLT-1 | 記進對應 backlog |
+| 9 | 後續輪次 | PERF-2、PERF-3、QLT-1 | 記進對應 backlog；SEC-7、SEC-8 已於 2026-08-29 完成 |
 | 10 | 獨立一輪 | MNT-2 | `app/web.py` 抽離，不要跟其他改動混在同一 diff |
 
 **硬相依**：

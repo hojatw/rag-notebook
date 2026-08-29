@@ -3805,6 +3805,72 @@ def test_oversized_spreadsheet_is_refused_at_upload_not_in_the_worker(monkeypatc
         assert [r["filename"] for r in rows] == ["ok.pdf"]
 
 
+# --- SEC-7/8: admin errors and logout cookie hygiene --------------------------
+
+
+def test_admin_create_user_failure_does_not_echo_database_exception(
+    monkeypatch, tmp_path, caplog
+):
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    caplog.set_level("ERROR", logger="app.admin")
+
+    with TestClient(main.app) as client:
+        _login(client)
+        response = client.post(
+            "/admin/users/new",
+            data={"username": "admin", "password": "password1"},
+        )
+
+    assert response.status_code == 400
+    assert main.i18n.t("admin_users.create_failed") in response.text
+    assert "UNIQUE constraint failed" not in response.text
+    assert "users.username" not in response.text
+    failure_records = [
+        record for record in caplog.records if record.getMessage().startswith("user_create_failed")
+    ]
+    assert len(failure_records) == 1
+    assert failure_records[0].exc_info is not None
+    assert "UNIQUE constraint failed" in str(failure_records[0].exc_info[1])
+
+
+def _response_cookie_header(response, name: str) -> str:
+    prefix = f"{name}="
+    matches = [
+        value for value in response.headers.get_list("set-cookie") if value.startswith(prefix)
+    ]
+    assert len(matches) == 1
+    return matches[0].lower()
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expects_secure"),
+    [("http://testserver", False), ("https://testserver", True)],
+)
+def test_logout_cookie_attributes_match_session_issuance(
+    monkeypatch, tmp_path, base_url, expects_secure
+):
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app, base_url=base_url) as client:
+        issued = client.post(
+            "/login",
+            data={"username": "admin", "password": "admin123"},
+            follow_redirects=False,
+        )
+        deleted = client.post("/logout", follow_redirects=False)
+
+    assert issued.status_code == 303
+    assert deleted.status_code == 303
+    issued_cookie = _response_cookie_header(issued, "session")
+    deleted_cookie = _response_cookie_header(deleted, "session")
+    for attribute in ("path=/", "httponly", "samesite=lax"):
+        assert attribute in issued_cookie
+        assert attribute in deleted_cookie
+    assert ("secure" in issued_cookie) is expects_secure
+    assert ("secure" in deleted_cookie) is expects_secure
+    assert "max-age=0" in deleted_cookie
+
+
 # --- SEC-3: password changes revoke other sessions, sessions expire -----------
 
 

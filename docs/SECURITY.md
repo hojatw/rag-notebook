@@ -127,9 +127,21 @@ lengths/fingerprints; it must never contain domain text or snapshots.
 
 A full review on **2026-08-22** surfaced a set of hardening items. They are triaged and tracked in `docs/REVIEW_BACKLOG_2026-08-22.md` with priorities and locations, and are folded back into this file as each lands.
 
-**Fixed:** `SEC-1` bootstrap accounts (above), `SEC-2` upload size limits / multipart buffering (see the parser note below), `SEC-3` session lifetime + revocation (below), `SEC-4` shared login rate limiting, `SEC-5` Traditional/Simplified Chinese prompt-injection telemetry patterns, and `SEC-6` explicit session-user field projection that excludes `password_hash`.
+**Fixed:** `SEC-1` bootstrap accounts (above), `SEC-2` upload size limits / multipart buffering (see the parser note below), `SEC-3` session lifetime + revocation (below), `SEC-4` shared login rate limiting, `SEC-5` Traditional/Simplified Chinese prompt-injection telemetry patterns, `SEC-6` explicit session-user field projection that excludes `password_hash`, `SEC-7` generic user-creation errors, and `SEC-8` aligned session-cookie deletion attributes.
 
-**Still open:** two low-severity hygiene items: a raw exception string echoed to an admin (`SEC-7`) and logout-cookie deletion attributes that are not explicitly aligned with issuance (`SEC-8`).
+### Admin error and logout-cookie hygiene (SEC-7 / SEC-8, 2026-08-29)
+
+User-creation failures now return a catalogued generic message to the admin;
+the full exception and traceback stay in the server log. This prevents SQLite
+schema and constraint details from being copied into rendered HTML while
+retaining diagnostic evidence for operators.
+
+Session issuance and logout deletion share the same cookie name, path,
+`HttpOnly`, `SameSite=Lax`, and request-scheme-derived `Secure` attributes.
+Cookie matching is based on name, domain, and path, and Starlette's prior
+deletion already defaulted to `Path=/`; this is contract hardening, not evidence
+of a reproduced logout failure. HTTP and HTTPS regressions now pin both sides
+so their security attributes cannot silently drift later.
 
 ### Local-login rate limiting (SEC-4, 2026-08-23)
 
