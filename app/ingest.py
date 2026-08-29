@@ -551,22 +551,19 @@ DEFAULT_OVERLAP_SENTENCES = config.chunking.overlap_sentences
 #:   gigabytes.
 #: * ``.pptx`` — zip expansion, *plus* python-pptx materialises the whole
 #:   presentation object rather than streaming slides.
-#: * ``.csv`` — not an archive at all. ``_read_csv_sheet`` materialises the file
-#:   three times over (``read_bytes`` → full ``str`` decode → ``splitlines``),
-#:   measured at ~5.7x the file size on a Big5 export. Encoding *detection* is
-#:   not the cause — it is only one consumer of an already-fully-read buffer —
-#:   though the strict whole-file UTF-8 attempt in ``_decode_csv_bytes`` is a
-#:   deliberate verification that sampling could not replace.
+#: * ``.csv`` — not an archive and now parsed incrementally, but the cap still
+#:   bounds parser CPU and pathological single records/fields that can approach
+#:   the file's full size even when the surrounding rows stream.
 #:
 #: PDF/DOCX stream and are not listed.
-EAGERLY_PARSED_SUFFIXES = frozenset({".xlsx", ".pptx", ".csv"})
+STRICT_EXTRACT_CAP_SUFFIXES = frozenset({".xlsx", ".pptx", ".csv"})
 
 
 def upload_limit_for(filename: str) -> int:
     """Effective per-file upload cap for this filename, in bytes.
 
-    Normally `upload_max_file_bytes`, but the eagerly-parsed formats fall back to
-    the stricter `extract_max_file_bytes` because that is what the worker would
+    Normally `upload_max_file_bytes`, but formats with the stricter parser cap
+    fall back to `extract_max_file_bytes` because that is what the worker would
     enforce anyway. Applying it at upload time turns a confusing two-stage
     rejection — upload succeeds, then ingest fails minutes later — into one
     immediate, explainable error.
@@ -575,19 +572,20 @@ def upload_limit_for(filename: str) -> int:
     to parse" knowledge stays next to the parsers that make it true.
     """
     limit = config.runtime.upload_max_file_bytes
-    if Path(filename).suffix.lower() in EAGERLY_PARSED_SUFFIXES:
+    if Path(filename).suffix.lower() in STRICT_EXTRACT_CAP_SUFFIXES:
         return min(limit, config.runtime.extract_max_file_bytes)
     return limit
 
 
 def _guard_source_size(path: Path) -> None:
-    """Refuse sources the extractor would parse eagerly beyond a sane size.
+    """Refuse sources whose parser cost needs a stricter size backstop.
 
     The upload path already applies the same cap (`upload_limit_for`), so in
     normal operation this never fires. It stays as the backstop for files that
     did not arrive through an upload — reindexing a source stored before the cap
     existed, or a file placed in `data/uploads/` by hand — because this is the
-    check that actually stands between a zip bomb and a parser.
+    check that actually stands between archive expansion / oversized records
+    and their parsers.
     """
     limit = config.runtime.extract_max_file_bytes
     size = path.stat().st_size
@@ -1007,53 +1005,167 @@ def _count_uncached_formulas(path: Path) -> int:
     return total
 
 
-def _decode_csv_bytes(raw: bytes) -> tuple[str, dict[str, Any]]:
-    """Decode CSV bytes, recording how (BOM / UTF-8 / detected / replaced).
+CSV_ENCODING_SAMPLE_BYTES = 65_536
 
-    zh-TW exports are still frequently Big5/CP950, which "successfully" decodes
-    into mojibake if UTF-8 is assumed — so the decision is recorded, never
-    silent.
+
+def _decode_csv_sample(raw: bytes, encoding: str) -> str:
+    """Strictly decode a bounded sample without rejecting a split final codepoint."""
+    import codecs
+
+    decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
+    return decoder.decode(raw, final=False)
+
+
+def _detect_csv_encoding(raw: bytes) -> tuple[str, dict[str, Any]]:
+    """Choose an encoding from a bounded sample and record the decision.
+
+    The UTF-8 result is provisional until the streaming parser reaches EOF. A
+    later decode failure triggers one bounded re-detection from the failing
+    decoder buffer and a full streaming re-read.
     """
     import codecs
 
     if raw.startswith(codecs.BOM_UTF8):
-        return raw.decode("utf-8-sig"), {"encoding": "utf-8-sig", "source": "bom"}
+        return "utf-8-sig", {"encoding": "utf-8-sig", "source": "bom"}
     for bom, name in ((codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16")):
         if raw.startswith(bom):
-            return raw.decode(name), {"encoding": name, "source": "bom"}
+            return name, {"encoding": name, "source": "bom"}
     try:
-        return raw.decode("utf-8"), {"encoding": "utf-8", "source": "strict"}
+        _decode_csv_sample(raw, "utf-8")
+        return "utf-8", {"encoding": "utf-8", "source": "strict"}
     except UnicodeDecodeError:
         pass
     try:
         from charset_normalizer import from_bytes
 
         best = from_bytes(raw).best()
-        if best is not None:
-            text = str(best)
-            return text, {
+        if best is not None and best.encoding:
+            _decode_csv_sample(raw, best.encoding)
+            return best.encoding, {
                 "encoding": best.encoding,
                 "source": "detected",
-                "replacements": text.count("�"),
+                "replacements": 0,
             }
     except Exception:
         logger.exception("csv_encoding_detection_failed")
-    text = raw.decode("utf-8", errors="replace")
-    return text, {"encoding": "utf-8", "source": "replace", "replacements": text.count("�")}
+    return "utf-8", {"encoding": "utf-8", "source": "replace", "replacements": 0}
 
 
-def _read_csv_sheet(path: Path) -> tuple[list[tuple[str, list[list[Any]]]], list[str], dict[str, Any]]:
-    """Read a .csv as a single sheet, detecting encoding and delimiter."""
+def _same_encoding(left: str, right: str) -> bool:
+    import codecs
+
+    try:
+        return codecs.lookup(left).name == codecs.lookup(right).name
+    except LookupError:
+        return left.casefold() == right.casefold()
+
+
+def _sniff_csv_delimiter(raw_sample: bytes, encoding: str, errors: str) -> str:
     import csv as csv_module
 
-    s = config.spreadsheet
-    text, encoding_details = _decode_csv_bytes(path.read_bytes())
-    sample = text[:65536]
     try:
-        delimiter = csv_module.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
-    except csv_module.Error:
-        delimiter = ","
+        if errors == "strict":
+            text = _decode_csv_sample(raw_sample, encoding)
+        else:
+            text = raw_sample.decode(encoding, errors=errors)
+        return csv_module.Sniffer().sniff(text, delimiters=",;\t|").delimiter
+    except (UnicodeDecodeError, LookupError, csv_module.Error):
+        return ","
+
+
+def _stream_csv_rows(
+    path: Path, encoding: str, errors: str, delimiter: str
+) -> tuple[list[list[Any]], bool, int]:
+    """Parse CSV incrementally while still consuming the file through EOF.
+
+    Continuing after the row cap is deliberate: a sampled UTF-8 head is only a
+    guess until the incremental decoder verifies every later byte. Stored rows
+    remain bounded, while a late failure can restart with a detected encoding.
+    """
+    import csv as csv_module
+    import io
+
+    s = config.spreadsheet
+    rows: list[list[Any]] = []
+    truncated = False
+    replacements = 0
+    with path.open("rb") as binary_file:
+        with io.TextIOWrapper(
+            binary_file, encoding=encoding, errors=errors, newline=""
+        ) as text_file:
+            for values in csv_module.reader(text_file, delimiter=delimiter):
+                replacements += sum(value.count("�") for value in values)
+                if len(rows) >= s.max_rows + 1:
+                    truncated = True
+                    # The row cap is already known. Drain decoded text only to
+                    # verify the remaining bytes without paying csv parsing cost
+                    # for rows that cannot be retained.
+                    for remaining in iter(
+                        lambda: text_file.read(CSV_ENCODING_SAMPLE_BYTES), ""
+                    ):
+                        replacements += remaining.count("�")
+                    break
+                trimmed = values[: s.max_cols]
+                if len(values) > s.max_cols:
+                    truncated = True
+                if any(_cell_text(value) for value in trimmed):
+                    rows.append(list(trimmed))
+    return rows, truncated, replacements
+
+
+def _read_csv_sheet(
+    path: Path,
+) -> tuple[list[tuple[str, list[list[Any]]]], list[str], dict[str, Any]]:
+    """Read one CSV sheet with bounded detection and incremental decoding."""
+    with path.open("rb") as binary_file:
+        raw_sample = binary_file.read(CSV_ENCODING_SAMPLE_BYTES)
+
+    encoding, encoding_details = _detect_csv_encoding(raw_sample)
+
+    def parse(
+        selected_encoding: str, selected_details: dict[str, Any]
+    ) -> tuple[list[list[Any]], bool, str, dict[str, Any]]:
+        errors = "replace" if selected_details["source"] == "replace" else "strict"
+        delimiter = _sniff_csv_delimiter(raw_sample, selected_encoding, errors)
+        rows, truncated, replacements = _stream_csv_rows(
+            path, selected_encoding, errors, delimiter
+        )
+        if selected_details["source"] in {"detected", "replace"}:
+            selected_details = {**selected_details, "replacements": replacements}
+        return rows, truncated, delimiter, selected_details
+
+    try:
+        rows, truncated, delimiter, encoding_details = parse(encoding, encoding_details)
+    except UnicodeDecodeError as exc:
+        if encoding_details["source"] == "bom":
+            raise
+        failure_sample = bytes(exc.object)
+        # The traceback retains _stream_csv_rows' partially built rows. Release
+        # it before the retry so the failed and successful passes do not overlap
+        # in memory.
+        exc.__traceback__ = None
+        fallback_encoding, fallback_details = _detect_csv_encoding(failure_sample)
+        if fallback_details["source"] == "detected" and not _same_encoding(
+            fallback_encoding, encoding
+        ):
+            try:
+                rows, truncated, delimiter, encoding_details = parse(
+                    fallback_encoding, fallback_details
+                )
+            except UnicodeDecodeError as fallback_exc:
+                fallback_exc.__traceback__ = None
+                rows, truncated, delimiter, encoding_details = parse(
+                    "utf-8",
+                    {"encoding": "utf-8", "source": "replace", "replacements": 0},
+                )
+        else:
+            rows, truncated, delimiter, encoding_details = parse(
+                "utf-8",
+                {"encoding": "utf-8", "source": "replace", "replacements": 0},
+            )
+
     notes: list[str] = []
+    sheet_name = path.stem
     details: dict[str, Any] = {
         "skipped_sheets": [],
         "truncated_sheets": [],
@@ -1062,18 +1174,6 @@ def _read_csv_sheet(path: Path) -> tuple[list[tuple[str, list[list[Any]]]], list
     }
     if encoding_details.get("source") in {"detected", "replace"}:
         notes.append("csv_encoding_fallback")
-    rows: list[list[Any]] = []
-    truncated = False
-    sheet_name = path.stem
-    for values in csv_module.reader(text.splitlines(), delimiter=delimiter):
-        if len(rows) >= s.max_rows + 1:
-            truncated = True
-            break
-        trimmed = values[: s.max_cols]
-        if len(values) > s.max_cols:
-            truncated = True
-        if any(_cell_text(v) for v in trimmed):
-            rows.append(list(trimmed))
     if truncated:
         details["truncated_sheets"].append(sheet_name)
         notes.append("spreadsheet_truncated")

@@ -167,10 +167,12 @@ protect different things:
 | `[runtime].upload_max_file_bytes` (50 MB) | web request, while streaming to disk | **all** | the host — disk fill, request memory |
 | `[runtime].extract_max_file_bytes` (20 MB) | ingest worker, file already stored | `.xlsx` / `.pptx` / `.csv` only | the **parser** |
 
-The second exists because those three formats' on-disk size says nothing about
-their parse cost: `.xlsx` / `.pptx` are zip containers (a small archive can
-decompress to gigabytes) and `.csv` is read whole into memory for encoding
-detection. PDF and DOCX stream, so they are exempt.
+The second exists because those three formats need a stricter parser-cost
+backstop: `.xlsx` / `.pptx` are zip containers (a small archive can decompress
+to gigabytes), while `.csv` now streams but can still spend work on every byte
+and can contain a pathological single record/field approaching the file's full
+size. PDF and DOCX stream without those format-specific costs, so they are
+exempt.
 
 **The upload path applies whichever is stricter for the file's format**
 (`ingest.upload_limit_for`), so a 30 MB spreadsheet is refused at upload with an

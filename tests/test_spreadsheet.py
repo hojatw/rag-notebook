@@ -181,6 +181,18 @@ def test_csv_utf8_is_read_with_detected_delimiter(tmp_path):
     assert result.sections[0][0] == 'sheet "faq" row 2'
 
 
+def test_csv_utf16_bom_streams_with_csv_newline_semantics(tmp_path):
+    path = tmp_path / "utf16.csv"
+    path.write_text("問題,答案\n如何登入？,使用帳密。\n", encoding="utf-16")
+
+    result = extract_sections(path)
+
+    assert result.details["encoding"] == {"encoding": "utf-16", "source": "bom"}
+    assert result.details["delimiter"] == ","
+    assert len(result.sections) == 1
+    assert "如何登入？" in result.sections[0][1]
+
+
 def test_csv_big5_is_decoded_and_flagged(tmp_path):
     """Big5/CP950 exports are common in zh-TW and must not be silently mojibake'd."""
     path = tmp_path / "big5.csv"
@@ -211,3 +223,49 @@ def test_csv_gbk_is_decoded_not_mistaken_for_korean(tmp_path):
     assert result.details["encoding"]["source"] == "detected"
     assert "如何退货？" in result.sections[0][1]
     assert "櫓" not in result.sections[0][1]
+
+
+def test_csv_streams_and_recovers_when_non_utf8_bytes_start_after_the_sample(
+    tmp_path, monkeypatch
+):
+    """A valid ASCII head must not hide Big5 bytes that appear after 64 KiB."""
+    import app.config as app_config
+
+    monkeypatch.setattr(app_config.config.spreadsheet, "max_rows", 2)
+    monkeypatch.setattr(app_config.config.spreadsheet, "max_cols", 2)
+    path = tmp_path / "late-big5.csv"
+    raw = (
+        b"q,a,ignored\n"
+        + b"padding?,\""
+        + b"a" * 70_000
+        + b"\",drop-column\n"
+        + "如何退貨？,七天內可退貨。,drop-column\n".encode("cp950")
+        + "第三題？,第三答,drop-column\n".encode("cp950")
+    )
+    path.write_bytes(raw)
+
+    def _read_bytes_must_not_be_used(_path):
+        raise AssertionError("CSV ingestion must stream instead of calling Path.read_bytes()")
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes_must_not_be_used)
+    result = extract_sections(path)
+
+    assert result.details["encoding"]["source"] == "detected"
+    assert "如何退貨？" in result.sections[1][1]
+    assert all("第三題？" not in text for _, text in result.sections)
+    assert all("drop-column" not in text for _, text in result.sections)
+    assert result.details["truncated_sheets"] == ["late-big5"]
+    assert "spreadsheet_truncated" in result.notes
+
+
+def test_csv_preserves_newlines_inside_quoted_fields(tmp_path):
+    path = tmp_path / "quoted-newline.csv"
+    path.write_text(
+        '問題,答案\n"如何操作？","第一行\n第二行"\n',
+        encoding="utf-8",
+    )
+
+    result = extract_sections(path)
+
+    assert len(result.sections) == 1
+    assert "Answer:\n第一行\n第二行" in result.sections[0][1]

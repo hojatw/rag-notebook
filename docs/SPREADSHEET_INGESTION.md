@@ -249,10 +249,12 @@ lookup and semantic search but not reliable aggregation.
   number formats) that the records/metrics phase will need. `data_only=True`
   returns cached formula results; formula cells without a cached value read as
   empty and must be counted toward the `formula-heavy` diagnostic warning.
-- **CSV:** stdlib `csv` — no new dependency.
-- **Encoding detection:** `charset-normalizer` — already present in the venv
-  as a transitive dependency; pin it explicitly in `requirements.txt` the
-  moment code imports it.
+- **CSV:** stdlib `csv` fed by an incrementally decoding `io.TextIOWrapper`
+  opened with `newline=""`; rows stream from the binary file, UTF-16 newline
+  boundaries remain valid, and quoted embedded newlines stay intact. No new
+  dependency.
+- **Encoding detection:** `charset-normalizer`, pinned directly in
+  `requirements.txt` because ingestion imports it for Big5/CP950/GBK fallback.
 - **Out of scope:** legacy `.xls`, `.xlsb`, ODS, and `pandas` (heavy, wrong
   altitude for row-level chunk shaping).
 - **Documented swap-point:** `python-calamine` (Rust-backed, prebuilt wheels
@@ -272,13 +274,18 @@ zh-TW corpora make encoding the biggest practical failure mode for CSV — Big5
 assumed UTF-8. Ingestion must:
 
 1. check for a UTF-8/UTF-16 BOM first;
-2. try strict UTF-8;
-3. fall back to `charset-normalizer` detection (expect Big5/CP950 candidates);
+2. provisionally try strict UTF-8 on a bounded 64 KiB sample, then verify the
+   decision by incrementally decoding through EOF even after the retained row
+   cap has been reached;
+3. fall back to `charset-normalizer` detection (expect Big5/CP950 candidates),
+   using the bounded failing decoder buffer when non-UTF-8 bytes first appear
+   after the initial sample, then restart the incremental read;
 4. decode with `errors="replace"` only as a last resort, counting replacement
    characters;
-5. record the chosen encoding, detection confidence, and replacement-character
-   count in `A6a` diagnostics — a file that decoded via fallback should be
-   visibly flagged, never silently indexed.
+5. record the chosen encoding, decision source (`bom` / `strict` / `detected` /
+   `replace`), and replacement-character count when applicable in `A6a`
+   diagnostics — a file that decoded via fallback should be visibly flagged,
+   never silently indexed.
 
 Delimiter/dialect: run `csv.Sniffer` on a bounded sample (first ~64 KB) with a
 comma fallback; record the detected delimiter in diagnostics.
@@ -297,10 +304,10 @@ Tunables live in `app/config.py` as a `[spreadsheet]` group (defaults ←
 
 - `max_rows`, `max_cols` — hard per-sheet ingest caps (the whole-file size cap
   is `[runtime].extract_max_file_bytes`, shared with `.pptx`/`.csv` because all
-  three are parsed eagerly; it is also what the **upload** path enforces for
-  these formats, so an oversized spreadsheet is refused before it is stored —
-  see [`DEVELOPMENT.md`](DEVELOPMENT.md) → *File size caps*);
-- `rows_per_chunk_min` / `rows_per_chunk_max` — record-chunk grouping bounds;
+  three need a stricter parser-cost backstop; it is also what the **upload** path
+  enforces for these formats, so an oversized spreadsheet is refused before it
+  is stored — see [`DEVELOPMENT.md`](DEVELOPMENT.md) → *File size caps*);
+- `rows_per_chunk_max` — upper bound on record-chunk grouping;
 - `embed_token_budget` — estimated-token cap per chunk for the adaptive row
   packing (see "Token budgeting for record chunks");
 - `header_sample_rows` — rows inspected for header inference;
