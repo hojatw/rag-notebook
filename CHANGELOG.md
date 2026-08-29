@@ -55,6 +55,15 @@
   條寬度都是點擊熱區。改為建立**全域** `.setting-check` 基礎樣式，這個 class
   以後在任何頁面都不會再是無樣式狀態。
 
+### 安全性
+
+- **管理員建立帳號失敗不再洩漏 SQLite 例外（SEC-7）**：頁面只顯示 i18n 通用錯誤，
+  完整例外與 traceback 保留在 server log，避免把 constraint／schema 細節帶入 HTML。
+- **登出 cookie 屬性與登入發行對齊（SEC-8）**：session cookie 的發行與刪除共用
+  `Path=/`、`HttpOnly`、`SameSite=Lax`，並依 HTTP／HTTPS request scheme 一致設定
+  `Secure`。舊版 Starlette 的 deletion 已預設 `Path=/`，因此這是避免未來設定漂移的
+  契約硬化，未宣稱已重現既有瀏覽器的登出失敗。
+
 ### 變更
 
 - **領域提示與回答政策頁改版**：兩個「啟用」開關改用新的 `.switch-field`
