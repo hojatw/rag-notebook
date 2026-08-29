@@ -420,8 +420,12 @@ def admin_create_user(
                     (username, hash_password(password), 1 if is_admin else 0),
                 )
                 created_id = cursor.lastrowid
-        except Exception as exc:
-            error = f"建立使用者失敗：{exc}"
+        except Exception:
+            logger.exception(
+                "user_create_failed admin_user_id=%s",
+                user["id"],
+            )
+            error = i18n.t("admin_users.create_failed")
     with connect() as conn:
         rows = _admin_user_rows(conn)
     if error:
