@@ -2674,7 +2674,16 @@ def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_p
                 "streaming": {"status": "succeeded", "latency_ms": 4.0, "usage_available": True},
                 "usage_reporting": {"status": "succeeded", "usage_available": True},
                 "json_following": {"status": "succeeded", "latency_ms": 8.0, "json_valid": True},
-                "image_understanding": {"status": "succeeded", "latency_ms": 9.0, "json_valid": True},
+                "image_understanding": {
+                    "status": "succeeded",
+                    "latency_ms": 9.0,
+                    "json_valid": True,
+                    "semantic_match": True,
+                },
+                "reasoning_effort": {
+                    "status": "succeeded",
+                    "supported_values": ["low", "medium"],
+                },
             },
         }
 
@@ -2705,6 +2714,8 @@ def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_p
         "embedding_passage_prefix": "passage:",
         "api_version": "2024-02-15-preview",
         "temperature": "0.2",
+        "reasoning_effort_mode": "auto",
+        "reasoning_effort": "medium",
         "timeout_seconds": "60",
         "embedding_provider": "openai_compatible",
         "embedding_api_key": "",
@@ -2733,6 +2744,8 @@ def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_p
         assert 'hx-post="/settings/test-embedding"' in page.text
         assert 'hx-target="#embedding-diagnostics"' in page.text
         assert 'id="embedding-diagnostics"' in page.text
+        assert 'name="reasoning_effort_mode"' in page.text
+        assert 'name="reasoning_effort"' in page.text
 
         chat = client.post(
             "/settings/test-chat",
@@ -2755,6 +2768,11 @@ def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_p
     diagnostics = json.loads(row["diagnostics_json"])
     assert diagnostics["chat"]["status"] == "succeeded"
     assert diagnostics["chat"]["include_image_understanding"] is True
+    assert diagnostics["chat"]["capabilities"]["image_understanding"]["semantic_match"] is True
+    assert diagnostics["chat"]["capabilities"]["reasoning_effort"]["supported_values"] == [
+        "low",
+        "medium",
+    ]
     assert diagnostics["embedding"]["embedding_dimension"] == 384
     stored = row["diagnostics_json"] + "".join(item["metadata_json"] for item in audit_rows)
     assert "sk-stored" not in stored
@@ -2764,6 +2782,105 @@ def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_p
     assert [item["action"] for item in audit_rows] == [
         "llm_settings_test_chat",
         "llm_settings_test_embedding",
+    ]
+
+
+def test_settings_rejects_fixed_reasoning_effort_until_exact_value_is_probed(monkeypatch, tmp_path):
+    """Saving fixed mode fails closed when the current diagnostics did not verify it."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    form = {
+        "provider": "openai_compatible",
+        "base_url": "http://model/v1",
+        "api_key": "",
+        "chat_model": "chat-candidate",
+        "api_version": "2024-02-15-preview",
+        "temperature": "0.2",
+        "reasoning_effort_mode": "fixed",
+        "reasoning_effort": "high",
+        "embedding_provider": "openai_compatible",
+        "embedding_base_url": "",
+        "embedding_api_key": "",
+        "embedding_model": "",
+        "embedding_query_prefix": "",
+        "embedding_passage_prefix": "",
+        "embedding_api_version": "2024-02-15-preview",
+        "timeout_seconds": "60",
+    }
+
+    with TestClient(main.app) as client:
+        _login(client)
+        response = client.post("/settings", data=form)
+
+    assert response.status_code == 400
+    assert "high" in response.text
+    assert "測試聊天模型" in response.text
+
+
+def test_settings_fixed_reasoning_effort_round_trips_real_probe_contract(monkeypatch, tmp_path):
+    """The probe writer, compact JSON, save gate, and settings reader agree on values."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.settings as app_settings
+
+    async def fake_chat_probe(settings, include_image=False, usage_context=None):
+        assert settings["reasoning_effort_mode"] == "fixed"
+        assert settings["reasoning_effort"] == "high"
+        return {
+            "status": "succeeded",
+            "provider": settings["provider"],
+            "model": settings["chat_model"],
+            "latency_ms": 5.0,
+            "capabilities": {
+                "sampling_params": {
+                    "status": "failed",
+                    "temperature_accepted": False,
+                },
+                "max_tokens_field": {
+                    "status": "succeeded",
+                    "field": "max_completion_tokens",
+                },
+                "reasoning_effort": {
+                    "status": "succeeded",
+                    "supported_values": ["low", "medium", "high"],
+                },
+            },
+        }
+
+    monkeypatch.setattr(app_settings, "probe_chat_diagnostics", fake_chat_probe)
+    form = {
+        "provider": "openai_compatible",
+        "base_url": "http://model/v1",
+        "api_key": "",
+        "chat_model": "chat-candidate",
+        "api_version": "2024-02-15-preview",
+        "temperature": "0.2",
+        "reasoning_effort_mode": "fixed",
+        "reasoning_effort": "high",
+        "embedding_provider": "openai_compatible",
+        "embedding_base_url": "",
+        "embedding_api_key": "",
+        "embedding_model": "",
+        "embedding_query_prefix": "",
+        "embedding_passage_prefix": "",
+        "embedding_api_version": "2024-02-15-preview",
+        "timeout_seconds": "60",
+    }
+
+    with TestClient(main.app) as client:
+        _login(client)
+        tested = client.post("/settings/test-chat", data=form)
+        assert tested.status_code == 200
+        saved = client.post("/settings", data=form)
+        assert saved.status_code == 200
+
+    with db.connect() as conn:
+        loaded = db.load_llm_settings(conn)
+    assert loaded["reasoning_effort_mode"] == "fixed"
+    assert loaded["reasoning_effort"] == "high"
+    assert loaded["diagnostics"]["chat"]["capabilities"]["reasoning_effort"]["supported_values"] == [
+        "low",
+        "medium",
+        "high",
     ]
 
 

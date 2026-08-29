@@ -72,8 +72,15 @@ Embedding model 尚未設定前，上傳功能會停用；回答與其他生成�
 
 同一頁也提供 admin-only diagnostics：chat 與 embedding model 可分開測試，
 顯示 latency/status/model 摘要與 embedding dimension，並可檢查 streaming、
-provider usage、JSON-following，以及選填的圖片理解能力。Diagnostics 只保存精簡
-status metadata，不保存 raw prompt、model output、API key 或 raw provider payload。
+provider usage、JSON-following、request sampling/max-token 形狀、實測支援的
+`reasoning_effort` 值，以及選填的圖片理解能力。正式 request 只在診斷 fingerprint
+仍符合目前設定時使用這些參數能力，因此任一 connection 設定變更後都要重新執行
+「測試聊天模型」。Diagnostics 只保存精簡 status metadata，不保存 raw prompt、
+model output、API key 或 raw provider payload。
+
+聊天卡片可選 `auto`（依任務語意）、Provider 預設（不送 effort）或固定值；固定值必須
+先由目前 endpoint 實測接受才能儲存。圖片 request 若已被 endpoint 接受、但回覆不足以
+證明圖片語意，會標示「無法判定」，不再誤報為 endpoint failure。
 
 設定頁有兩張彼此獨立的卡片；chat 與 embedding 可使用不同 provider、Base URL、
 API key、model 與 Azure API version。OpenAI-compatible chat card 範例：

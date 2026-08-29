@@ -179,6 +179,37 @@ def test_embedding_connection_backfilled_from_legacy_shared_fields(monkeypatch, 
     importlib.reload(db)
 
 
+def test_runtime_llm_settings_loads_persisted_diagnostics(monkeypatch, tmp_path):
+    """The request builder must see the capability probe stored in diagnostics_json.
+
+    Display settings already decoded the JSON blob, but runtime settings did not.
+    That made the settings page report an adapted request shape while every real
+    LLM call silently fell back to the unprobed defaults.
+    """
+    monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
+    import app.db as db
+
+    importlib.reload(db)
+    db.init_db()
+    diagnostics = {
+        "chat": {
+            "capabilities": {
+                "sampling_params": {"status": "failed", "temperature_accepted": False},
+            }
+        }
+    }
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE llm_settings SET diagnostics_json = ? WHERE id = 1",
+            (db.dumps(diagnostics),),
+        )
+        loaded = db.load_llm_settings(conn)
+
+    assert loaded is not None
+    assert loaded["diagnostics"] == diagnostics
+    importlib.reload(db)
+
+
 def test_usage_event_records_embedding_provider_not_chat(monkeypatch):
     """Embedding usage events must log the embedding connection's provider."""
     captured = {}
@@ -300,7 +331,16 @@ def test_eval_generation_and_judge_use_distinct_call_types(monkeypatch):
     the judge records eval_judge, so their LLM usage is separable from live chat."""
     seen = []
 
-    async def fake_chat_completion(settings, user_prompt, system_prompt, temperature=None, *, call_type="chat_completion", usage_context=None):
+    async def fake_chat_completion(
+        settings,
+        user_prompt,
+        system_prompt,
+        temperature=None,
+        *,
+        intent=None,
+        call_type="chat_completion",
+        usage_context=None,
+    ):
         seen.append(call_type)
         # Return valid judge JSON so parse_answer_judge succeeds for the judge path.
         return (
@@ -693,6 +733,304 @@ def _settings(**overrides):
     return base
 
 
+def _settings_with_capabilities(capabilities, **overrides):
+    settings = _settings(**overrides)
+    settings["diagnostics"] = {
+        "chat": {
+            "settings_fingerprint": llm.llm_settings_fingerprint(settings),
+            "capabilities": capabilities,
+        }
+    }
+    return settings
+
+
+@pytest.mark.parametrize(
+    ("intent_name", "expected_temperature"),
+    [
+        ("DETERMINISTIC", 0.0),
+        ("PRECISE", 0.2),
+        ("BALANCED", 0.3),
+        ("EXPLORATORY", 0.4),
+        ("CREATIVE", 0.6),
+    ],
+)
+def test_semantic_intents_preserve_existing_temperature_behavior(intent_name, expected_temperature):
+    """Gemma-compatible providers keep the exact pre-LLM-5 sampling values."""
+    intent = getattr(llm.ChatIntent, intent_name)
+    request = build_chat_request(
+        _settings(),
+        "hi",
+        "sys",
+        intent=intent,
+        call_type="chat_completion",
+    )
+
+    assert request["json"]["temperature"] == expected_temperature
+    assert "reasoning_effort" not in request["json"]
+
+
+def test_verified_reasoning_effort_replaces_temperature_for_semantic_intent():
+    """A positive probe maps task semantics to effort without model-name guessing."""
+    probed = _settings_with_capabilities({
+        llm.SAMPLING_PARAMS_CAPABILITY: {
+            "status": "failed",
+            "temperature_accepted": False,
+        },
+        llm.MAX_TOKENS_FIELD_CAPABILITY: {
+            "status": "succeeded",
+            "field": "max_completion_tokens",
+        },
+        llm.REASONING_EFFORT_CAPABILITY: {
+            "status": "succeeded",
+            "supported_values": ["low", "medium"],
+        },
+    })
+
+    deterministic = build_chat_request(
+        probed,
+        "hi",
+        "sys",
+        intent=llm.ChatIntent.DETERMINISTIC,
+        call_type="chat_completion",
+    )
+    creative = build_chat_request(
+        probed,
+        "hi",
+        "sys",
+        intent=llm.ChatIntent.CREATIVE,
+        call_type="chat_completion",
+    )
+
+    assert deterministic["json"]["reasoning_effort"] == "low"
+    assert creative["json"]["reasoning_effort"] == "medium"
+    assert "temperature" not in deterministic["json"]
+    assert "temperature" not in creative["json"]
+
+
+def test_provider_default_policy_omits_verified_reasoning_effort():
+    """An admin can explicitly leave effort selection to the provider."""
+    probed = _settings_with_capabilities(
+        {
+            llm.SAMPLING_PARAMS_CAPABILITY: {
+                "status": "failed",
+                "temperature_accepted": False,
+            },
+            llm.MAX_TOKENS_FIELD_CAPABILITY: {
+                "status": "succeeded",
+                "field": "max_completion_tokens",
+            },
+            llm.REASONING_EFFORT_CAPABILITY: {
+                "status": "succeeded",
+                "supported_values": ["low", "medium"],
+            },
+        },
+        reasoning_effort_mode="provider_default",
+        reasoning_effort="medium",
+    )
+
+    request = build_chat_request(
+        probed,
+        "hi",
+        "sys",
+        intent=llm.ChatIntent.CREATIVE,
+        call_type="chat_completion",
+    )
+
+    assert "temperature" not in request["json"]
+    assert "reasoning_effort" not in request["json"]
+
+
+def test_fixed_policy_applies_verified_effort_to_generic_chat_calls():
+    """Fixed mode covers call sites without a task-level semantic intent."""
+    probed = _settings_with_capabilities(
+        {
+            llm.SAMPLING_PARAMS_CAPABILITY: {
+                "status": "failed",
+                "temperature_accepted": False,
+            },
+            llm.MAX_TOKENS_FIELD_CAPABILITY: {
+                "status": "succeeded",
+                "field": "max_completion_tokens",
+            },
+            llm.REASONING_EFFORT_CAPABILITY: {
+                "status": "succeeded",
+                "supported_values": ["low", "medium", "high"],
+            },
+        },
+        reasoning_effort_mode="fixed",
+        reasoning_effort="high",
+    )
+
+    request = build_chat_request(probed, "hi", "sys", call_type="chat_completion")
+
+    assert request["json"]["reasoning_effort"] == "high"
+    assert "temperature" not in request["json"]
+
+
+def test_fixed_policy_adds_only_the_selected_effort_to_the_probe(monkeypatch):
+    """Fixed high is measured, without probing every provider-specific value."""
+    seen: list[dict] = []
+
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        seen.append(payload)
+        if "temperature" in payload or "max_tokens" in payload:
+            raise httpx.HTTPStatusError(
+                "Unsupported parameter",
+                request=httpx.Request("POST", url),
+                response=httpx.Response(400, text="Unsupported parameter: temperature"),
+            )
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+    capabilities = asyncio.run(
+        llm._probe_sampling_params(
+            _settings(reasoning_effort_mode="fixed", reasoning_effort="high"),
+            usage_context=None,
+        )
+    )
+
+    effort = capabilities[llm.REASONING_EFFORT_CAPABILITY]
+    assert effort["supported_values"] == ["low", "medium", "high"]
+    assert [payload["reasoning_effort"] for payload in seen if "reasoning_effort" in payload] == [
+        "low",
+        "medium",
+        "high",
+    ]
+
+
+@pytest.mark.parametrize("status", ["failed", "not_tested"])
+def test_unverified_reasoning_effort_is_never_sent(status):
+    """Unsupported and inconclusive probes both fail closed for effort."""
+    probed = _settings_with_capabilities({
+        llm.SAMPLING_PARAMS_CAPABILITY: {
+            "status": "failed",
+            "temperature_accepted": False,
+        },
+        llm.MAX_TOKENS_FIELD_CAPABILITY: {
+            "status": "succeeded",
+            "field": "max_completion_tokens",
+        },
+        llm.REASONING_EFFORT_CAPABILITY: {
+            "status": status,
+            "supported_values": [],
+        },
+    })
+
+    request = build_chat_request(
+        probed,
+        "hi",
+        "sys",
+        intent=llm.ChatIntent.CREATIVE,
+        call_type="chat_completion",
+    )
+
+    assert "temperature" not in request["json"]
+    assert "reasoning_effort" not in request["json"]
+
+
+def test_image_probe_reports_accepted_semantic_mismatch_as_inconclusive(monkeypatch):
+    """A valid multimodal response is not an endpoint failure just because its enum is wrong."""
+
+    async def fake_probe(*args, **kwargs):
+        return {
+            "status": "succeeded",
+            "latency_ms": 8.0,
+            "error_class": "",
+            "json_valid": True,
+            "json_object": {"dominant_color": "#ff0000"},
+            "usage_available": True,
+        }
+
+    monkeypatch.setattr(llm, "_probe_chat_once", fake_probe)
+    result = asyncio.run(llm._probe_image_understanding(_settings(), usage_context=None))
+
+    assert result["status"] == "inconclusive"
+    assert result["semantic_match"] is False
+    assert result["json_valid"] is True
+
+
+def test_image_probe_keeps_transport_rejection_failed(monkeypatch):
+    """Only a rejected or failed image request is shown as a real failure."""
+
+    async def fake_probe(*args, **kwargs):
+        return {
+            "status": "failed",
+            "latency_ms": 8.0,
+            "error_class": "HTTPStatusError",
+            "json_valid": False,
+            "usage_available": False,
+        }
+
+    monkeypatch.setattr(llm, "_probe_chat_once", fake_probe)
+    result = asyncio.run(llm._probe_image_understanding(_settings(), usage_context=None))
+
+    assert result["status"] == "failed"
+    assert result["semantic_match"] is False
+
+
+def test_stale_probe_fingerprint_cannot_enable_effort_for_a_different_model():
+    """A capability belongs to the exact settings tested, not the next model."""
+    old_settings = _settings(chat_model="old-model")
+    current = _settings(
+        chat_model="new-model",
+        diagnostics={
+            "chat": {
+                "settings_fingerprint": llm.llm_settings_fingerprint(old_settings),
+                "capabilities": {
+                    llm.SAMPLING_PARAMS_CAPABILITY: {
+                        "status": "failed",
+                        "temperature_accepted": False,
+                    },
+                    llm.MAX_TOKENS_FIELD_CAPABILITY: {
+                        "status": "succeeded",
+                        "field": "max_completion_tokens",
+                    },
+                    llm.REASONING_EFFORT_CAPABILITY: {
+                        "status": "succeeded",
+                        "supported_values": ["low", "medium"],
+                    },
+                },
+            }
+        },
+    )
+
+    request = build_chat_request(
+        current,
+        "hi",
+        "sys",
+        intent=llm.ChatIntent.CREATIVE,
+        call_type="chat_completion",
+    )
+
+    assert request["json"]["temperature"] == 0.6
+    assert "reasoning_effort" not in request["json"]
+
+
+def test_feature_chat_calls_do_not_hardcode_numeric_temperatures():
+    """New feature calls must name intent instead of reintroducing magic numbers."""
+    import ast
+    import pathlib
+
+    tree = ast.parse(pathlib.Path(llm.__file__).read_text(encoding="utf-8"))
+    offenders = []
+    for function in (node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)):
+        if function.name.startswith("_probe_"):
+            continue  # diagnostics intentionally retains a low-level override
+        for call in (node for node in ast.walk(function) if isinstance(node, ast.Call)):
+            name = call.func.id if isinstance(call.func, ast.Name) else ""
+            if name not in {"chat_completion", "chat_completion_stream"}:
+                continue
+            for keyword in call.keywords:
+                if keyword.arg == "temperature" and isinstance(keyword.value, ast.Constant):
+                    offenders.append((function.name, keyword.value.value))
+
+    assert offenders == []
+    assert all(
+        isinstance(intent, llm.ChatIntent)
+        for _prompt, intent, _label in llm.ARTIFACT_PROMPTS.values()
+    )
+
+
 def test_request_carries_temperature_and_max_tokens_by_default():
     """Unprobed, behave exactly as before plus the new output cap.
 
@@ -717,16 +1055,10 @@ def test_temperature_is_omitted_when_the_probe_found_it_unsupported():
     """
     from app.llm import build_chat_request
 
-    probed = _settings(
-        diagnostics={
-            "chat": {
-                "capabilities": {
-                    "sampling_params": {"status": "failed", "temperature_accepted": False},
-                    "max_tokens_field": {"status": "succeeded", "field": "max_completion_tokens"},
-                }
-            }
-        }
-    )
+    probed = _settings_with_capabilities({
+        "sampling_params": {"status": "failed", "temperature_accepted": False},
+        "max_tokens_field": {"status": "succeeded", "field": "max_completion_tokens"},
+    })
     request = build_chat_request(probed, "hi", "sys", temperature=0.9, call_type="chat_completion")
     assert "temperature" not in request["json"]
     assert request["json"]["max_completion_tokens"] == 2048
@@ -741,9 +1073,7 @@ def test_inconclusive_probe_leaves_temperature_alone():
     """
     from app.llm import build_chat_request
 
-    probed = _settings(
-        diagnostics={"chat": {"capabilities": {"sampling_params": {"status": "not_tested"}}}}
-    )
+    probed = _settings_with_capabilities({"sampling_params": {"status": "not_tested"}})
     assert "temperature" in build_chat_request(probed, "hi", "sys")["json"]
 
 
@@ -848,7 +1178,15 @@ def test_capability_probe_output_actually_reaches_build_chat_request(monkeypatch
     capabilities = asyncio.run(llm_module._probe_sampling_params(settings, usage_context=None))
 
     # Feed the probe's own output back the way the app stores it.
-    probed = {**settings, "diagnostics": {"chat": {"capabilities": capabilities}}}
+    probed = {
+        **settings,
+        "diagnostics": {
+            "chat": {
+                "settings_fingerprint": llm_module.llm_settings_fingerprint(settings),
+                "capabilities": capabilities,
+            }
+        },
+    }
     support = llm_module.chat_sampling_support(probed)
     assert support["temperature"] is False
     assert support["max_tokens_field"] == "max_completion_tokens"

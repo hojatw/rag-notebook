@@ -107,6 +107,8 @@ def init_db() -> None:
                 embedding_api_key TEXT NOT NULL DEFAULT '',
                 embedding_api_version TEXT NOT NULL DEFAULT '2024-02-15-preview',
                 temperature REAL NOT NULL DEFAULT 0.2,
+                reasoning_effort_mode TEXT NOT NULL DEFAULT 'auto',
+                reasoning_effort TEXT NOT NULL DEFAULT 'medium',
                 timeout_seconds REAL NOT NULL DEFAULT 60,
                 diagnostics_json TEXT NOT NULL DEFAULT '{}'
             );
@@ -526,6 +528,11 @@ def init_db() -> None:
         # settings row. Stores only status/capability metadata, never prompts,
         # model outputs, API keys, or raw provider payloads.
         _ensure_column(conn, "llm_settings", "diagnostics_json", "TEXT NOT NULL DEFAULT '{}'")
+        # LLM-5: provider-neutral reasoning policy. Auto preserves the existing
+        # task-intent mapping; fixed values remain fail-closed until the current
+        # endpoint probe accepts that exact value.
+        _ensure_column(conn, "llm_settings", "reasoning_effort_mode", "TEXT NOT NULL DEFAULT 'auto'")
+        _ensure_column(conn, "llm_settings", "reasoning_effort", "TEXT NOT NULL DEFAULT 'medium'")
         # U11: per-user colour theme — 'system' (follow the OS preference),
         # 'light', or 'dark'. Kept as a plain TEXT allowlist checked at the route
         # layer (see THEME_CHOICES in app/main.py) rather than a CHECK constraint,
@@ -863,6 +870,15 @@ def loads(value: str) -> Any:
     return json.loads(value)
 
 
+def _llm_diagnostics(value: Any) -> dict[str, Any]:
+    """Decode the untyped LLM diagnostics blob for runtime and display readers."""
+    try:
+        diagnostics = loads(value or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return diagnostics if isinstance(diagnostics, dict) else {}
+
+
 def load_llm_settings(conn: sqlite3.Connection) -> dict[str, Any] | None:
     """Return the global LLM settings row with the API key decrypted in place.
 
@@ -876,6 +892,7 @@ def load_llm_settings(conn: sqlite3.Connection) -> dict[str, Any] | None:
     settings = dict(row)
     settings["api_key"] = decrypt_secret(settings.get("api_key") or "", _app_secret())
     settings["embedding_api_key"] = decrypt_secret(settings.get("embedding_api_key") or "", _app_secret())
+    settings["diagnostics"] = _llm_diagnostics(settings.get("diagnostics_json"))
     return settings
 
 
@@ -895,9 +912,5 @@ def load_llm_settings_for_display(conn: sqlite3.Connection) -> dict[str, Any]:
     row["api_key"] = ""
     row["embedding_api_key_masked"] = bool(row["embedding_api_key"])
     row["embedding_api_key"] = ""
-    try:
-        diagnostics = loads(row.get("diagnostics_json") or "{}")
-    except (TypeError, json.JSONDecodeError):
-        diagnostics = {}
-    row["diagnostics"] = diagnostics if isinstance(diagnostics, dict) else {}
+    row["diagnostics"] = _llm_diagnostics(row.get("diagnostics_json"))
     return row

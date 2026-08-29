@@ -84,9 +84,16 @@ the rest for Reindex. See
 The same page also provides admin-only diagnostics: test the chat model and
 embedding model separately, inspect latency/status/model summaries and
 embedding dimension, and probe optional capabilities such as streaming,
-provider usage reporting, JSON-following, and opt-in image understanding.
-Diagnostics store compact status metadata only, not raw prompts, model output,
-API keys, or raw provider payloads.
+provider usage reporting, JSON-following, request sampling/max-token shape,
+positively supported `reasoning_effort` values, and opt-in image understanding.
+The chat card provides `auto`, provider-default, and fixed effort policies; a
+fixed value cannot be saved until the current endpoint probe accepts that exact
+value. An accepted image request with an ambiguous semantic result is reported
+as inconclusive rather than as an endpoint failure.
+Runtime requests use those parameter capabilities only while the diagnostic
+fingerprint matches the active settings, so run **Test chat model** again after
+changing either connection. Diagnostics store compact status metadata only, not
+raw prompts, model output, API keys, or raw provider payloads.
 
 Future image-source support is gated on these diagnostics: image uploads should
 stay blocked unless the active chat model passes the image-understanding probe

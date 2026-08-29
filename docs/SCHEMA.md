@@ -33,7 +33,8 @@ that drives the **real producer** rather than hand-writing the value.
 |---|---|---|---|---|
 | `sources.status` | `main` upload + reindex (`uploaded`); `ingest.process_source`; `index_migration` | `_source_item.html` **polling gate**, `source_status_labels`, retrieval filters, `index_migration` | `uploaded` · `processing` · `indexed` · `failed` · `stale_embedding` | `test_reindex_marks_the_source_queued_so_its_row_keeps_polling` |
 | `llm_settings.diagnostics_json` → `chat.status`, `embedding.status` | `llm.probe_*_diagnostics` → `settings.store_llm_diagnostic` | `_settings_diag_*.html`, `index_migration.target_dimension_from_diagnostics` **(migration gate)** | `succeeded` · `failed` — use `llm.DIAGNOSTIC_STATUS_*`, never a literal | `test_probe_output_actually_opens_the_migration_gate` |
-| …`chat.capabilities.sampling_params.status` / `max_tokens_field.field` | `llm._probe_sampling_params` | `_settings_diag_chat.html`, **and `chat_sampling_support` → `build_chat_request` on every LLM call** | `succeeded` · `failed` · `not_tested` · `skipped`; field is `max_tokens` \| `max_completion_tokens` | `test_capability_probe_output_actually_reaches_build_chat_request` |
+| …`chat.capabilities.sampling_params.status` / `max_tokens_field.field` / `reasoning_effort.status` + `supported_values` | `llm._probe_sampling_params` | `_settings_diag_chat.html`, **and `chat_sampling_support` → `build_chat_request` on every LLM call** | status: `succeeded` · `failed` · `not_tested` · `skipped`; field: `max_tokens` \| `max_completion_tokens`; effort values: `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`. Auto always probes `low`/`medium`; fixed mode also probes only its selected value. Runtime accepts effort only when its status succeeded, the exact value was positively probed, and `chat.settings_fingerprint` still matches the current non-secret settings | `test_settings_fixed_reasoning_effort_round_trips_real_probe_contract` |
+| …`chat.capabilities.image_understanding.status` + `semantic_match` | `llm._probe_image_understanding` | `_settings_diag_chat.html`; future A9 capability gate | `succeeded` only for an accepted request, valid constrained JSON, and exact semantic match; `inconclusive` for an accepted request that does not prove the expected image semantics; `failed` for endpoint/request failure; `not_tested` · `skipped` otherwise. Only `succeeded` may enable image-dependent work | `test_settings_chat_probe_detects_json_stream_and_usage`, `test_image_probe_reports_accepted_semantic_mismatch_as_inconclusive` |
 | `ingest_jobs.status` | `jobs.enqueue_source` / `claim_next_job` / `mark_done` / `requeue_or_fail` | `jobs.claim_next_job` (visibility timeout) | `queued` · `running` · `done` · `failed` | `tests/test_jobs.py` (same module writes and reads) |
 | `eval_runs.status` | `evals.run_eval_job` | `evals` listing + compare (compare rejects non-`succeeded`) | `running` · `succeeded` · `failed` | `test_admin_eval_set_runner_records_results` |
 | `llm_usage_events.status` | `governance.record_llm_usage_event` | `/admin` usage views, cost reporting | `succeeded` · `failed` | `tests/test_governance.py` |
@@ -182,17 +183,22 @@ bearer / `api-key` header, when blank no auth header is sent.
 | `embedding_provider` | TEXT NOT NULL DEFAULT `'openai_compatible'` | **embedding** provider: `openai_compatible` \| `azure_openai` |
 | `embedding_api_key` | TEXT DEFAULT `''` | **embedding** key. Optional. **Fernet-encrypted at rest**; read only via `load_llm_settings()` |
 | `embedding_api_version` | TEXT DEFAULT `'2024-02-15-preview'` | embedding Azure only |
-| `temperature` | REAL DEFAULT 0.2 | shared (chat) |
+| `temperature` | REAL DEFAULT 0.2 | shared chat default for calls without a semantic intent. Feature calls map named intents to their historical temperatures; models that reject sampling receive only positively probed `reasoning_effort` values |
+| `reasoning_effort_mode` | TEXT NOT NULL DEFAULT `'auto'` | `auto` maps semantic task intents to verified `low`/`medium`; `provider_default` omits `reasoning_effort`; `fixed` sends the selected verified value to every temperature-incompatible chat call |
+| `reasoning_effort` | TEXT NOT NULL DEFAULT `'medium'` | fixed-mode candidate: `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max`; saving fixed mode is rejected until the exact value succeeds for the current settings fingerprint |
 | `timeout_seconds` | REAL DEFAULT 60 | shared |
 | `embedding_query_prefix` | TEXT DEFAULT `''` | e.g. `query: ` for e5; blank for OpenAI |
 | `embedding_passage_prefix` | TEXT DEFAULT `''` | e.g. `passage: ` for e5 |
-| `diagnostics_json` | TEXT DEFAULT `'{}'` | O1 Phase 1 compact admin test results for chat/embedding diagnostics: status, latency, provider/model summary, embedding dimension, capability statuses, timestamp, and error class only; no prompts, outputs, API keys, or raw provider payloads |
+| `diagnostics_json` | TEXT DEFAULT `'{}'` | O1 Phase 1 compact admin test results for chat/embedding diagnostics: status, latency, provider/model summary, embedding dimension, capability statuses (including supported `reasoning_effort` values), settings fingerprint, timestamp, and error class only; no prompts, outputs, API keys, or raw provider payloads |
 
 > **Migration note:** the `embedding_provider` / `embedding_api_key` /
-> `embedding_api_version` columns are added idempotently in `app/db.py`. On first
+> `embedding_api_version` / `reasoning_effort_mode` / `reasoning_effort` columns
+> are added idempotently in `app/db.py`. On first
 > upgrade they are **backfilled once** from the previously-shared chat fields
 > (`provider` / `api_key` / `api_version`), and a blank `embedding_base_url` is
 > set to `base_url`, so existing single-connection deployments keep working.
+> Reasoning policy defaults to `auto` + `medium`, preserving the prior semantic
+> mapping without enabling an unverified fixed value.
 
 ## `llm_usage_events`
 High-volume AI governance telemetry for LLM and embedding calls (G1a/G1b). This table is intentionally separate from `audit_events`: usage events are frequent, report-oriented, and must not copy prompts, source text, retrieved snippets, API keys, or model outputs. Context ids are nullable and use `ON DELETE SET NULL` so telemetry can remain useful after user data is deleted without preserving the deleted content.

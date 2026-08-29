@@ -136,6 +136,41 @@ measurements. A row is also marked estimated when a provider returns only part o
 the usage shape and the missing prompt/completion component must be synthesized;
 prompt + total or completion + total can be completed exactly by subtraction.
 
+### Semantic sampling and reasoning effort
+
+Feature call sites express their generation goal through one of five semantic
+intents rather than provider-specific parameters: `deterministic`, `precise`,
+`balanced`, `exploratory`, or `creative`. On endpoints that accept sampling these
+map to the existing temperatures 0.0, 0.2, 0.3, 0.4, and 0.6 respectively, so
+Gemma and other OpenAI-compatible deployments keep their previous behaviour.
+
+The settings page exposes three provider-neutral policies:
+
+- `auto` (default) maps semantic task intents to `low`/`medium`; generic chat
+  calls without an intent leave effort to the provider.
+- `provider_default` never sends `reasoning_effort`.
+- `fixed` sends the selected value to every chat call whose endpoint rejects
+  temperature, including generic chat calls.
+
+When **Test chat model** finds that temperature is rejected, it sends small
+requests with `reasoning_effort=low` and `medium`. Fixed mode adds only its
+currently selected value (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+or `max`) rather than probing the whole provider-specific vocabulary. Saving
+fixed mode is rejected until that exact value succeeded and the stored settings
+fingerprint matches the candidate configuration; the app never infers support
+from a model name. An inconclusive, failed, missing, or stale probe omits effort.
+Changing either chat or embedding connection settings or the effort policy
+invalidates the conservative shared fingerprint, so run **Test chat model**
+again after any settings change. Until then, request construction falls back to
+the pre-probe temperature and `max_tokens` behaviour.
+
+The opt-in image-understanding probe uses a built-in 64×64 solid-colour PNG and
+a constrained `red|green|blue` JSON response. Endpoint/request rejection is
+`failed`; an accepted response that does not prove the expected semantics is
+`inconclusive`. Only an exact `succeeded` result may gate future image-dependent
+features. The compact diagnostic stores `json_valid` and `semantic_match`, not
+the prompt, model output, image bytes, API key, or raw provider payload.
+
 ### Session lifetime
 
 `[auth].session_max_age_hours` (default 12) is the **absolute** lifetime of a

@@ -6,7 +6,6 @@ an APIRouter that ``app/main.py`` mounts; route paths and behaviour are
 unchanged. Chat and embedding remain independent connections (see AGENTS.md).
 """
 
-import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -25,8 +24,12 @@ from .db import (
     loads,
 )
 from .llm import (
+    REASONING_EFFORT_MODES,
+    REASONING_EFFORT_VALUES,
+    chat_sampling_support,
     chat_settings,
     embedding_settings,
+    llm_settings_fingerprint,
     probe_chat_diagnostics,
     probe_embedding_diagnostics,
     probe_embedding_dimension,
@@ -68,9 +71,11 @@ def _settings_context(
         "diagnostic_status_labels": {
             "succeeded": i18n.t("settings.status_succeeded"),
             "failed": i18n.t("settings.status_failed"),
+            "inconclusive": i18n.t("settings.status_inconclusive"),
             "skipped": i18n.t("settings.status_skipped"),
             "not_tested": i18n.t("settings.status_not_tested"),
         },
+        "reasoning_effort_values": REASONING_EFFORT_VALUES,
     }
 
 
@@ -134,6 +139,8 @@ def candidate_settings_from_form(
     embedding_passage_prefix: str,
     api_version: str,
     temperature: float,
+    reasoning_effort_mode: str,
+    reasoning_effort: str,
     timeout_seconds: float,
     embedding_provider: str,
     embedding_api_key: str,
@@ -143,6 +150,10 @@ def candidate_settings_from_form(
         raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_llm_provider"))
     if embedding_provider not in {"openai_compatible", "azure_openai"}:
         raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_embedding_provider"))
+    if reasoning_effort_mode not in REASONING_EFFORT_MODES:
+        raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_reasoning_effort_mode"))
+    if reasoning_effort not in REASONING_EFFORT_VALUES:
+        raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_reasoning_effort"))
     return {
         "provider": provider,
         "base_url": base_url.strip(),
@@ -154,33 +165,17 @@ def candidate_settings_from_form(
         "embedding_passage_prefix": embedding_passage_prefix,
         "api_version": api_version.strip(),
         "temperature": temperature,
+        "reasoning_effort_mode": reasoning_effort_mode,
+        "reasoning_effort": reasoning_effort,
         "timeout_seconds": timeout_seconds,
         # Independent embedding connection. Blank key keeps the stored one.
         "embedding_provider": embedding_provider,
         "embedding_api_key": embedding_api_key.strip() or existing_decrypted.get("embedding_api_key", ""),
         "embedding_api_version": embedding_api_version.strip(),
+        # Saving fixed mode must evaluate the real probe result already stored
+        # for this candidate. This metadata is never sent to a provider.
+        "diagnostics": existing_decrypted.get("diagnostics") or {},
     }
-
-
-def llm_settings_fingerprint(settings: dict[str, Any]) -> str:
-    """Hash non-secret settings so diagnostics can be matched without secrets."""
-    summary = {
-        "provider": settings.get("provider") or "openai_compatible",
-        "base_url": settings.get("base_url") or "",
-        "embedding_base_url": settings.get("embedding_base_url") or "",
-        "api_key_set": bool(settings.get("api_key")),
-        "chat_model": settings.get("chat_model") or "",
-        "embedding_model": settings.get("embedding_model") or "",
-        "embedding_query_prefix": settings.get("embedding_query_prefix") or "",
-        "embedding_passage_prefix": settings.get("embedding_passage_prefix") or "",
-        "api_version": settings.get("api_version") or "",
-        "temperature": float(settings.get("temperature") or 0),
-        "timeout_seconds": float(settings.get("timeout_seconds") or 0),
-        "embedding_provider": settings.get("embedding_provider") or "openai_compatible",
-        "embedding_api_key_set": bool(settings.get("embedding_api_key")),
-        "embedding_api_version": settings.get("embedding_api_version") or "",
-    }
-    return hashlib.sha256(dumps(summary).encode("utf-8")).hexdigest()
 
 
 def utc_timestamp() -> str:
@@ -227,13 +222,26 @@ def compact_diagnostic_capabilities(capabilities: dict[str, Any]) -> dict[str, A
             "latency_ms": round(float(value.get("latency_ms") or 0), 1),
             "error_class": str(value.get("error_class") or "")[:120],
         }
-        for key in ("usage_available", "stream_usage_fallback", "json_valid", "temperature_accepted"):
+        for key in (
+            "usage_available",
+            "stream_usage_fallback",
+            "json_valid",
+            "semantic_match",
+            "temperature_accepted",
+        ):
             if key in value:
                 item[key] = bool(value.get(key))
         # LLM-2/3: which max-tokens field the model took. A string, not a flag —
         # and build_chat_request reads it back, so it must survive compaction.
         if "field" in value:
             item["field"] = str(value.get("field") or "")[:40]
+        if "supported_values" in value:
+            raw_values = value.get("supported_values")
+            item["supported_values"] = [
+                effort
+                for effort in REASONING_EFFORT_VALUES
+                if isinstance(raw_values, list) and effort in raw_values
+            ]
         compact[str(name)[:80]] = item
     return compact
 
@@ -287,6 +295,8 @@ async def test_chat_settings(
     embedding_passage_prefix: str = Form(""),
     api_version: str = Form("2024-02-15-preview"),
     temperature: float = Form(0.2),
+    reasoning_effort_mode: str = Form("auto"),
+    reasoning_effort: str = Form("medium"),
     timeout_seconds: float = Form(60),
     embedding_provider: str = Form("openai_compatible"),
     embedding_api_key: str = Form(""),
@@ -307,6 +317,8 @@ async def test_chat_settings(
         embedding_passage_prefix=embedding_passage_prefix,
         api_version=api_version,
         temperature=temperature,
+        reasoning_effort_mode=reasoning_effort_mode,
+        reasoning_effort=reasoning_effort,
         timeout_seconds=timeout_seconds,
         embedding_provider=embedding_provider,
         embedding_api_key=embedding_api_key,
@@ -363,6 +375,8 @@ async def test_embedding_settings(
     embedding_passage_prefix: str = Form(""),
     api_version: str = Form("2024-02-15-preview"),
     temperature: float = Form(0.2),
+    reasoning_effort_mode: str = Form("auto"),
+    reasoning_effort: str = Form("medium"),
     timeout_seconds: float = Form(60),
     embedding_provider: str = Form("openai_compatible"),
     embedding_api_key: str = Form(""),
@@ -382,6 +396,8 @@ async def test_embedding_settings(
         embedding_passage_prefix=embedding_passage_prefix,
         api_version=api_version,
         temperature=temperature,
+        reasoning_effort_mode=reasoning_effort_mode,
+        reasoning_effort=reasoning_effort,
         timeout_seconds=timeout_seconds,
         embedding_provider=embedding_provider,
         embedding_api_key=embedding_api_key,
@@ -432,6 +448,8 @@ async def update_settings(
     embedding_passage_prefix: str = Form(""),
     api_version: str = Form("2024-02-15-preview"),
     temperature: float = Form(0.2),
+    reasoning_effort_mode: str = Form("auto"),
+    reasoning_effort: str = Form("medium"),
     timeout_seconds: float = Form(60),
     embedding_provider: str = Form("openai_compatible"),
     embedding_api_key: str = Form(""),
@@ -453,6 +471,7 @@ async def update_settings(
     with connect() as conn:
         existing_row = conn.execute("SELECT * FROM llm_settings WHERE id = 1").fetchone()
         existing = dict(existing_row) if existing_row else {}
+        existing_decrypted = load_llm_settings(conn) or {}
         # The stored keys are either Fernet ciphertext or legacy plaintext.
         # Either way they are opaque to us here; we keep the stored value when
         # the form field was left blank (the "keep existing" UX).
@@ -475,6 +494,33 @@ async def update_settings(
             or embedding_api_version.strip() != (existing.get("embedding_api_version") or "")
             or bool(embedding_api_key.strip())
         )
+
+    candidate = candidate_settings_from_form(
+        existing_decrypted,
+        provider=provider,
+        base_url=base_url,
+        embedding_base_url=embedding_base_url,
+        api_key=api_key,
+        chat_model=chat_model,
+        embedding_model=embedding_model,
+        embedding_query_prefix=embedding_query_prefix,
+        embedding_passage_prefix=embedding_passage_prefix,
+        api_version=api_version,
+        temperature=temperature,
+        reasoning_effort_mode=reasoning_effort_mode,
+        reasoning_effort=reasoning_effort,
+        timeout_seconds=timeout_seconds,
+        embedding_provider=embedding_provider,
+        embedding_api_key=embedding_api_key,
+        embedding_api_version=embedding_api_version,
+    )
+    if reasoning_effort_mode == "fixed":
+        supported = chat_sampling_support(candidate)["reasoning_efforts"]
+        if reasoning_effort not in supported:
+            raise HTTPException(
+                status_code=400,
+                detail=i18n.t("error.reasoning_effort_not_verified", value=reasoning_effort),
+            )
 
     if embedding_changed and embedding_model.strip():
         # Build a candidate settings dict with the plaintext key so we can
@@ -516,7 +562,8 @@ async def update_settings(
             SET provider = ?, base_url = ?, embedding_base_url = ?, api_key = ?,
                 chat_model = ?, embedding_model = ?,
                 embedding_query_prefix = ?, embedding_passage_prefix = ?,
-                api_version = ?, temperature = ?, timeout_seconds = ?,
+                api_version = ?, temperature = ?, reasoning_effort_mode = ?,
+                reasoning_effort = ?, timeout_seconds = ?,
                 embedding_provider = ?, embedding_api_key = ?, embedding_api_version = ?
             WHERE id = 1
             """,
@@ -533,6 +580,8 @@ async def update_settings(
                 embedding_passage_prefix,
                 api_version.strip(),
                 temperature,
+                reasoning_effort_mode,
+                reasoning_effort,
                 timeout_seconds,
                 embedding_provider,
                 stored_embedding_key,
@@ -553,6 +602,14 @@ async def update_settings(
         "embedding_passage_prefix_changed": embedding_passage_prefix != (existing.get("embedding_passage_prefix") or ""),
         "api_version": {"before": existing.get("api_version") or "", "after": api_version.strip()},
         "temperature": {"before": existing.get("temperature"), "after": temperature},
+        "reasoning_effort_mode": {
+            "before": existing.get("reasoning_effort_mode") or "auto",
+            "after": reasoning_effort_mode,
+        },
+        "reasoning_effort": {
+            "before": existing.get("reasoning_effort") or "medium",
+            "after": reasoning_effort,
+        },
         "timeout_seconds": {"before": existing.get("timeout_seconds"), "after": timeout_seconds},
         "api_key_changed": bool(api_key.strip()),
         "embedding_provider": {
@@ -576,7 +633,7 @@ async def update_settings(
         "high" if embedding_changed or api_key.strip() or embedding_api_key.strip() else "normal",
     )
     logger.info(
-        "settings_updated admin_user_id=%s provider=%s base_url_set=%s embedding_base_url_set=%s chat_model_set=%s embedding_model_set=%s api_version=%s temperature=%s timeout_seconds=%s api_key_changed=%s",
+        "settings_updated admin_user_id=%s provider=%s base_url_set=%s embedding_base_url_set=%s chat_model_set=%s embedding_model_set=%s api_version=%s temperature=%s reasoning_effort_mode=%s reasoning_effort=%s timeout_seconds=%s api_key_changed=%s",
         user["id"],
         provider,
         bool(base_url.strip()),
@@ -585,6 +642,8 @@ async def update_settings(
         bool(embedding_model.strip()),
         api_version.strip(),
         temperature,
+        reasoning_effort_mode,
+        reasoning_effort,
         timeout_seconds,
         bool(api_key.strip()),
     )

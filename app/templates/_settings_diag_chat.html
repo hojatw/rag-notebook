@@ -41,11 +41,15 @@
            non-problem. Report the shape instead. #}
         {% set sampling = caps.get('sampling_params', {}) %}
         {% set field = (caps.get('max_tokens_field', {}).get('field')) or 'max_tokens' %}
+        {% set effort = caps.get('reasoning_effort', {}) %}
+        {% set effort_values = effort.get('supported_values', []) %}
         <li>
           <span>{{ t('settings.cap_sampling') }}</span>
           <span class="muted">
             {%- if sampling.status == 'succeeded' -%}
               {{ t('settings.cap_sampling_full', field=field) }}
+            {%- elif sampling.status == 'failed' and effort.status == 'succeeded' and effort_values -%}
+              {{ t('settings.cap_sampling_reasoning', values=effort_values|join('/'), field=field) }}
             {%- elif sampling.status == 'failed' -%}
               {{ t('settings.cap_sampling_limited', field=field) }}
             {%- else -%}
