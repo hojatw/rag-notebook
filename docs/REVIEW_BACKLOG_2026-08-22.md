@@ -13,7 +13,7 @@
 2026-08-23 再完成 `SEC-4`~`SEC-6`、`LLM-4` 與 `MNT-1`；2026-08-29 完成
 `SEC-7`、`SEC-8`。
 
-**仍待排（5 項，全為 P2/P3）**：`PERF-2`、`PERF-3`、`QLT-1`、`LLM-5`、`MNT-2`。
+**仍待排（4 項，全為 P2/P3）**：`PERF-2`、`PERF-3`、`QLT-1`、`MNT-2`。
 
 剩餘項目的順序建議：
 - **`QLT-1`（關鍵字先截斷後評分）需要 `Q1-3` 代表性 eval set** —— 修法直覺正確，
@@ -248,14 +248,26 @@ sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, N
 - **修法**：改用 `config.py` 既有的 `cjk_chars_per_token` / `latin_chars_per_token`，
   依 CJK 佔比加權——這兩個常數已經存在，只是沒被用在這裡。
 
-### [ ] LLM-5 · P3 · effort 抽象層（13 個呼叫點的語意化）
+### [x] LLM-5 · P3 · effort 抽象層（13 個呼叫點的語意化）
+> **已完成（2026-08-29）** — 原盤點的 13 處中，11 個功能呼叫點改以
+> `deterministic`／`precise`／
+> `balanced`／`exploratory`／`creative` 表達生成語意；支援 sampling 的 endpoint 仍收到
+> 原本完全相同的 0.0／0.2／0.3／0.4／0.6。若聊天模型拒絕 temperature，設定頁會以
+> 實際請求分別測試 `reasoning_effort=low|medium`；設定頁另提供自動、Provider 預設與
+> 固定值 policy，固定模式只額外測所選值，未實測通過前不能儲存。正式請求只使用探測
+> 確認且與目前設定 fingerprint 相符的值；未探測、結果不明或設定已變更時不推測能力。
+> Image understanding probe 同步改為 64×64 限定色彩測試，將 request failure 與
+> accepted-but-inconclusive 分開。durable 契約見
+> [`DEVELOPMENT.md`](DEVELOPMENT.md) → *Semantic sampling and reasoning effort*、
+> [`SCHEMA.md`](SCHEMA.md) 與 [`ROADMAP.md`](ROADMAP.md) O1b。
 - **位置**：`app/llm.py` 中 13 個寫死 temperature 的呼叫點（0.0 / 0.2 / 0.3 / 0.4 / 0.6）。
 - **問題**：這些數字承載的是**語意**（「這個任務要多少隨機性」），但語意只存在於數字本身、沒有名字。
   真要支援 effort，需要一張語意對照表（決定性任務 → effort low、發想型任務 → effort medium），
   不是把 temperature 刪掉。
-- **決定**：**現在不做**。目前部署的 serving 端固定是 Gemma，沒有 effort 可用。
-- **重啟條件**：**已經被觸發過一次**（同事以 GPT-5.4-mini 測試時發現）。
-  改記為「已有實測案例，待有正式部署要用 GPT-5 以上系列時實作」，非投機性需求。
+- **歷史決定**：原先因部署的 serving 端固定是 Gemma 而暫緩；同事以 GPT-5.4-mini
+  測試後已觸發實作條件。此次保留 Gemma 行為，同時加入不依賴 model 名稱的安全轉譯。
+- **保留的低階呼叫**：另外 2 處是 sampling／streaming diagnostics，本來就必須直接
+  指定探測參數；它們不代表產品任務語意，刻意不套用 `ChatIntent`。
 
 ---
 

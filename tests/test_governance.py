@@ -541,7 +541,9 @@ def test_settings_chat_probe_detects_json_stream_and_usage(monkeypatch, tmp_path
         if isinstance(body["messages"][1]["content"], list):
             text = body["messages"][1]["content"][0]["text"]
             image_url = body["messages"][1]["content"][1]["image_url"]["url"]
-            assert "red" not in text.lower()
+            # The target is not disclosed as a free-form hint: all allowed
+            # enum values are present, and the image must choose among them.
+            assert all(color in text.lower() for color in ("red", "green", "blue"))
             assert image_url.startswith("data:image/png;base64,")
             return httpx.Response(
                 200,
@@ -591,6 +593,7 @@ def test_settings_chat_probe_detects_json_stream_and_usage(monkeypatch, tmp_path
     assert result["capabilities"]["streaming"]["status"] == "succeeded"
     assert result["capabilities"]["usage_reporting"]["status"] == "succeeded"
     assert result["capabilities"]["image_understanding"]["status"] == "succeeded"
+    assert result["capabilities"]["image_understanding"]["semantic_match"] is True
     # An endpoint that accepts temperature + max_tokens is the common case.
     assert result["capabilities"]["sampling_params"]["status"] == "succeeded"
     assert result["capabilities"]["max_tokens_field"]["field"] == "max_tokens"
@@ -660,6 +663,73 @@ def test_probe_detects_a_model_that_refuses_temperature(monkeypatch, tmp_path):
     adapted = [b for b in seen if "max_completion_tokens" in b]
     assert adapted, "later requests should switch to the field the model accepts"
     assert all("temperature" not in b for b in adapted)
+
+
+def test_effort_probe_persists_through_runtime_request_builder(monkeypatch, tmp_path):
+    """Drive the real probe -> compact JSON -> DB load -> request-builder contract."""
+    db, _governance, llm = _fresh_governance_stack(monkeypatch, tmp_path)
+    seen: list[dict] = []
+
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        seen.append(payload)
+        if "temperature" in payload or "max_tokens" in payload:
+            detail = "Unsupported parameter: use max_completion_tokens without temperature"
+            raise httpx.HTTPStatusError(
+                detail,
+                request=httpx.Request("POST", url),
+                response=httpx.Response(400, text=detail),
+            )
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+    capabilities = asyncio.run(llm._probe_sampling_params(
+        {
+            "provider": "openai_compatible",
+            "base_url": "http://llm.test/v1",
+            "chat_model": "reasoning-model",
+            "api_key": "",
+            "timeout_seconds": 10,
+        },
+        usage_context=None,
+    ))
+
+    effort = capabilities[llm.REASONING_EFFORT_CAPABILITY]
+    assert effort["status"] == "succeeded"
+    assert effort["supported_values"] == ["low", "medium"]
+
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE llm_settings SET provider = ?, base_url = ?, chat_model = ? WHERE id = 1",
+            (
+                "openai_compatible",
+                "http://llm.test/v1",
+                "reasoning-model",
+            ),
+        )
+        candidate = db.load_llm_settings(conn)
+        assert candidate is not None
+        conn.execute(
+            "UPDATE llm_settings SET diagnostics_json = ? WHERE id = 1",
+            (db.dumps({
+                "chat": {
+                    "settings_fingerprint": llm.llm_settings_fingerprint(candidate),
+                    "capabilities": capabilities,
+                }
+            }),),
+        )
+        loaded = db.load_llm_settings(conn)
+
+    assert loaded is not None
+    request = llm.build_chat_request(
+        loaded,
+        "hi",
+        "sys",
+        intent=llm.ChatIntent.CREATIVE,
+        call_type="chat_completion",
+    )
+    assert request["json"]["reasoning_effort"] == "medium"
+    assert "temperature" not in request["json"]
+    assert len([payload for payload in seen if "reasoning_effort" in payload]) == 2
 
 
 def test_probe_does_not_infer_capabilities_from_an_unrelated_failure(monkeypatch, tmp_path):

@@ -1,10 +1,12 @@
 import asyncio
 import dataclasses
+import hashlib
 import json
 import logging
 import random
 import re
 import time
+from enum import StrEnum
 from typing import Any
 
 import httpx
@@ -44,6 +46,38 @@ MAX_STREAM_BUFFER_CHARS = 100_000
 # literal "ok" that nothing ever wrote.
 DIAGNOSTIC_STATUS_SUCCEEDED = "succeeded"
 DIAGNOSTIC_STATUS_FAILED = "failed"
+DIAGNOSTIC_STATUS_INCONCLUSIVE = "inconclusive"
+
+
+class ChatIntent(StrEnum):
+    """Task-level generation semantics, independent of provider parameters."""
+
+    DETERMINISTIC = "deterministic"
+    PRECISE = "precise"
+    BALANCED = "balanced"
+    EXPLORATORY = "exploratory"
+    CREATIVE = "creative"
+
+
+@dataclasses.dataclass(frozen=True)
+class ChatIntentParameters:
+    temperature: float
+    reasoning_effort: str
+
+
+# Preserve every pre-LLM-5 temperature exactly for Gemma/OpenAI-compatible
+# deployments. Reasoning models receive only values positively measured by the
+# settings probe; see `_probe_sampling_params` and `build_chat_request`.
+CHAT_INTENT_PARAMETERS: dict[ChatIntent, ChatIntentParameters] = {
+    ChatIntent.DETERMINISTIC: ChatIntentParameters(temperature=0.0, reasoning_effort="low"),
+    ChatIntent.PRECISE: ChatIntentParameters(temperature=0.2, reasoning_effort="low"),
+    ChatIntent.BALANCED: ChatIntentParameters(temperature=0.3, reasoning_effort="medium"),
+    ChatIntent.EXPLORATORY: ChatIntentParameters(temperature=0.4, reasoning_effort="medium"),
+    ChatIntent.CREATIVE: ChatIntentParameters(temperature=0.6, reasoning_effort="medium"),
+}
+SEMANTIC_REASONING_EFFORTS = ("low", "medium")
+REASONING_EFFORT_MODES = ("auto", "provider_default", "fixed")
+REASONING_EFFORT_VALUES = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 QUERY_REWRITE_PROMPT = """You create retrieval queries for a source-grounded RAG system.
 Do not answer the user. Rewrite the user's question into 1 to 4 concise search queries.
@@ -256,11 +290,11 @@ Rules:
 - Preserve meaning, terminology, numbers, and names; do not add, omit, or summarise further.
 - If the summary is already in the target language, return it unchanged."""
 
-# kind -> (prompt, temperature, log label). The single dispatch point for A4.
-ARTIFACT_PROMPTS: dict[str, tuple[str, float, str]] = {
-    "study_guide": (STUDY_GUIDE_PROMPT, 0.4, "study_guide"),
-    "faq": (FAQ_PROMPT, 0.4, "faq"),
-    "timeline": (TIMELINE_PROMPT, 0.3, "timeline"),
+# kind -> (prompt, semantic intent, log label). The single dispatch point for A4.
+ARTIFACT_PROMPTS: dict[str, tuple[str, ChatIntent, str]] = {
+    "study_guide": (STUDY_GUIDE_PROMPT, ChatIntent.EXPLORATORY, "study_guide"),
+    "faq": (FAQ_PROMPT, ChatIntent.EXPLORATORY, "faq"),
+    "timeline": (TIMELINE_PROMPT, ChatIntent.BALANCED, "timeline"),
 }
 
 logger = logging.getLogger(__name__)
@@ -460,7 +494,8 @@ DIAGNOSTIC_SYSTEM_PROMPT = (
 )
 DIAGNOSTIC_IMAGE_DATA_URL = (
     "data:image/png;base64,"
-    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg=="
+    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAATElEQVR42u3PQQ0AAAgEoNP+nTWCbzdoQE1+6wgICA"
+    "gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHBZShQF/CY4YrwAAAABJRU5ErkJggg=="
 )
 
 
@@ -573,6 +608,7 @@ async def probe_chat_diagnostics(
             "json_following": {"status": "not_tested"},
             SAMPLING_PARAMS_CAPABILITY: {"status": "not_tested"},
             MAX_TOKENS_FIELD_CAPABILITY: {"status": "not_tested", "field": "max_tokens"},
+            REASONING_EFFORT_CAPABILITY: {"status": "not_tested", "supported_values": []},
             "image_understanding": {"status": "not_tested" if include_image else "skipped"},
         },
     }
@@ -590,7 +626,10 @@ async def probe_chat_diagnostics(
             **settings,
             "diagnostics": {
                 **(settings.get("diagnostics") or {}),
-                "chat": {"capabilities": sampling},
+                "chat": {
+                    "settings_fingerprint": llm_settings_fingerprint(settings),
+                    "capabilities": sampling,
+                },
             },
         }
 
@@ -738,7 +777,14 @@ async def _probe_sampling_params(
     parameters, we retry without `temperature` and with
     `max_completion_tokens`, which is the GPT-5-era shape.
 
-    Returns the two capability entries `build_chat_request` reads back.
+    When temperature is rejected but a token-limit field succeeds, also probe
+    the two reasoning-effort values used by semantic intents (``low`` and
+    ``medium``). Fixed mode adds only its selected value rather than probing the
+    entire provider-specific vocabulary. Each value is enabled independently
+    only after a successful request; no model name or provider label is treated
+    as capability evidence.
+
+    Returns the three capability entries `build_chat_request` reads back.
     """
     resolved = chat_settings(settings)
     timeout = float(settings.get("timeout_seconds") or 60)
@@ -772,14 +818,52 @@ async def _probe_sampling_params(
         except Exception as exc:
             return False, exc.__class__.__name__
 
-    cap_sampling: dict[str, Any] = {"status": "not_tested"}
-    cap_field: dict[str, Any] = {"status": "not_tested", "field": "max_tokens"}
+    async def probe_reasoning_efforts(max_tokens_field: str) -> dict[str, Any]:
+        supported: list[str] = []
+        failure_details: list[str] = []
+        efforts = list(SEMANTIC_REASONING_EFFORTS)
+        selected_effort = str(resolved.get("reasoning_effort") or "medium")
+        if (
+            resolved.get("reasoning_effort_mode") == "fixed"
+            and selected_effort in REASONING_EFFORT_VALUES
+            and selected_effort not in efforts
+        ):
+            efforts.append(selected_effort)
+        for effort in efforts:
+            accepted, failure_detail = await attempt(
+                {max_tokens_field: 16, "reasoning_effort": effort}
+            )
+            if accepted:
+                supported.append(effort)
+            else:
+                failure_details.append(failure_detail.lower())
+        if supported:
+            return {
+                "status": "succeeded",
+                "supported_values": supported,
+            }
+        conclusive = any(
+            any(
+                token in detail
+                for token in ("reasoning_effort", "reasoning effort", "unsupported", "unrecognized")
+            )
+            for detail in failure_details
+        )
+        return {
+            "status": "failed" if conclusive else "not_tested",
+            "supported_values": [],
+            **({"error_class": "UnsupportedParameter"} if conclusive else {"error_class": "inconclusive"}),
+        }
 
     ok, detail = await attempt({"temperature": 0.0, "max_tokens": 16})
     if ok:
         return {
             SAMPLING_PARAMS_CAPABILITY: {"status": "succeeded", "temperature_accepted": True},
             MAX_TOKENS_FIELD_CAPABILITY: {"status": "succeeded", "field": "max_tokens"},
+            REASONING_EFFORT_CAPABILITY: {
+                "status": "skipped",
+                "supported_values": [],
+            },
         }
 
     lowered = detail.lower()
@@ -795,6 +879,11 @@ async def _probe_sampling_params(
         return {
             SAMPLING_PARAMS_CAPABILITY: {"status": "not_tested", "error_class": "inconclusive"},
             MAX_TOKENS_FIELD_CAPABILITY: {"status": "not_tested", "field": "max_tokens"},
+            REASONING_EFFORT_CAPABILITY: {
+                "status": "not_tested",
+                "supported_values": [],
+                "error_class": "inconclusive",
+            },
         }
 
     ok2, detail2 = await attempt({"max_completion_tokens": 16})
@@ -810,6 +899,7 @@ async def _probe_sampling_params(
                 "error_class": "UnsupportedParameter",
             },
             MAX_TOKENS_FIELD_CAPABILITY: {"status": "succeeded", "field": "max_completion_tokens"},
+            REASONING_EFFORT_CAPABILITY: await probe_reasoning_efforts("max_completion_tokens"),
         }
 
     ok3, _ = await attempt({"max_tokens": 16})
@@ -821,10 +911,16 @@ async def _probe_sampling_params(
                 "error_class": "UnsupportedParameter",
             },
             MAX_TOKENS_FIELD_CAPABILITY: {"status": "succeeded", "field": "max_tokens"},
+            REASONING_EFFORT_CAPABILITY: await probe_reasoning_efforts("max_tokens"),
         }
     return {
         SAMPLING_PARAMS_CAPABILITY: {"status": "not_tested", "error_class": "inconclusive"},
         MAX_TOKENS_FIELD_CAPABILITY: {"status": "not_tested", "field": "max_tokens"},
+        REASONING_EFFORT_CAPABILITY: {
+            "status": "not_tested",
+            "supported_values": [],
+            "error_class": "inconclusive",
+        },
     }
 
 
@@ -1002,7 +1098,13 @@ async def _probe_image_understanding(
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": 'What is the dominant color in this image? Return JSON only: {"dominant_color":"color"}'},
+                {
+                    "type": "text",
+                    "text": (
+                        "What is the dominant color in this image? Return JSON only, with "
+                        'dominant_color set to exactly one of red, green, or blue: {"dominant_color":"red"}'
+                    ),
+                },
                 {"type": "image_url", "image_url": {"url": DIAGNOSTIC_IMAGE_DATA_URL}},
             ],
         },
@@ -1017,13 +1119,23 @@ async def _probe_image_understanding(
         expect_json=True,
         messages_override=messages,
     )
-    color = str((probe.get("json_object") or {}).get("dominant_color") or "").lower()
-    understood = probe["status"] == "succeeded" and probe.get("json_valid") and "red" in color
+    color = str((probe.get("json_object") or {}).get("dominant_color") or "").strip().lower()
+    semantic_match = probe["status"] == DIAGNOSTIC_STATUS_SUCCEEDED and probe.get("json_valid") and color == "red"
+    if probe["status"] != DIAGNOSTIC_STATUS_SUCCEEDED:
+        status = DIAGNOSTIC_STATUS_FAILED
+    elif semantic_match:
+        status = DIAGNOSTIC_STATUS_SUCCEEDED
+    else:
+        # The endpoint accepted a multimodal request, but the bounded response
+        # did not prove the image was understood. Do not mislabel that as an
+        # endpoint/capability rejection, and do not enable image-dependent work.
+        status = DIAGNOSTIC_STATUS_INCONCLUSIVE
     return {
-        "status": "succeeded" if understood else "failed",
+        "status": status,
         "latency_ms": probe["latency_ms"],
         "error_class": probe.get("error_class", ""),
         "json_valid": probe.get("json_valid", False),
+        "semantic_match": bool(semantic_match),
         "usage_available": probe.get("usage_available", False),
     }
 
@@ -1451,7 +1563,7 @@ async def rewrite_search_queries(
             settings,
             user_prompt,
             QUERY_REWRITE_PROMPT,
-            temperature=0.0,
+            intent=ChatIntent.DETERMINISTIC,
             call_type="query_rewrite",
             usage_context=usage_context,
         )
@@ -1503,7 +1615,7 @@ async def rerank_chunks(
             settings,
             user_prompt,
             RERANK_PROMPT,
-            temperature=0.0,
+            intent=ChatIntent.DETERMINISTIC,
             call_type="rerank",
             usage_context=usage_context,
         )
@@ -1551,7 +1663,7 @@ async def generate_starter_questions(
             settings,
             user_prompt,
             STARTER_QUESTIONS_PROMPT,
-            temperature=0.6,
+            intent=ChatIntent.CREATIVE,
             call_type="starter_questions",
             usage_context=usage_context,
         )
@@ -1607,7 +1719,7 @@ async def generate_eval_candidates(
             settings,
             user_prompt,
             EVAL_AUTHORING_PROMPT,
-            temperature=0.4,
+            intent=ChatIntent.EXPLORATORY,
             call_type="eval_authoring",
             usage_context=usage_context,
         )
@@ -1669,7 +1781,7 @@ async def judge_answer(
             settings,
             user_prompt,
             ANSWER_JUDGE_PROMPT,
-            temperature=0.0,
+            intent=ChatIntent.DETERMINISTIC,
             call_type="eval_judge",
             usage_context=usage_context,
         )
@@ -1713,7 +1825,7 @@ async def suggest_followup_questions(
             settings,
             user_prompt,
             FOLLOWUP_QUESTIONS_PROMPT,
-            temperature=0.6,
+            intent=ChatIntent.CREATIVE,
             call_type="followups",
             usage_context=usage_context,
         )
@@ -1791,7 +1903,7 @@ async def generate_meeting_minutes(
             settings,
             user_prompt,
             MEETING_MINUTES_PROMPT,
-            temperature=0.3,
+            intent=ChatIntent.BALANCED,
             call_type="meeting_minutes",
             usage_context=usage_context,
         )
@@ -1830,7 +1942,7 @@ async def summarize_source(
             settings,
             user_prompt,
             SOURCE_SUMMARY_PROMPT,
-            temperature=0.3,
+            intent=ChatIntent.BALANCED,
             call_type="source_summary",
             usage_context=usage_context,
         )
@@ -1870,7 +1982,7 @@ async def generate_briefing(
             settings,
             user_prompt,
             NOTEBOOK_BRIEFING_PROMPT,
-            temperature=0.4,
+            intent=ChatIntent.EXPLORATORY,
             call_type="briefing",
             usage_context=usage_context,
         )
@@ -1913,7 +2025,7 @@ async def compare_sources(
             settings,
             user_prompt,
             SOURCE_COMPARE_PROMPT,
-            temperature=0.3,
+            intent=ChatIntent.BALANCED,
             call_type="compare",
             usage_context=usage_context,
         )
@@ -1942,7 +2054,7 @@ async def generate_artifact(
     spec = ARTIFACT_PROMPTS.get(kind)
     if spec is None:
         raise ValueError(f"unknown artifact kind: {kind}")
-    prompt, temperature, label = spec
+    prompt, intent, label = spec
     items = [item for item in summaries if (item.get("summary") or "").strip()]
     if not items:
         return ""
@@ -1959,7 +2071,7 @@ async def generate_artifact(
             settings,
             user_prompt,
             prompt,
-            temperature=temperature,
+            intent=intent,
             call_type=f"artifact_{label}",
             usage_context=usage_context,
         )
@@ -1995,7 +2107,7 @@ async def translate_summary(
             settings,
             user_prompt,
             TRANSLATE_SUMMARY_PROMPT,
-            temperature=0.2,
+            intent=ChatIntent.PRECISE,
             call_type="translate_summary",
             usage_context=usage_context,
         )
@@ -2013,11 +2125,19 @@ async def chat_completion(
     system_prompt: str,
     temperature: float | None = None,
     *,
+    intent: ChatIntent | str | None = None,
     call_type: str = "chat_completion",
     usage_context: dict[str, Any] | None = None,
 ) -> str:
     """Call the configured chat completion endpoint and return message text."""
-    request = build_chat_request(settings, user_prompt, system_prompt, temperature, call_type=call_type)
+    request = build_chat_request(
+        settings,
+        user_prompt,
+        system_prompt,
+        temperature,
+        call_type=call_type,
+        intent=intent,
+    )
     timeout = float(settings.get("timeout_seconds") or 60)
     started = time.perf_counter()
     input_chars = len(system_prompt) + len(user_prompt)
@@ -2090,11 +2210,19 @@ async def chat_completion_stream(
     system_prompt: str,
     temperature: float | None = None,
     *,
+    intent: ChatIntent | str | None = None,
     call_type: str = "chat_stream",
     usage_context: dict[str, Any] | None = None,
 ):
     """Stream message text from an OpenAI-compatible chat completion endpoint."""
-    request = build_chat_request(settings, user_prompt, system_prompt, temperature, call_type=call_type)
+    request = build_chat_request(
+        settings,
+        user_prompt,
+        system_prompt,
+        temperature,
+        call_type=call_type,
+        intent=intent,
+    )
     request["json"]["stream"] = True
     request["json"]["stream_options"] = {"include_usage": True}
     timeout = float(settings.get("timeout_seconds") or 60)
@@ -2587,8 +2715,34 @@ def chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
         "api_version": settings.get("api_version") or "",
         "chat_model": settings.get("chat_model") or "",
         "temperature": settings.get("temperature"),
+        "reasoning_effort_mode": settings.get("reasoning_effort_mode") or "auto",
+        "reasoning_effort": settings.get("reasoning_effort") or "medium",
         "timeout_seconds": settings.get("timeout_seconds"),
     }
+
+
+def llm_settings_fingerprint(settings: dict[str, Any]) -> str:
+    """Hash non-secret settings so a capability applies only to what was probed."""
+    summary = {
+        "provider": settings.get("provider") or "openai_compatible",
+        "base_url": settings.get("base_url") or "",
+        "embedding_base_url": settings.get("embedding_base_url") or "",
+        "api_key_set": bool(settings.get("api_key")),
+        "chat_model": settings.get("chat_model") or "",
+        "embedding_model": settings.get("embedding_model") or "",
+        "embedding_query_prefix": settings.get("embedding_query_prefix") or "",
+        "embedding_passage_prefix": settings.get("embedding_passage_prefix") or "",
+        "api_version": settings.get("api_version") or "",
+        "temperature": float(settings.get("temperature") or 0),
+        "reasoning_effort_mode": settings.get("reasoning_effort_mode") or "auto",
+        "reasoning_effort": settings.get("reasoning_effort") or "medium",
+        "timeout_seconds": float(settings.get("timeout_seconds") or 0),
+        "embedding_provider": settings.get("embedding_provider") or "openai_compatible",
+        "embedding_api_key_set": bool(settings.get("embedding_api_key")),
+        "embedding_api_version": settings.get("embedding_api_version") or "",
+    }
+    encoded = json.dumps(summary, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def embedding_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -2653,6 +2807,7 @@ def build_embedding_request(settings: dict[str, Any], texts: list[str]) -> dict[
 #: reads back. Kept as constants so the probe and the consumer cannot drift apart.
 SAMPLING_PARAMS_CAPABILITY = "sampling_params"
 MAX_TOKENS_FIELD_CAPABILITY = "max_tokens_field"
+REASONING_EFFORT_CAPABILITY = "reasoning_effort"
 
 
 def chat_sampling_support(settings: dict[str, Any]) -> dict[str, Any]:
@@ -2665,17 +2820,26 @@ def chat_sampling_support(settings: dict[str, Any]) -> dict[str, Any]:
     and reading the error. `/settings` → *Test chat model* does the latter once
     and stores the result; this reads it back.
 
-    Returns ``{"temperature": bool, "max_tokens_field": str}``. Defaults are
-    permissive (send `temperature`, use `max_tokens`) because that is correct for
-    every OpenAI-compatible server this project actually targets — a model that
-    rejects them is the exception, and until the probe has run we should behave
-    exactly as before rather than silently dropping parameters.
+    Returns ``{"temperature": bool, "max_tokens_field": str,
+    "reasoning_efforts": tuple[str, ...]}``. Temperature/max-token defaults are
+    permissive because that preserves the existing OpenAI-compatible behaviour.
+    Reasoning effort is the opposite: it defaults to no supported values and is
+    sent only for exact values a successful probe recorded.
     """
+    default_support = {
+        "temperature": True,
+        "max_tokens_field": "max_tokens",
+        "reasoning_efforts": (),
+    }
     diagnostics = settings.get("diagnostics")
     chat = diagnostics.get("chat") if isinstance(diagnostics, dict) else None
+    if not isinstance(chat, dict):
+        return default_support
+    if chat.get("settings_fingerprint") != llm_settings_fingerprint(settings):
+        return default_support
     capabilities = chat.get("capabilities") if isinstance(chat, dict) else None
     if not isinstance(capabilities, dict):
-        return {"temperature": True, "max_tokens_field": "max_tokens"}
+        return default_support
 
     sampling = capabilities.get(SAMPLING_PARAMS_CAPABILITY)
     temperature_ok = True
@@ -2688,7 +2852,22 @@ def chat_sampling_support(settings: dict[str, Any]) -> dict[str, Any]:
         detected = str(max_tokens_cap.get("field") or "").strip()
         if detected in {"max_tokens", "max_completion_tokens"}:
             field = detected
-    return {"temperature": temperature_ok, "max_tokens_field": field}
+
+    reasoning_efforts: tuple[str, ...] = ()
+    effort_cap = capabilities.get(REASONING_EFFORT_CAPABILITY)
+    if isinstance(effort_cap, dict) and effort_cap.get("status") == DIAGNOSTIC_STATUS_SUCCEEDED:
+        raw_values = effort_cap.get("supported_values")
+        if isinstance(raw_values, list):
+            reasoning_efforts = tuple(
+                effort
+                for effort in REASONING_EFFORT_VALUES
+                if effort in raw_values
+            )
+    return {
+        "temperature": temperature_ok,
+        "max_tokens_field": field,
+        "reasoning_efforts": reasoning_efforts,
+    }
 
 
 def resolve_max_tokens(call_type: str | None) -> int:
@@ -2704,13 +2883,15 @@ def build_chat_request(
     system_prompt: str = SYSTEM_PROMPT,
     temperature: float | None = None,
     call_type: str | None = None,
+    *,
+    intent: ChatIntent | str | None = None,
 ) -> dict[str, Any]:
     """Build the provider-specific HTTP request for chat completion.
 
     Resolves the chat connection first (see ``chat_settings``), so the chat
     endpoint, key and provider are independent of embedding.
 
-    Two things beyond the messages (LLM-2 / LLM-3):
+    Three things beyond the messages (LLM-2 / LLM-3 / LLM-5):
 
     * ``temperature`` is **omitted** when the last `/settings` probe found the
       model rejects it. GPT-5-class reasoning models accept sampling parameters
@@ -2718,6 +2899,11 @@ def build_chat_request(
       request with a 400. Since every LLM call in this app funnels through here,
       that would take down chat, rewrite, rerank, briefing and evals at once —
       not degrade them.
+    * Feature code passes a semantic ``intent`` rather than a numeric sampling
+      value. Temperature-capable providers receive the exact historical value;
+      models that reject temperature receive ``reasoning_effort`` only when the
+      probe positively accepted that exact mapped value. The low-level
+      ``temperature`` override remains for diagnostics and compatibility.
     * ``max_tokens`` bounds the response. On a shared, borrowed endpoint one
       runaway generation occupies the GPU for everyone, and nothing else caps it.
       GPT-5 renamed the field to ``max_completion_tokens``; the probe records
@@ -2725,6 +2911,15 @@ def build_chat_request(
     """
     resolved = chat_settings(settings)
     support = chat_sampling_support(settings)
+    intent_parameters: ChatIntentParameters | None = None
+    if intent is not None:
+        try:
+            resolved_intent = intent if isinstance(intent, ChatIntent) else ChatIntent(intent)
+        except ValueError as exc:
+            raise ValueError(f"unknown chat intent: {intent}") from exc
+        intent_parameters = CHAT_INTENT_PARAMETERS[resolved_intent]
+    if intent_parameters is not None and temperature is not None:
+        raise ValueError("intent and temperature are mutually exclusive")
     payload: dict[str, Any] = {
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -2732,8 +2927,25 @@ def build_chat_request(
         ],
     }
     if support["temperature"]:
-        effective_temperature = resolved.get("temperature") if temperature is None else temperature
+        if intent_parameters is not None:
+            effective_temperature = intent_parameters.temperature
+        else:
+            effective_temperature = resolved.get("temperature") if temperature is None else temperature
         payload["temperature"] = float(0.2 if effective_temperature is None else effective_temperature)
+    else:
+        effort_mode = str(resolved.get("reasoning_effort_mode") or "auto")
+        if effort_mode not in REASONING_EFFORT_MODES:
+            effort_mode = "auto"
+        if effort_mode == "fixed":
+            fixed_effort = str(resolved.get("reasoning_effort") or "medium")
+            if fixed_effort in support["reasoning_efforts"]:
+                payload["reasoning_effort"] = fixed_effort
+        elif (
+            effort_mode == "auto"
+            and intent_parameters is not None
+            and intent_parameters.reasoning_effort in support["reasoning_efforts"]
+        ):
+            payload["reasoning_effort"] = intent_parameters.reasoning_effort
     payload[support["max_tokens_field"]] = resolve_max_tokens(call_type)
     provider = resolved.get("provider") or "openai_compatible"
     if provider == "azure_openai":

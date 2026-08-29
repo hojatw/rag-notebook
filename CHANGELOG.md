@@ -26,6 +26,11 @@
 
 ### 修正
 
+- **聊天模型診斷未進入 runtime request builder**：`diagnostics_json` 原本只供設定頁
+  顯示，`load_llm_settings()` 沒有載入內容，因此已實測的 sampling／token-limit 能力
+  在正式呼叫永遠不可見。Runtime 現在會解析診斷，但只接受與目前 non-secret 設定
+  fingerprint 相符的結果；換 endpoint、model 或任一 connection 設定後，舊結果會
+  安全失效並要求重新測試。
 - **維度遷移永遠被擋住**：`/admin/index` 的遷移閘門比對 embedding 診斷的
   `status != "ok"`，但探測寫入的值是 `"succeeded"`——`"ok"` 這個字串在整個
   codebase 裡只存在於那一行比較。因此無論在「設定」頁測試成功幾次，紅色的
@@ -49,6 +54,10 @@
   整頁送出，重繪時用資料庫的值填回表單——捲動位置與剛剛拿去測試的輸入值
   兩者都會消失。改為 HTMX 局部更新，只換回診斷卡片；表單完全不動，兩個問題
   一併消失，測試結果的提示也改為顯示在卡片內而非頁首。無 JS 時仍可整頁運作。
+- **Image understanding 診斷誤報 failed**：舊 probe 的圖片只有 2×2，且只接受回覆中
+  含字面 `red`；endpoint 已接受 image request、回傳有效 JSON 時仍可能被誤判失敗。
+  改用 64×64 內建紅色 PNG 與 `red|green|blue` 限定輸出；request/endpoint 失敗維持
+  `failed`，已接受但語意不足改標「無法判定」，只有 exact match 才是 `succeeded`。
 - **領域設定頁的「啟用」核取方塊破版**：`.setting-check` 只在 `.rename-form`
   底下有樣式，領域提示頁的三處用法沒被涵蓋，掉回基礎 `label` 的 grid 直排——
   核取方塊被撐成整欄寬（實測 654px）、看起來置中，說明文字被擠到第二列，且整
@@ -75,6 +84,13 @@
 
 ### 變更
 
+- **LLM-5 semantic intent 與 reasoning effort**：11 個功能呼叫點不再各自寫死
+  temperature，改以 `deterministic`、`precise`、`balanced`、`exploratory`、
+  `creative` 表達任務語意。支援 sampling 的 Gemma／OpenAI-compatible endpoint 仍收到
+  完全相同的 0.0／0.2／0.3／0.4／0.6；拒絕 temperature 的模型則只會收到設定頁
+  實測成功的 `reasoning_effort`，不以 model 名稱猜測能力。設定頁新增自動、Provider
+  預設與固定值 policy；自動模式探測 `low|medium`，固定模式再探測所選值，且未實測
+  通過前不能儲存。探測失敗、不確定或過期時不送 effort，維持既有 request 行為。
 - **領域提示與回答政策頁改版**：兩個「啟用」開關改用新的 `.switch-field`
   整列式 toggle（左標題＋說明、右開關、整列可點）。筆記本層級設定收進一張卡片、
   儲存列改放在卡片框線內，不再停在頁面中段看起來像「儲存全部」；提示清單成為

@@ -400,6 +400,22 @@ def test_load_llm_settings_decrypts_api_key(monkeypatch, tmp_path):
     assert loaded["api_key"] == "sk-real"
 
 
+def test_llm_settings_reasoning_effort_policy_has_safe_defaults(monkeypatch, tmp_path):
+    """Existing databases migrate to semantic auto mode without changing behaviour."""
+    monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NOTEBOOKLM_SECRET", "unit-test-secret")
+    import app.db as db
+    import importlib
+
+    importlib.reload(db)
+    db.init_db()
+    with db.connect() as conn:
+        loaded = db.load_llm_settings(conn)
+
+    assert loaded["reasoning_effort_mode"] == "auto"
+    assert loaded["reasoning_effort"] == "medium"
+
+
 def test_load_llm_settings_passes_legacy_plaintext(monkeypatch, tmp_path):
     """Plaintext keys stored before encryption was added still load unchanged."""
     monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
