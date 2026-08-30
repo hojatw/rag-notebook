@@ -82,6 +82,8 @@ backoff_base_s = 0.5          # exponential backoff base (seconds) + jitter
 visibility_timeout_s = 1800.0 # abandoned 'running' job becomes re-claimable
 max_attempts = 3              # cap on (re)claims before a job is failed
 poll_interval_s = 2.0         # worker idle poll interval
+health_port = 0               # standalone loopback liveness; Compose worker sets 8001
+health_timeout_s = 3.0        # below Docker healthcheck's 5s timeout
 
 # --- Misc runtime ------------------------------------------------------------
 [runtime]

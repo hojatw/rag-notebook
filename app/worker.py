@@ -27,6 +27,7 @@ from .db import init_db
 from .ingest import process_source
 from .jobs import claim_next_job, mark_done, requeue_or_fail
 from .llm import close_http_client, set_http_client
+from .worker_health import start_health_server
 
 logger = logging.getLogger("notebooklm")
 
@@ -84,9 +85,15 @@ async def _run_standalone() -> None:
             loop.add_signal_handler(sig, stop_event.set)
         except (NotImplementedError, ValueError):  # e.g. non-main thread / Windows
             pass
+    health_server = None
     try:
+        if config.jobs.health_port:
+            health_server = await start_health_server(config.jobs.health_port)
         await run_worker_loop(stop_event=stop_event)
     finally:
+        if health_server is not None:
+            health_server.close()
+            await health_server.wait_closed()
         await close_http_client()
 
 

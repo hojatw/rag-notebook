@@ -166,6 +166,8 @@ class JobsConfig:
     visibility_timeout_s: float = 1800.0  # abandoned 'running' job becomes re-claimable
     max_attempts: int = 3
     poll_interval_s: float = 2.0
+    health_port: int = 0               # standalone loopback probe; 0 disables listener
+    health_timeout_s: float = 3.0      # keep below Docker healthcheck's 5s timeout
 
 
 @dataclasses.dataclass

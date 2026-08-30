@@ -35,6 +35,31 @@ worker alongside it:
 Docker Compose does this automatically with separate `app` and `worker`
 services. They share the same `./data` bind mount.
 
+**Docker liveness checks:** the app uses HTTP `/healthz`. The worker has no
+HTTP server; Compose overrides the image's web probe with
+`python -m app.worker_health` and sets `NOTEBOOKLM_JOBS_HEALTH_PORT=8001`.
+The standalone worker answers a fixed, non-sensitive TCP response on
+`127.0.0.1:8001` inside its container, on the same event loop as the ingest
+queue. The port is not published or bound to external interfaces. The listener
+starts after DB initialization and closes when the worker loop exits or fails.
+Merely accepting a TCP connection is insufficient: the probe must receive the
+worker response within `[jobs].health_timeout_s` (default 3 seconds; keep this
+below Docker's 5-second healthcheck timeout).
+
+`[jobs].health_port` defaults to `0` (no listener), preserving ordinary local
+worker behaviour. Inline workers never start this listener. For a custom
+standalone deployment, use the same nonzero port/config for worker and probe;
+workers sharing a host network need distinct ports. If running the worker image
+without Compose, also override its inherited web healthcheck with the worker
+probe. A disabled, unreachable, unresponsive, or unexpected service fails the
+probe. Port-binding errors fail worker startup rather than claiming health.
+
+These are **liveness**, not dependency/readiness checks: a worker waiting
+asynchronously for an LLM can remain healthy, and a healthy worker does not
+prove that ingestion completed or that the provider, SQLite, or Chroma is
+healthy. Inspect job/source status and run an end-to-end ingest check as well.
+Docker's restart policy does not itself restart an `unhealthy` running process.
+
 **Anything blocking added to the ingest pipeline must go through
 `asyncio.to_thread`.** `process_source` is `async`, but with the inline worker it
 runs *inside* the web process, so a synchronous CPU-bound step there stops the
@@ -349,6 +374,7 @@ app/ingest.py          Text extraction (PDF/DOCX/HTML/subtitles/PPTX/XLSX/CSV), 
                        vector upsert, per-source summary, A6a ingestion diagnostics.
 app/jobs.py            DB-backed ingest queue (ingest_jobs): enqueue + atomic claim + retry.
 app/worker.py          Ingest worker loop (standalone or inline).
+app/worker_health.py   Loopback-only standalone worker liveness server + probe CLI.
 app/llm.py             LLM/embedding HTTP, query rewrite, rerank, grounded answers and tools.
 app/governance.py      AI usage/safety telemetry normalization + sanitized recorders.
 app/index_migration.py O0 embedding-dimension migration: source classification by

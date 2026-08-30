@@ -9,6 +9,8 @@
 
 ## [未發布]
 
+## [0.6.0] - 2026-08-30
+
 ### 新增
 
 - **U17 topic-focused source comparison**：來源比較重新提供選填的「比較主題」。
@@ -36,6 +38,12 @@
 
 ### 修正
 
+- **Docker worker 健康檢查誤報**：worker 原本繼承 image 的 HTTP `/healthz`
+  probe，但自身沒有 HTTP server，會被誤標 `unhealthy`。Compose 現在使用專用的
+  `python -m app.worker_health`，要求 worker event loop 在期限內回傳固定 TCP
+  訊息；只接受 TCP 連線並不算通過。Listener 僅綁定容器內 `127.0.0.1`，不發布
+  port、不存取 DB／LLM；queue loop 結束或失敗時一併關閉。App 的 Compose probe
+  也對齊 Dockerfile 的 `/healthz`。這是 liveness，不是 ingest 成功或依賴可用的保證。
 - **來源比較的來源辨識**：結果加入由程式產生的來源編號／檔名對照與證據狀態，
   可看出每份來源使用摘要、取得幾段主題證據，或未取得足夠證據；對照隨筆記與
   匯出保留。提示詞要求每項共同點、差異與待釐清事項標明來源，部分共同點需明示
@@ -126,6 +134,32 @@
   （18px），並在 `docs/UI.md` §3.2 記下這個 CJK 陷阱。
 - **`.empty-state` 補上樣式**：先前模板已在用這個 class，但 CSS 從未定義它。
   現定為區塊層級空狀態，與整頁層級的 `.empty` 分成兩級（`docs/UI.md` §3.9）。
+
+### 升級注意事項
+
+- 本版維持 POC／Pre-release 定位。升級前先停止共用資料的 app／worker，備份完整
+  `data/` 與部署設定，保留原本的 `NOTEBOOKLM_SECRET`；不要以刪除資料或更換 secret
+  的方式升級。Docker 重新 build 後先啟動 app，待健康檢查通過再啟動 worker
+  （既有 Compose 已設定此相依順序）。
+- 從 `0.5.0` 升級時，啟動程序會自動補上 `llm_settings.reasoning_effort_mode`
+  與 `reasoning_effort` 欄位，不需手動執行 SQL，也不需因本次進版清除或重建向量。
+  若要回復舊版，停止 app／worker，再搭配升級前的資料備份與相同 secret 還原；
+  不保證舊版可直接使用新版本已寫入的資料。
+- 升級後請在 `/settings` 重新執行 **Test chat model**，更新與目前連線及 policy
+  相符的能力診斷；固定 reasoning effort 值必須先探測成功才能儲存。變更 embedding
+  model／維度仍應走既有遷移流程，與本次版本升級分開處理。
+- U17 比較結果與來源對照需重新生成才會套用；既有筆記不改寫。有主題限 2–3 份，
+  無主題限 2–10 份；這不是全文 diff，也不是文件版本效力或內容正確性的自動認定。
+- 部分回答串流仍預設關閉（`answer_stream_gate_chars = 0`）；不要只因升級就啟用。
+  ChromaDB `1.5.9` 的四項既有 advisory 仍未有已發布修補版；目前 embedded-only
+  使用路徑的風險判定及重新評估條件見 [`docs/SECURITY.md`](docs/SECURITY.md)，
+  不代表依賴已無漏洞。
+- Docker 升級應重建 image 並使用更新後的 Compose，讓 worker 套用專用 liveness
+  probe。`[jobs].health_port` 預設 `0`（不啟用）；Compose 僅在 worker 設為 `8001`。
+  自訂部署需使 worker 與 probe 的 port/config 一致；共用 host network 的多個
+  worker 需用不同 port。`health_timeout_s` 預設 3 秒，應小於 Docker probe 的
+  5 秒 timeout。一般本機與 inline worker 行為不變。詳見
+  [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#worker-mode)。
 
 ## [0.5.0] - 2026-08-24
 

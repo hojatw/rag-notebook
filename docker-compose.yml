@@ -44,7 +44,7 @@ services:
     healthcheck:
       # Defined in the Dockerfile; restated here so `docker compose ps`
       # reflects health without poking inside the image.
-      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/', timeout=4); sys.exit(0 if r.status < 400 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4); sys.exit(0 if r.status == 200 else 1)"]
       interval: 30s
       timeout: 5s
       start_period: 15s
@@ -59,6 +59,14 @@ services:
     container_name: notebooklm-rag-poc-worker
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
+    healthcheck:
+      # The worker has no HTTP server. Require a response from its event loop
+      # over loopback instead of inheriting the image's web /healthz check.
+      test: ["CMD", "python", "-m", "app.worker_health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
     depends_on:
       # Wait until the web app is healthy so it has finished the SQLite schema
       # migrations before the worker opens the same DB (avoids both racing on
@@ -68,6 +76,8 @@ services:
     environment:
       NOTEBOOKLM_SECRET: ${NOTEBOOKLM_SECRET:?NOTEBOOKLM_SECRET must be set in .env}
       NOTEBOOKLM_LOG_LEVEL: ${NOTEBOOKLM_LOG_LEVEL:-INFO}
+      # Only bound inside this container; not a published port or HTTP API.
+      NOTEBOOKLM_JOBS_HEALTH_PORT: "8001"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
