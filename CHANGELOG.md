@@ -38,6 +38,12 @@
 
 ### 修正
 
+- **Docker worker 健康檢查誤報**：worker 原本繼承 image 的 HTTP `/healthz`
+  probe，但自身沒有 HTTP server，會被誤標 `unhealthy`。Compose 現在使用專用的
+  `python -m app.worker_health`，要求 worker event loop 在期限內回傳固定 TCP
+  訊息；只接受 TCP 連線並不算通過。Listener 僅綁定容器內 `127.0.0.1`，不發布
+  port、不存取 DB／LLM；queue loop 結束或失敗時一併關閉。App 的 Compose probe
+  也對齊 Dockerfile 的 `/healthz`。這是 liveness，不是 ingest 成功或依賴可用的保證。
 - **來源比較的來源辨識**：結果加入由程式產生的來源編號／檔名對照與證據狀態，
   可看出每份來源使用摘要、取得幾段主題證據，或未取得足夠證據；對照隨筆記與
   匯出保留。提示詞要求每項共同點、差異與待釐清事項標明來源，部分共同點需明示
@@ -148,11 +154,12 @@
   ChromaDB `1.5.9` 的四項既有 advisory 仍未有已發布修補版；目前 embedded-only
   使用路徑的風險判定及重新評估條件見 [`docs/SECURITY.md`](docs/SECURITY.md)，
   不代表依賴已無漏洞。
-- **Docker 已知限制**：本次煙霧測試確認 app 的頁面與健康檢查正常，但 Compose 的
-  worker 會繼承 image 的 HTTP healthcheck；worker 不提供 HTTP server，因此會
-  被標示為 `unhealthy`，即使其程序與 queue loop 已啟動。這是 `0.5.0` 已存在的
-  設定問題，本進版 PR 未修正；不能把 worker 的健康檢查宣稱為通過，也不應僅憑
-  process 存活判定 ingest 功能正常。詳見 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#worker-mode)。
+- Docker 升級應重建 image 並使用更新後的 Compose，讓 worker 套用專用 liveness
+  probe。`[jobs].health_port` 預設 `0`（不啟用）；Compose 僅在 worker 設為 `8001`。
+  自訂部署需使 worker 與 probe 的 port/config 一致；共用 host network 的多個
+  worker 需用不同 port。`health_timeout_s` 預設 3 秒，應小於 Docker probe 的
+  5 秒 timeout。一般本機與 inline worker 行為不變。詳見
+  [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#worker-mode)。
 
 ## [0.5.0] - 2026-08-24
 
