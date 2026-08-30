@@ -223,11 +223,17 @@ Unbounded memory/CPU on crafted `/ToUnicode` streams and CID font width ranges. 
 
 ### ChromaDB `1.5.9` advisory cluster — current application paths not affected; patched release pending
 
-As of 2026-08-29, GitHub reports seven open Dependabot alerts for four unique
+The 2026-08-29 review covered seven Dependabot alerts for four unique
 ChromaDB advisories. The duplicate count comes from the same runtime dependency
 being represented in both `requirements.txt` and `requirements-dev.txt` (the
 latter includes the former with `-r`). The affected package is still pinned at
 `chromadb==1.5.9` in [`requirements.txt`](../requirements.txt).
+
+Rechecked on 2026-08-30 for `0.6.0`: GitHub reports no open Dependabot alerts;
+the previously triaged alerts remain an accepted deployment-scope risk, not a
+patched dependency. PyPI still publishes `1.5.9` as latest, all four GitHub
+advisories still have no `first_patched_version`, and the embedded-only usage
+described below is unchanged. This release does not change alert dispositions.
 
 The four advisories are:
 

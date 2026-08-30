@@ -9,6 +9,8 @@
 
 ## [未發布]
 
+## [0.6.0] - 2026-08-30
+
 ### 新增
 
 - **U17 topic-focused source comparison**：來源比較重新提供選填的「比較主題」。
@@ -126,6 +128,31 @@
   （18px），並在 `docs/UI.md` §3.2 記下這個 CJK 陷阱。
 - **`.empty-state` 補上樣式**：先前模板已在用這個 class，但 CSS 從未定義它。
   現定為區塊層級空狀態，與整頁層級的 `.empty` 分成兩級（`docs/UI.md` §3.9）。
+
+### 升級注意事項
+
+- 本版維持 POC／Pre-release 定位。升級前先停止共用資料的 app／worker，備份完整
+  `data/` 與部署設定，保留原本的 `NOTEBOOKLM_SECRET`；不要以刪除資料或更換 secret
+  的方式升級。Docker 重新 build 後先啟動 app，待健康檢查通過再啟動 worker
+  （既有 Compose 已設定此相依順序）。
+- 從 `0.5.0` 升級時，啟動程序會自動補上 `llm_settings.reasoning_effort_mode`
+  與 `reasoning_effort` 欄位，不需手動執行 SQL，也不需因本次進版清除或重建向量。
+  若要回復舊版，停止 app／worker，再搭配升級前的資料備份與相同 secret 還原；
+  不保證舊版可直接使用新版本已寫入的資料。
+- 升級後請在 `/settings` 重新執行 **Test chat model**，更新與目前連線及 policy
+  相符的能力診斷；固定 reasoning effort 值必須先探測成功才能儲存。變更 embedding
+  model／維度仍應走既有遷移流程，與本次版本升級分開處理。
+- U17 比較結果與來源對照需重新生成才會套用；既有筆記不改寫。有主題限 2–3 份，
+  無主題限 2–10 份；這不是全文 diff，也不是文件版本效力或內容正確性的自動認定。
+- 部分回答串流仍預設關閉（`answer_stream_gate_chars = 0`）；不要只因升級就啟用。
+  ChromaDB `1.5.9` 的四項既有 advisory 仍未有已發布修補版；目前 embedded-only
+  使用路徑的風險判定及重新評估條件見 [`docs/SECURITY.md`](docs/SECURITY.md)，
+  不代表依賴已無漏洞。
+- **Docker 已知限制**：本次煙霧測試確認 app 的頁面與健康檢查正常，但 Compose 的
+  worker 會繼承 image 的 HTTP healthcheck；worker 不提供 HTTP server，因此會
+  被標示為 `unhealthy`，即使其程序與 queue loop 已啟動。這是 `0.5.0` 已存在的
+  設定問題，本進版 PR 未修正；不能把 worker 的健康檢查宣稱為通過，也不應僅憑
+  process 存活判定 ingest 功能正常。詳見 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#worker-mode)。
 
 ## [0.5.0] - 2026-08-24
 

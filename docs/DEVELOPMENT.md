@@ -35,6 +35,16 @@ worker alongside it:
 Docker Compose does this automatically with separate `app` and `worker`
 services. They share the same `./data` bind mount.
 
+**Known Docker healthcheck limitation (verified for `0.6.0` on 2026-08-30):**
+the worker inherits the image's web `/healthz` check but runs no HTTP server,
+so Docker marks it `unhealthy` even when the worker process and queue loop have
+started. This also affects tooling that waits for every container to become
+healthy. The app service's healthcheck works. This configuration predates
+`0.6.0` and is not fixed by the version bump; worker startup logs and process
+state are not a substitute for an end-to-end ingest check. Do not interpret
+the failed HTTP probe alone as evidence that ingest has stopped, or disable
+the check and describe that as verified worker health.
+
 **Anything blocking added to the ingest pipeline must go through
 `asyncio.to_thread`.** `process_source` is `async`, but with the inline worker it
 runs *inside* the web process, so a synchronous CPU-bound step there stops the
