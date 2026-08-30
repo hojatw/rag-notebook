@@ -2836,20 +2836,10 @@ async def notebook_suggestions(
     user: Annotated[dict, Depends(require_login)],
 ):
     """Generate 4 starter questions from the notebook's indexed chunks."""
-    with connect() as conn:
-        notebook = get_notebook(conn, notebook_id, user["id"])
-        rows = conn.execute(
-            """
-            SELECT chunks.text, chunks.location, sources.filename
-            FROM chunks JOIN sources ON sources.id = chunks.source_id
-            WHERE chunks.user_id = ? AND sources.notebook_id = ? AND sources.status = 'indexed'
-            ORDER BY chunks.id DESC
-            LIMIT 24
-            """,
-            (user["id"], notebook_id),
-        ).fetchall()
-        settings = load_llm_settings(conn)
-        has_indexed = bool(rows)
+    notebook, rows, settings = await asyncio.to_thread(
+        _suggestions_context, notebook_id, user["id"]
+    )
+    has_indexed = bool(rows)
 
     excerpts = [{"filename": r["filename"], "location": r["location"], "text": r["text"]} for r in rows]
     questions: list[str] = []
@@ -2872,17 +2862,38 @@ async def notebook_suggestions(
             error = friendly_error_message(exc, i18n.t("error.action_suggestions"))
 
     if questions:
-        with connect() as conn:
-            conn.execute(
-                "UPDATE notebooks SET suggestions_json = ?, suggestions_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (dumps(questions), notebook_id),
-            )
+        await asyncio.to_thread(_save_suggestions, notebook_id, questions)
 
     return render(
         request,
         "_suggestions.html",
         {"notebook": notebook, "questions": questions, "error": error, "has_indexed": has_indexed},
     )
+
+
+def _suggestions_context(notebook_id: int, user_id: int):
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user_id)
+        rows = conn.execute(
+            """
+            SELECT chunks.text, chunks.location, sources.filename
+            FROM chunks JOIN sources ON sources.id = chunks.source_id
+            WHERE chunks.user_id = ? AND sources.notebook_id = ? AND sources.status = 'indexed'
+            ORDER BY chunks.id DESC
+            LIMIT 24
+            """,
+            (user_id, notebook_id),
+        ).fetchall()
+        settings = load_llm_settings(conn)
+    return notebook, rows, settings
+
+
+def _save_suggestions(notebook_id: int, questions: list[str]) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE notebooks SET suggestions_json = ?, suggestions_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (dumps(questions), notebook_id),
+        )
 
 
 def _fetch_source_summaries(conn, notebook_id: int, user_id: int, source_ids: list[int] | None = None) -> list[dict]:
@@ -2947,6 +2958,39 @@ def _render_briefing(
     )
 
 
+def _briefing_state(notebook_id: int, user_id: int):
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user_id)
+        has_indexed = bool(conn.execute(
+            "SELECT 1 FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' LIMIT 1",
+            (notebook_id, user_id),
+        ).fetchone())
+    return notebook, has_indexed, _cached_briefing(notebook)
+
+
+def _briefing_generation_context(notebook_id: int, user_id: int):
+    with connect() as conn:
+        summaries = _fetch_source_summaries(conn, notebook_id, user_id)
+        settings = load_llm_settings(conn) or {}
+    return summaries, settings
+
+
+def _save_briefing(notebook_id: int, briefing: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE notebooks SET briefing = ?, briefing_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (briefing, notebook_id),
+        )
+
+
+def _comparison_context(notebook_id: int, user_id: int, source_ids: list[int]):
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user_id)
+        summaries = _fetch_source_summaries(conn, notebook_id, user_id, source_ids)
+        settings = load_llm_settings(conn) or {}
+    return notebook, summaries, settings
+
+
 @app.get("/notebooks/{notebook_id}/_briefing", response_class=HTMLResponse)
 def briefing_partial(
     request: Request,
@@ -2994,13 +3038,9 @@ async def notebook_briefing(
     but still respects the lock so two simultaneous Regenerate clicks don't
     double-bill.
     """
-    with connect() as conn:
-        notebook = get_notebook(conn, notebook_id, user["id"])
-        has_indexed = bool(conn.execute(
-            "SELECT 1 FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' LIMIT 1",
-            (notebook_id, user["id"]),
-        ).fetchone())
-        cached = _cached_briefing(notebook)
+    notebook, has_indexed, cached = await asyncio.to_thread(
+        _briefing_state, notebook_id, user["id"]
+    )
 
     # Fast paths that should never call the LLM:
     # 1. Non-forced request and we already have a fresh cache — just return it.
@@ -3016,9 +3056,9 @@ async def notebook_briefing(
         )
 
     try:
-        with connect() as conn:
-            summaries = _fetch_source_summaries(conn, notebook_id, user["id"])
-            settings = load_llm_settings(conn) or {}
+        summaries, settings = await asyncio.to_thread(
+            _briefing_generation_context, notebook_id, user["id"]
+        )
         has_indexed = bool(summaries) or has_indexed
 
         briefing = ""
@@ -3041,11 +3081,7 @@ async def notebook_briefing(
                 error = friendly_error_message(exc, i18n.t("error.action_briefing"))
 
         if briefing:
-            with connect() as conn:
-                conn.execute(
-                    "UPDATE notebooks SET briefing = ?, briefing_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (briefing, notebook_id),
-                )
+            await asyncio.to_thread(_save_briefing, notebook_id, briefing)
 
         return _render_briefing(
             request, notebook,
@@ -3066,7 +3102,8 @@ async def notebook_compare(
     """Compare 2+ indexed sources using their summaries; returns a result fragment."""
     selected_ids = [sid for sid in source_ids if isinstance(sid, int)]
     if focus.strip():
-        record_ai_safety_events(
+        await asyncio.to_thread(
+            record_ai_safety_events,
             text=focus,
             event_type="input_scan",
             surface="tool.compare_focus",
@@ -3086,10 +3123,9 @@ async def notebook_compare(
             },
             status_code=400,
         )
-    with connect() as conn:
-        notebook = get_notebook(conn, notebook_id, user["id"])
-        summaries = _fetch_source_summaries(conn, notebook_id, user["id"], selected_ids)
-        settings = load_llm_settings(conn) or {}
+    notebook, summaries, settings = await asyncio.to_thread(
+        _comparison_context, notebook_id, user["id"], selected_ids
+    )
 
     if len(summaries) < 2:
         return render(
@@ -3560,8 +3596,8 @@ async def _answer_question(
     """Run retrieval and non-streaming answer generation."""
     metadata: dict[str, Any] = {}
     usage_context = {"user_id": user_id, "notebook_id": notebook_id, "conversation_id": conversation_id}
-    domain_snapshot, matched_hints, domain_metadata = _effective_domain_context(
-        notebook_id, user_id, question, history
+    domain_snapshot, matched_hints, domain_metadata = await asyncio.to_thread(
+        _effective_domain_context, notebook_id, user_id, question, history
     )
     metadata.update(domain_metadata)
     retrieve_started = time.perf_counter()
@@ -3711,6 +3747,18 @@ def _render_messages_partial(request: Request, notebook_id: int, user_id: int, c
     return render(request, "_messages.html", {**_messages_context(notebook_id, user_id, conversation_id), "oob": oob})
 
 
+async def _render_messages_partial_async(
+    request: Request,
+    notebook_id: int,
+    user_id: int,
+    conversation_id: int,
+    *,
+    oob: bool,
+) -> HTMLResponse:
+    context = await asyncio.to_thread(_messages_context, notebook_id, user_id, conversation_id)
+    return render(request, "_messages.html", {**context, "oob": oob})
+
+
 def sse_event(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {dumps(data)}\n\n"
 
@@ -3736,10 +3784,13 @@ async def ask(
         return RedirectResponse(f"/notebooks/{notebook_id}", status_code=303)
 
     metadata: dict[str, Any] = {}
-    usage_watermark = _llm_usage_event_watermark()
+    usage_watermark = await asyncio.to_thread(_llm_usage_event_watermark)
     try:
-        conversation_id, history, settings = _prepare_question(notebook_id, user, question, conversation_id, source_ids)
-        record_ai_safety_events(
+        conversation_id, history, settings = await asyncio.to_thread(
+            _prepare_question, notebook_id, user, question, conversation_id, source_ids
+        )
+        await asyncio.to_thread(
+            record_ai_safety_events,
             text=question,
             event_type="input_scan",
             surface="chat.ask",
@@ -3753,15 +3804,27 @@ async def ask(
         raise
     except Exception as exc:
         if conversation_id is None:
-            conversation_id, _history, _settings = _prepare_question(notebook_id, user, question, None, source_ids)
+            conversation_id, _history, _settings = await asyncio.to_thread(
+                _prepare_question, notebook_id, user, question, None, source_ids
+            )
         answer = friendly_error_message(exc, i18n.t("error.action_answer"))
         citations = []
         metadata["outcome"] = "error"
         metadata["error"] = str(exc)[:200]
         logger.exception("chat_failed user_id=%s notebook_id=%s conversation_id=%s", user["id"], notebook_id, conversation_id)
 
-    assistant_message_id = _save_assistant_message(notebook_id, user["id"], conversation_id, question, answer, citations, metadata)
-    _attach_usage_events_to_message(
+    assistant_message_id = await asyncio.to_thread(
+        _save_assistant_message,
+        notebook_id,
+        user["id"],
+        conversation_id,
+        question,
+        answer,
+        citations,
+        metadata,
+    )
+    await asyncio.to_thread(
+        _attach_usage_events_to_message,
         user_id=user["id"],
         notebook_id=notebook_id,
         conversation_id=conversation_id,
@@ -3771,7 +3834,9 @@ async def ask(
     )
 
     if request.headers.get("HX-Request") == "true":
-        response = _render_messages_partial(request, notebook_id, user["id"], conversation_id, oob=True)
+        response = await _render_messages_partial_async(
+            request, notebook_id, user["id"], conversation_id, oob=True
+        )
         response.headers["HX-Push-Url"] = f"/notebooks/{notebook_id}?conversation_id={conversation_id}"
         return response
     return RedirectResponse(f"/notebooks/{notebook_id}?conversation_id={conversation_id}", status_code=303)
@@ -3799,10 +3864,13 @@ async def ask_stream(
         answer = ""
         usage_watermark = 0
         try:
-            conversation, history, settings = _prepare_question(notebook_id, user, question, conversation, source_ids)
-            usage_watermark = _llm_usage_event_watermark()
+            conversation, history, settings = await asyncio.to_thread(
+                _prepare_question, notebook_id, user, question, conversation, source_ids
+            )
+            usage_watermark = await asyncio.to_thread(_llm_usage_event_watermark)
             usage_context = {"user_id": user["id"], "notebook_id": notebook_id, "conversation_id": conversation}
-            record_ai_safety_events(
+            await asyncio.to_thread(
+                record_ai_safety_events,
                 text=question,
                 event_type="input_scan",
                 surface="chat.ask_stream",
@@ -3812,8 +3880,8 @@ async def ask_stream(
             yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
             yield sse_event("status", {"text": i18n.t("js.retrieving")})
 
-            domain_snapshot, matched_hints, domain_metadata = _effective_domain_context(
-                notebook_id, user["id"], question, history
+            domain_snapshot, matched_hints, domain_metadata = await asyncio.to_thread(
+                _effective_domain_context, notebook_id, user["id"], question, history
             )
             metadata.update(domain_metadata)
             retrieve_started = time.perf_counter()
@@ -3870,8 +3938,18 @@ async def ask_stream(
                 citations = [] if abstained else _referenced_citations(answer, retrieved)
                 metadata["outcome"] = "abstained" if abstained else "answered"
 
-            assistant_message_id = _save_assistant_message(notebook_id, user["id"], conversation, question, answer, citations, metadata)
-            _attach_usage_events_to_message(
+            assistant_message_id = await asyncio.to_thread(
+                _save_assistant_message,
+                notebook_id,
+                user["id"],
+                conversation,
+                question,
+                answer,
+                citations,
+                metadata,
+            )
+            await asyncio.to_thread(
+                _attach_usage_events_to_message,
                 user_id=user["id"],
                 notebook_id=notebook_id,
                 conversation_id=conversation,
@@ -3885,7 +3963,9 @@ async def ask_stream(
                 # The initial _prepare_question failed, so there's no row to
                 # attach the error to — try once more.
                 try:
-                    conversation, _history, _settings = _prepare_question(notebook_id, user, question, None, source_ids)
+                    conversation, _history, _settings = await asyncio.to_thread(
+                        _prepare_question, notebook_id, user, question, None, source_ids
+                    )
                     yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
                 except Exception:
                     # Still can't establish a conversation. Report the error and
@@ -3897,8 +3977,18 @@ async def ask_stream(
             # Update (not replace) so retrieval metrics gathered before the
             # failure survive into the saved metadata.
             metadata.update({"outcome": "error", "error": str(exc)[:200]})
-            assistant_message_id = _save_assistant_message(notebook_id, user["id"], conversation, question, answer, [], metadata)
-            _attach_usage_events_to_message(
+            assistant_message_id = await asyncio.to_thread(
+                _save_assistant_message,
+                notebook_id,
+                user["id"],
+                conversation,
+                question,
+                answer,
+                [],
+                metadata,
+            )
+            await asyncio.to_thread(
+                _attach_usage_events_to_message,
                 user_id=user["id"],
                 notebook_id=notebook_id,
                 conversation_id=conversation,
@@ -3908,7 +3998,9 @@ async def ask_stream(
             )
             yield sse_event("error", {"text": answer})
 
-        final = _render_messages_partial(request, notebook_id, user["id"], conversation, oob=False)
+        final = await _render_messages_partial_async(
+            request, notebook_id, user["id"], conversation, oob=False
+        )
         yield sse_event("done", {"html": final.body.decode("utf-8"), "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
 
     return StreamingResponse(events(), media_type="text/event-stream")
@@ -3927,37 +4019,19 @@ async def followups_partial(
     Generated once per message and cached in messages.metadata_json.followups,
     so reloading the page does not re-call the LLM.
     """
-    with connect() as conn:
-        notebook = get_notebook(conn, notebook_id, user["id"])
-        if not notebook["followups_enabled"]:
-            return HTMLResponse("")
-        convo = conn.execute(
-            "SELECT id FROM conversations WHERE id = ? AND notebook_id = ? AND user_id = ?",
-            (conversation_id, notebook_id, user["id"]),
-        ).fetchone()
-        message = conn.execute(
-            "SELECT * FROM messages WHERE id = ? AND conversation_id = ? AND user_id = ? AND role = 'assistant'",
-            (message_id, conversation_id, user["id"]),
-        ).fetchone() if convo else None
-        if message is None:
-            return HTMLResponse("")
-        message_data = message_with_citations(message)
-        metadata = message_data["metadata"]
-        if metadata.get("followups") and metadata.get("followups_version") == FOLLOWUPS_CACHE_VERSION:
-            return render(request, "_followups.html", {"questions": metadata["followups"]})
-        source_context = [c.get("snippet", "") for c in message_data.get("citations", [])]
-        prior_question = conn.execute(
-            "SELECT content FROM messages WHERE conversation_id = ? AND user_id = ? AND role = 'user' AND id < ? ORDER BY id DESC LIMIT 1",
-            (conversation_id, user["id"], message_id),
-        ).fetchone()
-        settings = load_llm_settings(conn)
-    if prior_question is None:
+    context = await asyncio.to_thread(
+        _followups_context, notebook_id, user["id"], conversation_id, message_id
+    )
+    if context is None:
         return HTMLResponse("")
+    if context["cached_questions"] is not None:
+        return render(request, "_followups.html", {"questions": context["cached_questions"]})
+
     questions = await suggest_followup_questions(
-        prior_question["content"],
-        message["content"],
-        settings or {},
-        source_context,
+        context["prior_question"],
+        context["answer"],
+        context["settings"],
+        context["source_context"],
         usage_context={
             "user_id": user["id"],
             "notebook_id": notebook_id,
@@ -3966,15 +4040,60 @@ async def followups_partial(
         },
     )
     if questions:
-        # json_set patches only the followups key inside SQLite, so a slow LLM
-        # call here can't clobber metadata written concurrently elsewhere.
-        with connect() as conn:
-            conn.execute(
-                "UPDATE messages SET metadata_json = json_set(metadata_json, '$.followups', json(?), '$.followups_version', ?) "
-                "WHERE id = ? AND user_id = ?",
-                (dumps(questions), FOLLOWUPS_CACHE_VERSION, message_id, user["id"]),
-            )
+        await asyncio.to_thread(_save_followups, message_id, user["id"], questions)
     return render(request, "_followups.html", {"questions": questions})
+
+
+def _followups_context(
+    notebook_id: int,
+    user_id: int,
+    conversation_id: int,
+    message_id: int,
+) -> dict[str, Any] | None:
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user_id)
+        if not notebook["followups_enabled"]:
+            return None
+        convo = conn.execute(
+            "SELECT id FROM conversations WHERE id = ? AND notebook_id = ? AND user_id = ?",
+            (conversation_id, notebook_id, user_id),
+        ).fetchone()
+        message = conn.execute(
+            "SELECT * FROM messages WHERE id = ? AND conversation_id = ? AND user_id = ? AND role = 'assistant'",
+            (message_id, conversation_id, user_id),
+        ).fetchone() if convo else None
+        if message is None:
+            return None
+        message_data = message_with_citations(message)
+        metadata = message_data["metadata"]
+        if metadata.get("followups") and metadata.get("followups_version") == FOLLOWUPS_CACHE_VERSION:
+            return {"cached_questions": metadata["followups"]}
+        source_context = [c.get("snippet", "") for c in message_data.get("citations", [])]
+        prior_question = conn.execute(
+            "SELECT content FROM messages WHERE conversation_id = ? AND user_id = ? AND role = 'user' AND id < ? ORDER BY id DESC LIMIT 1",
+            (conversation_id, user_id, message_id),
+        ).fetchone()
+        settings = load_llm_settings(conn)
+    if prior_question is None:
+        return None
+    return {
+        "cached_questions": None,
+        "prior_question": prior_question["content"],
+        "answer": message["content"],
+        "settings": settings or {},
+        "source_context": source_context,
+    }
+
+
+def _save_followups(message_id: int, user_id: int, questions: list[str]) -> None:
+    # json_set patches only the followups key inside SQLite, so a slow LLM call
+    # here can't clobber metadata written concurrently elsewhere.
+    with connect() as conn:
+        conn.execute(
+            "UPDATE messages SET metadata_json = json_set(metadata_json, '$.followups', json(?), '$.followups_version', ?) "
+            "WHERE id = ? AND user_id = ?",
+            (dumps(questions), FOLLOWUPS_CACHE_VERSION, message_id, user_id),
+        )
 
 
 def _markdown_download(markdown: str, filename: str) -> Response:
@@ -4273,6 +4392,26 @@ def minutes_declines_meeting(minutes: str) -> bool:
     return any(marker in normalized for marker in decline_markers)
 
 
+def _minutes_context(notebook_id: int, user_id: int, source_id: int):
+    with connect() as conn:
+        get_notebook(conn, notebook_id, user_id)
+        source = conn.execute(
+            "SELECT * FROM sources WHERE id = ? AND notebook_id = ? AND user_id = ? AND status = 'indexed'",
+            (source_id, notebook_id, user_id),
+        ).fetchone()
+        if source is None:
+            return None, [], {}
+        # Cap the fetch: generate_meeting_minutes uses ~16k chars and chunks are
+        # ~300-800 chars each, so 100 rows is ample — don't read a 1000-chunk
+        # transcript just to throw 95% of it away.
+        chunks = [dict(r) for r in conn.execute(
+            "SELECT location, text FROM chunks WHERE source_id = ? AND user_id = ? ORDER BY chunk_index LIMIT 100",
+            (source_id, user_id),
+        ).fetchall()]
+        settings = load_llm_settings(conn) or {}
+    return dict(source), chunks, settings
+
+
 @app.post("/notebooks/{notebook_id}/minutes", response_class=HTMLResponse)
 async def source_minutes(
     request: Request,
@@ -4286,26 +4425,15 @@ async def source_minutes(
     The result is rendered in the Studio card and saved as a note; an
     HX-Trigger refreshes the notes section.
     """
-    with connect() as conn:
-        get_notebook(conn, notebook_id, user["id"])
-        source = conn.execute(
-            "SELECT * FROM sources WHERE id = ? AND notebook_id = ? AND user_id = ? AND status = 'indexed'",
-            (source_id, notebook_id, user["id"]),
-        ).fetchone()
-        if source is None:
-            return render(
-                request, "_minutes_result.html",
-                {"minutes": "", "error": i18n.t("flow.minutes_no_source"), "filename": ""},
-                status_code=404,
-            )
-        # Cap the fetch: generate_meeting_minutes uses ~16k chars and chunks are
-        # ~300-800 chars each, so 100 rows is ample — don't read a 1000-chunk
-        # transcript just to throw 95% of it away.
-        chunks = [dict(r) for r in conn.execute(
-            "SELECT location, text FROM chunks WHERE source_id = ? AND user_id = ? ORDER BY chunk_index LIMIT 100",
-            (source_id, user["id"]),
-        ).fetchall()]
-        settings = load_llm_settings(conn) or {}
+    source, chunks, settings = await asyncio.to_thread(
+        _minutes_context, notebook_id, user["id"], source_id
+    )
+    if source is None:
+        return render(
+            request, "_minutes_result.html",
+            {"minutes": "", "error": i18n.t("flow.minutes_no_source"), "filename": ""},
+            status_code=404,
+        )
 
     likelihood = meeting_likelihood(chunks)
     if not force and not likelihood["is_likely"]:
@@ -4391,6 +4519,26 @@ TOOL_MIN_INDEXED = {"compare": 2, "minutes": 1, "study_guide": 1, "faq": 1, "tim
 TRANSLATE_LANGUAGES = ["繁體中文", "English", "日本語", "简体中文"]
 
 
+def _artifact_context(notebook_id: int, user_id: int, source_ids: list[int]):
+    with connect() as conn:
+        notebook = get_notebook(conn, notebook_id, user_id)
+        summaries = _fetch_source_summaries(conn, notebook_id, user_id, source_ids)
+        indexed_total = conn.execute(
+            "SELECT COUNT(*) AS n FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed'",
+            (notebook_id, user_id),
+        ).fetchone()["n"]
+        settings = load_llm_settings(conn) or {}
+    return notebook, summaries, indexed_total, settings
+
+
+def _translation_context(notebook_id: int, user_id: int, source_id: int):
+    with connect() as conn:
+        get_notebook(conn, notebook_id, user_id)
+        summaries = _fetch_source_summaries(conn, notebook_id, user_id, [source_id])
+        settings = load_llm_settings(conn) or {}
+    return summaries, settings
+
+
 @app.get("/notebooks/{notebook_id}/_tools", response_class=HTMLResponse)
 def tools_partial(
     request: Request,
@@ -4463,14 +4611,9 @@ async def notebook_artifact(
     # deselected everything — an error, not an invitation to use the whole
     # notebook. The panel ships with all sources checked.
     selected_ids = [sid for sid in source_ids if isinstance(sid, int)]
-    with connect() as conn:
-        notebook = get_notebook(conn, notebook_id, user["id"])
-        summaries = _fetch_source_summaries(conn, notebook_id, user["id"], selected_ids)
-        indexed_total = conn.execute(
-            "SELECT COUNT(*) AS n FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed'",
-            (notebook_id, user["id"]),
-        ).fetchone()["n"]
-        settings = load_llm_settings(conn) or {}
+    notebook, summaries, indexed_total, settings = await asyncio.to_thread(
+        _artifact_context, notebook_id, user["id"], selected_ids
+    )
 
     # What the saved note is named after. Two runs of the same tool used to
     # produce two identically-titled shelf entries ("常見問答 — <notebook>"),
@@ -4550,10 +4693,9 @@ async def translate_source_summary(
     """
     if target_language not in TRANSLATE_LANGUAGES:
         raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_target_language"))
-    with connect() as conn:
-        notebook = get_notebook(conn, notebook_id, user["id"])
-        summaries = _fetch_source_summaries(conn, notebook_id, user["id"], [source_id])
-        settings = load_llm_settings(conn) or {}
+    summaries, settings = await asyncio.to_thread(
+        _translation_context, notebook_id, user["id"], source_id
+    )
 
     base_ctx = {"notebook_id": notebook_id, "target_language": target_language, "translated": "", "filename": ""}
     if not summaries:

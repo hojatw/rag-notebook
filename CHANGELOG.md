@@ -66,6 +66,12 @@
 
 ### 效能
 
+- **Async LLM routes 不再於 event loop 直接執行 SQLite（PERF-2）**：starter
+  questions、briefing、compare、chat／streaming chat、follow-ups、meeting minutes、
+  artifacts 與 summary translation 的 bounded SQLite 階段改由
+  `asyncio.to_thread` 執行。每個同步 helper 都在 worker thread 內自行開關連線，
+  並把相關查詢合併成單一階段，避免 lock wait 或慢磁碟讓同一 worker 的所有 request
+  一起停住。新增 route-level 測試，以延遲真實連線邊界確認 event loop 仍可持續排程。
 - **CSV ingestion 改為串流解析（P1-5）**：不再以 `read_bytes → decode → splitlines`
   同時保留多份整檔內容；改由 64 KiB 樣本判斷 encoding／delimiter，再以 incremental
   decoder `TextIOWrapper(newline="")` 將 physical lines 送入 `csv.reader`。即使超過
