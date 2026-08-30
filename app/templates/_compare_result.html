@@ -1,10 +1,10 @@
-{# Fragment returned by POST /notebooks/{nid}/compare into #compare-result.
+{# Fragment returned by POST /notebooks/{nid}/compare into #tool-result.
    Markdown body is rendered client-side by the existing data-markdown binder. #}
 {% if error %}
-  <p class="muted small alert-inline">{{ error }}</p>
+  <p class="alert small" role="alert">{{ error }}</p>
 {% elif comparison %}
   <div class="compare-result-body">
-    <p class="muted small">比較對象：{{ filenames | join('、') }}{% if focus %} · 聚焦：{{ focus }}{% endif %}</p>
+    <p class="muted small">{{ t('tool.compare_targets') }}：{{ filenames | join('、') }}{% if focus %} · {{ t('tool.compare_topic_short') }}：{{ focus }}{% endif %}</p>
     <div class="markdown-body" data-markdown>{{ comparison }}</div>
     {% with note_title = "來源比較：" ~ filenames | join(' vs ') ~ ("（" ~ focus ~ "）" if focus else ""), note_content = comparison, note_kind = "compare" %}
       {% include "_save_note_button.html" %}

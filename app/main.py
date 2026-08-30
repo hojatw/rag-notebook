@@ -53,7 +53,7 @@ from .worker import run_worker_loop
 from . import i18n
 import httpx
 
-from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, generate_answer_result, generate_answer_stream, generate_artifact, generate_briefing, generate_meeting_minutes, generate_starter_questions, set_http_client, suggest_followup_questions, translate_summary
+from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, comparison_source_items, generate_answer_result, generate_answer_stream, generate_artifact, generate_briefing, generate_meeting_minutes, generate_starter_questions, set_http_client, suggest_followup_questions, translate_summary
 # Used by main itself (chat/ask flow, lifespan, message rendering):
 from .retrieval import (
     active_low_confidence_threshold,
@@ -2991,6 +2991,75 @@ def _comparison_context(notebook_id: int, user_id: int, source_ids: list[int]):
     return notebook, summaries, settings
 
 
+TOPIC_COMPARE_MAX_SOURCES = 3
+SUMMARY_COMPARE_MAX_SOURCES = 10
+NO_RELEVANT_TOPIC_EVIDENCE = "[NO_RELEVANT_TOPIC_EVIDENCE]"
+
+
+def _topic_evidence(source: dict, retrieved: list[dict]) -> dict:
+    """Adapt one source's retrieved chunks to the compare_sources input shape."""
+    top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
+    excerpts = []
+    if retrieved and top_score >= active_low_confidence_threshold():
+        excerpts = [
+            f"[{chunk.get('location') or 'source'}]\n{str(chunk.get('text') or '').strip()}"
+            for chunk in retrieved
+            if str(chunk.get("text") or "").strip()
+        ]
+    return {
+        "id": source["id"],
+        "filename": source["filename"],
+        "summary": "\n\n".join(excerpts) or NO_RELEVANT_TOPIC_EVIDENCE,
+        "evidence_count": len(excerpts),
+    }
+
+
+def _comparison_source_legend(sources: list[dict], topic: str) -> str:
+    """Application-owned legend travels with the result into notes and exports."""
+    lines = [f"### {i18n.t('tool.compare_legend')}", ""]
+    for source in comparison_source_items(sources):
+        # Keep filenames literal and on one line inside Markdown, including when
+        # saved/exported. The renderer's existing sanitizer remains unchanged.
+        filename = re.sub(r"([\\`*_\[\]<>])", r"\\\1", " ".join(source["filename"].split()))
+        if not topic:
+            evidence_status = i18n.t("tool.compare_summary_evidence")
+        elif source["summary"] == NO_RELEVANT_TOPIC_EVIDENCE:
+            evidence_status = i18n.t("tool.compare_missing_evidence")
+        else:
+            evidence_status = i18n.t("tool.compare_topic_evidence", count=source["evidence_count"])
+        lines.append(f"- **[{source['reference']}] {filename}** — {evidence_status}")
+    lines.extend(["", i18n.t("tool.compare_evidence_hint")])
+    return "\n".join(lines)
+
+
+async def _topic_comparison_evidence(
+    topic: str,
+    sources: list[dict],
+    settings: dict[str, Any],
+    *,
+    user_id: int,
+    notebook_id: int,
+) -> list[dict]:
+    """Run the existing retrieval pipeline once per authorised source."""
+    evidence: list[dict] = []
+    for source in sources:
+        retrieved = await retrieve(
+            topic,
+            None,
+            settings,
+            [],
+            user_id,
+            [source["id"]],
+            usage_context={
+                "user_id": user_id,
+                "notebook_id": notebook_id,
+                "source_id": source["id"],
+            },
+        )
+        evidence.append(_topic_evidence(source, retrieved))
+    return evidence
+
+
 @app.get("/notebooks/{notebook_id}/_briefing", response_class=HTMLResponse)
 def briefing_partial(
     request: Request,
@@ -3099,12 +3168,13 @@ async def notebook_compare(
     source_ids: list[int] = Form(default=[]),
     focus: str = Form(default=""),
 ):
-    """Compare 2+ indexed sources using their summaries; returns a result fragment."""
+    """Compare source summaries, or topic-retrieved evidence when focus is set."""
+    topic = focus.strip()
     selected_ids = [sid for sid in source_ids if isinstance(sid, int)]
-    if focus.strip():
+    if topic:
         await asyncio.to_thread(
             record_ai_safety_events,
-            text=focus,
+            text=topic,
             event_type="input_scan",
             surface="tool.compare_focus",
             context={"user_id": user["id"], "notebook_id": notebook_id},
@@ -3119,7 +3189,7 @@ async def notebook_compare(
                 "comparison": "",
                 "error": i18n.t("flow.compare_need_2"),
                 "filenames": [],
-                "focus": focus,
+                "focus": topic,
             },
             status_code=400,
         )
@@ -3136,7 +3206,24 @@ async def notebook_compare(
                 "comparison": "",
                 "error": i18n.t("flow.compare_need_2_content"),
                 "filenames": [s["filename"] for s in summaries],
-                "focus": focus,
+                "focus": topic,
+            },
+            status_code=400,
+        )
+    max_sources = TOPIC_COMPARE_MAX_SOURCES if topic else SUMMARY_COMPARE_MAX_SOURCES
+    if len(summaries) > max_sources:
+        return render(
+            request,
+            "_compare_result.html",
+            {
+                "notebook_id": notebook_id,
+                "comparison": "",
+                "error": i18n.t(
+                    "flow.compare_topic_too_many" if topic else "flow.compare_summary_too_many",
+                    count=max_sources,
+                ),
+                "filenames": [s["filename"] for s in summaries],
+                "focus": topic,
             },
             status_code=400,
         )
@@ -3149,7 +3236,7 @@ async def notebook_compare(
                 "comparison": "",
                 "error": i18n.t("flow.compare_no_llm"),
                 "filenames": [s["filename"] for s in summaries],
-                "focus": focus,
+                "focus": topic,
             },
             status_code=400,
         )
@@ -3157,21 +3244,32 @@ async def notebook_compare(
     error = ""
     comparison = ""
     try:
+        compare_inputs = summaries
+        if topic:
+            compare_inputs = await _topic_comparison_evidence(
+                topic,
+                summaries,
+                settings,
+                user_id=user["id"],
+                notebook_id=notebook_id,
+            )
         comparison = await compare_sources(
-            summaries,
-            focus,
+            compare_inputs,
+            topic,
             settings,
             usage_context={"user_id": user["id"], "notebook_id": notebook_id},
         )
         if not comparison:
             error = i18n.t("flow.compare_empty")
+        else:
+            comparison = f"{_comparison_source_legend(compare_inputs, topic)}\n\n{comparison}"
     except Exception as exc:
         logger.exception("compare_failed user_id=%s notebook_id=%s sources=%s", user["id"], notebook_id, len(summaries))
         error = friendly_error_message(exc, i18n.t("error.action_compare"))
 
     logger.info(
         "compare_completed user_id=%s notebook_id=%s sources=%s focus_chars=%s chars=%s",
-        user["id"], notebook_id, len(summaries), len(focus or ""), len(comparison),
+        user["id"], notebook_id, len(summaries), len(topic), len(comparison),
     )
     return render(
         request,
@@ -3181,7 +3279,7 @@ async def notebook_compare(
             "comparison": comparison,
             "error": error,
             "filenames": [s["filename"] for s in summaries],
-            "focus": focus,
+            "focus": topic,
         },
     )
 
@@ -4584,6 +4682,8 @@ def tool_panel(
             "sources_indexed": sources_indexed,
             "artifact_label": ARTIFACT_LABELS.get(kind, ""),
             "translate_languages": TRANSLATE_LANGUAGES,
+            "topic_compare_max_sources": TOPIC_COMPARE_MAX_SOURCES,
+            "summary_compare_max_sources": SUMMARY_COMPARE_MAX_SOURCES,
         },
     )
 

@@ -201,34 +201,78 @@ Read each source's summary and produce a single paragraph of 80 to 110 words cov
 Do not list sources mechanically; weave them into prose. No headings, no bullets.
 Keep it tight — the briefing is shown in a small sidebar."""
 
-SOURCE_COMPARE_PROMPT = """You compare two or more source documents grounded in their summaries.
+SOURCE_COMPARE_PROMPT = """You compare two or more source documents grounded in the provided source evidence.
 
 LANGUAGE RULE — read this FIRST, it overrides the structure example below.
-Strictly match the dominant language of the source summaries:
-- Traditional Chinese summaries -> Traditional Chinese comparison (繁體中文).
-  Use headings: ## 共同點 / ## 各自獨特之處 / ## 矛盾之處
-- Simplified Chinese summaries -> Simplified Chinese comparison.
-  Use headings: ## 共同点 / ## 各自独特之处 / ## 矛盾之处
-- Japanese summaries -> Japanese comparison.
-  Use headings: ## 共通点 / ## それぞれの特徴 / ## 矛盾点
-- English summaries -> English comparison.
-  Use headings: ## Shared / ## Distinct / ## Contradictions
+Strictly match the dominant language of the source evidence:
+- Traditional Chinese evidence -> Traditional Chinese comparison (繁體中文).
+  Use headings: ## 共同點 / ## 差異 / ## 待釐清
+- Simplified Chinese evidence -> Simplified Chinese comparison.
+  Use headings: ## 共同点 / ## 差异 / ## 待澄清
+- Japanese evidence -> Japanese comparison.
+  Use headings: ## 共通点 / ## 相違点 / ## 要確認
+- English evidence -> English comparison.
+  Use headings: ## Shared / ## Differences / ## To clarify
 Do NOT translate. The headings below are FORMAT examples in English — translate
 them to match the source language before writing.
 
 Use this Markdown structure, OMITTING any section that would be empty:
 
 ## Shared
-- Common ground across the sources.
+- **{supporting source IDs and filenames} ({all sources / partial commonality})** — common claim.
+  Shared requires support from at least two selected source documents;
+  not similarities between groups, products, or treatments within one document.
+  A point supported by only one document belongs under Differences, not Shared.
+  If a point is shared only by a subset, explicitly label it as a partial commonality.
+  Do not claim three sources agree when only two are cited.
 
-## Distinct
-- **{filename}** — what is unique to this source.
-- (one bullet per source that has distinctive points)
+## Differences
+- **{dimension}** — one bullet per comparison dimension (e.g. deliverables,
+  warranty duration, coverage), placing each source's explicit terms side by side.
 
-## Contradictions
-- Direct disagreements between sources, citing the sources by filename.
+## To clarify
+- Concrete uncertainties affecting interpretation: state the source claims,
+  what cannot be determined, and the question or condition needing confirmation.
+  Do not repeat every difference here or invent issues to fill this section.
 
-Stay grounded in the provided summaries. If a focus question is given, prioritise points relevant to it."""
+Comparison rules:
+- The [n] labels in the provided source headers are source-level identifiers, not chunk numbers or references inside a document.
+  Use only those source IDs; do not renumber them or use a document's internal
+  reference numbers as source IDs. The application supplies the source legend.
+- Every comparison bullet must name the supporting source IDs and filenames
+  (e.g. [1] a.pdf and [3] c.pdf), including Shared and To clarify bullets.
+  Do not write only 'both reports', 'two sources', or 'all sources'; list them.
+- Account for every source with usable evidence; do not silently omit a source.
+  A source without sufficient topic evidence cannot support a shared claim;
+  identify it explicitly as insufficient evidence, not as agreeing or disagreeing.
+- For factual comparisons, cite filenames and excerpt locations when provided;
+  never invent a location or source claim.
+- Do not assume that a shared topic means the same project or subject.
+  Use only explicit source evidence or user-provided context for relationships;
+  if the relationship is unknown, report differences without declaring a conflict.
+- Different projects or versions can legitimately have different terms.
+  A version change is not automatically a contradiction. Do not infer authority or supersession from filenames or version numbers alone.
+- Only flag a possible inconsistency when evidence supports the same subject, scope, conditions, and effective period,
+  the explicit claims cannot both hold, and no known revision or supersession
+  explains the difference. Put it under To clarify, not a definitive verdict.
+- Missing evidence does not prove that the source lacks a provision.
+  Distinguish an explicit exclusion from information not found in the evidence.
+- This is not an exhaustive full-document comparison; do not claim completeness.
+
+Stay grounded in the provided evidence. The evidence may be either a source
+summary or topic-retrieved excerpts. If a source contains exactly
+[NO_RELEVANT_TOPIC_EVIDENCE], state that no sufficiently relevant evidence was
+retrieved from that source for the topic; do not infer or fill in its position.
+If most sources contain that marker, match the focus question's language.
+If a focus question is given, compare only what is relevant to it.
+
+Before submitting, check every bullet: start with the applicable source IDs and
+filenames; Shared bullets must have at least two independently supporting source
+documents, with the exact supporting subset named. Remove unsupported claims
+instead of adding citations to make a point appear shared. For example, with
+three selected documents a point supported only by sources 2 and 3 must say
+"[2] filename2 and [3] filename3 (partial commonality)", never "all three".
+Do not output this checklist."""
 
 # --- A4 artifact prompts (study guide / FAQ / timeline) -------------------
 # Siblings of briefing/compare: each takes the notebook's source summaries and
@@ -1994,29 +2038,35 @@ async def generate_briefing(
     return briefing
 
 
+def comparison_source_items(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One source-numbering contract for the model prompt and display/save legend."""
+    usable = [item for item in sources if (item.get("summary") or "").strip()]
+    return [{**item, "reference": index} for index, item in enumerate(usable, start=1)]
+
+
 async def compare_sources(
-    summaries: list[dict[str, Any]],
+    sources: list[dict[str, Any]],
     focus: str,
     settings: dict[str, Any],
     *,
     usage_context: dict[str, Any] | None = None,
 ) -> str:
-    """Compare 2+ sources by their summaries.
+    """Compare 2+ sources using summaries or topic-retrieved evidence.
 
-    Returns an empty string if fewer than 2 usable summaries are provided or
+    Returns an empty string if fewer than 2 usable evidence items are provided or
     settings are missing. ``focus`` is an optional free-text hint from the
     user about what to compare on.
     """
-    items = [item for item in summaries if (item.get("summary") or "").strip()]
+    items = comparison_source_items(sources)
     if len(items) < 2:
-        logger.info("compare_skipped reason=fewer_than_two_summaries provided=%s", len(items))
+        logger.info("compare_skipped reason=fewer_than_two_evidence_items provided=%s", len(items))
         return ""
     if not settings.get("chat_model"):
         logger.info("compare_skipped reason=no_chat_settings")
         return ""
     context = "\n\n".join(
-        f"[{index}] {item['filename']}\n{item['summary'].strip()}"
-        for index, item in enumerate(items, start=1)
+        f"[{item['reference']}] {item['filename']}\n{item['summary'].strip()}"
+        for item in items
     )
     focus_line = f"Focus: {focus.strip()}\n\n" if (focus or "").strip() else ""
     user_prompt = f"{focus_line}Sources to compare:\n{context}\n\nWrite the comparison now."
@@ -2030,10 +2080,10 @@ async def compare_sources(
             usage_context=usage_context,
         )
     except Exception:
-        logger.exception("compare_failed summaries=%s focus_chars=%s", len(items), len(focus or ""))
+        logger.exception("compare_failed evidence_items=%s focus_chars=%s", len(items), len(focus or ""))
         return ""
     comparison = (content or "").strip()
-    logger.info("compare_generated summaries=%s chars=%s focus_chars=%s", len(items), len(comparison), len(focus or ""))
+    logger.info("compare_generated evidence_items=%s chars=%s focus_chars=%s", len(items), len(comparison), len(focus or ""))
     return comparison
 
 
