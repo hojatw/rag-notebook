@@ -49,6 +49,18 @@ document.body.addEventListener("htmx:configRequest", (event) => {
   if (token) event.detail.headers["X-CSRF-Token"] = token;
 });
 
+document.addEventListener("htmx:beforeSwap", (event) => {
+  const { xhr, target } = event.detail;
+  // HTMX skips 4xx bodies by default. Only explicitly opted-in result panes
+  // may display the server's HTML validation fragment; auth/CSRF errors and
+  // other tools keep their existing handling. Preserve isError / HTTP 400.
+  if (target && target.matches('[data-swap-validation-errors="400"]') &&
+      xhr.status === 400 &&
+      (xhr.getResponseHeader("Content-Type") || "").toLowerCase().startsWith("text/html")) {
+    event.detail.shouldSwap = true;
+  }
+});
+
 document.addEventListener("htmx:afterSwap", (event) => {
   bindAll(event.target);
   restoreSourceScopeState();

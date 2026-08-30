@@ -485,6 +485,93 @@ def test_compare_sources_requires_two_summaries_and_settings():
     ) == ""
 
 
+def test_compare_sources_treats_missing_topic_evidence_as_metadata(monkeypatch):
+    """U17: the real compare prompt must not turn an empty retrieval into facts."""
+    captured = {}
+
+    async def fake_chat(settings, user_prompt, system_prompt, **kwargs):
+        captured["user_prompt"] = user_prompt
+        captured["system_prompt"] = system_prompt
+        captured["call_type"] = kwargs.get("call_type")
+        return "## 共同點\n- 有依據的比較"
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    evidence = [
+        {"filename": "a.pdf", "summary": "[page 2]\n風險包含供應鏈中斷。"},
+        {"filename": "b.pdf", "summary": "[NO_RELEVANT_TOPIC_EVIDENCE]"},
+    ]
+
+    result = asyncio.run(
+        compare_sources(evidence, "風險控管", {"api_key": "x", "chat_model": "m"})
+    )
+
+    assert result.startswith("## 共同點")
+    assert "Focus: 風險控管" in captured["user_prompt"]
+    assert "[NO_RELEVANT_TOPIC_EVIDENCE]" in captured["user_prompt"]
+    assert "do not infer or fill in its position" in captured["system_prompt"]
+    assert captured["call_type"] == "compare"
+
+
+@pytest.mark.parametrize("focus", ["", "保固期間"])
+def test_compare_sources_requests_neutral_evidence_based_sections(monkeypatch, focus):
+    """Pin the prompt sent by both comparison modes, not a model's reasoning."""
+    captured = {}
+    response = "## 差異\n- 保固期間：a-v1.pdf 一年；b-v2.pdf 三年。"
+
+    async def fake_chat(settings, user_prompt, system_prompt, **kwargs):
+        captured["user"] = user_prompt
+        captured["system"] = system_prompt
+        return response
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    sources = [
+        {"filename": "a-v1.pdf", "summary": "[page 2]\n保固期間為一年。"},
+        {"filename": "b-v2.pdf", "summary": "[page 3]\n保固期間為三年。"},
+    ]
+    result = asyncio.run(compare_sources(sources, focus, {"chat_model": "m"}))
+
+    assert result == response
+    if focus:
+        assert f"Focus: {focus}" in captured["user"]
+    else:
+        assert "Focus:" not in captured["user"]
+    for source in sources:
+        assert source["filename"] in captured["user"]
+        assert source["summary"] in captured["user"]
+    prompt = captured["system"]
+    for headings in (
+        "## 共同點 / ## 差異 / ## 待釐清",
+        "## 共同点 / ## 差异 / ## 待澄清",
+        "## 共通点 / ## 相違点 / ## 要確認",
+        "## Shared / ## Differences / ## To clarify",
+    ):
+        assert headings in prompt
+    for old_heading in (
+        "各自獨特之處", "矛盾之處", "各自独特之处", "矛盾之处",
+        "それぞれの特徴", "矛盾点", "## Distinct", "## Contradictions",
+    ):
+        assert old_heading not in prompt
+    for rule in (
+        "one bullet per comparison dimension",
+        "cite filenames and excerpt locations when provided",
+        "Do not assume that a shared topic means the same project or subject",
+        "Different projects or versions can legitimately have different terms",
+        "same subject, scope, conditions, and effective period",
+        "Do not infer authority or supersession from filenames or version numbers alone",
+        "Missing evidence does not prove that the source lacks a provision",
+        "not an exhaustive full-document comparison",
+        "source-level identifiers, not chunk numbers or references inside a document",
+        "Every comparison bullet must name the supporting source IDs and filenames",
+        "If a point is shared only by a subset, explicitly label it as a partial commonality",
+        "Do not write only 'both reports', 'two sources', or 'all sources'",
+        "Account for every source with usable evidence",
+        "Shared requires support from at least two selected source documents",
+        "not similarities between groups, products, or treatments within one document",
+        "Do not claim three sources agree when only two are cited",
+    ):
+        assert rule in prompt
+
+
 def test_generate_artifact_dispatches_and_short_circuits(monkeypatch):
     """A4: generate_artifact picks the right prompt, skips on no summaries/settings,
     and rejects unknown kinds."""

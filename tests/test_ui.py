@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import json
 import time
+from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -1720,6 +1721,292 @@ def test_async_llm_route_sqlite_does_not_block_event_loop(monkeypatch, tmp_path)
     response, ticks = asyncio.run(drive())
     assert response.status_code == 200
     assert ticks >= 3, f"event loop was starved during SQLite work (ticks={ticks})"
+
+
+def test_compare_panel_exposes_optional_topic_with_three_source_limit(monkeypatch, tmp_path):
+    """U17: the compare tool explains when it uses summaries vs topic retrieval."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        for name in ("a.pdf", "b.pdf", "c.pdf"):
+            _seed_indexed_source(db, user["id"], notebook_id, name)
+
+        panel = client.get(f"/notebooks/{notebook_id}/tools/compare")
+        other_panel = client.get(f"/notebooks/{notebook_id}/tools/minutes")
+
+    assert panel.status_code == 200
+    assert 'name="focus"' in panel.text
+    assert "比較主題（選填）" in panel.text
+    assert "最多選擇 3 份來源" in panel.text
+    assert "留白時依來源摘要比較" in panel.text
+    assert "最多選擇 10 份來源" in panel.text
+    assert 'data-swap-validation-errors="400"' in panel.text
+    assert 'data-swap-validation-errors' not in other_panel.text
+
+
+@pytest.mark.parametrize("focus", ["", "保固期間"])
+def test_comparison_legend_matches_real_prompt_and_survives_note_export(monkeypatch, tmp_path, focus):
+    """Real route -> compare prompt -> rendered save form -> note -> export."""
+    import app.llm as llm
+
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    captured = {}
+    generated = "## 差異\n- [1] a_[draft].pdf 與 [2] b.pdf 的保固期間不同。"
+
+    async def fake_chat(settings, user_prompt, system_prompt, **kwargs):
+        captured["prompt"] = user_prompt
+        return generated
+
+    async def fake_retrieve(question, rows, settings, history, user_id, source_ids, **kwargs):
+        name = names_by_id[source_ids[0]]
+        if name == "c.pdf":
+            return []
+        return [
+            {"text": "保固期間", "location": "page 2", "score": 0.9},
+            {"text": "保固範圍", "location": "page 3", "score": 0.8},
+            {"text": "  ", "location": "page 4", "score": 0.7},
+        ]
+
+    class SaveFormParser(HTMLParser):
+        content = None
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == "input" and attrs.get("name") == "content":
+                self.content = attrs["value"]
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    monkeypatch.setattr(main, "retrieve", fake_retrieve)
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE llm_settings SET chat_model = 'chat' WHERE id = 1")
+        names_by_id = {
+            _seed_indexed_source(db, user["id"], notebook_id, name, f"summary {name}"): name
+            for name in ("c.pdf", "b.pdf", "a_[draft].pdf")
+        }
+        response = client.post(
+            f"/notebooks/{notebook_id}/compare",
+            data={"source_ids": list(names_by_id), "focus": focus},
+        )
+        assert response.status_code == 200
+        parser = SaveFormParser()
+        parser.feed(response.text)
+        content = parser.content
+        assert content is not None
+        assert content.startswith("### 來源對照與證據狀態\n")
+        for index, filename in enumerate(sorted(names_by_id.values()), 1):
+            assert f"[{index}] {filename}\n" in captured["prompt"]
+            safe_name = filename.replace("_", "\\_").replace("[", "\\[").replace("]", "\\]")
+            assert f"- **[{index}] {safe_name}** — " in content
+        if focus:
+            assert content.count("已取得主題證據（2 段）") == 2
+            assert "- **[3] c.pdf** — 未取得足夠主題證據" in content
+            assert "[3] c.pdf\n[NO_RELEVANT_TOPIC_EVIDENCE]" in captured["prompt"]
+        else:
+            assert content.count("使用摘要／節錄") == 3
+            assert "[NO_RELEVANT_TOPIC_EVIDENCE]" not in captured["prompt"]
+        assert content.endswith(generated)
+        assert "來源對照與證據狀態" in response.text.split('class="save-note-form"')[0]
+        saved = client.post(
+            f"/notebooks/{notebook_id}/notes/add",
+            data={"title": "比較測試", "content": content, "kind": "compare"},
+        )
+        assert saved.status_code == 200
+        with db.connect() as conn:
+            row = conn.execute("SELECT content FROM notes WHERE notebook_id = ?", (notebook_id,)).fetchone()
+        assert row["content"] == content
+        exported = client.get(f"/notebooks/{notebook_id}/notes/export")
+        assert exported.status_code == 200
+        assert content in exported.text
+
+
+def test_compare_topic_retrieves_each_source_but_blank_topic_keeps_summaries(monkeypatch, tmp_path):
+    """U17: a topic scopes one real retrieval run per authorised source."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    retrieval_calls = []
+    compare_calls = []
+
+    async def fake_retrieve(question, rows, settings, history, user_id, source_ids=None, **kwargs):
+        source_id = source_ids[0]
+        retrieval_calls.append((question, list(source_ids)))
+        if len(retrieval_calls) == 3:
+            return [{
+                "id": source_id * 10,
+                "source_id": source_id,
+                "filename": f"source-{source_id}.pdf",
+                "location": f"page {source_id}",
+                "text": "off-topic result",
+                "score": 0.1,
+            }]
+        return [{
+            "id": source_id * 10,
+            "source_id": source_id,
+            "filename": f"source-{source_id}.pdf",
+            "location": f"page {source_id}",
+            "text": f"topic evidence {source_id}",
+            "score": 0.9,
+        }]
+
+    async def fake_compare(items, focus, settings, **kwargs):
+        compare_calls.append((items, focus))
+        return "比較完成"
+
+    monkeypatch.setattr(main, "retrieve", fake_retrieve)
+    monkeypatch.setattr(main, "compare_sources", fake_compare)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE llm_settings SET chat_model = 'chat', embedding_model = 'embed' WHERE id = 1"
+            )
+        source_ids = [
+            _seed_indexed_source(db, user["id"], notebook_id, name, f"summary {name}")
+            for name in ("a.pdf", "b.pdf", "c.pdf")
+        ]
+        with db.connect() as conn:
+            foreign_user_id = conn.execute(
+                "SELECT id FROM users WHERE username = 'user'"
+            ).fetchone()["id"]
+            foreign_notebook_id = conn.execute(
+                "INSERT INTO notebooks (user_id, title) VALUES (?, 'foreign')",
+                (foreign_user_id,),
+            ).lastrowid
+        foreign_source_id = _seed_indexed_source(
+            db, foreign_user_id, foreign_notebook_id, "foreign.pdf", "foreign summary"
+        )
+
+        focused = client.post(
+            f"/notebooks/{notebook_id}/compare",
+            data={
+                "source_ids": [str(sid) for sid in [*source_ids, foreign_source_id]],
+                "focus": "風險控管",
+            },
+        )
+        summary_source_ids = [
+            *source_ids,
+            _seed_indexed_source(db, user["id"], notebook_id, "d.pdf", "summary d.pdf"),
+        ]
+        blank = client.post(
+            f"/notebooks/{notebook_id}/compare",
+            data={"source_ids": [str(sid) for sid in summary_source_ids], "focus": "   "},
+        )
+
+    assert focused.status_code == 200
+    assert retrieval_calls == [("風險控管", [sid]) for sid in source_ids]
+    focused_items, focused_topic = compare_calls[0]
+    assert focused_topic == "風險控管"
+    assert f"page {source_ids[0]}" in focused_items[0]["summary"]
+    assert f"topic evidence {source_ids[0]}" in focused_items[0]["summary"]
+    assert focused_items[2]["summary"] == main.NO_RELEVANT_TOPIC_EVIDENCE
+
+    assert blank.status_code == 200
+    assert len(retrieval_calls) == 3
+    blank_items, blank_topic = compare_calls[1]
+    assert blank_topic == ""
+    assert [item["summary"] for item in blank_items] == [
+        "summary a.pdf",
+        "summary b.pdf",
+        "summary c.pdf",
+        "summary d.pdf",
+    ]
+
+
+@pytest.mark.parametrize("htmx_request", [False, True])
+def test_compare_topic_rejects_four_sources_before_retrieval(monkeypatch, tmp_path, htmx_request):
+    """U17: topic mode must not create an unbounded LLM/retrieval fan-out."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    retrieval_calls = []
+    compare_calls = []
+
+    async def fake_retrieve(*args, **kwargs):
+        retrieval_calls.append((args, kwargs))
+        return []
+
+    async def fake_compare(*_args, **_kwargs):
+        compare_calls.append((_args, _kwargs))
+        return "不應執行比較"
+
+    monkeypatch.setattr(main, "retrieve", fake_retrieve)
+    monkeypatch.setattr(main, "compare_sources", fake_compare)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE llm_settings SET chat_model = 'chat', embedding_model = 'embed' WHERE id = 1"
+            )
+        source_ids = [
+            _seed_indexed_source(db, user["id"], notebook_id, f"{index}.pdf")
+            for index in range(4)
+        ]
+
+        response = client.post(
+            f"/notebooks/{notebook_id}/compare",
+            data={"source_ids": [str(sid) for sid in source_ids], "focus": "成本"},
+            headers={"HX-Request": "true"} if htmx_request else {},
+        )
+
+    assert response.status_code == 400
+    assert "最多只能比較 3 份來源" in response.text
+    assert response.headers["content-type"].startswith("text/html")
+    assert 'role="alert"' in response.text
+    assert retrieval_calls == []
+    assert compare_calls == []
+
+
+@pytest.mark.parametrize("focus", ["", "   "])
+def test_compare_summaries_accepts_ten_but_rejects_eleven(monkeypatch, tmp_path, focus):
+    """Summary comparison is bounded before generation and never retrieves."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    compare_calls = []
+    retrieval_calls = []
+
+    async def fake_compare(items, topic, settings, **kwargs):
+        compare_calls.append((items, topic))
+        return "摘要比較完成"
+
+    async def fake_retrieve(*args, **kwargs):
+        retrieval_calls.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr(main, "compare_sources", fake_compare)
+    monkeypatch.setattr(main, "retrieve", fake_retrieve)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE llm_settings SET chat_model = 'chat' WHERE id = 1")
+        source_ids = [
+            _seed_indexed_source(db, user["id"], notebook_id, f"{index:02}.pdf", f"summary {index}")
+            for index in range(11)
+        ]
+        rejected = client.post(
+            f"/notebooks/{notebook_id}/compare",
+            data={"source_ids": [str(sid) for sid in source_ids], "focus": focus},
+            headers={"HX-Request": "true"},
+        )
+        accepted = client.post(
+            f"/notebooks/{notebook_id}/compare",
+            data={"source_ids": [str(sid) for sid in source_ids[:10]], "focus": focus},
+            headers={"HX-Request": "true"},
+        )
+
+    assert rejected.status_code == 400
+    assert "未輸入比較主題時，最多只能比較 10 份來源" in rejected.text
+    assert 'role="alert"' in rejected.text
+    assert accepted.status_code == 200
+    assert len(compare_calls) == 1
+    assert len(compare_calls[0][0]) == 10
+    assert compare_calls[0][1] == ""
+    assert retrieval_calls == []
 
 
 def test_admin_eval_workbench_creates_default_profile(monkeypatch, tmp_path):

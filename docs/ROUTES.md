@@ -48,7 +48,7 @@ GET  /notebooks/{id}/_briefing                            HTMX swap: briefing st
 POST /notebooks/{id}/briefing[?force=1]                   generate / regenerate notebook briefing
 GET  /notebooks/{id}/_tools                               HTMX swap: Studio tools launcher (tile grid)
 GET  /notebooks/{id}/tools/{kind}                         tool config panel for the preview-modal (compare|minutes|study_guide|faq|timeline|translate)
-POST /notebooks/{id}/compare                              compare 2+ sources (returns result fragment + save button)
+POST /notebooks/{id}/compare                              compare 2–10 summaries; optional focus runs per-source topic retrieval (2–3 sources); result includes source/evidence legend retained in notes
 POST /notebooks/{id}/minutes                              structured meeting minutes from one source (result + save button)
 POST /notebooks/{id}/artifacts/{kind}                     A4 artifact: study_guide | faq | timeline (result + save button)
 POST /notebooks/{id}/translate                            A5 translate one source's summary into a target language (result + save button)

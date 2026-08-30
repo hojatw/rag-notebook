@@ -145,6 +145,10 @@ endpoint, not stored chunks.
   chips, starter questions, IME-safe input, and Traditional Chinese UI strings.
 - **Studio tools:** briefing strip, source comparison, meeting minutes, study
   guide, FAQ, timeline, translation, and manual save-to-notes flow.
+  Source comparison accepts 2–10 sources in summary mode, or 2–3 with an optional
+  topic that retrieves evidence from each source before comparison. Results
+  include a source/evidence legend retained in notes and exports; comparison
+  conclusions still require human review. See [U17](docs/RETRIEVAL.md#topic-focused-source-comparison-u17).
 - **Hybrid retrieval:** query rewrite, Chroma vector search, SQLite keyword
   search, LLM reranking, abstain threshold, and per-message retrieval debug
   details.

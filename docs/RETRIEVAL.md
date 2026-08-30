@@ -138,6 +138,60 @@ Full chunk text is sent (no `text[:900]` truncation) because chunks are already 
 
 `metadata.outcome` is set to `low_confidence` / `no_retrieval` / `abstained` / `answered` / `error` so the per-message debug pane can render the reason.
 
+### Topic-focused source comparison (U17)
+
+`POST /notebooks/{id}/compare` has two evidence paths. With a blank topic it
+preserves the original behavior and compares each selected source's stored
+summary (or the existing first-chunk excerpt fallback). It accepts 2–10 sources
+in one comparison call; eleven or more are rejected before
+generation. This count limit is a product guardrail, not a token/context-window
+guarantee. With a topic it runs this same `retrieve()` pipeline **sequentially
+once per authorised source**, passing `source_ids=[source_id]`, then compares
+the returned chunks. Query rewrite, embedding, hybrid retrieval, active profile,
+and rerank behavior are therefore shared with chat rather than reimplemented.
+
+Topic mode accepts two or three sources. Four or more are rejected before any
+retrieval call so one request cannot create unbounded LLM/embedding fan-out.
+The active low-confidence threshold is applied per source; no results or a top
+score below the threshold become the metadata marker
+`[NO_RELEVANT_TOPIC_EVIDENCE]`. The compare prompt must state that no sufficient
+topic evidence was retrieved for that source and must not infer its position.
+The marker is not source evidence and is never stored as a chunk.
+
+Every successful result starts with an application-generated source legend,
+using the same `comparison_source_items()` numbering as the real model prompt.
+Each `[n]` maps to a filename and its input evidence status: summary/excerpt,
+the count of non-empty topic excerpts actually supplied after the source-level
+confidence gate, or insufficient topic evidence. This is input coverage, not a
+guarantee that the generated report discusses every source. The legend is part
+of the comparison Markdown, so manual save-to-notes and note exports retain it.
+Its UI copy uses the i18n catalog; filenames are escaped as literal Markdown.
+
+Both modes use neutral sections: **共同點 / 差異 / 待釐清** (or equivalents in
+the evidence language), omitting empty sections. Differences are organised by
+comparison dimension, with each source's explicit terms side by side. Factual
+comparisons identify source IDs and filenames on every bullet and cite excerpt
+locations when available. Shared points must list their supporting sources;
+points supported by only a subset must be labelled partial commonalities, not
+implied to apply to all selected documents. Bare phrases like "both reports"
+are insufficient. A shared point requires at least two supporting documents;
+similarities between groups/products/treatments inside a single document are
+not cross-document commonalities. Single-source points belong under Differences.
+Sources lacking topic evidence cannot support shared claims.
+These source IDs are not chunk numbers or the documents' internal references.
+Clarifications state the claims, the unresolved condition, and what needs confirmation; they
+are not definitive contradiction verdicts. A shared topic does not establish a
+shared project or subject. Different projects or versions may legitimately have
+different terms; filenames/version numbers alone do not establish authority or
+supersession. Only evidence of incompatible claims about the same subject,
+scope, conditions, and effective period, with no known revision/supersession
+explanation, warrants flagging a possible inconsistency. Unknown relationships
+remain explicit uncertainties, not inferred conflicts. Missing evidence does
+not prove a document lacks a provision, and bounded summaries/retrieved excerpts
+cannot establish an exhaustive full-document comparison. These are prompt-level
+rules, not deterministic verification of document relationships or model output.
+Existing saved comparison notes are unchanged; regenerate to use the new prompt.
+
 ### 7. Answer generation
 
 [`generate_answer`](../app/llm.py) with `SYSTEM_PROMPT`:

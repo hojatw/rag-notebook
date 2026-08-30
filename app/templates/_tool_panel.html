@@ -25,9 +25,13 @@
           </li>
         {% endfor %}
       </ul>
-      {# 聚焦重點 (focus) input removed from the UI — recorded as a future
-         feature (ROADMAP U17). /compare still accepts an (empty) focus param,
-         so nothing else changes. #}
+      <label class="minutes-source-label">
+        <span class="muted small">{{ t('tool.compare_topic_label') }}</span>
+        <input type="text"
+               name="focus"
+               placeholder="{{ t('tool.compare_topic_placeholder') }}">
+        <span class="muted small">{{ t('tool.compare_topic_hint', count=topic_compare_max_sources, summary_count=summary_compare_max_sources) }}</span>
+      </label>
       <button type="submit" class="wide small">{{ t('tool.compare_btn') }}</button>
     </form>
 
@@ -113,5 +117,5 @@
   {% endif %}
 
   <p id="tool-loading" class="studio-loading htmx-indicator">{{ t('tool.generating') }}</p>
-  <div id="tool-result" class="tool-result"></div>
+  <div id="tool-result" class="tool-result"{% if kind == "compare" %} data-swap-validation-errors="400"{% endif %}></div>
 </div>
