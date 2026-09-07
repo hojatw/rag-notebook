@@ -121,7 +121,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         # Warnings — each states the consequence, not just the fact.
         "diag.warn_low_text": "幾乎沒有讀到文字（{chars} 字元）。這通常代表檔案是掃描影像或以圖片呈現內容，目前無法檢索；需要 OCR 才能處理。",
         "diag.warn_pdf_structure_fallback": "這份 PDF 無法解析段落與表格結構，已退回逐頁純文字。引用位置只會精確到頁，表格內容可能變得難以閱讀。",
-        "diag.warn_chunk_over_token_budget": "有 {count} 個分塊可能超過 embedding 模型的輸入上限（約 {budget} tokens），超出的尾端會被靜默截斷而檢索不到。此為估算值，非實際量測。",
+        "diag.warn_chunk_over_token_budget": "有 {count} 個分塊可能超過 embedding 模型的輸入上限（約 {budget} tokens）。依端點行為而定：有些會靜默截斷（尾端檢索不到），有些會直接拒絕整批請求而導致索引失敗。此為估算值，非實際量測。",
         "diag.warn_empty_sections": "有 {count} 個分段是空白的，已略過。",
         # A6b PPTX
         "diag.warn_pptx_visual_only_slides": "有 {count} 張投影片只有圖片、圖表或 SmartArt，沒有可讀取的文字，因此沒有被索引。目前的簡報支援只讀文字；圖像內容需要 OCR 或影像理解能力才能處理。",
