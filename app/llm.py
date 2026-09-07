@@ -380,6 +380,42 @@ def get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
+def _attach_response_detail(exc: httpx.HTTPStatusError) -> str:
+    """Fold the provider's error body into ``exc``'s message and return it.
+
+    httpx's own message stops at the status line and the URL. Everything that
+    says *why* the request was refused lives in the response body, which this
+    path never read — so an ingest killed by an over-long chunk wrote only
+    ``Client error '400 Bad Request'`` into ``sources.error`` and the app log,
+    while vLLM's actual explanation ("maximum context length is 512 tokens...")
+    existed nowhere but the provider's own container log. That is one support
+    round-trip per incident, for a string we already had in hand.
+
+    Mutating the message instead of raising a richer subclass is deliberate:
+    the exception *type* is what ``_record_usage_event`` stores as
+    ``error_class`` and what every caller catches, so both must stay put.
+
+    Returns the snippet (empty when there is no readable body) so the caller can
+    log it as its own field rather than re-parsing the message.
+    """
+    limit = config.llm_retry.error_body_chars
+    if limit <= 0:
+        return ""
+    try:
+        body = " ".join((exc.response.text or "").split())
+    except Exception:  # a streamed or already-closed response has no .text
+        return ""
+    if not body:
+        return ""
+    if len(body) > limit:
+        body = body[:limit] + "\u2026"
+    # Replace httpx's two-line message rather than appending to it: `sources.error`
+    # is capped at 500 characters, and its boilerplate MDN link would crowd out
+    # the part a human needs.
+    exc.args = (f"HTTP {exc.response.status_code} from {exc.request.url}: {body}",)
+    return body
+
+
 async def _post_json_with_retry(
     url: str,
     headers: dict[str, str],
@@ -410,6 +446,11 @@ async def _post_json_with_retry(
                 retry_stats["last_error_class"] = exc.__class__.__name__
                 retry_stats["last_status_code"] = exc.response.status_code
             if exc.response.status_code not in LLM_RETRYABLE_STATUS or attempt >= max_attempts:
+                detail = _attach_response_detail(exc)
+                logger.error(
+                    "llm_http_error status=%s url=%s attempts=%s detail=%s",
+                    exc.response.status_code, url, attempt, detail or "<empty body>",
+                )
                 raise
         except httpx.RequestError as exc:
             # Covers connect/read/write/pool timeouts and transport/network errors.

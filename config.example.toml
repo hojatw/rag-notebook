@@ -76,6 +76,7 @@ max_concurrency = 4           # in-flight embedding batches (bound the endpoint)
 [llm_retry]
 max_attempts = 3
 backoff_base_s = 0.5          # exponential backoff base (seconds) + jitter
+error_body_chars = 400        # provider error body kept in the raised error; 0 disables
 
 # --- Ingest job queue --------------------------------------------------------
 [jobs]

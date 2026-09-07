@@ -159,6 +159,11 @@ class MaxTokensConfig:
 class LLMRetryConfig:
     max_attempts: int = 3
     backoff_base_s: float = 0.5
+    # Characters of the provider's error body folded into the raised exception,
+    # which is what reaches `logs/app.log` and `sources.error`. Bounded because
+    # a provider that echoes the rejected request would otherwise write the
+    # document text into both. 0 disables the detail entirely.
+    error_body_chars: int = 400
 
 
 @dataclasses.dataclass

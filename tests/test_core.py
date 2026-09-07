@@ -80,6 +80,71 @@ def test_txt_source_ingestion_and_delete_cascades(fresh_modules, local_embed, tm
         assert remaining["count"] == 0
 
 
+def test_embedding_refusal_reason_reaches_source_error(fresh_modules, monkeypatch, tmp_path):
+    """The provider's reason must survive the whole ingest path into `sources.error`.
+
+    Deliberately drives the REAL producer chain — `process_source` ->
+    `embed_texts` -> `_post_json_with_retry` -> the 400 handler — because the
+    contract under test spans three modules. The symptom this exists for was a
+    user staring at "Client error '400 Bad Request'" in the source row while the
+    sentence that explained it (a chunk over the embedding model's token window)
+    sat unread in the response body. Note there is no `local_embed` fixture
+    here: stubbing the embedder would skip the code that carries the reason.
+    """
+    import httpx
+
+    import app.llm as llm
+
+    db, ingest = fresh_modules.db, fresh_modules.ingest
+    reason = (
+        "This model's maximum context length is 512 tokens. However, you requested "
+        "0 output tokens and your prompt contains at least 513 input tokens."
+    )
+
+    def handler(request):
+        return httpx.Response(400, json={"object": "error", "message": reason})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    llm.set_http_client(client)
+    monkeypatch.setattr(
+        ingest,
+        "get_settings",
+        lambda: {
+            "provider": "openai_compatible",
+            "base_url": "http://e5.test/v1",
+            "embedding_model": "multilingual-e5-large",
+            "embedding_passage_prefix": "passage: ",
+        },
+    )
+
+    source_path = tmp_path / "label.txt"
+    source_path.write_text("Alpha project revenue is 42 dollars.", encoding="utf-8")
+    with db.connect() as conn:
+        user = conn.execute("SELECT * FROM users WHERE username = 'user'").fetchone()
+        source_id = conn.execute(
+            """
+            INSERT INTO sources (user_id, filename, stored_path, content_type, status)
+            VALUES (?, 'label.txt', ?, 'text/plain', 'uploaded')
+            """,
+            (user["id"], str(source_path)),
+        ).lastrowid
+
+    try:
+        asyncio.run(ingest.process_source(source_id))
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+
+    with db.connect() as conn:
+        source = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+
+    assert source["status"] == "failed"
+    assert "maximum context length is 512 tokens" in source["error"]
+    assert "513 input tokens" in source["error"]
+    # sources.error is stored truncated; the reason has to fit inside that.
+    assert len(source["error"]) <= 500
+
+
 def test_txt_source_ingestion_updates_chroma(fresh_modules, local_embed, tmp_path):
     """TXT ingestion should write indexed chunks into Chroma for vector search."""
     db, ingest = fresh_modules.db, fresh_modules.ingest
