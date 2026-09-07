@@ -413,7 +413,33 @@ def _attach_response_detail(exc: httpx.HTTPStatusError) -> str:
     # is capped at 500 characters, and its boilerplate MDN link would crowd out
     # the part a human needs.
     exc.args = (f"HTTP {exc.response.status_code} from {exc.request.url}: {body}",)
+    # Also hang the bare snippet off the exception so a caller further up can log
+    # it as its own field instead of re-parsing the composed message.
+    exc.provider_detail = body  # type: ignore[attr-defined]
     return body
+
+
+async def _raise_for_status_with_detail(response: httpx.Response) -> None:
+    """``raise_for_status()`` for a **streamed** response, keeping the error body.
+
+    Must be called INSIDE the ``client.stream(...)`` context. A streamed response
+    holds no body in memory when the status is checked — ``.text`` raises
+    ``ResponseNotRead`` — and httpx closes the response as that block exits, so a
+    body pulled from the outer ``except`` is gone either way. Reading it here is
+    safe and cheap: an error response is small, and its stream is about to be
+    thrown away regardless.
+    """
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if config.llm_retry.error_body_chars > 0:
+            try:
+                await response.aread()
+            except Exception:  # already consumed, closed, or a transport quirk
+                pass
+            else:
+                _attach_response_detail(exc)
+        raise
 
 
 async def _post_json_with_retry(
@@ -1041,7 +1067,7 @@ async def _probe_chat_stream(
                 json=request["json"],
                 timeout=timeout,
             ) as response:
-                response.raise_for_status()
+                await _raise_for_status_with_detail(response)
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -1066,6 +1092,13 @@ async def _probe_chat_stream(
                 stream_usage_fallback = True
                 retry_stats["retry_count"] = int(retry_stats.get("retry_count") or 0) + 1
                 continue
+            logger.error(
+                "llm_http_error status=%s url=%s attempts=%s detail=%s",
+                exc.response.status_code,
+                request["url"],
+                retry_stats.get("attempts"),
+                getattr(exc, "provider_detail", "") or "<empty body>",
+            )
             return _finish_stream_probe_failure(
                 settings,
                 started,
@@ -2340,7 +2373,7 @@ async def chat_completion_stream(
                 json=request["json"],
                 timeout=timeout,
             ) as response:
-                response.raise_for_status()
+                await _raise_for_status_with_detail(response)
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -2393,6 +2426,13 @@ async def chat_completion_stream(
                     retry_stats=retry_stats,
                     stream_usage_requested=stream_usage_requested,
                     stream_usage_fallback=stream_usage_fallback,
+                )
+                logger.error(
+                    "llm_http_error status=%s url=%s attempts=%s detail=%s",
+                    exc.response.status_code,
+                    request["url"],
+                    attempt,
+                    getattr(exc, "provider_detail", "") or "<empty body>",
                 )
                 raise
         except httpx.RequestError as exc:

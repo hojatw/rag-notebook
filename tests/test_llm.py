@@ -837,6 +837,53 @@ def test_retryable_status_still_carries_detail_when_it_finally_gives_up(monkeypa
     assert "no free GPU slots" in str(caught.value)
 
 
+def test_streaming_http_error_keeps_the_provider_explanation():
+    """A streamed 4xx must carry its reason too, and that is timing-sensitive.
+
+    A streamed response holds no body when the status is checked, and httpx
+    closes it as the `client.stream(...)` block exits — so the body has to be
+    pulled *inside* that block. Read it from the outer `except` and this comes
+    back empty, which is exactly the regression this pins.
+
+    The endpoint answers 400 twice on purpose: the first one is consumed by the
+    benign `stream_options` fallback (a provider that rejects usage reporting),
+    so this also proves that retry still happens before the give-up path.
+    """
+    settings = {
+        "provider": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "chat_model": "chat-model",
+    }
+    reason = "This model's maximum context length is 8192 tokens. However, your messages resulted in 9001 tokens."
+    calls = {"n": 0, "with_usage": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if b'"stream_options"' in request.read():
+            calls["with_usage"] += 1
+        return httpx.Response(400, json={"object": "error", "message": reason})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    llm.set_http_client(client)
+
+    async def collect():
+        async for _ in llm.chat_completion_stream(settings, "Question", llm.SYSTEM_PROMPT):
+            pass
+
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as caught:
+            asyncio.run(collect())
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+
+    assert "maximum context length is 8192 tokens" in str(caught.value)
+    assert caught.value.__class__ is httpx.HTTPStatusError
+    # The first attempt asked for usage, the retry dropped it: the 400 was not
+    # mistaken for a hard failure before the fallback got its turn.
+    assert calls["n"] == 2 and calls["with_usage"] == 1
+
+
 def test_chat_completion_stream_yields_delta_content():
     settings = {
         "provider": "openai_compatible",

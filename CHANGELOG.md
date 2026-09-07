@@ -24,6 +24,13 @@
   避免會回吐請求內容的供應商把整份文件寫進 log；設為 `0` 可完全關閉。
   例外的**型別**刻意維持 `httpx.HTTPStatusError`，因為
   `llm_usage_events.error_class` 記的就是它，改成子類別會讓既有遙測用語漂移。
+  串流聊天（`chat_completion_stream`）與 `/settings` 的串流探測同樣涵蓋：
+  串流回應在檢查狀態碼時身上沒有 body（`.text` 會丟 `ResponseNotRead`），
+  而 httpx 會在 `client.stream(...)` 區塊結束時關閉回應，所以錯誤內文必須在
+  該區塊「內」讀取——挪到外層 `except` 就只剩空字串。
+  串流那條 400／422 的 `stream_options` 退回機制不受影響，仍會先重試一次。
+  `llm_usage_events.metadata_json` 刻意**不**收錄錯誤內文，維持 `governance.py`
+  要求的精簡；內文只落在 `logs/app.log` 與 `sources.error`。
 
 ## [0.6.0] - 2026-08-30
 
