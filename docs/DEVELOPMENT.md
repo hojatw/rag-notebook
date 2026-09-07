@@ -164,7 +164,10 @@ sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, N
 Take p95 × 1.5. The `is_estimated = 0` filter still matters: fallback counts are
 now CJK-aware (`[diagnostics].cjk_chars_per_token` and
 `latin_chars_per_token`) but remain approximations rather than provider/tokenizer
-measurements. A row is also marked estimated when a provider returns only part of
+measurements. Those two are the *chat-usage* ratios and are separate from the
+`[diagnostics].tokens_per_*` costs, which price the embedding input window per
+character class — `governance.estimate_tokens` only ever receives a character
+count, never the text, so it cannot classify anything. A row is also marked estimated when a provider returns only part of
 the usage shape and the missing prompt/completion component must be synthesized;
 prompt + total or completion + total can be completed exactly by subtraction.
 

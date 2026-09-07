@@ -150,8 +150,9 @@ looks indexed while its tail rows are unreachable through the vector path —
 the worst spreadsheet failure mode. Layered strategy:
 
 1. **Prevent (primary).** Estimate tokens at chunk-build time with a
-   conservative character heuristic (CJK ≈ 1 token/char, ASCII ≈ 1 token per
-   ~4 chars, plus a safety margin) and pack rows adaptively:
+   conservative per-character-class heuristic (`estimate_embedding_tokens`;
+   ordinary words are cheap, CJK ~0.75/char, digits and symbols ~1/char) and
+   pack rows adaptively:
    budget = 512 − passage prefix − preamble − margin, targeting
    `embed_token_budget` (default ≈ 400 estimated tokens, aligned with
    `[chunking].cjk_target_chars`). Wide rows naturally degrade to one row per
@@ -309,7 +310,10 @@ Tunables live in `app/config.py` as a `[spreadsheet]` group (defaults ←
   is stored — see [`DEVELOPMENT.md`](DEVELOPMENT.md) → *File size caps*);
 - `rows_per_chunk_max` — upper bound on record-chunk grouping;
 - `embed_token_budget` — estimated-token cap per chunk for the adaptive row
-  packing (see "Token budgeting for record chunks");
+  packing (see "Token budgeting for record chunks"). The estimator it is
+  measured against was made per-character-class in 2026-09; identifier- and
+  number-dense sheets, which the old heuristic under-charged roughly twofold,
+  now split into more and smaller chunks for the same budget;
 - `header_sample_rows` — rows inspected for header inference;
 - `qa_question_synonyms` / `qa_answer_synonyms` — column-name lists for Q&A
   detection (`question`, `q`, `問題`, `提問` / `answer`, `a`, `答案`, `回覆`),

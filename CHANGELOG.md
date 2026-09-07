@@ -11,6 +11,35 @@
 
 ### 修正
 
+- **表格抽取不再輸出成排的空白分隔線**：`_render_pdf_table` 過去對「空儲存格」
+  照樣輸出一根 `|`，所以 pdfplumber 抽出的稀疏合併表頭會變成一整片
+  `| | | | | |`。這不是版面問題——對 embedding 模型來說每根管線是兩個 token
+  （`▁` 加 `|`），而且不帶任何資訊。實測一份 FDA 藥品仿單 PDF，其中一個 773 字的
+  chunk 就是這樣吃掉 **533 個 e5 token**，超過模型 512 的輸入上限；vLLM 對超長
+  輸入是直接回 HTTP 400 而不是截斷，於是整批 64 筆 embedding 連同整份來源索引
+  一起失敗。現在連續空欄會壓成一個（保留「這裡有空欄」的訊號，去掉重複），
+  同一份仿單最大 chunk 從 533 降到 370 token，超限數從 1 降到 0。
+  PPTX 表格共用同一個函式，一併涵蓋。
+  **DOCX 另外修掉自己的一個問題**：python-docx 的 `row.cells` 是「每個網格欄
+  一筆」，水平合併的儲存格會依跨欄數重複回傳，所以合併表頭原本會被重複嵌入
+  三、四次。改以底層 `<w:tc>` 元素的識別判斷，兩個「碰巧內容相同」的獨立儲存格
+  不會被誤判成合併。**需要重新索引既有的 PDF／PPTX／DOCX 來源才會生效。**
+- **token 估算改為逐字元類別計價**：`estimate_embedding_tokens` 原本只用整個
+  chunk 的語言挑一個比例（中文 1 token/字、其餘 4 字/token），所以上面那面管線牆
+  被當成英文散文計價，估出 **193** 而實際是 **533**——這就是為什麼
+  `chunk_over_token_budget` 警告從頭到尾沒亮，維運端在來源頁上看不到任何徵兆。
+  現在依字元類別計價：一般單字便宜、全大寫與料號接近 1 token/字元、
+  CJK 約 0.75、數字與符號約 1，另加「非單字開頭前的空白自成一個 token」。
+  以那份仿單的 766 個 chunk 實測：**漏報 0、誤報約 1%**（原本最多低估 2.8 倍）。
+  參數在 `[diagnostics].tokens_per_*`，刻意偏保守——誤報只是多看一眼，漏報是整份
+  索引失敗。
+  **注意這一項不只影響顯示**：同一個函式也是試算表列打包的預算依據
+  （`_record_sections` / `_split_wide_row`），所以 XLSX/CSV 的 chunk 形狀會改變、
+  需要重新索引；先前一個實測 1541 字／實際 803 token 的數字密集案例，現在會正確
+  切成多個約 190 token 的 chunk。
+  `governance.estimate_tokens` 用的 `cjk_chars_per_token` / `latin_chars_per_token`
+  維持原樣：它只拿得到字元數、看不到文字，本來就無法分類。
+
 - **LLM／embedding 的 HTTP 錯誤現在會保留供應商的說明**：`_post_json_with_retry`
   過去只把 httpx 的訊息往上拋，內容到「`Client error '400 Bad Request' for url ...`」
   就結束，真正說明原因的 response body 從來沒被讀過。實務後果是：某個檔案上傳後
