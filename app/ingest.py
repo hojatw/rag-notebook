@@ -862,11 +862,88 @@ def _meta_columns(columns: list[str], qa: dict[str, Any]) -> list[int]:
     return out
 
 
+def _cut_to_budget(text: str, room: int) -> list[str]:
+    """Hard-cut `text` into the longest prefixes that each fit `room` tokens.
+
+    Last resort under `_split_text_to_budget`, for text with no usable boundary
+    left — a single unpunctuated wall, or a stretch whose token density varies
+    enough that a character-based cut still overshoots. Binary-searching the
+    longest fitting prefix is exact and always advances by at least one
+    character, so it terminates on any input.
+    """
+    pieces: list[str] = []
+    remaining = text
+    while remaining:
+        if estimate_embedding_tokens(remaining) <= room:
+            pieces.append(remaining)
+            break
+        low, high = 1, len(remaining)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if estimate_embedding_tokens(remaining[:mid]) <= room:
+                low = mid
+            else:
+                high = mid - 1
+        pieces.append(remaining[:low])
+        remaining = remaining[low:]
+    return pieces
+
+
+def _split_text_to_budget(prefix: str, text: str, budget: int) -> list[str]:
+    """Split `text` so that ``prefix + piece`` stays inside `budget` tokens.
+
+    Same ladder `chunk_sections` uses — sentences first, then soft punctuation,
+    then a hard cut — but measured in estimated tokens rather than characters,
+    because the caller's real limit is the embedding model's input window and
+    the spreadsheet path never goes through the character-based chunker.
+
+    `prefix` is the context every piece repeats (preamble, question, column
+    name), so it is charged once against the budget up front.
+    """
+    room = max(1, budget - estimate_embedding_tokens(prefix))
+    pieces: list[str] = []
+    buffer = ""
+
+    for sentence in split_sentences(text) or [text]:
+        sentence_tokens = estimate_embedding_tokens(sentence)
+        if sentence_tokens > room:
+            if buffer:
+                pieces.append(buffer)
+                buffer = ""
+            # Size the character cut from *this* sentence's measured density
+            # rather than a fixed chars-per-token guess, then verify: a wall of
+            # symbols and a wall of prose need very different cuts.
+            density = sentence_tokens / max(1, len(sentence))
+            for piece in _split_long_sentence(sentence, max(1, int(room / density))):
+                pieces.extend(_cut_to_budget(piece, room))
+            continue
+        candidate = f"{buffer} {sentence}" if buffer else sentence
+        if buffer and estimate_embedding_tokens(candidate) > room:
+            pieces.append(buffer)
+            buffer = sentence
+        else:
+            buffer = candidate
+    if buffer:
+        pieces.append(buffer)
+    return pieces or [text]
+
+
 def _qa_sections(
     sheet: str, columns: list[str], rows: list[tuple[int, list[Any]]], qa: dict[str, Any]
 ) -> list[tuple[str, str]]:
-    """One chunk per Q&A row, in the trimmed-preamble shape (design doc)."""
+    """One chunk per Q&A row, in the trimmed-preamble shape (design doc).
+
+    A row whose answer alone exceeds the budget is split into `part n/m` pieces
+    that each repeat the preamble and the question, so every piece is still
+    reachable by the question it answers. Before this the row was emitted whole
+    at any length — measured at 1167 tokens for a 1500-character policy answer —
+    and since vLLM refuses an over-long input rather than truncating it, one such
+    row failed the entire file's ingest. Answers that paste a regulation or a
+    whole procedure into the cell reach that size easily; ~660 Chinese
+    characters is the threshold against a 512-token window.
+    """
     meta = _meta_columns(columns, qa)
+    budget = config.spreadsheet.embed_token_budget
     sections: list[tuple[str, str]] = []
     for row_number, values in rows:
         question = _cell_text(values[qa["question"]]) if qa["question"] < len(values) else ""
@@ -878,8 +955,16 @@ def _qa_sections(
             text = _cell_text(values[index]) if index < len(values) else ""
             if text:
                 preamble += f" · {columns[index]}: {text}"
-        body = f"{preamble}\n\nQuestion:\n{question}\n\nAnswer:\n{answer}"
-        sections.append((f'sheet "{sheet}" row {row_number}', body))
+        header = f"{preamble}\n\nQuestion:\n{question}\n\nAnswer:\n"
+        location = f'sheet "{sheet}" row {row_number}'
+        if estimate_embedding_tokens(header + answer) <= budget:
+            sections.append((location, header + answer))
+            continue
+        parts = _split_text_to_budget(header, answer, budget)
+        total = len(parts)
+        for part, piece in enumerate(parts, start=1):
+            label = location if total == 1 else f"{location} part {part}/{total}"
+            sections.append((label, header + piece))
     return sections
 
 
@@ -901,20 +986,50 @@ def _split_wide_row(
     Without this a very wide row would be embedded and silently truncated past
     the model's window, leaving its tail columns unreachable by vector search.
     Every part repeats column 0 so each child chunk still identifies its record.
+
+    Two cases here are about a *single* cell rather than a wide row, and both
+    used to escape the packing loop entirely:
+
+    * One cell holding more than the budget. The `current and` guard below can
+      never fire on it — `current` is empty at that point — so the cell was
+      emitted whole, at any length. A contract clause or a pasted procedure in a
+      free-text column reaches this easily, and the endpoint answers HTTP 400.
+      Such a value is now split, with the column name repeated on every piece so
+      a tail piece still says which field it came from.
+    * Column 0 holding one. It becomes the identifier that every part repeats,
+      so an oversized one puts *all* parts over budget however finely the rest is
+      split. It is demoted to an ordinary column in that case and split like any
+      other, rather than truncated — losing the cell would be silent, and this
+      column is usually the record's name.
     """
     identifier = ""
+    first_column = 1
     if columns:
         head = _cell_text(values[0]) if values else ""
-        identifier = f"{columns[0]} = {head}" if head else ""
+        candidate_identifier = f"{columns[0]} = {head}" if head else ""
+        # A repeated identifier has to leave room for actual content; a quarter
+        # of the budget is the line between "context" and "the payload itself".
+        if estimate_embedding_tokens(candidate_identifier) <= max(1, budget // 4):
+            identifier = candidate_identifier
+        else:
+            first_column = 0  # demoted: fall through and split it like any cell
+    header = f"{preamble}\n\nRow {row_number}:\n{identifier}\n"
     groups: list[list[str]] = []
     current: list[str] = []
-    for index, name in enumerate(columns[1:], start=1):
+    for index, name in enumerate(columns[first_column:], start=first_column):
         text = _cell_text(values[index]) if index < len(values) else ""
         if not text:
             continue
         line = f"{name} = {text}"
+        if estimate_embedding_tokens(header + line) > budget:
+            if current:
+                groups.append(current)
+                current = []
+            for piece in _split_text_to_budget(f"{header}{name} = ", text, budget):
+                groups.append([f"{name} = {piece}"])
+            continue
         candidate = current + [line]
-        probe = f"{preamble}\n\nRow {row_number}:\n{identifier}\n" + "\n".join(candidate)
+        probe = header + "\n".join(candidate)
         if current and estimate_embedding_tokens(probe) > budget:
             groups.append(current)
             current = [line]
