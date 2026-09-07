@@ -355,6 +355,20 @@ available:
 .venv/bin/python -m tests.eval_retrieval --top-k 10
 ```
 
+To check whether one specific file will produce a chunk past the embedding
+model's input window — before uploading it, and including files that failed to
+index and therefore left no chunk rows behind:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m tests.inspect_file_tokens /path/to/file.pdf
+```
+
+It runs the real `extract_sections` + `chunk_sections` and counts tokens with the
+model's own tokenizer, offline — no network, no database, no vector store — so it
+is safe to point at a customer file. Exit code is 1 when any chunk is over the
+limit. `tests.inspect_e5_chunk_tokens` is the corpus-wide companion; it scans
+chunks already indexed in the database.
+
 The harness reports per-question hit rank, Recall@k, and MRR. It requires an
 embedding model, but not an API key: local OpenAI-compatible embedding services
 may be configured with a blank key. A chat model is optional; without one the
