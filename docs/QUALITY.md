@@ -91,8 +91,18 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   measured here can still slip past both the char cap and the estimate. Adding
   one means shipping the tokenizer into the app (a dependency, memory, and
   ingest latency), which is deferred until a second incident with a different
-  cause justifies it. `_qa_sections` also remains unbounded by design review —
-  a Q&A sheet row is one chunk no matter how long the answer is.
+  cause justifies it.
+- **Spreadsheet paths closed (2026-09-07).** `_qa_sections` and `_split_wide_row`
+  were the two places that could still emit an unbounded chunk: a Q&A row was
+  emitted whole at any length (1167 tokens measured on a 1500-character policy
+  answer), and `_split_wide_row`'s packing loop could not split a *single* cell
+  bigger than the whole budget (1150 tokens measured), column 0 included. Both
+  now split through `_split_text_to_budget`, which walks the same
+  sentences → soft punctuation → hard cut ladder as `chunk_sections` but measures
+  in estimated tokens, since the spreadsheet path never reaches the
+  character-based chunker. Nothing is dropped — every piece repeats the context
+  it needs (question, or column name) and the tests assert the pieces reconstruct
+  the original text.
 - **Local guard added:** `chunk_sections` now drops sentence overlap when carrying it would make the next chunk exceed the configured char target. This fixes the observed dense-CJK boundary case where two ~400-char sentences could combine into one ~800-char chunk. Re-chunking the 10 local over-limit examples with the new guard produced max 320 e5 tokens. Existing indexed sources need reindexing to benefit.
 
 ### [x] Q0-6 · Starter questions ignored the source language

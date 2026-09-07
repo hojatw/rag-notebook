@@ -58,6 +58,14 @@ Detection should support:
 Each Q&A row should become one chunk unless the answer is very long. If the answer
 must be split, every child chunk should repeat the original question and row metadata.
 
+**Implemented 2026-09-07.** This paragraph was in the design from the start but
+`_qa_sections` never acted on it: a row was emitted whole at any length, and a
+1500-character policy answer measured 1167 e5 tokens against a 512-token window.
+Splitting now produces `sheet "FAQ" row 12 part 2/3` labels, each part repeating
+the preamble and the question. In real Traditional Chinese FAQ text the threshold
+is around 660 characters — reachable whenever someone pastes a regulation or a
+whole procedure into the answer cell, which is common.
+
 Recommended chunk text (decision: one trimmed-preamble text per chunk — see
 "Decision: single trimmed-preamble embedding text" below. Constant fields such
 as workbook filename, row number, and detected type live in chunk metadata,
@@ -160,9 +168,19 @@ the worst spreadsheet failure mode. Layered strategy:
 2. **Split single over-budget rows.** When one row alone exceeds the budget,
    split it into column-group child chunks that each repeat the identifier
    columns (the same rule as long Q&A answers repeating the question), with
-   location labels like `Row 7 · part 2/3 · columns G–T`. A pathological
-   giant cell (e.g. a memo pasted into 備註) routes through the normal text
-   chunker as its own sections.
+   location labels like `Row 7 · part 2/3 · columns G–T`.
+
+   **Deviation, 2026-09-07.** The original note said a pathological giant cell
+   (a memo pasted into 備註) would "route through the normal text chunker as its
+   own sections". It is split in place instead, by `_split_text_to_budget`,
+   repeating `欄位名 = ` on every piece. Handing it to `chunk_sections` would
+   drop both the column name and the `sheet "X" row N` citation, which is most of
+   what makes a spreadsheet chunk answerable. Until this landed the giant cell
+   was not handled at all: `_split_wide_row`'s packing loop only closed a group
+   when one was already open, so a cell larger than the whole budget sat in an
+   empty group and was emitted at full length. The same applies to column 0,
+   which is repeated into every part — an oversized one is demoted to an ordinary
+   column and split, rather than truncated.
 3. **Detect (backstop).** Store the token estimate in chunk metadata; `A6a`
    diagnostics warn on any chunk whose estimate exceeds the window. Calibrate
    the heuristic against the real tokenizer with the existing
