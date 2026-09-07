@@ -38,6 +38,27 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Fix:** **Tooling landed; measurement pending in the target data/runtime.** Run `python -m tests.inspect_e5_chunk_tokens` against indexed deployment data with the `intfloat/multilingual-e5-large` tokenizer cached/available. The script prepends the passage prefix, counts tokens including special tokens, reports all/CJK/Latin/mixed/table p50/p95/p99/max, and prints over-512 examples. If real customer chunks exceed 512, lower `CJK_TARGET_CHARS` / tune table chunking and re-index; otherwise tick this off.
 - **Current local measurement (2026-06-19):** 6,406 indexed chunks scanned; p95 = 285 tokens, p99 = 359, max = 874; 10 chunks (0.2%) exceed 512, all classified CJK. The over-limit cases are concentrated in long extracted pages / dense medical-label style text, not ordinary Latin chunks. Keep this open until the target customer corpus is measured and a chunking/table strategy is chosen for over-limit CJK chunks.
 - **Now observable in production (A6a, 2026-07-25):** each source's ingestion diagnostics carry a `chunk_over_token_budget` warning counting chunks whose *estimated* token length exceeds `[diagnostics].embedding_token_budget` (CJK ~1 token/char, Latin ~4 chars/token — `estimate_embedding_tokens` in `app/ingest.py`). That makes the over-limit case visible per source on the customer corpus without shipping the tokenizer, so this item no longer depends on someone remembering to run the script. The script stays the ground truth — the warning is an estimate and can over-report.
+- **Per-file pre-flight tool (2026-09-07):** `python -m tests.inspect_file_tokens <path>`
+  runs the real `extract_sections` + `chunk_sections` on **one file** and counts
+  real tokens, offline (no network, no DB, no vector store). It exists because
+  `inspect_e5_chunk_tokens` scans *indexed* chunks and therefore cannot see the
+  case that matters most — an ingest the embedding endpoint **rejected**, which
+  leaves no chunk rows behind. It also prints the app's own
+  `estimate_embedding_tokens` beside the true count, which is how the estimator's
+  Latin 4-chars/token assumption was measured as roughly 2x optimistic on
+  ID/number-dense text (1541 chars: estimate 385, actual 803).
+- **Measured character-class densities (2026-09-07, e5 tokenizer, 800-char chunk):**
+  English prose 0.17 tok/char, common Traditional Chinese 0.58, ID/number-dense
+  0.45, table rules `├─┼─┤` 0.70, full-width punctuation 0.79, rare/variant Han
+  0.67, mis-decoded text (mojibake) 0.98, no-whitespace strings 0.77. The
+  800-char Latin target is safe for prose but **not** for the last five: a
+  chunk at the cap can reach 560-780 tokens. The 800-char cap itself holds —
+  fuzzed over 4000 random inputs, max chunk 799 chars.
+- **Failures now say why (2026-09-07):** a rejection from the embedding endpoint
+  used to reach `sources.error` as `Client error '400 Bad Request'` with the
+  provider's explanation dropped. `_post_json_with_retry` now folds the response
+  body in (see CHANGELOG), so "maximum context length is 512 tokens" is visible
+  in the UI and in `logs/app.log` without reading the provider's container log.
 - **Local guard added:** `chunk_sections` now drops sentence overlap when carrying it would make the next chunk exceed the configured char target. This fixes the observed dense-CJK boundary case where two ~400-char sentences could combine into one ~800-char chunk. Re-chunking the 10 local over-limit examples with the new guard produced max 320 e5 tokens. Existing indexed sources need reindexing to benefit.
 
 ### [x] Q0-6 · Starter questions ignored the source language

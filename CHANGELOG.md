@@ -9,6 +9,22 @@
 
 ## [未發布]
 
+### 修正
+
+- **LLM／embedding 的 HTTP 錯誤現在會保留供應商的說明**：`_post_json_with_retry`
+  過去只把 httpx 的訊息往上拋，內容到「`Client error '400 Bad Request' for url ...`」
+  就結束，真正說明原因的 response body 從來沒被讀過。實務後果是：某個檔案上傳後
+  索引失敗，來源列上只看得到那句 400，而 vLLM 給的
+  「This model's maximum context length is 512 tokens…」只存在於 embedding
+  container 自己的 log，維運者必須登入該主機才知道發生什麼事。
+  現在非重試性的 4xx 與重試耗盡的 5xx 都會把 response body 併進例外訊息，
+  因此同時出現在 `logs/app.log`（新的 `llm_http_error` 記錄行，含 status／url／
+  attempts／detail）與失敗來源的 `sources.error`（UI 直接看得到）。
+  內文長度由新增的 `[llm_retry].error_body_chars`（預設 400）限制，
+  避免會回吐請求內容的供應商把整份文件寫進 log；設為 `0` 可完全關閉。
+  例外的**型別**刻意維持 `httpx.HTTPStatusError`，因為
+  `llm_usage_events.error_class` 記的就是它，改成子類別會讓既有遙測用語漂移。
+
 ## [0.6.0] - 2026-08-30
 
 ### 新增
