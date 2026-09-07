@@ -162,9 +162,20 @@ the worst spreadsheet failure mode. Layered strategy:
    ordinary words are cheap, CJK ~0.75/char, digits and symbols ~1/char) and
    pack rows adaptively:
    budget = 512 − passage prefix − preamble − margin, targeting
-   `embed_token_budget` (default ≈ 400 estimated tokens, aligned with
-   `[chunking].cjk_target_chars`). Wide rows naturally degrade to one row per
-   chunk.
+   `embed_token_budget`. Wide rows naturally degrade to one row per chunk.
+
+   **Default raised 400 → 500 (2026-09-07).** The 400 was chosen against the old
+   estimator; once that was made per-character-class it became markedly more
+   conservative, so 400 estimated tokens bought only ~360 real ones and rows that
+   never needed splitting were being split. The ceiling was measured rather than
+   guessed: across spreadsheet-shaped content — prose, mixed CJK/Latin, part
+   numbers, mojibake from a mis-decoded CSV, pasted ASCII tables, punctuation
+   walls — the estimate never fell below **1.04x** the true count on this path,
+   putting the ceiling at 512 / 1.04 ≈ 534 and leaving 500 with ~33 tokens of
+   headroom (worst-case true length 479). That floor is specific to this path:
+   the preamble and `column = ` labels always dilute a pathological cell, whereas
+   a PDF table chunk of nothing but pipes measured 0.98x. Do not carry this
+   number to the character-based chunker.
 2. **Split single over-budget rows.** When one row alone exceeds the budget,
    split it into column-group child chunks that each repeat the identifier
    columns (the same rule as long Q&A answers repeating the question), with

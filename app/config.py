@@ -57,7 +57,15 @@ class SpreadsheetConfig:
     max_rows: int = 5000                 # per sheet, after the header row
     max_cols: int = 60                   # per sheet
     rows_per_chunk_max: int = 20         # (chunk shape) upper bound on record packing
-    embed_token_budget: int = 400        # (chunk shape) estimated tokens per record chunk
+    # (chunk shape) estimated tokens per record chunk. Measured against the real
+    # tokenizer over spreadsheet-shaped content — ordinary prose, mixed CJK/Latin,
+    # part numbers, mojibake from a mis-decoded CSV, and pasted ASCII tables — the
+    # estimate never came in below 1.04x the true count on this path, so 512 / 1.04
+    # ≈ 534 is the ceiling and 500 keeps ~33 tokens of headroom. Note the estimator
+    # is *less* conservative on other paths (a chunk of nothing but table pipes
+    # measured 0.98x), which is why this ceiling is specific to spreadsheets: the
+    # preamble and `column = ` labels always dilute a pathological cell here.
+    embed_token_budget: int = 500
     header_sample_rows: int = 5          # rows inspected when inferring a header
     wide_sheet_cols: int = 25            # above this, warn that the sheet is wide
     # Comma-separated column-name lists for Q&A detection. Customer sheets use
