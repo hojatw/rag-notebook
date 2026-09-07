@@ -9,6 +9,23 @@
 
 ## [未發布]
 
+### 升級注意事項
+
+- **必須重新索引全部來源。** 本輪修正改變了 PDF／PPTX／DOCX 的表格文字形狀，
+  以及 XLSX／CSV 的分塊切法。既有的 chunk 是舊形狀，不重新索引就享受不到修正，
+  原本會導致索引失敗的檔案也仍然是失敗狀態。從 `/admin/index` 的 Rebuild 執行。
+- **`[spreadsheet].embed_token_budget` 預設從 400 改為 500。** 若你的
+  `config.toml` 或 `NOTEBOOKLM_SPREADSHEET_EMBED_TOKEN_BUDGET` 有明確指定
+  400，它會繼續沿用舊值——那個值是對著舊估算器訂的，建議一併移除或改成 500。
+- **`[diagnostics]` 新增四個 `tokens_per_*` 參數。** 這是本節唯一一組
+  「不只影響顯示」的診斷參數：它們同時是試算表分塊的預算依據，改動會改變
+  XLSX／CSV 的 chunk 形狀並需要重新索引。原有的 `cjk_chars_per_token` /
+  `latin_chars_per_token` 保留不動，它們服務的是 `governance.estimate_tokens`
+  的用量估算，與 embedding 視窗無關。
+- **`[llm_retry]` 新增 `error_body_chars`（預設 400）。** 供應商的 HTTP 錯誤
+  內文現在會寫進 `logs/app.log` 與 `sources.error`。若你的端點會在錯誤回應中
+  回吐請求內容，且你不希望文件文字進入 log，設為 `0` 可完全關閉。
+
 ### 修正
 
 - **表格抽取不再輸出成排的空白分隔線**：`_render_pdf_table` 過去對「空儲存格」
