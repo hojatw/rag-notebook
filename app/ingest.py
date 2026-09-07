@@ -317,11 +317,41 @@ def _pdf_words_to_paragraph_blocks(words: list[dict[str, Any]], page_index: int)
     return paragraphs
 
 
+def _collapse_row_cells(cells: list[str]) -> list[str]:
+    """Drop trailing blank cells and collapse each run of blanks to one.
+
+    A sparse wide table — the merged multi-level headers in an FDA drug label,
+    say — otherwise renders as a wall of ``| | | | |``. Every pipe is its own
+    token to the embedding model while carrying no information at all, and that
+    is not a cosmetic problem: a real 773-character chunk from such a table
+    measured **533 e5 tokens**, past the model's 512-token window, and vLLM
+    refuses an over-long input with HTTP 400 rather than truncating it — so one
+    of these chunks fails the whole batch and the whole source ingest.
+    Collapsing the run to a single blank cell took the same table to 336 tokens.
+
+    One blank is kept per run so "a column was empty here" still survives; only
+    the repetition goes. Rows that hold nothing but blanks are dropped by the
+    caller.
+    """
+    trimmed = list(cells)
+    while trimmed and not trimmed[-1]:
+        trimmed.pop()
+    collapsed: list[str] = []
+    for cell in trimmed:
+        if not cell and collapsed and not collapsed[-1]:
+            continue
+        collapsed.append(cell)
+    return collapsed
+
+
 def _render_pdf_table(rows: list[list[Any]]) -> str:
-    """Render extracted table rows into retrieval-friendly pipe-separated text."""
+    """Render extracted table rows into retrieval-friendly pipe-separated text.
+
+    Also used for PPTX tables (`_extract_pptx`), so a change here covers both.
+    """
     cleaned_rows: list[list[str]] = []
     for row in rows:
-        cleaned = [" ".join(str(cell or "").split()) for cell in row]
+        cleaned = _collapse_row_cells([" ".join(str(cell or "").split()) for cell in row])
         if any(cell for cell in cleaned):
             cleaned_rows.append(cleaned)
     if not cleaned_rows:
@@ -453,9 +483,20 @@ def _render_docx_table(table) -> str:
     rows: list[str] = []
     for row in table.rows:
         cells: list[str] = []
+        previous_tc = None
         for cell in row.cells:
+            # python-docx yields one entry per *grid column*, so a horizontally
+            # merged cell is repeated once per column it spans — a merged header
+            # would otherwise be embedded three or four times over, inflating the
+            # chunk and teaching the vector nothing but its own echo. Identity of
+            # the underlying <w:tc> element is the exact test: two independent
+            # cells that happen to hold the same text are different elements.
+            if cell._tc is previous_tc:
+                continue
+            previous_tc = cell._tc
             cell_text = _render_docx_container(cell)
             cells.append(" ".join(cell_text.split()))
+        cells = _collapse_row_cells(cells)
         if any(c.strip() for c in cells):
             rows.append(" | ".join(cells))
     if not rows:
@@ -532,6 +573,13 @@ _SENTENCE_BOUNDARY_RE = re.compile(r"[。！？]+|[.!?](?=\s|$)|\n+")
 # the target chunk size. Includes both CJK and Latin commas / semicolons.
 _SOFT_BREAK_RE = re.compile(r"[，、；,;]")
 _CJK_RE = re.compile(r"[一-鿿]")
+#: Wider than `_CJK_RE` on purpose. `_CJK_RE` drives chunk *sizing* and stays
+#: ideograph-only so chunk shape does not move; this one drives the token
+#: *estimate*, where kana, hangul, and the rarer Han blocks cost the same as
+#: common ideographs and must not be billed as ASCII letters.
+_CJK_TOKEN_RE = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]"
+)
 # Internal whitespace normalisation: collapse runs but preserve newlines so
 # split_sentences() can use them as boundaries. PDFs often inject erratic
 # spacing inside paragraphs that we still want flattened.
@@ -1499,15 +1547,73 @@ def estimate_embedding_tokens(text: str) -> int:
     """Rough token count for the embedding input window (A6a).
 
     An **estimate, not a measurement**: counting real tokens would mean shipping
-    the model's tokenizer. CJK-heavy text is charged ~1 token/char (conservative
-    — e5 rarely does better) and Latin text ~4 chars/token, reusing the same
-    `is_mostly_cjk` split the chunker already relies on. Used only to warn that
-    a chunk *may* be truncated, never to change chunking. Ground truth lives in
-    `tests/inspect_e5_chunk_tokens.py` (QUALITY.md Q0-5).
+    the model's tokenizer. Ground truth lives in
+    `tests/inspect_e5_chunk_tokens.py` / `tests.inspect_file_tokens` (QUALITY.md
+    Q0-5), which run the real one.
+
+    Costs are charged per character *class*, not per chunk. The previous model
+    picked one of two ratios from `is_mostly_cjk(text)` and applied it to the
+    whole chunk, which meant a wall of table pipes — a sparse PDF table renders
+    as `| | | |` — was billed at English-prose density, 4 characters per token,
+    when each pipe is in fact a token of its own. On a real FDA drug label that
+    read 193 estimated against 533 actual, so the over-budget warning stayed
+    silent on the one source the embedding endpoint went on to refuse outright.
+
+    Each constant is rounded up from measurements against the real
+    multilingual-e5 tokenizer, so this leans towards over-estimating: a false
+    warning costs a glance, a missed one costs the whole ingest.
+
+    Whitespace is free — SentencePiece folds a space into the token that
+    follows it.
     """
     d = config.diagnostics
-    per_token = d.cjk_chars_per_token if is_mostly_cjk(text) else d.latin_chars_per_token
-    return int(len(text) / per_token) if per_token > 0 else 0
+    return int(sum(_word_token_cost(word, d) for word in text.split()))
+
+
+def _word_token_cost(word: str, d: Any) -> float:
+    """Estimated e5 tokens for one whitespace-separated word.
+
+    Modelled on what the tokenizer visibly does (verified against it):
+
+    * ``"▁combination"`` — a leading space is absorbed into an ordinary word, so
+      that word's space is free; ``"▁", "|"`` — before a symbol it is not, and
+      costs a token of its own. Hence the leading marker below, which is what a
+      wall of ``| | | |`` is actually made of: two tokens per pipe, not one.
+    * ``"▁The", "▁recommended", "▁dos", "age"`` — ordinary words cover several
+      characters per piece, but ``"KEYTRUDA"`` splits into five, and
+      ``"aB3xK9pQ"`` into one piece per character. Casing and digits break the
+      subword vocabulary, and a drug label is full of both.
+    """
+    if not word:
+        return 0.0
+    # A space merges into the following token only when that token is an ordinary
+    # word start (``"▁combination"``, ``"▁2"``); before a symbol it does not
+    # (``"▁", "|"``) and costs a piece of its own. That standalone marker is most
+    # of what a wall of ``| | | |`` actually costs: two tokens per pipe, not one.
+    total = 0.0 if (word[0].isascii() and word[0].isalnum()) else 1.0
+    rest: list[str] = []
+    for char in word:
+        if _CJK_TOKEN_RE.match(char):
+            total += d.tokens_per_cjk_char
+        else:
+            rest.append(char)
+    if not rest:
+        return total
+    if all(char.isalpha() for char in rest):
+        shouting = any(char.isupper() for char in rest[1:])
+        per_char = d.tokens_per_shouting_letter if shouting else d.tokens_per_ascii_letter
+        if any(not char.isascii() for char in rest):
+            # Accented Latin, Greek, Cyrillic: still ordinary words with subword
+            # pieces, just rarer ones, so they fragment more than English but
+            # nothing like an identifier. Charging them per character instead
+            # over-estimated German prose more than threefold.
+            per_char = max(per_char, d.tokens_per_non_ascii_letter)
+        # No word costs less than the one piece it is written as.
+        return total + max(1.0, len(rest) * per_char)
+    # Mixed letters/digits/symbols, or anything non-ASCII: identifiers, part
+    # numbers, table rules, mojibake. The vocabulary has no piece spanning these,
+    # so they land at roughly one token per character.
+    return total + len(rest) * d.tokens_per_other_char
 
 
 def collect_ingest_diagnostics(

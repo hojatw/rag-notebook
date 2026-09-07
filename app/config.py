@@ -92,14 +92,36 @@ class DomainPolicyConfig:
 class DiagnosticsConfig:
     """A6a ingestion diagnostics — thresholds for the per-source warnings.
 
-    These only decide when a warning is *shown*; none of them changes what is
-    extracted, chunked, or embedded, so tuning them never requires re-indexing.
+    Mostly display-only, with one exception worth knowing about: the
+    `tokens_per_*` costs feed `estimate_embedding_tokens`, which is also the
+    budget the **spreadsheet** row packer sizes its chunks against
+    (`_record_sections` / `_split_wide_row`). Changing those therefore changes
+    stored chunk shape for XLSX/CSV sources and requires re-indexing them; every
+    other field here only decides when a warning is shown.
     """
     low_text_chars: int = 200           # below this extracted total -> "almost no text" warning
     preview_chars: int = 500            # stored extracted-text preview length
     embedding_token_budget: int = 512   # model input window used for the over-budget warning
-    cjk_chars_per_token: float = 1.0    # CJK-heavy text estimate (conservative: 1 token/char)
-    latin_chars_per_token: float = 4.0  # Latin text estimate (the usual ~4 chars/token)
+    # Coarse char-count ratios used by `governance.estimate_tokens` when a
+    # provider returns no usage numbers. Deliberately kept separate from the
+    # embedding-window costs below: this one estimates *chat* usage from a
+    # character count alone — it never sees the text, by design (see
+    # `app/governance.py`) — so it cannot do anything per character class.
+    cjk_chars_per_token: float = 1.0    # CJK-heavy text (conservative: 1 token/char)
+    latin_chars_per_token: float = 4.0  # Latin text (the usual ~4 chars/token)
+    # Per-character token costs for `estimate_embedding_tokens`. The previous
+    # two-ratio model (CJK 1 token/char, everything else 4 chars/token) split on
+    # the *whole chunk's* language and so charged a wall of table pipes the same
+    # as English prose: a real chunk measured 533 e5 tokens while the estimate
+    # said 193, which is why the over-budget warning stayed silent on a source
+    # the endpoint then refused. These are per character *class* instead, and
+    # each is rounded UP from what the real multilingual-e5 tokenizer produces
+    # (docs/QUALITY.md Q0-5) — over-warning is cheap, a missed truncation is not.
+    tokens_per_ascii_letter: float = 0.22   # ordinary-cased word: several chars per piece
+    tokens_per_shouting_letter: float = 0.7  # ALLCAPS/CamelCase fragment far more
+    tokens_per_non_ascii_letter: float = 0.45  # accented Latin / Greek / Cyrillic words
+    tokens_per_cjk_char: float = 0.75       # measured ~0.58-0.67 for Han/kana/hangul
+    tokens_per_other_char: float = 1.0      # digits, punctuation, symbols, mojibake
 
 
 @dataclasses.dataclass
@@ -121,8 +143,9 @@ class MaxTokensConfig:
     generous headroom on those.
 
     Sized for **Traditional Chinese** output at roughly 1 token per character
-    (see `DiagnosticsConfig.cjk_chars_per_token`); the same content in English
-    needs about a quarter of this. Values are ~2x the expected output.
+    (see `DiagnosticsConfig.tokens_per_cjk_char`, which measures ~0.6 for input —
+    the 1.0 here keeps output headroom deliberately loose); the same content in
+    English needs about a quarter of this. Values are ~2x the expected output.
 
     Replace these with measured numbers once a deployment has traffic:
     `llm_usage_events` records `completion_tokens` per `call_type` — take p95 and

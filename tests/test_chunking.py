@@ -267,3 +267,77 @@ def test_chunk_sections_single_contributor_keeps_plain_label():
     out = chunk_sections([("page 15 paragraph 2", big)])
     assert len(out) > 1  # the section genuinely splits across multiple chunks
     assert all(loc == "page 15 paragraph 2" for loc, _ in out)
+
+
+#: The chunk that actually broke a customer ingest: a sparse PDF table rendered
+#: as pipes. Kept verbatim (shortened) because its *shape* is the whole point —
+#: mostly separators, and the old estimator billed them as English prose.
+PIPE_WALL_CHUNK = (
+    "| | | | combination with enfortumab | | | | | | | | vedotin before and after RC with "
+    "| | | | | | | | | | | | | | PLND | | | | | | | | | | | | | | n=167 | | | | | | | | "
+    "| | | | | | All Grades | | | | | | | | Grades 3-4 | | | | | |"
+)
+
+
+def test_token_estimate_catches_a_chunk_that_is_mostly_separators():
+    """The regression that let a rejected source ship with no warning.
+
+    The old estimator picked one of two ratios from the whole chunk's language
+    and charged this at Latin prose density — 4 characters per token — when
+    every pipe is a token of its own. It read 193 estimated against 533 actual,
+    so `chunk_over_token_budget` never fired on the one source the embedding
+    endpoint went on to refuse with HTTP 400.
+    """
+    from app.ingest import estimate_embedding_tokens
+
+    estimate = estimate_embedding_tokens(PIPE_WALL_CHUNK)
+    # ~1 token per non-space character here: "▁" then "|" for every pipe.
+    assert estimate > len(PIPE_WALL_CHUNK) * 0.45, estimate
+    # Same length of ordinary English must stay far cheaper, or the estimate is
+    # not measuring density at all — it is just a length check in disguise.
+    prose = ("The recommended dosage is 25 mg once daily with food. " * 5)[: len(PIPE_WALL_CHUNK)]
+    assert estimate_embedding_tokens(prose) < estimate / 2
+
+
+def test_token_estimate_charges_full_width_punctuation_as_symbols():
+    """Full-width forms cost about a token each; they are not cheap letters.
+
+    Measured at ~0.95 tokens per character against the real tokenizer. A CJK
+    document laid out with （）、；※ runs is one of the shapes that sits closest
+    to the window, so mis-classifying these as prose is how a warning goes
+    missing on exactly the wrong document.
+    """
+    from app.ingest import estimate_embedding_tokens
+
+    text = "（一）、（二）、（三）；※◎△▲□■◇◆" * 4
+    assert estimate_embedding_tokens(text) > len(text) * 0.85
+
+
+def test_token_estimate_does_not_cry_wolf_on_ordinary_prose():
+    """Over-estimating is the safe direction, but it still has to stay usable.
+
+    A full-size chunk of English or Traditional Chinese prose is nowhere near
+    the window, and must not be reported as if it were, or the warning becomes
+    noise people learn to scroll past.
+    """
+    from app.ingest import estimate_embedding_tokens
+    from app.config import config
+
+    english = ("The recommended dosage is 25 mg once daily with food. " * 20)[:800]
+    chinese = "本公司之品質管理系統依照國際標準建立並持續改善所有製程均須經過檢驗。" * 12
+
+    assert estimate_embedding_tokens(english) < config.diagnostics.embedding_token_budget
+    assert estimate_embedding_tokens(chinese[:400]) < config.diagnostics.embedding_token_budget
+
+
+def test_token_estimate_prices_identifiers_above_words():
+    """`aB3xK9pQ` is one piece per character; `recommended` is one or two total.
+
+    Part numbers, hashes and barcodes are where the cheap-word assumption breaks,
+    and they are common in exactly the documents that carry dense tables.
+    """
+    from app.ingest import estimate_embedding_tokens
+
+    identifiers = "aB3xK9pQ2mZ7wL4nR8vT " * 8
+    words = "recommendation deployment information " * 5
+    assert estimate_embedding_tokens(identifiers[:160]) > estimate_embedding_tokens(words[:160]) * 2

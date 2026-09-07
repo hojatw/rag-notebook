@@ -248,3 +248,61 @@ def test_html_keeps_visible_table_content(tmp_path):
     assert "Country" in text
     assert "Taiwan" in text
     assert "123" in text
+
+
+def test_pdf_table_render_collapses_blank_cell_runs():
+    """A sparse table must not render as a wall of pipes.
+
+    Each `|` is a token to the embedding model while carrying no information.
+    A real FDA drug label produced a 773-character chunk of these worth 533 e5
+    tokens — past the 512-token window, which vLLM answers with HTTP 400 rather
+    than truncating, so the whole source failed to index. One blank survives per
+    run so "a column was empty here" is still visible.
+    """
+    from app.ingest import _render_pdf_table
+
+    rendered = _render_pdf_table([
+        ["Adverse Reaction", "", "", "KEYTRUDA", "", ""],
+        ["Nausea", "", "", "12.4%", "", ""],
+        ["", "", "", "", "", ""],
+    ])
+
+    assert rendered == "Table:\nAdverse Reaction |  | KEYTRUDA\nNausea |  | 12.4%"
+    assert "| | |" not in rendered          # no run of empties survives
+    assert not rendered.endswith("|")       # no trailing separators
+    # The row that was entirely blank contributed nothing at all.
+    assert len(rendered.splitlines()) == 3
+
+
+def test_docx_table_render_collapses_blanks_and_keeps_merged_cell_once(tmp_path):
+    """DOCX had the same pipe-wall bug plus one of its own.
+
+    python-docx yields one entry per *grid column*, so a horizontally merged
+    cell comes back repeated once per column it spans — a merged header was
+    being embedded three times over. Identity of the underlying <w:tc> element
+    is what separates that from two independent cells holding the same text,
+    which is why the last row below must keep both of its zeros.
+    """
+    from app.ingest import _render_docx_table
+
+    document = Document()
+    table = document.add_table(rows=3, cols=4)
+    table.cell(0, 0).text = "Adverse Reaction"
+    table.cell(0, 1).merge(table.cell(0, 3)).text = "KEYTRUDA 200 mg"
+    table.cell(1, 0).text = "Nausea"
+    table.cell(1, 2).text = "12.4%"
+    table.cell(2, 0).text = "Grade 3"
+    table.cell(2, 1).text = "0"
+    table.cell(2, 2).text = "0"
+
+    rendered = _render_docx_table(table)
+    lines = rendered.splitlines()
+
+    assert lines[0] == "Table:"
+    # Merged header appears exactly once, not once per column it spans.
+    assert lines[1] == "Adverse Reaction | KEYTRUDA 200 mg"
+    assert rendered.count("KEYTRUDA 200 mg") == 1
+    # Blank run between "Nausea" and its value collapses to a single separator.
+    assert lines[2] == "Nausea |  | 12.4%"
+    # Two independent cells that happen to read the same are NOT a merge.
+    assert lines[3] == "Grade 3 | 0 | 0"
