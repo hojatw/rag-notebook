@@ -9,22 +9,21 @@
 
 ## [未發布]
 
-### 升級注意事項
+## [0.7.0] - 2026-09-08
 
-- **必須重新索引全部來源。** 本輪修正改變了 PDF／PPTX／DOCX 的表格文字形狀，
-  以及 XLSX／CSV 的分塊切法。既有的 chunk 是舊形狀，不重新索引就享受不到修正，
-  原本會導致索引失敗的檔案也仍然是失敗狀態。從 `/admin/index` 的 Rebuild 執行。
-- **`[spreadsheet].embed_token_budget` 預設從 400 改為 500。** 若你的
-  `config.toml` 或 `NOTEBOOKLM_SPREADSHEET_EMBED_TOKEN_BUDGET` 有明確指定
-  400，它會繼續沿用舊值——那個值是對著舊估算器訂的，建議一併移除或改成 500。
-- **`[diagnostics]` 新增四個 `tokens_per_*` 參數。** 這是本節唯一一組
-  「不只影響顯示」的診斷參數：它們同時是試算表分塊的預算依據，改動會改變
-  XLSX／CSV 的 chunk 形狀並需要重新索引。原有的 `cjk_chars_per_token` /
-  `latin_chars_per_token` 保留不動，它們服務的是 `governance.estimate_tokens`
-  的用量估算，與 embedding 視窗無關。
-- **`[llm_retry]` 新增 `error_body_chars`（預設 400）。** 供應商的 HTTP 錯誤
-  內文現在會寫進 `logs/app.log` 與 `sources.error`。若你的端點會在錯誤回應中
-  回吐請求內容，且你不希望文件文字進入 log，設為 `0` 可完全關閉。
+本版全部是修正，沒有新功能，但**必須重新索引全部來源**才會生效——詳見文末的
+升級注意事項。起因是客戶上傳某個 PDF 後 embedding 端點回 HTTP 400，追下去發現
+整條 ingest pipeline 只用字元數當上限，從來沒有一處用 token 數把關。
+
+### 新增
+
+- **`tests/inspect_file_tokens.py`：單一檔案的 embedding token 離線檢查。**
+  對指定檔案跑與 ingest worker 完全相同的 `extract_sections` + `chunk_sections`，
+  再用模型自己的 tokenizer 數真實 token。不連網、不碰 DB、不碰向量庫，
+  可以直接指著客戶的檔案跑，用來回答「這個檔案上傳後會不會因為 chunk 過長而失敗」；
+  任何 chunk 超限時 exit code 為 1。既有的 `tests/inspect_e5_chunk_tokens.py`
+  掃的是資料庫裡「已索引」的 chunk，剛好看不到最需要診斷的情況——被端點拒絕而
+  失敗的來源一筆 chunk 都不會留下。用法見 `docs/DEVELOPMENT.md` 的驗證章節。
 
 ### 修正
 
@@ -40,11 +39,17 @@
   **DOCX 另外修掉自己的一個問題**：python-docx 的 `row.cells` 是「每個網格欄
   一筆」，水平合併的儲存格會依跨欄數重複回傳，所以合併表頭原本會被重複嵌入
   三、四次。改以底層 `<w:tc>` 元素的識別判斷，兩個「碰巧內容相同」的獨立儲存格
-  不會被誤判成合併。**需要重新索引既有的 PDF／PPTX／DOCX 來源才會生效。**
-- **分塊超限警告的文案更正**：原本寫「超出的尾端會被靜默截斷而檢索不到」，
-  但那只描述了一半——vLLM 這類端點是直接拒絕整批請求、導致索引失敗，不是截斷。
-  客戶看到的正是後者，而畫面上的說明卻指向前者。改為兩種行為都說明。
-
+  不會被誤判成合併。
+- **token 估算改為逐字元類別計價**：`estimate_embedding_tokens` 原本只用整個
+  chunk 的語言挑一個比例（中文 1 token/字、其餘 4 字/token），所以上面那面管線牆
+  被當成英文散文計價，估出 **193** 而實際是 **533**——這就是為什麼
+  `chunk_over_token_budget` 警告從頭到尾沒亮，維運端在來源頁上看不到任何徵兆。
+  現在依字元類別計價：一般單字便宜、全大寫與料號接近 1 token/字元、
+  CJK 約 0.75、數字與符號約 1，另加「非單字開頭前的空白自成一個 token」。
+  以那份仿單的 766 個 chunk 實測：**漏報 0、誤報約 1%**（原本最多低估 2.8 倍）。
+  參數在 `[diagnostics].tokens_per_*`，刻意偏保守——誤報只是多看一眼，漏報是整份
+  索引失敗。`governance.estimate_tokens` 用的 `cjk_chars_per_token` /
+  `latin_chars_per_token` 維持原樣：它只拿得到字元數、看不到文字，本來就無法分類。
 - **試算表不再產生無上限的 chunk**：兩個地方會把單一儲存格原封不動送去 embedding，
   兩個都修掉了。
   `_qa_sections` 過去不論答案多長都是「一列一個 chunk」——設計文件從一開始就寫了
@@ -62,31 +67,14 @@
   兩者共用新的 `_split_text_to_budget`，走的是與 `chunk_sections` 相同的
   句子 → 軟標點 → 硬切階梯，但以估算 token 計量而非字元數，因為試算表路徑
   本來就不經過字元式的 chunker。切分不會丟資料，測試會斷言各段能還原原文。
-  **需要重新索引既有的 XLSX/CSV 來源。**
 - **`[spreadsheet].embed_token_budget` 預設 400 → 500**：400 是對著舊估算器訂的，
   估算器改成逐字元類別後變保守許多，400 個估算 token 只換到約 360 個真 token，
   導致本來不需要切分的列也被切開。上限是量出來的不是猜的：把散文、中英混排、
   料號金額、CSV 編碼誤判的亂碼、貼進儲存格的 ASCII 表格與標點牆都跑過，
   在試算表這條路徑上估算值從未低於真值的 **1.04 倍**，因此上限為 512 ÷ 1.04 ≈ 534，
   500 留下約 33 tokens 餘裕（最壞情況真實長度 479）。
-  這個下限只適用於這條路徑——前言與 `欄位名 = ` 標籤永遠會稀釋掉病態內容；
-  在字元式 chunker 那邊，一個全是管線符號的 PDF 表格 chunk 量到 0.98 倍。
-- **token 估算改為逐字元類別計價**：`estimate_embedding_tokens` 原本只用整個
-  chunk 的語言挑一個比例（中文 1 token/字、其餘 4 字/token），所以上面那面管線牆
-  被當成英文散文計價，估出 **193** 而實際是 **533**——這就是為什麼
-  `chunk_over_token_budget` 警告從頭到尾沒亮，維運端在來源頁上看不到任何徵兆。
-  現在依字元類別計價：一般單字便宜、全大寫與料號接近 1 token/字元、
-  CJK 約 0.75、數字與符號約 1，另加「非單字開頭前的空白自成一個 token」。
-  以那份仿單的 766 個 chunk 實測：**漏報 0、誤報約 1%**（原本最多低估 2.8 倍）。
-  參數在 `[diagnostics].tokens_per_*`，刻意偏保守——誤報只是多看一眼，漏報是整份
-  索引失敗。
-  **注意這一項不只影響顯示**：同一個函式也是試算表列打包的預算依據
-  （`_record_sections` / `_split_wide_row`），所以 XLSX/CSV 的 chunk 形狀會改變、
-  需要重新索引；先前一個實測 1541 字／實際 803 token 的數字密集案例，現在會正確
-  切成多個約 190 token 的 chunk。
-  `governance.estimate_tokens` 用的 `cjk_chars_per_token` / `latin_chars_per_token`
-  維持原樣：它只拿得到字元數、看不到文字，本來就無法分類。
-
+  這個 1.04 只適用於這條路徑——前言與 `欄位名 = ` 標籤永遠會稀釋掉病態內容；
+  在字元式 chunker 那邊，同樣的內容量到 0.98 倍。別把數字搬到另一條路徑用。
 - **LLM／embedding 的 HTTP 錯誤現在會保留供應商的說明**：`_post_json_with_retry`
   過去只把 httpx 的訊息往上拋，內容到「`Client error '400 Bad Request' for url ...`」
   就結束，真正說明原因的 response body 從來沒被讀過。實務後果是：某個檔案上傳後
@@ -96,8 +84,8 @@
   現在非重試性的 4xx 與重試耗盡的 5xx 都會把 response body 併進例外訊息，
   因此同時出現在 `logs/app.log`（新的 `llm_http_error` 記錄行，含 status／url／
   attempts／detail）與失敗來源的 `sources.error`（UI 直接看得到）。
-  內文長度由新增的 `[llm_retry].error_body_chars`（預設 400）限制，
-  避免會回吐請求內容的供應商把整份文件寫進 log；設為 `0` 可完全關閉。
+  內文長度由新增的 `[llm_retry].error_body_chars` 限制，避免會回吐請求內容的
+  供應商把整份文件寫進 log；設為 `0` 可完全關閉。
   例外的**型別**刻意維持 `httpx.HTTPStatusError`，因為
   `llm_usage_events.error_class` 記的就是它，改成子類別會讓既有遙測用語漂移。
   串流聊天（`chat_completion_stream`）與 `/settings` 的串流探測同樣涵蓋：
@@ -107,6 +95,28 @@
   串流那條 400／422 的 `stream_options` 退回機制不受影響，仍會先重試一次。
   `llm_usage_events.metadata_json` 刻意**不**收錄錯誤內文，維持 `governance.py`
   要求的精簡；內文只落在 `logs/app.log` 與 `sources.error`。
+- **分塊超限警告的文案更正**：原本寫「超出的尾端會被靜默截斷而檢索不到」，
+  但那只描述了一半——vLLM 這類端點是直接拒絕整批請求、導致索引失敗，不是截斷。
+  客戶看到的正是後者，而畫面上的說明卻指向前者。改為兩種行為都說明。
+
+### 升級注意事項
+
+- **必須重新索引全部來源。** 本版改變了 PDF／PPTX／DOCX 的表格文字形狀，
+  以及 XLSX／CSV 的分塊切法。既有的 chunk 是舊形狀，不重新索引就享受不到修正，
+  原本會導致索引失敗的檔案也仍然是失敗狀態。從 `/admin/index` 的 Rebuild 執行。
+- **`[spreadsheet].embed_token_budget` 預設從 400 改為 500。** 若你的
+  `config.toml` 或 `NOTEBOOKLM_SPREADSHEET_EMBED_TOKEN_BUDGET` 有明確指定
+  400，它會繼續沿用舊值——那個值是對著舊估算器訂的，建議一併移除或改成 500。
+- **`[diagnostics]` 新增四個 `tokens_per_*` 參數。** 這是該節唯一一組
+  「不只影響顯示」的診斷參數：它們同時是試算表分塊的預算依據，改動會改變
+  XLSX／CSV 的 chunk 形狀並需要重新索引。
+- **`[llm_retry]` 新增 `error_body_chars`（預設 400）。** 供應商的 HTTP 錯誤
+  內文現在會寫進 `logs/app.log` 與 `sources.error`。若你的端點會在錯誤回應中
+  回吐請求內容，且你不希望文件文字進入 log，設為 `0` 可完全關閉。
+- **仍然沒有硬性的 token 防線。** 本版讓所有已知路徑都有界，但那是靠量測而非
+  保證：embedding 呼叫前沒有任何一處量測真實 token。若又遇到索引失敗，先用
+  `python -m tests.inspect_file_tokens <檔案>` 確認是不是同一類問題。
+  背景記在 `docs/QUALITY.md` 的 Q0-5。
 
 ## [0.6.0] - 2026-08-30
 
