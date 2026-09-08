@@ -58,6 +58,14 @@ Detection should support:
 Each Q&A row should become one chunk unless the answer is very long. If the answer
 must be split, every child chunk should repeat the original question and row metadata.
 
+**Implemented 2026-09-07.** This paragraph was in the design from the start but
+`_qa_sections` never acted on it: a row was emitted whole at any length, and a
+1500-character policy answer measured 1167 e5 tokens against a 512-token window.
+Splitting now produces `sheet "FAQ" row 12 part 2/3` labels, each part repeating
+the preamble and the question. In real Traditional Chinese FAQ text the threshold
+is around 660 characters — reachable whenever someone pastes a regulation or a
+whole procedure into the answer cell, which is common.
+
 Recommended chunk text (decision: one trimmed-preamble text per chunk — see
 "Decision: single trimmed-preamble embedding text" below. Constant fields such
 as workbook filename, row number, and detected type live in chunk metadata,
@@ -150,18 +158,40 @@ looks indexed while its tail rows are unreachable through the vector path —
 the worst spreadsheet failure mode. Layered strategy:
 
 1. **Prevent (primary).** Estimate tokens at chunk-build time with a
-   conservative character heuristic (CJK ≈ 1 token/char, ASCII ≈ 1 token per
-   ~4 chars, plus a safety margin) and pack rows adaptively:
+   conservative per-character-class heuristic (`estimate_embedding_tokens`;
+   ordinary words are cheap, CJK ~0.75/char, digits and symbols ~1/char) and
+   pack rows adaptively:
    budget = 512 − passage prefix − preamble − margin, targeting
-   `embed_token_budget` (default ≈ 400 estimated tokens, aligned with
-   `[chunking].cjk_target_chars`). Wide rows naturally degrade to one row per
-   chunk.
+   `embed_token_budget`. Wide rows naturally degrade to one row per chunk.
+
+   **Default raised 400 → 500 (2026-09-07).** The 400 was chosen against the old
+   estimator; once that was made per-character-class it became markedly more
+   conservative, so 400 estimated tokens bought only ~360 real ones and rows that
+   never needed splitting were being split. The ceiling was measured rather than
+   guessed: across spreadsheet-shaped content — prose, mixed CJK/Latin, part
+   numbers, mojibake from a mis-decoded CSV, pasted ASCII tables, punctuation
+   walls — the estimate never fell below **1.04x** the true count on this path,
+   putting the ceiling at 512 / 1.04 ≈ 534 and leaving 500 with ~33 tokens of
+   headroom (worst-case true length 479). That floor is specific to this path:
+   the preamble and `column = ` labels always dilute a pathological cell, whereas
+   a PDF table chunk of nothing but pipes measured 0.98x. Do not carry this
+   number to the character-based chunker.
 2. **Split single over-budget rows.** When one row alone exceeds the budget,
    split it into column-group child chunks that each repeat the identifier
    columns (the same rule as long Q&A answers repeating the question), with
-   location labels like `Row 7 · part 2/3 · columns G–T`. A pathological
-   giant cell (e.g. a memo pasted into 備註) routes through the normal text
-   chunker as its own sections.
+   location labels like `Row 7 · part 2/3 · columns G–T`.
+
+   **Deviation, 2026-09-07.** The original note said a pathological giant cell
+   (a memo pasted into 備註) would "route through the normal text chunker as its
+   own sections". It is split in place instead, by `_split_text_to_budget`,
+   repeating `欄位名 = ` on every piece. Handing it to `chunk_sections` would
+   drop both the column name and the `sheet "X" row N` citation, which is most of
+   what makes a spreadsheet chunk answerable. Until this landed the giant cell
+   was not handled at all: `_split_wide_row`'s packing loop only closed a group
+   when one was already open, so a cell larger than the whole budget sat in an
+   empty group and was emitted at full length. The same applies to column 0,
+   which is repeated into every part — an oversized one is demoted to an ordinary
+   column and split, rather than truncated.
 3. **Detect (backstop).** Store the token estimate in chunk metadata; `A6a`
    diagnostics warn on any chunk whose estimate exceeds the window. Calibrate
    the heuristic against the real tokenizer with the existing
@@ -309,7 +339,10 @@ Tunables live in `app/config.py` as a `[spreadsheet]` group (defaults ←
   is stored — see [`DEVELOPMENT.md`](DEVELOPMENT.md) → *File size caps*);
 - `rows_per_chunk_max` — upper bound on record-chunk grouping;
 - `embed_token_budget` — estimated-token cap per chunk for the adaptive row
-  packing (see "Token budgeting for record chunks");
+  packing (see "Token budgeting for record chunks"). The estimator it is
+  measured against was made per-character-class in 2026-09; identifier- and
+  number-dense sheets, which the old heuristic under-charged roughly twofold,
+  now split into more and smaller chunks for the same budget;
 - `header_sample_rows` — rows inspected for header inference;
 - `qa_question_synonyms` / `qa_answer_synonyms` — column-name lists for Q&A
   detection (`question`, `q`, `問題`, `提問` / `answer`, `a`, `答案`, `回覆`),

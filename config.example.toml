@@ -36,7 +36,7 @@ overlap_sentences = 1         # sentences of overlap between adjacent chunks
 max_rows = 5000               # per sheet, after the header row
 max_cols = 60                 # per sheet
 rows_per_chunk_max = 20       # upper bound on record-chunk packing
-embed_token_budget = 400      # estimated tokens per record chunk
+embed_token_budget = 500      # estimated tokens per record chunk
 header_sample_rows = 5        # rows inspected when inferring a header
 wide_sheet_cols = 25          # above this, warn that the sheet is wide
 qa_question_synonyms = "question,q,問題,提問,問句,客戶提問"
@@ -59,13 +59,20 @@ max_matched_hints = 8
 max_hint_tokens = 600
 max_rewrite_queries = 5
 
-# --- A6a ingestion diagnostics (display thresholds only, no re-indexing) -----
+# --- A6a ingestion diagnostics -----------------------------------------------
+# Display thresholds, except the tokens_per_* costs: those also size spreadsheet
+# chunks (_record_sections), so changing them requires re-indexing XLSX/CSV.
 [diagnostics]
 low_text_chars = 200          # extracted total below this -> "almost no text" warning
 preview_chars = 500           # stored extracted-text preview length
 embedding_token_budget = 512  # model input window used for the over-budget warning
-cjk_chars_per_token = 1.0     # CJK-heavy estimate (conservative: 1 token per char)
-latin_chars_per_token = 4.0   # Latin estimate (the usual ~4 chars per token)
+cjk_chars_per_token = 1.0     # chat-usage estimate from a char count only
+latin_chars_per_token = 4.0   # (governance.estimate_tokens; never sees the text)
+tokens_per_ascii_letter = 0.22 # per-char token cost estimates, rounded up from
+tokens_per_shouting_letter = 0.7 # ALLCAPS/CamelCase words fragment far more
+tokens_per_non_ascii_letter = 0.45 # accented Latin / Greek / Cyrillic words
+tokens_per_cjk_char = 0.75    # real multilingual-e5 measurements; over-warning is
+tokens_per_other_char = 1.0   # cheap, a missed truncation is not
 
 # --- Embedding throughput (settings.* can still override per deployment) -----
 [embedding]
@@ -76,6 +83,7 @@ max_concurrency = 4           # in-flight embedding batches (bound the endpoint)
 [llm_retry]
 max_attempts = 3
 backoff_base_s = 0.5          # exponential backoff base (seconds) + jitter
+error_body_chars = 400        # provider error body kept in the raised error; 0 disables
 
 # --- Ingest job queue --------------------------------------------------------
 [jobs]

@@ -251,7 +251,11 @@ def test_csv_streams_and_recovers_when_non_utf8_bytes_start_after_the_sample(
     result = extract_sections(path)
 
     assert result.details["encoding"]["source"] == "detected"
-    assert "如何退貨？" in result.sections[1][1]
+    # Match on content, not position: this fixture's 70 KB padding cell is itself
+    # over the token budget and now splits into several parts, so the second Q&A
+    # row is no longer at a fixed index. What matters here is that its Big5 bytes
+    # were decoded at all.
+    assert any("如何退貨？" in text for _, text in result.sections)
     assert all("第三題？" not in text for _, text in result.sections)
     assert all("drop-column" not in text for _, text in result.sections)
     assert result.details["truncated_sheets"] == ["late-big5"]
@@ -269,3 +273,97 @@ def test_csv_preserves_newlines_inside_quoted_fields(tmp_path):
 
     assert len(result.sections) == 1
     assert "Answer:\n第一行\n第二行" in result.sections[0][1]
+
+
+def _nonspace(text: str) -> str:
+    return "".join(text.split())
+
+
+def test_long_qa_answer_is_split_into_parts_that_repeat_the_question(tmp_path, monkeypatch):
+    """A Q&A row was emitted whole at any length, so one long answer killed the file.
+
+    Q&A sheets in the wild paste whole regulations into the answer cell; ~660
+    Chinese characters is all it takes to pass a 512-token window, and vLLM
+    refuses an over-long input rather than truncating it, so the failure is the
+    entire source, not one row. Each part has to repeat the question or the tail
+    pieces stop being reachable by the question they answer.
+    """
+    import app.config as app_config
+
+    monkeypatch.setattr(app_config.config.spreadsheet, "embed_token_budget", 120)
+    answer = "本條規定之內容依主管機關公告辦理，並自公告日起生效。" * 12
+    path = _write_xlsx(tmp_path, {"FAQ": [["編號", "客戶提問", "回覆內容"],
+                                          ["1", "請問核決權限的規定為何？", answer]]})
+
+    result = extract_sections(path)
+
+    assert len(result.sections) > 1, "the long answer was not split at all"
+    assert all("part" in location for location, _ in result.sections)
+    assert result.sections[0][0].endswith(f"part 1/{len(result.sections)}")
+    # Every part stays reachable by the question, and names its sheet row.
+    assert all("請問核決權限的規定為何？" in text for _, text in result.sections)
+    assert all('sheet "FAQ" row 2' in location for location, _ in result.sections)
+    # Nothing is dropped: splitting must not become silent truncation.
+    answers = [text.split("Answer:\n", 1)[1] for _, text in result.sections]
+    assert _nonspace("".join(answers)) == _nonspace(answer)
+
+
+def test_short_qa_answer_still_makes_exactly_one_chunk(tmp_path):
+    """The row remains the unit whenever it fits — splitting is the exception."""
+    path = _write_xlsx(tmp_path, {"FAQ": [["編號", "客戶提問", "回覆內容"],
+                                          ["1", "請購單多久核准？", "採購部收件後三個工作日內完成初審。"]]})
+
+    result = extract_sections(path)
+
+    assert len(result.sections) == 1
+    assert result.sections[0][0] == 'sheet "FAQ" row 2'
+    assert "part" not in result.sections[0][0]
+
+
+def test_single_over_budget_cell_is_split_repeating_its_column_name(tmp_path, monkeypatch):
+    """One oversized cell escaped the packing loop entirely.
+
+    `_split_wide_row` only closed a group when `current` was non-empty, so a cell
+    bigger than the whole budget landed in an empty group and was emitted at full
+    length — the wide-row splitter looking like it had done its job. A contract
+    clause or a pasted procedure in a free-text column reaches that size easily.
+    """
+    import app.config as app_config
+
+    monkeypatch.setattr(app_config.config.spreadsheet, "embed_token_budget", 120)
+    clause = "本條款之內容包含各項權利義務之詳細說明，並依相關法令辦理。" * 12
+    path = _write_xlsx(tmp_path, {"條款": [["條號", "內容"], ["第一條", clause]]})
+
+    result = extract_sections(path)
+
+    assert len(result.sections) > 1
+    assert all("part" in location for location, _ in result.sections)
+    # A tail piece must still say which field it came from.
+    assert all("內容 = " in text for _, text in result.sections)
+    assert all("條號 = 第一條" in text for _, text in result.sections)
+    bodies = [text.split("內容 = ", 1)[1] for _, text in result.sections]
+    assert _nonspace("".join(bodies)) == _nonspace(clause)
+
+
+def test_oversized_identifier_column_is_split_not_repeated(tmp_path, monkeypatch):
+    """Column 0 is repeated on every part, so an oversized one poisons all of them.
+
+    No amount of splitting the other columns helps when the identifier alone is
+    over budget. It gets demoted to an ordinary column and split like any other —
+    dropping it instead would be silent, and column 0 is usually the record name.
+    """
+    import app.config as app_config
+
+    monkeypatch.setattr(app_config.config.spreadsheet, "embed_token_budget", 120)
+    essay = "這一欄被填進了整段說明文字而不是識別碼，長度遠超過一個識別碼該有的樣子。" * 10
+    path = _write_xlsx(tmp_path, {"表": [["說明", "數值"], [essay, "42"]]})
+
+    result = extract_sections(path)
+
+    assert len(result.sections) > 1
+    assert all("part" in location for location, _ in result.sections)
+    # Demoted, not truncated: the whole cell is still present across the parts.
+    recovered = "".join(
+        _nonspace(text.split("說明 = ", 1)[1]) for _, text in result.sections if "說明 = " in text
+    )
+    assert recovered == _nonspace(essay)

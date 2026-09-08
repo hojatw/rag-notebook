@@ -164,7 +164,10 @@ sqlite3 data/app.sqlite3 "WITH ranked AS (SELECT call_type, completion_tokens, N
 Take p95 × 1.5. The `is_estimated = 0` filter still matters: fallback counts are
 now CJK-aware (`[diagnostics].cjk_chars_per_token` and
 `latin_chars_per_token`) but remain approximations rather than provider/tokenizer
-measurements. A row is also marked estimated when a provider returns only part of
+measurements. Those two are the *chat-usage* ratios and are separate from the
+`[diagnostics].tokens_per_*` costs, which price the embedding input window per
+character class — `governance.estimate_tokens` only ever receives a character
+count, never the text, so it cannot classify anything. A row is also marked estimated when a provider returns only part of
 the usage shape and the missing prompt/completion component must be synthesized;
 prompt + total or completion + total can be completed exactly by subtraction.
 
@@ -351,6 +354,20 @@ available:
 .venv/bin/python -m tests.eval_retrieval --no-rerank
 .venv/bin/python -m tests.eval_retrieval --top-k 10
 ```
+
+To check whether one specific file will produce a chunk past the embedding
+model's input window — before uploading it, and including files that failed to
+index and therefore left no chunk rows behind:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m tests.inspect_file_tokens /path/to/file.pdf
+```
+
+It runs the real `extract_sections` + `chunk_sections` and counts tokens with the
+model's own tokenizer, offline — no network, no database, no vector store — so it
+is safe to point at a customer file. Exit code is 1 when any chunk is over the
+limit. `tests.inspect_e5_chunk_tokens` is the corpus-wide companion; it scans
+chunks already indexed in the database.
 
 The harness reports per-question hit rank, Recall@k, and MRR. It requires an
 embedding model, but not an API key: local OpenAI-compatible embedding services

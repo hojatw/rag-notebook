@@ -37,7 +37,72 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Impact:** Chunk tails dropped from the embedding → lost recall on long CJK / table chunks.
 - **Fix:** **Tooling landed; measurement pending in the target data/runtime.** Run `python -m tests.inspect_e5_chunk_tokens` against indexed deployment data with the `intfloat/multilingual-e5-large` tokenizer cached/available. The script prepends the passage prefix, counts tokens including special tokens, reports all/CJK/Latin/mixed/table p50/p95/p99/max, and prints over-512 examples. If real customer chunks exceed 512, lower `CJK_TARGET_CHARS` / tune table chunking and re-index; otherwise tick this off.
 - **Current local measurement (2026-06-19):** 6,406 indexed chunks scanned; p95 = 285 tokens, p99 = 359, max = 874; 10 chunks (0.2%) exceed 512, all classified CJK. The over-limit cases are concentrated in long extracted pages / dense medical-label style text, not ordinary Latin chunks. Keep this open until the target customer corpus is measured and a chunking/table strategy is chosen for over-limit CJK chunks.
-- **Now observable in production (A6a, 2026-07-25):** each source's ingestion diagnostics carry a `chunk_over_token_budget` warning counting chunks whose *estimated* token length exceeds `[diagnostics].embedding_token_budget` (CJK ~1 token/char, Latin ~4 chars/token — `estimate_embedding_tokens` in `app/ingest.py`). That makes the over-limit case visible per source on the customer corpus without shipping the tokenizer, so this item no longer depends on someone remembering to run the script. The script stays the ground truth — the warning is an estimate and can over-report.
+- **Now observable in production (A6a, 2026-07-25):** each source's ingestion diagnostics carry a `chunk_over_token_budget` warning counting chunks whose *estimated* token length exceeds `[diagnostics].embedding_token_budget` — `estimate_embedding_tokens` in `app/ingest.py`. That makes the over-limit case visible per source on the customer corpus without shipping the tokenizer, so this item no longer depends on someone remembering to run the script. The script stays the ground truth — the warning is an estimate and can over-report.
+- **Per-file pre-flight tool (2026-09-07):** `python -m tests.inspect_file_tokens <path>`
+  runs the real `extract_sections` + `chunk_sections` on **one file** and counts
+  real tokens, offline (no network, no DB, no vector store). It exists because
+  `inspect_e5_chunk_tokens` scans *indexed* chunks and therefore cannot see the
+  case that matters most — an ingest the embedding endpoint **rejected**, which
+  leaves no chunk rows behind. It also prints the app's own
+  `estimate_embedding_tokens` beside the true count, which is how the estimator's
+  Latin 4-chars/token assumption was measured as roughly 2x optimistic on
+  ID/number-dense text (1541 chars: estimate 385, actual 803).
+- **Measured character-class densities (2026-09-07, e5 tokenizer, 800-char chunk):**
+  English prose 0.17 tok/char, common Traditional Chinese 0.58, ID/number-dense
+  0.45, table rules `├─┼─┤` 0.70, full-width punctuation 0.79, rare/variant Han
+  0.67, mis-decoded text (mojibake) 0.98, no-whitespace strings 0.77. The
+  800-char Latin target is safe for prose but **not** for the last five: a
+  chunk at the cap can reach 560-780 tokens. The 800-char cap itself holds —
+  fuzzed over 4000 random inputs, max chunk 799 chars.
+- **Failures now say why (2026-09-07):** a rejection from the embedding endpoint
+  used to reach `sources.error` as `Client error '400 Bad Request'` with the
+  provider's explanation dropped. `_post_json_with_retry` now folds the response
+  body in (see CHANGELOG), so "maximum context length is 512 tokens" is visible
+  in the UI and in `logs/app.log` without reading the provider's container log.
+- **Reproduced on a real customer file (2026-09-07).** An FDA drug-label PDF
+  (BLA 125514 s190, 881 sections) produced exactly one chunk over the window:
+  773 characters worth **533 e5 tokens**. The cause was not prose density but
+  `_render_pdf_table` emitting a separator for every *empty* cell, so a sparse
+  merged-header table rendered as `| | | | | |` — each pipe costing two tokens
+  (`"▁"` then `"|"`) and carrying no information. The customer's symptom was an
+  HTTP 400 from vLLM, which refuses an over-long input instead of truncating it,
+  failing the whole 64-text batch and the whole source.
+- **Both halves fixed (2026-09-07).**
+  1. *Renderers.* `_collapse_row_cells` trims trailing blank cells and collapses
+     each run of blanks to one, keeping "a column was empty here" without the
+     repetition. Shared by PDF and PPTX (`_extract_pptx` calls
+     `_render_pdf_table`); `_render_docx_table` got the same treatment plus a
+     fix for its own defect — python-docx repeats a horizontally merged cell
+     once per grid column it spans, so merged headers were being embedded three
+     and four times over. The label went from max 533 tokens / 1 over-limit
+     chunk to **max 370 / 0 over-limit**, and its table chunks from p99 503 to
+     p99 366.
+  2. *Estimator.* `estimate_embedding_tokens` was the reason nobody saw it
+     coming: it read **193** for that 533-token chunk, because it picked one of
+     two ratios from the whole chunk's language and billed a wall of pipes at
+     English-prose density. It now prices per character *class* — ordinary words
+     cheap, ALLCAPS and identifiers near one token per character, CJK ~0.75,
+     symbols ~1 — plus a token for the space before anything that is not a word
+     start. Measured on the 766-chunk label corpus: **0 misses, ~1% false
+     warnings** (previously it under-read by up to 2.8x). Constants live in
+     `[diagnostics].tokens_per_*`.
+- **Still open.** There is no *hard* token guard before `embed_texts`: nothing
+  measures real tokens at ingest time, so a document shaped unlike anything
+  measured here can still slip past both the char cap and the estimate. Adding
+  one means shipping the tokenizer into the app (a dependency, memory, and
+  ingest latency), which is deferred until a second incident with a different
+  cause justifies it.
+- **Spreadsheet paths closed (2026-09-07).** `_qa_sections` and `_split_wide_row`
+  were the two places that could still emit an unbounded chunk: a Q&A row was
+  emitted whole at any length (1167 tokens measured on a 1500-character policy
+  answer), and `_split_wide_row`'s packing loop could not split a *single* cell
+  bigger than the whole budget (1150 tokens measured), column 0 included. Both
+  now split through `_split_text_to_budget`, which walks the same
+  sentences → soft punctuation → hard cut ladder as `chunk_sections` but measures
+  in estimated tokens, since the spreadsheet path never reaches the
+  character-based chunker. Nothing is dropped — every piece repeats the context
+  it needs (question, or column name) and the tests assert the pieces reconstruct
+  the original text.
 - **Local guard added:** `chunk_sections` now drops sentence overlap when carrying it would make the next chunk exceed the configured char target. This fixes the observed dense-CJK boundary case where two ~400-char sentences could combine into one ~800-char chunk. Re-chunking the 10 local over-limit examples with the new guard produced max 320 e5 tokens. Existing indexed sources need reindexing to benefit.
 
 ### [x] Q0-6 · Starter questions ignored the source language

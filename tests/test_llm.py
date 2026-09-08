@@ -766,6 +766,124 @@ def test_post_json_does_not_retry_on_4xx_request_error(monkeypatch):
     assert calls["n"] == 1  # 400 is not retryable
 
 
+#: A real vLLM refusal, shortened. This is the string the customer had to read
+#: out of the embedding container's own log because the app dropped it.
+VLLM_TOKEN_LIMIT_ERROR = (
+    "This model's maximum context length is 512 tokens. However, you requested "
+    "0 output tokens and your prompt contains at least 513 input tokens, for a "
+    "total of at least 513 tokens. Please reduce the length of the input prompt."
+)
+
+
+def test_http_error_keeps_the_provider_explanation(monkeypatch):
+    """The response body is the only place that says *why* a call was refused.
+
+    httpx's message stops at the status line, so before this the ingest failure
+    that reached `sources.error` and `logs/app.log` was
+    "Client error '400 Bad Request'" and nothing else — the token-limit message
+    it was raised for survived only in the provider's container log.
+    """
+    client, _ = _client_returning(
+        monkeypatch, [(400, {"object": "error", "message": VLLM_TOKEN_LIMIT_ERROR})]
+    )
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as caught:
+            asyncio.run(llm._post_json_with_retry("http://e5.test/v1/embeddings", {}, {}, 5.0))
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+
+    message = str(caught.value)
+    assert "maximum context length is 512 tokens" in message
+    assert "513 input tokens" in message
+    assert "http://e5.test/v1/embeddings" in message
+    # The exception TYPE is telemetry vocabulary: `_record_usage_event` stores
+    # `exc.__class__.__name__` as `error_class`, and every caller catches
+    # httpx.HTTPStatusError. Enriching the message must not smuggle in a subclass.
+    assert caught.value.__class__ is httpx.HTTPStatusError
+    assert caught.value.response.status_code == 400
+
+
+def test_http_error_detail_is_bounded(monkeypatch):
+    """A provider that echoes the rejected request must not paste it into the log.
+
+    `sources.error` is capped at 500 chars and the app log is on disk, so the
+    body goes in trimmed rather than whole.
+    """
+    client, _ = _client_returning(monkeypatch, [(400, {"message": "x" * 5000})])
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as caught:
+            asyncio.run(llm._post_json_with_retry("http://e5.test/v1/embeddings", {}, {}, 5.0))
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+
+    message = str(caught.value)
+    assert len(message) <= llm.config.llm_retry.error_body_chars + 120
+    assert message.endswith("\u2026")
+
+
+def test_retryable_status_still_carries_detail_when_it_finally_gives_up(monkeypatch):
+    """A 5xx that exhausts retries is the other case an operator has to debug."""
+    client, calls = _client_returning(monkeypatch, [(503, {"message": "no free GPU slots"})])
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as caught:
+            asyncio.run(llm._post_json_with_retry("http://e5.test/v1/embeddings", {}, {}, 5.0))
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+
+    assert calls["n"] == llm.LLM_RETRY_MAX_ATTEMPTS
+    assert "no free GPU slots" in str(caught.value)
+
+
+def test_streaming_http_error_keeps_the_provider_explanation():
+    """A streamed 4xx must carry its reason too, and that is timing-sensitive.
+
+    A streamed response holds no body when the status is checked, and httpx
+    closes it as the `client.stream(...)` block exits — so the body has to be
+    pulled *inside* that block. Read it from the outer `except` and this comes
+    back empty, which is exactly the regression this pins.
+
+    The endpoint answers 400 twice on purpose: the first one is consumed by the
+    benign `stream_options` fallback (a provider that rejects usage reporting),
+    so this also proves that retry still happens before the give-up path.
+    """
+    settings = {
+        "provider": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "chat_model": "chat-model",
+    }
+    reason = "This model's maximum context length is 8192 tokens. However, your messages resulted in 9001 tokens."
+    calls = {"n": 0, "with_usage": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if b'"stream_options"' in request.read():
+            calls["with_usage"] += 1
+        return httpx.Response(400, json={"object": "error", "message": reason})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    llm.set_http_client(client)
+
+    async def collect():
+        async for _ in llm.chat_completion_stream(settings, "Question", llm.SYSTEM_PROMPT):
+            pass
+
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as caught:
+            asyncio.run(collect())
+    finally:
+        asyncio.run(client.aclose())
+        llm.set_http_client(None)
+
+    assert "maximum context length is 8192 tokens" in str(caught.value)
+    assert caught.value.__class__ is httpx.HTTPStatusError
+    # The first attempt asked for usage, the retry dropped it: the 400 was not
+    # mistaken for a hard failure before the fallback got its turn.
+    assert calls["n"] == 2 and calls["with_usage"] == 1
+
+
 def test_chat_completion_stream_yields_delta_content():
     settings = {
         "provider": "openai_compatible",

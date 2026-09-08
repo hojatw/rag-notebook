@@ -317,11 +317,41 @@ def _pdf_words_to_paragraph_blocks(words: list[dict[str, Any]], page_index: int)
     return paragraphs
 
 
+def _collapse_row_cells(cells: list[str]) -> list[str]:
+    """Drop trailing blank cells and collapse each run of blanks to one.
+
+    A sparse wide table — the merged multi-level headers in an FDA drug label,
+    say — otherwise renders as a wall of ``| | | | |``. Every pipe is its own
+    token to the embedding model while carrying no information at all, and that
+    is not a cosmetic problem: a real 773-character chunk from such a table
+    measured **533 e5 tokens**, past the model's 512-token window, and vLLM
+    refuses an over-long input with HTTP 400 rather than truncating it — so one
+    of these chunks fails the whole batch and the whole source ingest.
+    Collapsing the run to a single blank cell took the same table to 336 tokens.
+
+    One blank is kept per run so "a column was empty here" still survives; only
+    the repetition goes. Rows that hold nothing but blanks are dropped by the
+    caller.
+    """
+    trimmed = list(cells)
+    while trimmed and not trimmed[-1]:
+        trimmed.pop()
+    collapsed: list[str] = []
+    for cell in trimmed:
+        if not cell and collapsed and not collapsed[-1]:
+            continue
+        collapsed.append(cell)
+    return collapsed
+
+
 def _render_pdf_table(rows: list[list[Any]]) -> str:
-    """Render extracted table rows into retrieval-friendly pipe-separated text."""
+    """Render extracted table rows into retrieval-friendly pipe-separated text.
+
+    Also used for PPTX tables (`_extract_pptx`), so a change here covers both.
+    """
     cleaned_rows: list[list[str]] = []
     for row in rows:
-        cleaned = [" ".join(str(cell or "").split()) for cell in row]
+        cleaned = _collapse_row_cells([" ".join(str(cell or "").split()) for cell in row])
         if any(cell for cell in cleaned):
             cleaned_rows.append(cleaned)
     if not cleaned_rows:
@@ -453,9 +483,20 @@ def _render_docx_table(table) -> str:
     rows: list[str] = []
     for row in table.rows:
         cells: list[str] = []
+        previous_tc = None
         for cell in row.cells:
+            # python-docx yields one entry per *grid column*, so a horizontally
+            # merged cell is repeated once per column it spans — a merged header
+            # would otherwise be embedded three or four times over, inflating the
+            # chunk and teaching the vector nothing but its own echo. Identity of
+            # the underlying <w:tc> element is the exact test: two independent
+            # cells that happen to hold the same text are different elements.
+            if cell._tc is previous_tc:
+                continue
+            previous_tc = cell._tc
             cell_text = _render_docx_container(cell)
             cells.append(" ".join(cell_text.split()))
+        cells = _collapse_row_cells(cells)
         if any(c.strip() for c in cells):
             rows.append(" | ".join(cells))
     if not rows:
@@ -532,6 +573,13 @@ _SENTENCE_BOUNDARY_RE = re.compile(r"[。！？]+|[.!?](?=\s|$)|\n+")
 # the target chunk size. Includes both CJK and Latin commas / semicolons.
 _SOFT_BREAK_RE = re.compile(r"[，、；,;]")
 _CJK_RE = re.compile(r"[一-鿿]")
+#: Wider than `_CJK_RE` on purpose. `_CJK_RE` drives chunk *sizing* and stays
+#: ideograph-only so chunk shape does not move; this one drives the token
+#: *estimate*, where kana, hangul, and the rarer Han blocks cost the same as
+#: common ideographs and must not be billed as ASCII letters.
+_CJK_TOKEN_RE = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]"
+)
 # Internal whitespace normalisation: collapse runs but preserve newlines so
 # split_sentences() can use them as boundaries. PDFs often inject erratic
 # spacing inside paragraphs that we still want flattened.
@@ -814,11 +862,88 @@ def _meta_columns(columns: list[str], qa: dict[str, Any]) -> list[int]:
     return out
 
 
+def _cut_to_budget(text: str, room: int) -> list[str]:
+    """Hard-cut `text` into the longest prefixes that each fit `room` tokens.
+
+    Last resort under `_split_text_to_budget`, for text with no usable boundary
+    left — a single unpunctuated wall, or a stretch whose token density varies
+    enough that a character-based cut still overshoots. Binary-searching the
+    longest fitting prefix is exact and always advances by at least one
+    character, so it terminates on any input.
+    """
+    pieces: list[str] = []
+    remaining = text
+    while remaining:
+        if estimate_embedding_tokens(remaining) <= room:
+            pieces.append(remaining)
+            break
+        low, high = 1, len(remaining)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if estimate_embedding_tokens(remaining[:mid]) <= room:
+                low = mid
+            else:
+                high = mid - 1
+        pieces.append(remaining[:low])
+        remaining = remaining[low:]
+    return pieces
+
+
+def _split_text_to_budget(prefix: str, text: str, budget: int) -> list[str]:
+    """Split `text` so that ``prefix + piece`` stays inside `budget` tokens.
+
+    Same ladder `chunk_sections` uses — sentences first, then soft punctuation,
+    then a hard cut — but measured in estimated tokens rather than characters,
+    because the caller's real limit is the embedding model's input window and
+    the spreadsheet path never goes through the character-based chunker.
+
+    `prefix` is the context every piece repeats (preamble, question, column
+    name), so it is charged once against the budget up front.
+    """
+    room = max(1, budget - estimate_embedding_tokens(prefix))
+    pieces: list[str] = []
+    buffer = ""
+
+    for sentence in split_sentences(text) or [text]:
+        sentence_tokens = estimate_embedding_tokens(sentence)
+        if sentence_tokens > room:
+            if buffer:
+                pieces.append(buffer)
+                buffer = ""
+            # Size the character cut from *this* sentence's measured density
+            # rather than a fixed chars-per-token guess, then verify: a wall of
+            # symbols and a wall of prose need very different cuts.
+            density = sentence_tokens / max(1, len(sentence))
+            for piece in _split_long_sentence(sentence, max(1, int(room / density))):
+                pieces.extend(_cut_to_budget(piece, room))
+            continue
+        candidate = f"{buffer} {sentence}" if buffer else sentence
+        if buffer and estimate_embedding_tokens(candidate) > room:
+            pieces.append(buffer)
+            buffer = sentence
+        else:
+            buffer = candidate
+    if buffer:
+        pieces.append(buffer)
+    return pieces or [text]
+
+
 def _qa_sections(
     sheet: str, columns: list[str], rows: list[tuple[int, list[Any]]], qa: dict[str, Any]
 ) -> list[tuple[str, str]]:
-    """One chunk per Q&A row, in the trimmed-preamble shape (design doc)."""
+    """One chunk per Q&A row, in the trimmed-preamble shape (design doc).
+
+    A row whose answer alone exceeds the budget is split into `part n/m` pieces
+    that each repeat the preamble and the question, so every piece is still
+    reachable by the question it answers. Before this the row was emitted whole
+    at any length — measured at 1167 tokens for a 1500-character policy answer —
+    and since vLLM refuses an over-long input rather than truncating it, one such
+    row failed the entire file's ingest. Answers that paste a regulation or a
+    whole procedure into the cell reach that size easily; ~660 Chinese
+    characters is the threshold against a 512-token window.
+    """
     meta = _meta_columns(columns, qa)
+    budget = config.spreadsheet.embed_token_budget
     sections: list[tuple[str, str]] = []
     for row_number, values in rows:
         question = _cell_text(values[qa["question"]]) if qa["question"] < len(values) else ""
@@ -830,8 +955,16 @@ def _qa_sections(
             text = _cell_text(values[index]) if index < len(values) else ""
             if text:
                 preamble += f" · {columns[index]}: {text}"
-        body = f"{preamble}\n\nQuestion:\n{question}\n\nAnswer:\n{answer}"
-        sections.append((f'sheet "{sheet}" row {row_number}', body))
+        header = f"{preamble}\n\nQuestion:\n{question}\n\nAnswer:\n"
+        location = f'sheet "{sheet}" row {row_number}'
+        if estimate_embedding_tokens(header + answer) <= budget:
+            sections.append((location, header + answer))
+            continue
+        parts = _split_text_to_budget(header, answer, budget)
+        total = len(parts)
+        for part, piece in enumerate(parts, start=1):
+            label = location if total == 1 else f"{location} part {part}/{total}"
+            sections.append((label, header + piece))
     return sections
 
 
@@ -853,20 +986,50 @@ def _split_wide_row(
     Without this a very wide row would be embedded and silently truncated past
     the model's window, leaving its tail columns unreachable by vector search.
     Every part repeats column 0 so each child chunk still identifies its record.
+
+    Two cases here are about a *single* cell rather than a wide row, and both
+    used to escape the packing loop entirely:
+
+    * One cell holding more than the budget. The `current and` guard below can
+      never fire on it — `current` is empty at that point — so the cell was
+      emitted whole, at any length. A contract clause or a pasted procedure in a
+      free-text column reaches this easily, and the endpoint answers HTTP 400.
+      Such a value is now split, with the column name repeated on every piece so
+      a tail piece still says which field it came from.
+    * Column 0 holding one. It becomes the identifier that every part repeats,
+      so an oversized one puts *all* parts over budget however finely the rest is
+      split. It is demoted to an ordinary column in that case and split like any
+      other, rather than truncated — losing the cell would be silent, and this
+      column is usually the record's name.
     """
     identifier = ""
+    first_column = 1
     if columns:
         head = _cell_text(values[0]) if values else ""
-        identifier = f"{columns[0]} = {head}" if head else ""
+        candidate_identifier = f"{columns[0]} = {head}" if head else ""
+        # A repeated identifier has to leave room for actual content; a quarter
+        # of the budget is the line between "context" and "the payload itself".
+        if estimate_embedding_tokens(candidate_identifier) <= max(1, budget // 4):
+            identifier = candidate_identifier
+        else:
+            first_column = 0  # demoted: fall through and split it like any cell
+    header = f"{preamble}\n\nRow {row_number}:\n{identifier}\n"
     groups: list[list[str]] = []
     current: list[str] = []
-    for index, name in enumerate(columns[1:], start=1):
+    for index, name in enumerate(columns[first_column:], start=first_column):
         text = _cell_text(values[index]) if index < len(values) else ""
         if not text:
             continue
         line = f"{name} = {text}"
+        if estimate_embedding_tokens(header + line) > budget:
+            if current:
+                groups.append(current)
+                current = []
+            for piece in _split_text_to_budget(f"{header}{name} = ", text, budget):
+                groups.append([f"{name} = {piece}"])
+            continue
         candidate = current + [line]
-        probe = f"{preamble}\n\nRow {row_number}:\n{identifier}\n" + "\n".join(candidate)
+        probe = header + "\n".join(candidate)
         if current and estimate_embedding_tokens(probe) > budget:
             groups.append(current)
             current = [line]
@@ -1499,15 +1662,73 @@ def estimate_embedding_tokens(text: str) -> int:
     """Rough token count for the embedding input window (A6a).
 
     An **estimate, not a measurement**: counting real tokens would mean shipping
-    the model's tokenizer. CJK-heavy text is charged ~1 token/char (conservative
-    — e5 rarely does better) and Latin text ~4 chars/token, reusing the same
-    `is_mostly_cjk` split the chunker already relies on. Used only to warn that
-    a chunk *may* be truncated, never to change chunking. Ground truth lives in
-    `tests/inspect_e5_chunk_tokens.py` (QUALITY.md Q0-5).
+    the model's tokenizer. Ground truth lives in
+    `tests/inspect_e5_chunk_tokens.py` / `tests.inspect_file_tokens` (QUALITY.md
+    Q0-5), which run the real one.
+
+    Costs are charged per character *class*, not per chunk. The previous model
+    picked one of two ratios from `is_mostly_cjk(text)` and applied it to the
+    whole chunk, which meant a wall of table pipes — a sparse PDF table renders
+    as `| | | |` — was billed at English-prose density, 4 characters per token,
+    when each pipe is in fact a token of its own. On a real FDA drug label that
+    read 193 estimated against 533 actual, so the over-budget warning stayed
+    silent on the one source the embedding endpoint went on to refuse outright.
+
+    Each constant is rounded up from measurements against the real
+    multilingual-e5 tokenizer, so this leans towards over-estimating: a false
+    warning costs a glance, a missed one costs the whole ingest.
+
+    Whitespace is free — SentencePiece folds a space into the token that
+    follows it.
     """
     d = config.diagnostics
-    per_token = d.cjk_chars_per_token if is_mostly_cjk(text) else d.latin_chars_per_token
-    return int(len(text) / per_token) if per_token > 0 else 0
+    return int(sum(_word_token_cost(word, d) for word in text.split()))
+
+
+def _word_token_cost(word: str, d: Any) -> float:
+    """Estimated e5 tokens for one whitespace-separated word.
+
+    Modelled on what the tokenizer visibly does (verified against it):
+
+    * ``"▁combination"`` — a leading space is absorbed into an ordinary word, so
+      that word's space is free; ``"▁", "|"`` — before a symbol it is not, and
+      costs a token of its own. Hence the leading marker below, which is what a
+      wall of ``| | | |`` is actually made of: two tokens per pipe, not one.
+    * ``"▁The", "▁recommended", "▁dos", "age"`` — ordinary words cover several
+      characters per piece, but ``"KEYTRUDA"`` splits into five, and
+      ``"aB3xK9pQ"`` into one piece per character. Casing and digits break the
+      subword vocabulary, and a drug label is full of both.
+    """
+    if not word:
+        return 0.0
+    # A space merges into the following token only when that token is an ordinary
+    # word start (``"▁combination"``, ``"▁2"``); before a symbol it does not
+    # (``"▁", "|"``) and costs a piece of its own. That standalone marker is most
+    # of what a wall of ``| | | |`` actually costs: two tokens per pipe, not one.
+    total = 0.0 if (word[0].isascii() and word[0].isalnum()) else 1.0
+    rest: list[str] = []
+    for char in word:
+        if _CJK_TOKEN_RE.match(char):
+            total += d.tokens_per_cjk_char
+        else:
+            rest.append(char)
+    if not rest:
+        return total
+    if all(char.isalpha() for char in rest):
+        shouting = any(char.isupper() for char in rest[1:])
+        per_char = d.tokens_per_shouting_letter if shouting else d.tokens_per_ascii_letter
+        if any(not char.isascii() for char in rest):
+            # Accented Latin, Greek, Cyrillic: still ordinary words with subword
+            # pieces, just rarer ones, so they fragment more than English but
+            # nothing like an identifier. Charging them per character instead
+            # over-estimated German prose more than threefold.
+            per_char = max(per_char, d.tokens_per_non_ascii_letter)
+        # No word costs less than the one piece it is written as.
+        return total + max(1.0, len(rest) * per_char)
+    # Mixed letters/digits/symbols, or anything non-ASCII: identifiers, part
+    # numbers, table rules, mojibake. The vocabulary has no piece spanning these,
+    # so they land at roughly one token per character.
+    return total + len(rest) * d.tokens_per_other_char
 
 
 def collect_ingest_diagnostics(
