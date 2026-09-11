@@ -33,7 +33,7 @@ The list above is task-gated: load a file when your change touches its area. For
 - **Backlogs** (living, tick-off format): `ROADMAP.md`, `QUALITY.md`, `PERFORMANCE.md`. Codebase-maintenance items that fit none of them go in `ROADMAP.md` → *Engineering maintenance*. A one-off review may stage its findings in a temporary `REVIEW_BACKLOG_<date>.md`; its items dissolve into these backlogs as they land, and the file is deleted once empty (the 2026-08-22 list was closed out this way on 2026-09-11).
 - **Design deep-dives**: `SPREADSHEET_INGESTION.md`, `PRODUCT_DESIGN_NOTES.md` (unscheduled product exploration, deliberately kept out of `ROADMAP.md` so the backlog stays scannable).
 - **Proposals under discussion**: `FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE.zh-TW.md` (a colleague's product-direction proposal, 2026-09-10) and its review `FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE_REVIEW.zh-TW.md` (2026-09-11). Neither is scheduled work — whatever is adopted moves into `ROADMAP.md` / `QUALITY.md` (so far `C1`, `T1`, `Q1-8`).
-- **Customer-facing**: `PRODUCT_WHITEPAPER.zh-TW.md`.
+- **Customer-facing** (the repo is public — never put internal-only material here): `PRODUCT_WHITEPAPER.zh-TW.md` (complete edition, the source of truth for every customer-facing claim) and `PRODUCT_BRIEF.zh-TW.md` (short brief condensed from it — it must never claim anything the complete edition does not). Both are re-checked at release time; see `docs/RELEASE.md`.
 - **Closed implementation plans**, kept as design records rather than instructions: `archive/O0_DIMENSION_RESET_PLAN.md`, `archive/E1E2_ANSWER_JUDGING_PLAN.md`. Both describe work that is **already done** — read them for *why* a design is shaped the way it is, never as a to-do list.
 
 ## Runtime And Dependencies

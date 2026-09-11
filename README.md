@@ -181,8 +181,12 @@ endpoint, not stored chunks.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) - product/admin roadmap: UX, Eval
   Workbench, AI governance, LLM operations, source-format support, and new AI
   features.
+- [`docs/PRODUCT_BRIEF.zh-TW.md`](docs/PRODUCT_BRIEF.zh-TW.md) - short
+  customer-facing product brief in Traditional Chinese (first contact).
 - [`docs/PRODUCT_WHITEPAPER.zh-TW.md`](docs/PRODUCT_WHITEPAPER.zh-TW.md) -
-  customer-facing product whitepaper in Traditional Chinese.
+  complete customer-facing product whitepaper in Traditional Chinese: every
+  capability, current limits, security design, and deployment needs. The brief
+  is condensed from it.
 - [`docs/RETRIEVAL.md`](docs/RETRIEVAL.md) - retrieval pipeline, ranking,
   reranking, eval workflow, and tuning knobs.
 - [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) - local login, enterprise

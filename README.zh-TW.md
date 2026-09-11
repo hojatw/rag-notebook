@@ -132,7 +132,8 @@ Ollama、vLLM、TEI 這類本機 OpenAI-compatible 服務會透過 `/v1` endpoin
 ## 文件導覽
 
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) - 產品/admin roadmap：UX、Eval Workbench、AI governance、LLM operations、來源格式支援與新 AI 功能。
-- [`docs/PRODUCT_WHITEPAPER.zh-TW.md`](docs/PRODUCT_WHITEPAPER.zh-TW.md) - 客戶向繁中產品白皮書。
+- [`docs/PRODUCT_BRIEF.zh-TW.md`](docs/PRODUCT_BRIEF.zh-TW.md) - 客戶向產品簡介（初次接觸用，精簡版）。
+- [`docs/PRODUCT_WHITEPAPER.zh-TW.md`](docs/PRODUCT_WHITEPAPER.zh-TW.md) - 客戶向產品白皮書完整版：全部功能、目前版本的限制、資安設計與部署需求；產品簡介由此濃縮。
 - [`docs/RETRIEVAL.md`](docs/RETRIEVAL.md) - 檢索 pipeline、ranking、reranking、eval workflow 與調參旋鈕。
 - [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) - 本機帳號、企業 SSO（信任標頭 / OIDC）、AD 整合與角色對應。
 - [`docs/SSO_DEPLOYMENT.zh-TW.md`](docs/SSO_DEPLOYMENT.zh-TW.md) - 維運指引：反向代理／OIDC 設定範例、安全契約檢查表與認證測試計劃。
