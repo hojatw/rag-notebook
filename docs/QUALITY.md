@@ -184,6 +184,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Sibling sampling quirk — starter questions.** `_suggestions_context` (`../app/main.py`) takes the 24 newest chunk rows (`ORDER BY chunks.id DESC`) and `generate_starter_questions` (`../app/llm.py`) sends the first 8, each cut to 400 characters. Chunk ids grow in insertion order, so that is the **end of the most recently indexed source** — for a transcript, its closing remarks. Same class of problem (the sample does not represent the notebook), different code path; fix it alongside or split it out.
 - **Verification:** a deterministic unit test on the sampling helper — a document whose distinctive content appears only in its second half must have that content in the summary input — observed failing against today's `chunks[:12]` before it is kept (AGENTS.md, *Writing tests that actually hold*). Output quality still needs a human spot-check on one long transcript and one long report; there is no summary-quality eval type.
 - **Raised:** 2026-09-11, while reviewing the enterprise-workspace feature proposal.
+- **Batch:** also listed as ROADMAP `T1b`, part of the meeting-transcript trial-readiness batch (review §5 試用前準備). Tick both together.
 
 
 ---

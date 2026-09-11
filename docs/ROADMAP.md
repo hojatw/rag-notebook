@@ -22,6 +22,29 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ---
 
+## Meeting-transcript trial readiness
+
+> **Batch from the proposal review §5 試用前準備** — [`FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE_REVIEW.zh-TW.md`](FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE_REVIEW.zh-TW.md) §5, 2026-09-11. A colleague's customer wants to trial the app on meeting transcripts and DOCX minutes. A trial exercises the **existing** features (upload, cited Q&A, the `A1` minutes tool, briefing, starter questions), so these are the problems it would hit first. **Keep this batch together in this section.** The one item tracked elsewhere (`Q1-8`) is listed here as a pointer so the batch stays complete in one place.
+
+#### [ ] T1 · Trial readiness for meeting transcripts and DOCX minutes
+- **Scope:** fixes and checks on current behaviour only. The proposal's new capabilities (cross-meeting consolidation, evidence tables, report editing) are **not** part of this batch.
+- **Items** (`T1a`–`T1f` map one-to-one onto rows 1–6 of the review's §5 table):
+  - [ ] **T1a · The minutes tool truncates silently.** `_minutes_context` (`app/main.py`) reads at most the first 100 chunks, and `generate_meeting_minutes` (`app/llm.py`) stops adding text at `MEETING_MINUTES_CONTEXT_CHARS = 16000`; the only trace is `chunks_used` in the server log. At an estimated 10–15k characters per hour of Chinese speech, a two-hour meeting loses roughly 20–50% of its content with nothing on screen. The existing `meeting_likelihood` warning is about "this does not look like a meeting" and does not cover this.
+    - *Step 1 — disclose (XS):* show how much of the source the minutes covered (for example chunks used of total, or the last location reached), through the i18n catalog, and carry the same notice into the saved note so an exported file says it too.
+    - *Step 2 — cover the whole transcript (M):* windowed extraction over every chunk, then merge. This is also the first building block of the proposal's meeting-consolidation scenario, so design it for that rather than as a one-off.
+    - *Test:* a transcript over the cap must produce the notice — observed failing before the fix.
+  - [ ] **T1b · Summary and starter-question sampling** — tracked as [`QUALITY.md`](QUALITY.md) `Q1-8`: summaries read only the first 12 chunks (a transcript's opening), and starter questions sample the end of the newest source. Pointer only; tick it when `Q1-8` option (a) lands.
+  - [ ] **T1c · Keep speaker labels from WebVTT (S).** `_extract_subtitles` (`app/ingest.py`) removes every inline tag with `_VTT_INLINE_TAG`, including the voice span `<v Speaker Name>` that Teams-style VTT uses to mark who is talking. The speaker is lost, and with it the main clue for an action item's owner. Rewrite a voice span into a `Speaker Name: ` prefix (allowing the `<v.class Name>` form) before stripping the remaining tags. SRT, and Zoom-style cues that write `Name: text` inline, already keep the name. Existing `.vtt` sources need re-indexing to benefit — say so under CHANGELOG *升級注意事項*.
+  - [ ] **T1d · Readable citation locations for transcripts and DOCX.** Subtitles become one `transcript` section and the DOCX body one `document` section (`_extract_docx`), so every citation location reads `transcript` or `document`. In-app citations still jump to the exact chunk; the problem is any exported deliverable.
+    - *Transcripts (S–M):* keep cue timestamps and emit time-window sections (for example `00:12:30–00:15:10`), so chunk labels become time spans the way PPTX slides become `slide 1 – slide 2`.
+    - *DOCX (M):* paragraph-ordinal or heading-based labels overlap `A12` — numbered headings such as `一、` or `三、決議事項` are common in minutes. Decide whether to wait for `A12` Phase 1 instead of shipping an interim label scheme that later changes again.
+    - Both halves change chunk shape and need re-indexing; eval items that pin evidence to old chunks must be re-checked.
+  - [ ] **T1e · Pre-flight the customer's real samples (no code).** Before the trial, upload 2–3 de-identified samples from each transcript tool the customer uses (Teams / Zoom / 雅婷 / typed) and read the `A6a` diagnostics: extractor path, warnings, whether speakers and timestamps survived, chunk-token warnings. If the trial's embedding model is e5-family, `python -m tests.inspect_file_tokens <path>` also gives an offline token pre-flight per file.
+  - [ ] **T1f · Deployment-conditions interview (no code).** Owner: the colleague. The questions are in the review's §10 (usage, data, acceptance, speed, delivery format, security, environment, budget), phrased for non-technical respondents. The answers decide which model and serving the trial runs on — and therefore whether structured-output checks like `Q0-3` must be repeated on that model.
+- **Suggested exit (review §5):** T1f answered first; T1a–T1e done before the trial starts. Within them, T1a step 2 and the DOCX half of T1d are the parts that can reasonably follow later if the interview shows short meetings or no exported deliverables in the trial.
+
+---
+
 ## Enterprise authentication
 
 ### High priority
@@ -295,6 +318,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [x] A1 · Meeting-minutes organizer
 - **What:** pick an indexed source (transcript upload) → structured minutes (主題/決議/行動項目(負責人/期限)/待辦/未決事項) → save to Notes.
 - **Fix:** **Done.** A Studio **tool tile** (U16) with a source picker; `MEETING_MINUTES_PROMPT` (strong language rule). A non-meeting source shows the model's reason with no save option; a real transcript shows the minutes with a **manual** save-to-notes button.
+- **Follow-up:** the 16,000-character input cap truncates long transcripts without telling the user → `T1a` (meeting-transcript trial-readiness batch).
 
 #### [x] A2 · Follow-up question chips after each answer
 - **What:** 2–3 suggested follow-ups under the latest assistant answer; click = ask.
@@ -387,6 +411,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 #### [x] A7 · Subtitle files as sources (.srt / .vtt)
 - **Done.** `_extract_subtitles` (`app/ingest.py`) strips cue indices, timestamp lines, the WebVTT header + NOTE/STYLE/REGION blocks, and inline VTT tags, and collapses rolling-caption repeats — leaving the spoken text as one `transcript` section that flows through the existing chunk/embed pipeline. `.srt`/`.vtt` added to `ALLOWED_EXTENSIONS` + the upload accept list. No new deps. Pairs naturally with A1 meeting minutes. Verified end-to-end (upload → indexed → clean transcript chunk).
+- **Follow-up:** WebVTT voice-span speaker names and all cue timestamps are dropped, and the whole file is one `transcript` section → `T1c` / `T1d` (meeting-transcript trial-readiness batch).
 
 #### [ ] A8 · OCR for scanned PDFs / images
 - `pytesseract` + tesseract in the Docker image (`chi_tra` model for Traditional Chinese). Decades-old scanned research reports are likely in the customer corpus — high practical value, no LLM dependency.
