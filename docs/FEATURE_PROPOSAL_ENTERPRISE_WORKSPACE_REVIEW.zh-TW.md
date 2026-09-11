@@ -1,11 +1,11 @@
 # 〈企業文件分析與交付工作台〉提案審閱回饋
 
-日期：2026-09-11  
-審閱對象：[FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE.zh-TW.md](FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE.zh-TW.md)（2026-09-10 討論稿）  
-審閱者：Philip（以 Claude Code 協助核對程式碼與撰寫）  
-核對基準：版本 0.7.0（commit `9b71eeb`），靜態核對程式碼與文件；未執行模型、客戶資料或效益測試  
-讀者：提案作者、產品規劃與開發同事  
-狀態：回饋稿，Philip 已審閱（2026-09-11，無修改意見），可提供給提案作者。Philip 已於 2026-09-11 裁決的事項見 §1.2，其餘建議待團隊討論。
+- 日期：2026-09-11
+- 審閱對象：[FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE.zh-TW.md](FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE.zh-TW.md)（2026-09-10 討論稿）
+- 審閱者：Philip（以 Claude Code 協助核對程式碼與撰寫）
+- 核對基準：版本 0.7.0（commit `9b71eeb`），靜態核對程式碼與文件；未執行模型、客戶資料或效益測試
+- 讀者：提案作者、產品規劃與開發同事
+- 狀態：回饋稿，Philip 已審閱（2026-09-11，無修改意見），可提供給提案作者。Philip 已於 2026-09-11 裁決的事項見 §1.2，其餘建議待團隊討論。
 
 > 時間有限時，先讀 §1（摘要）、§4（三個場景的比較）、§5（試用前準備）。
 >
