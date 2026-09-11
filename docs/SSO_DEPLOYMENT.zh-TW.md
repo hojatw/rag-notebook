@@ -35,7 +35,7 @@
 
 ## 1. 共通前置
 
-- **`NOTEBOOKLM_SECRET`**：穩定、強隨機。輪替它會使已加密的 LLM API key 失效（需到 `/settings` 重新輸入），也會使任何 DB 內加密欄位失效。
+- **`NOTEBOOKLM_SECRET`**：穩定、強隨機。輪替它會使已加密的 LLM API key 失效（需到 `/settings` 重新輸入），也會使任何 DB 內加密欄位失效；session cookie 也由它簽章，因此**所有使用者會被登出一次**，登入失敗計數也會重置。
 - **網路隔離（安全契約核心）**：app container 綁在內網，**只有反向代理可達**。嚴禁客戶端直連 app。
 - **設定途徑**：`config.toml` 的 `[auth]` 段，或 `NOTEBOOKLM_AUTH_*` 環境變數（同名大寫，例：`NOTEBOOKLM_AUTH_OIDC_ENABLED=true`）。完整參數見 [`config.example.toml`](../config.example.toml) 的 `[auth]` 段。
 - **保留 break-glass**：先維持 `local_login_enabled = true`，待 SSO 端到端驗證無誤，再視政策決定是否關閉。**關閉本地登入前，務必確認至少一個由 SSO 映射成功的 admin 帳號可登入**，否則會把自己鎖在外面。
@@ -214,8 +214,8 @@ curl -i -H "X-Forwarded-User: mallory" http://localhost:8000/auth/trusted-header
 
 分四層，由「你自己就能做」推進到「客戶環境」。
 
-### Level 0 — 單元測試（✅ 已完成）
-`pytest` 全套件 **197 passed**，含 16 個 auth 測試（正/負路徑）。程式改動後回歸執行：
+### Level 0 — 單元測試（CI 每個 PR 都會跑全套件）
+auth 相關測試涵蓋正／負路徑。改動認證相關程式後，可只跑這一組快速回歸：
 ```bash
 .venv/bin/pytest tests/test_ui.py -k "auth or oidc or trusted or sso" tests/test_config.py
 ```
@@ -245,11 +245,13 @@ curl -i -H "X-Forwarded-User: mallory" http://localhost:8000/auth/trusted-header
 | 正向 | OIDC 登入 + auto-provision | 同上 |
 | 正向 | admin group 使用者登入 | 取得 admin；`/admin/*` 可進 |
 | 正向 | 既有外部身份再次登入 | 更新 email/name/groups、不重複建帳號 |
-| 負向 | 信任頭部：缺／錯 shared secret | 503／403，記稽核 |
+| 負向 | 信任頭部：app 端未設定 shared secret | 503，記稽核 |
+| 負向 | 信任頭部：請求缺／錯 shared secret，或來源 IP 不在 `trusted_header_allowed_ips` | 403，記稽核 |
+| 負向 | 信任頭部：secret 正確但缺使用者 header | 400，記稽核 |
 | 負向 | 信任頭部：偽造身份 header 無 secret | 403 |
 | 負向 | 未知身份 + auto-provision 關閉 | 403 |
 | 負向 | OIDC：state／nonce 不符 | 400，記稽核 |
-| 負向 | OIDC：`iat` 過期／未來、非 HTTPS issuer | 拒絕 |
+| 負向 | OIDC：state cookie 的 `iat` 過期或在未來；ID token `exp` 已過、`nbf`／`iat` 在未來；非 HTTPS issuer | 拒絕 |
 | 負向 | 對 SSO 帳號重設本地密碼 | 被擋（400） |
 | 回歸 | CSRF、per-user notebook 隔離 | 維持不變 |
 | 授權 | SSO 新建 user 只看得到自己的 notebook | per-user scoping 不變 |
@@ -260,11 +262,14 @@ curl -i -H "X-Forwarded-User: mallory" http://localhost:8000/auth/trusted-header
 
 **已知限制（MVP，請向客戶明講，屬刻意取捨）**：
 - **群組映射於登入時計算**：AD／IdP 的群組變更，要到使用者下次登入才生效。
-- **session 無伺服器端撤銷**：在 IdP 停用某使用者，不會即時終止其現有 app session（到期才失效）。
+- **session 無伺服器端撤銷**：在 IdP 停用某使用者，不會即時終止其現有 app session，要等 session 到期（`[auth].session_max_age_hours`，預設 12 小時，從登入起算、不因活動延長）。
 - **無 IdP-initiated logout**：app 登出只清本地 session。
+- **App 內沒有「停用帳號」功能**，SSO 帳號也不能由管理員重設本地密碼（重設密碼是本地帳號撤銷 session 的方式）。
 
 **維運動作**：
-- 停用使用者：於 IdP 停用；如需立即斷開，另刪除／停用其本地 `users` 帳號。
+- 停用使用者：**於 IdP 停用**，其 app session 最遲在上述有效期限內失效。
+  - 若必須**立即**斷開，唯一方式是在 `/admin/users` 刪除其本地帳號——但這會**永久刪除該使用者的所有 notebook、來源、對話與筆記**，且無法復原；刪除前先確認資料是否需保留（必要時先備份 `data/`）。
+  - 若 IdP 端未停用且 `*_auto_provision = true`，該使用者下次 SSO 登入會被重新建立為一個空帳號。
 - 稽核：`/admin/audit` 可見 `*_login_succeeded`／`*_user_provisioned`／`*_role_mapped`／`*_login_rejected`（含 reason code）。
 - 疑難排解：先看 `/admin/auth` 設定健檢，再對照稽核的 rejection reason。
 
