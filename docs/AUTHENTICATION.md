@@ -210,7 +210,7 @@ before auth, and only the trusted proxy may inject the app's identity headers.
   and allowed signing algorithms;
 - Authorization Code flow with short-lived signed `state`/`nonce` cookie; no
   Starlette SessionMiddleware or second app session store;
-- ID token validation using Authlib / joserfc against discovery JWKS:
+- ID token validation using joserfc against discovery JWKS:
   signature, `iss`, `aud`, `exp`, `nbf`, `iat`, `nonce`, and `sub`;
 - local account linking by stable external subject (`sub`) plus provider id in
   `external_identities`;

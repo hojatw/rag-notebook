@@ -9,6 +9,13 @@
 
 ## [未發布]
 
+### 依賴
+
+- 移除未使用的 `authlib`。OIDC ID token 驗證（I1b）自始只直接 import `joserfc`
+  （`joserfc` 本就獨立 pin 在 `requirements.txt`），`authlib` 在 `app/`、`tests/`
+  皆無任何 import，已安裝套件也無一宣告依賴它；Dependabot #114（authlib 1.7.2 →
+  1.8.0）因此作廢。`docs/AUTHENTICATION.md` 的描述同步改為 joserfc。
+
 ## [0.7.0] - 2026-09-08
 
 本版全部是修正，沒有新功能，但**必須重新索引全部來源**才會生效——詳見文末的
