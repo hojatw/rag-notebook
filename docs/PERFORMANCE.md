@@ -82,6 +82,12 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deliberate
 - **Impact:** SQLite is normally fast, but lock waits or slow local storage could pause every request handled by that worker. The problem becomes visible under concurrent use even though each individual query is small.
 - **Fix:** **Done.** Route-local SQLite phases now run through `asyncio.to_thread`; each synchronous helper opens and closes its own connection inside the worker thread, so no `sqlite3.Connection` crosses thread boundaries. Related queries stay grouped into one phase to avoid a thread handoff per SQL statement. LLM/network awaits and HTML rendering remain on the event loop. A route-level regression test delays the real connection boundary and confirms the event loop continues ticking; existing route behavior tests cover persistence, authorization, caching, streaming, and rendered results.
 
+### [ ] P2-5 · Cache OIDC discovery + JWKS (low priority; from review item PERF-3, 2026-08-22)
+- **Issue:** `_oidc_discover()` (`app/main.py`) fetches the IdP's `/.well-known/openid-configuration` on **every** OIDC login start and callback, and the callback then fetches `jwks_uri` as well — nothing is cached.
+- **Impact:** Extra outbound HTTPS round-trips per login (discovery on `/auth/oidc/login`, discovery + JWKS on the callback), so login latency and availability track the IdP's metadata endpoints. At ~200 users logging in a few times a day this is small, which is why it is not scheduled.
+- **Fix:** A short TTL cache (e.g. 10–60 min) for the discovery document and JWKS, keyed by discovery URL. On a signature failure with an unknown `kid`, refetch JWKS once before rejecting, so IdP key rotation still works.
+- **Restart condition:** login latency complaints, IdP rate limiting, or OIDC becoming the default login path for a larger user base.
+
 ---
 
 ## P3 — UX / product tradeoffs

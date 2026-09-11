@@ -2,7 +2,7 @@
 
 Product-facing roadmap for the NotebookLM-style personal AI assistant: UX, admin workflows, Eval Workbench, AI governance, source-format support, and new AI-assisted surfaces. Same tick-off format as `PERFORMANCE.md` / `QUALITY.md`.
 
-Performance and retrieval-quality engineering stay in their own backlogs (`PERFORMANCE.md`, `QUALITY.md`). Security policy and dependency triage stay in `SECURITY.md`. This file tracks the product/admin capability surface and points to those deeper references when needed.
+Performance and retrieval-quality engineering stay in their own backlogs (`PERFORMANCE.md`, `QUALITY.md`). Security policy and dependency triage stay in `SECURITY.md`. This file tracks the product/admin capability surface and points to those deeper references when needed. Codebase-maintenance items that fit none of those backlogs live in the short *Engineering maintenance* section at the end.
 
 **Current target-deployment constraint:** the known customer inference side is borrowed and fixed (Gemma 4 31B chat + multilingual-e5-large embeddings — **chat + embedding only unless the active chat endpoint passes the image-understanding probe**). Features needing only chat completions are cheap; new extraction paths (web, PPTX, spreadsheets, OCR) are app-side work; new model capabilities (vision, speech) must be verified against the active customer endpoint first. `O1` adds admin capability probes so this assumption can be tested per deployment before enabling vision-dependent work.
 
@@ -456,3 +456,16 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 #### [ ] A11 · Audio overview / TTS, mind map
 - **Low priority unless a customer explicitly needs it.** TTS not available on the serving side; mind map needs a self-hosted render lib (markmap/mermaid — no-CDN rule). Nice-to-haves, not this phase.
+
+---
+
+## Engineering maintenance
+
+Not product-facing. Codebase-structure work that is neither a performance nor a retrieval-quality item, kept here so it has a durable home rather than a one-off review list. Same tick-off format.
+
+#### [ ] M1 · Extract shared web helpers into `app/web.py` to break the import cycle (from review item MNT-2, 2026-08-22)
+- **Current state:** `app/main.py` is the only module still growing — about 3,700 lines / 48 routes when this was raised, **4,974 lines / 53 `@app` routes** on 2026-09-11. Retrieval, evals, admin, and settings have already been extracted, which is the right direction.
+- **Candidates for the next extractions:** auth (login/logout/trusted-header/OIDC), Studio tools + the A4 generators (already fenced off by comment dividers in the file), and notes/notebooks CRUD.
+- **The first step is not moving routes.** `app/main.py` is the package's import root, and the route modules import `render` / `require_admin` / `record_audit_event` back from it; that circular dependency is what makes further splitting risky. Move the shared helpers into `app/web.py` first, break the cycle, and every later extraction becomes a safe, mechanical move.
+- **How to do it:** its own round, never mixed into a feature diff — a pure move is only reviewable when nothing else changes. The full test suite is the safety net; route behaviour must not change.
+- **Priority:** low (P3). Worth scheduling before the next large feature that would add a new block of routes to `app/main.py`.

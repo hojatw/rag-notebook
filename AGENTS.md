@@ -30,7 +30,7 @@ The list above is task-gated: load a file when your change touches its area. For
 - **Contracts** (read before changing that area): `RETRIEVAL.md`, `SCHEMA.md`, `ROUTES.md`, `UI.md`, `I18N.md`, `SECURITY.md`, `AUTHENTICATION.md`, and `UX_REVIEW_GUIDE.md` (the durable rubric every UX review is judged by — the latest completed findings log is archived at `archive/2026-06-19-UX_REVIEW.md`).
 - **Operating**: `DEVELOPMENT.md`, `SSO_DEPLOYMENT.zh-TW.md`, `RELEASE.md`.
 - **Grounding facts**: `DEPLOYMENT_CONTEXT.md`.
-- **Backlogs** (living, tick-off format): `ROADMAP.md`, `QUALITY.md`, `PERFORMANCE.md`. `REVIEW_BACKLOG_2026-08-22.md` is a **temporary** staging list from one review pass — its items dissolve into the three above as they land, and the file is deleted once empty.
+- **Backlogs** (living, tick-off format): `ROADMAP.md`, `QUALITY.md`, `PERFORMANCE.md`. Codebase-maintenance items that fit none of them go in `ROADMAP.md` → *Engineering maintenance*. A one-off review may stage its findings in a temporary `REVIEW_BACKLOG_<date>.md`; its items dissolve into these backlogs as they land, and the file is deleted once empty (the 2026-08-22 list was closed out this way on 2026-09-11).
 - **Design deep-dives**: `SPREADSHEET_INGESTION.md`, `PRODUCT_DESIGN_NOTES.md` (unscheduled product exploration, deliberately kept out of `ROADMAP.md` so the backlog stays scannable).
 - **Proposals under discussion**: `FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE.zh-TW.md` (a colleague's product-direction proposal, 2026-09-10) and its review `FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE_REVIEW.zh-TW.md` (2026-09-11). Neither is scheduled work — whatever is adopted moves into `ROADMAP.md` / `QUALITY.md` (so far `C1`, `T1`, `Q1-8`).
 - **Customer-facing**: `PRODUCT_WHITEPAPER.zh-TW.md`.
