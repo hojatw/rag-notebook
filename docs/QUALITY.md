@@ -168,6 +168,24 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Blocked on:** `A12` Phase 2 (there is no node to summarise until headings are detected and chunk boundaries align), **`Q1-1`** (rank fusion, per the mixed-notebook argument above), and **`Q1-3`** to prove the arm helps rather than merely changes results. `A12` Phase 0/1 are *not* blocked by any of these and should run first regardless.
 - **Related:** `Q2-1` already stops chunks merging across a *register* change (table/footnote/header); this item and `A12` extend the same idea to a *topic* change.
 
+### [ ] Q1-8 · Source summaries are built from a document's first 12 chunks only
+- **Issue:** `summarize_source` (`../app/llm.py`) writes each source's 2–4-sentence summary from `chunks[:12]` — the first twelve chunks in document order, roughly the first ~5k characters of CJK text or ~10k of Latin text, i.e. the opening few pages. Everything that reads `sources.summary` inherits that window: the notebook briefing, summary-mode source comparison (`U17` with a blank topic), the `A4` study guide / FAQ / timeline (`generate_artifact`), `A5` summary translation, and the summary text global search (`U9`) matches against.
+- **Impact depends on document shape — it is not uniformly bad:**
+  - *Reports that open with an abstract or executive summary:* the opening pages are often a reasonable basis for a short summary; the loss shows up mainly in tools that need detail from the whole document (FAQ, timeline).
+  - *Meeting transcripts:* the first chunks are the opening minutes — agenda, introductions — while decisions usually come later, so the summary and everything built on it describe how the meeting started, not what it decided. This is the case that matters for the meeting-transcript customer trial raised on 2026-09-11.
+  - *Vendor documents and manuals without an upfront summary:* the summary reflects the cover, table of contents and introduction.
+  - *Short documents (≤ 12 chunks):* unaffected.
+- **Not the same problem as `A4`'s input depth.** Even a perfect summary is 2–4 sentences, so FAQ/timeline artifacts generated from summaries stay thin by design. Feeding those tools retrieved evidence instead of summaries is a separate, larger change and is deliberately out of scope here; this item only fixes *which part of the document* the summary sees.
+- **Fix options:**
+  - **(a) Spread the sample — recommended first step.** Keep 12 chunks and the same prompt size, but take the first few plus the rest evenly spaced across the document. Zero added LLM calls or tokens. It trades reading-order coherence for coverage, so the prompt should say the excerpts are spaced samples (each excerpt already carries its location label).
+  - **(b) Windowed map-reduce at ingest.** Summarise each window of ~40 chunks (about the 16k-character context the meeting-minutes tool already sends), then summarise the window summaries. Cost grows with length — a ~600-chunk report is ~15 window calls + 1 — and runs in the ingest worker where the summary already runs, gated by chunk count. Window summaries are reusable as a coverage map for whole-document extraction and as fallback nodes for `Q1-7` when `A12` finds no structure; adopt (b) when one of those needs it, not for the summary alone.
+  - **(c) Structure-aware sampling** once `A12` detects sections: sample per section instead of per position.
+- **Existing summaries do not refresh themselves.** The summary is regenerated only inside (re)ingest, which also re-embeds. Shipping (a) or (b) needs either a summary-only refresh path or an explicit statement that old sources keep their old summary until reindexed — decide before shipping and say which in `CHANGELOG.md`.
+- **Sibling sampling quirk — starter questions.** `_suggestions_context` (`../app/main.py`) takes the 24 newest chunk rows (`ORDER BY chunks.id DESC`) and `generate_starter_questions` (`../app/llm.py`) sends the first 8, each cut to 400 characters. Chunk ids grow in insertion order, so that is the **end of the most recently indexed source** — for a transcript, its closing remarks. Same class of problem (the sample does not represent the notebook), different code path; fix it alongside or split it out.
+- **Verification:** a deterministic unit test on the sampling helper — a document whose distinctive content appears only in its second half must have that content in the summary input — observed failing against today's `chunks[:12]` before it is kept (AGENTS.md, *Writing tests that actually hold*). Output quality still needs a human spot-check on one long transcript and one long report; there is no summary-quality eval type.
+- **Raised:** 2026-09-11, while reviewing the enterprise-workspace feature proposal.
+- **Batch:** also listed as ROADMAP `T1b`, part of the meeting-transcript trial-readiness batch (review §5 試用前準備). Tick both together.
+
 
 ---
 
