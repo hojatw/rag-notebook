@@ -2,7 +2,7 @@
 
 ## Project status
 
-This is a **single-machine proof of concept**, not a hardened production service. It is suitable for local experiments and small trusted single-machine deployments after you set a strong `NOTEBOOKLM_SECRET`. Do not expose it directly to the public internet without adding the hardening items listed below.
+This is a **single-machine proof of concept**, not a hardened production service. It is suitable for local experiments and small trusted single-machine deployments after you set a strong `NOTEBOOKLM_SECRET`. Do not expose it directly to the public internet: read the known limits recorded below first, and keep it behind a reverse proxy that terminates TLS and applies verified client-IP rate limiting.
 
 ### What "proof of concept" is actually claiming — and when to drop it
 
@@ -125,7 +125,7 @@ lengths/fingerprints; it must never contain domain text or snapshots.
 
 ## Hardening status
 
-A full review on **2026-08-22** surfaced a set of hardening items. They are triaged and tracked in `docs/REVIEW_BACKLOG_2026-08-22.md` with priorities and locations, and are folded back into this file as each lands.
+A full review on **2026-08-22** surfaced eight hardening items (`SEC-1`–`SEC-8`). All of them have landed and their durable record is the sections below; the temporary review backlog that staged them is no longer the source of truth.
 
 **Fixed:** `SEC-1` bootstrap accounts (above), `SEC-2` upload size limits / multipart buffering (see the parser note below), `SEC-3` session lifetime + revocation (below), `SEC-4` shared login rate limiting, `SEC-5` Traditional/Simplified Chinese prompt-injection telemetry patterns, `SEC-6` explicit session-user field projection that excludes `password_hash`, `SEC-7` generic user-creation errors, and `SEC-8` aligned session-cookie deletion attributes.
 
@@ -199,14 +199,11 @@ Ingestion now parses `.pptx` (`python-pptx`, which pulls in **Pillow**) and `.xl
 Current mitigations are structural rather than sandboxing:
 
 - Uploads are authenticated — a user must already have an account, so this is not an anonymous-internet surface.
-- **Bounded before anything is stored or parsed (SEC-2, 2026-08-22).** `[runtime].upload_max_file_bytes` caps each file *at upload time*, for every format, enforced while streaming to disk (and drops to the stricter `extract_max_file_bytes` for `.xlsx`/`.pptx`/`.csv`, so those fail up front rather than in the worker) — an oversized file is refused with 413 and its partial write removed. A whole request is bounded at `upload_max_file_bytes * upload_batch_limit` and refused from `Content-Length` **before any body is read**. Previously nothing capped upload size at all: only file *count* was limited, and `extract_max_file_bytes` (then named `max_source_bytes`) applied at parse time, once the file was already on disk. Worse, the CSRF middleware called `await request.body()` on multipart requests to regex the token out of the raw body — and the upload form is a plain HTML form that carries no header to short-circuit that — so every upload was materialised in memory in full. A handful of large files was enough to exhaust it, from an ordinary authenticated account and with no vulnerability involved. The middleware no longer reads multipart bodies; upload routes validate CSRF from their own parsed form via `verify_multipart_csrf`, and a startup assertion fails the boot if a multipart route omits it, so the check cannot be dropped silently.
+- **Bounded before anything is stored or parsed (SEC-2, 2026-08-22).** `[runtime].upload_max_file_bytes` caps each file *at upload time*, for every format, enforced while streaming to disk (and drops to the stricter `extract_max_file_bytes` for `.xlsx`/`.pptx`/`.csv`, so those fail up front rather than in the worker) — an oversized file is refused with 413 and its partial write removed. A whole request is bounded at `upload_max_file_bytes * upload_batch_limit` and refused from `Content-Length` **before any body is read**. The CSRF middleware deliberately does **not** read multipart bodies: it used to call `await request.body()` to find the token, which buffered every upload in memory and let an ordinary account exhaust it with a few large files. Instead, upload routes validate CSRF from their own parsed form via `verify_multipart_csrf`, and a startup assertion fails the boot if a multipart route omits it, so the check cannot be dropped silently.
 - Parsing runs in the ingest worker, not the request path; `[runtime].extract_max_file_bytes` caps every format with stricter parser-cost bounds (`.xlsx` / `.pptx` / `.csv`) **before** a parser sees the file. CSV rows now stream incrementally, but the cap still bounds total parse work and pathological single records/fields; `[spreadsheet].max_rows` / `max_cols` bound retained per-sheet data, and a parser exception fails that one source (`status='failed'` with `failed_stage`) rather than the process.
 - Phase 1 PPTX **never decodes image bytes** — images are counted, not opened — so Pillow is currently a transitive dependency that ingest does not actually exercise. That changes the day `A8`/`A9` add OCR or vision, which is when this note needs revisiting.
 
 **Keep these parsers patched** (they are the highest-value dependency updates in this project), and re-evaluate isolation if the app is ever exposed to untrusted uploaders.
-
-(Resolved: CSRF protection on unsafe routes, streaming responses, LLM/embedding HTTP retry/backoff, and worker-backed ingest — a DB-backed queue (`app/jobs.py`) with a dedicated/inline worker — are now implemented. See `docs/PERFORMANCE.md`.)
-
 ## Triaged dependency-audit findings
 
 The items below are surfaced by Dependabot / `pip-audit`. Each records how it was assessed against *this* deployment, so the alerts are not repeatedly re-investigated. An advisory that turns out not to apply is still patched when the upgrade is cheap — the note explains why the alert existed, not why the upgrade was skipped.
@@ -244,11 +241,15 @@ being represented in both `requirements.txt` and `requirements-dev.txt` (the
 latter includes the former with `-r`). The affected package is still pinned at
 `chromadb==1.5.9` in [`requirements.txt`](../requirements.txt).
 
-Rechecked on 2026-08-30 for `0.6.0`: GitHub reports no open Dependabot alerts;
-the previously triaged alerts remain an accepted deployment-scope risk, not a
-patched dependency. PyPI still publishes `1.5.9` as latest, all four GitHub
-advisories still have no `first_patched_version`, and the embedded-only usage
-described below is unchanged. This release does not change alert dispositions.
+Rechecked on 2026-09-11 (after `0.7.1`): GitHub reports no open Dependabot
+alerts **because the ChromaDB alerts are dismissed, not fixed** — seven as
+`tolerable_risk` (#33, #40–#45) and one as `not_used` (#30). An open-alert count
+of zero therefore does not mean `chromadb` is clean; these remain an accepted
+deployment-scope risk, not a patched dependency. PyPI still publishes `1.5.9` as
+latest, all four GitHub advisories still have no `first_patched_version`, and
+the embedded-only usage described below is unchanged. When a patched release
+ships, the dismissed alerts will not reopen on their own — check the advisories
+directly rather than waiting for Dependabot.
 
 The four advisories are:
 
