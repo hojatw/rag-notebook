@@ -2072,6 +2072,11 @@ def test_admin_eval_help_page_documents_tuning_workflow(monkeypatch, tmp_path):
         assert "current_profile_fields" not in help_page.text
         assert "<code>vector_weight</code>" in help_page.text
         assert 'aria-current="page">調參指南</a>' in help_page.text
+        # O0: Clear/Rebuild cannot change a locked dimension (and Rebuild
+        # never re-embeds), so the "cannot apply directly" card must route
+        # dimension changes to the migration flow instead.
+        assert "Clear/Rebuild" not in help_page.text
+        assert "「更換 embedding 維度」遷移流程" in help_page.text
 
 
 def test_base_and_notebook_include_accessibility_scaffolding(monkeypatch, tmp_path):
@@ -3137,6 +3142,75 @@ def test_settings_diagnostics_store_compact_results_and_audit(monkeypatch, tmp_p
         "llm_settings_test_chat",
         "llm_settings_test_embedding",
     ]
+
+
+def test_settings_embedding_dimension_mismatch_points_at_migration_flow(monkeypatch, tmp_path):
+    """O0: the /settings mismatch warning must not sell Clear/Rebuild as a fix.
+
+    Chroma locks a collection's width on first write and Clear does not release
+    it, so "Clear then Rebuild" leaves an index that still rejects the new
+    dimension. This warning is what an admin reads right after the probe shows a
+    different width — it has to route them to the /admin/index migration flow.
+    Drives the real test-embedding route so the diagnostics the template reads
+    are the ones the producer actually writes.
+    """
+    import re
+
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    import app.settings as app_settings
+
+    async def fake_embedding_probe(settings, usage_context=None):
+        return {
+            "status": "succeeded",
+            "provider": settings["provider"],
+            "model": settings["embedding_model"],
+            "latency_ms": 5.0,
+            "embedding_dimension": 1536,
+        }
+
+    monkeypatch.setattr(app_settings, "probe_embedding_diagnostics", fake_embedding_probe)
+    monkeypatch.setattr(
+        app_settings,
+        "vector_probe_index_dimension",
+        lambda: {"dimension": 1024, "readable": True},
+    )
+
+    form = {
+        "provider": "openai_compatible",
+        "base_url": "http://model/v1",
+        "embedding_base_url": "",
+        "api_key": "",
+        "chat_model": "chat-candidate",
+        "embedding_model": "embed-wider",
+        "embedding_query_prefix": "",
+        "embedding_passage_prefix": "",
+        "api_version": "2024-02-15-preview",
+        "temperature": "0.2",
+        "reasoning_effort_mode": "auto",
+        "reasoning_effort": "medium",
+        "timeout_seconds": "60",
+        "embedding_provider": "openai_compatible",
+        "embedding_api_key": "",
+        "embedding_api_version": "2024-02-15-preview",
+    }
+
+    with TestClient(main.app) as client:
+        _login(client)
+        embedding = client.post("/settings/test-embedding", data=form)
+        assert embedding.status_code == 200
+        warnings = re.findall(r'<p class="notice failed">(.*?)</p>', embedding.text, re.S)
+        assert len(warnings) == 1
+        warning = warnings[0]
+        # The quoted section name, not just the words: the old Clear/Rebuild
+        # copy also said "更換 embedding 維度" in passing.
+        assert "「更換 embedding 維度」" in warning
+        assert "/admin/index" in warning
+        for recommended_fix in ("Clear", "Rebuild", "清除", "重建"):
+            assert recommended_fix not in warning
+
+        # The full settings page renders the same stored diagnostic.
+        page = client.get("/settings")
+        assert warning in page.text
 
 
 def test_settings_rejects_fixed_reasoning_effort_until_exact_value_is_probed(monkeypatch, tmp_path):

@@ -647,7 +647,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "settings.reasoning_effort_fixed_value": "固定 reasoning_effort",
         "settings.reasoning_effort_fixed_hint": "請先用目前表單設定執行「測試聊天模型」；只有端點實測接受的值才能儲存。",
         "settings.runtime_params": "執行參數",
-        "settings.dim_mismatch_warn": "偵測到的維度與目前索引不同：更換 embedding 維度需先到 /admin/index 點 Clear 再 Rebuild，現有向量才會相容。",
+        "settings.dim_mismatch_warn": "偵測到的維度與目前索引不同：索引維度在第一次寫入時已鎖定，無法直接沿用。請到 /admin/index 使用「更換 embedding 維度」遷移流程（以這次測試的維度為目標），完成後再儲存設定，並重新索引它列出的來源。",
         "settings.index_unreadable_warn": "Embedding 連線正常，但目前的向量索引無法讀取（檔案可能已損壞或遺失），因此無法比對維度。請到「索引」管理頁面點 Rebuild 重建索引；若仍失敗，改用 Clear 後重新匯入來源。",
         # --- Audit log page (Phase 2) ----------------------------------------
         "audit.title": "稽核紀錄",

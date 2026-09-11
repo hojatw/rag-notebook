@@ -26,7 +26,7 @@
       </article>
       <article class="card eval-help-card">
         <h3>不能直接套用</h3>
-        <p class="muted small">這些會改變索引或向量空間，需使用 Clear/Rebuild 或 per-source reindex 流程。</p>
+        <p class="muted small">這些會改變索引或向量空間，需重新索引受影響的來源（per-source reindex）；「重建」只重播 SQLite 已存的向量，不會重新切段或重新產生 embedding。更換 embedding 維度須先走 <a href="/admin/index">/admin/index</a> 的「更換 embedding 維度」遷移流程。</p>
         <ul class="check-list">
           <li>chunk size、overlap、切段策略</li>
           <li>embedding model、prefix、dimension</li>
