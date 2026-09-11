@@ -13,7 +13,8 @@ App 使用 FastAPI、Jinja2、HTMX、Alpine.js、SQLite、Chroma 與本機檔案
 ## 快速開始
 
 ```bash
-cd notebooklm-rag-poc
+git clone https://github.com/hojatw/rag-notebook.git
+cd rag-notebook
 ./setup.sh
 NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
@@ -38,12 +39,14 @@ docker compose logs -f
 Docker Compose 需要 `.env` 中有 `NOTEBOOKLM_SECRET`；缺少時 app 會 fail
 closed。Compose file 會 bind-mount `./data` 與 `./logs`，所以 rebuild 後仍會保留使用者狀態。
 
-升級：
+升級前請先閱讀 [`CHANGELOG.md`](CHANGELOG.md) 中所有跨過版本的**升級注意事項**；部分版本需要重新索引或其他一次性步驟：
 
 ```bash
 git pull
 docker compose up --build -d
 ```
+
+不使用 Docker 時，執行 `git pull` 後再跑 `./setup.sh` 更新 `.venv`，然後重啟 app（若有獨立 worker 也一併重啟）。
 
 重設，會刪除使用者、notebooks、uploads、vectors 與 logs：
 
@@ -82,6 +85,9 @@ model output、API key 或 raw provider payload。
 先由目前 endpoint 實測接受才能儲存。圖片 request 若已被 endpoint 接受、但回覆不足以
 證明圖片語意，會標示「無法判定」，不再誤報為 endpoint failure。
 
+未來的圖片來源支援以這些診斷為門檻：除非目前的 chat model 通過圖片理解 probe，
+或部署明確啟用 OCR-only 路徑，否則圖片上傳應維持封鎖。
+
 設定頁有兩張彼此獨立的卡片；chat 與 embedding 可使用不同 provider、Base URL、
 API key、model 與 Azure API version。OpenAI-compatible chat card 範例：
 
@@ -115,7 +121,7 @@ Ollama、vLLM、TEI 這類本機 OpenAI-compatible 服務會透過 `/v1` endpoin
 - **Notebook workspace：** 每個 notebook 都有自己的來源、對話、釘選筆記與工具產出。
 - **Sources pane：** 拖放上傳、索引狀態輪詢、重新索引/刪除、來源預覽抽屜、citation-to-chunk 高亮。
 - **Grounded chat：** 串流 retrieval/generation 狀態、完成後的 bounded answer classification、Markdown 轉譯、引用來源、複製/匯出、追問 chip、起始問題、中文 IME-safe 輸入，以及繁中 UI。
-- **Studio tools：** briefing strip、來源比較、會議記錄、學習指南、FAQ、時間軸、翻譯，以及手動存成筆記流程。
+- **Studio tools：** briefing strip、來源比較、會議記錄、學習指南、FAQ、時間軸、翻譯，以及手動存成筆記流程。來源比較在摘要模式可選 2–10 個來源；指定比較主題時可選 2–3 個，會先從每個來源檢索證據再比較。結果附有來源／證據圖例，並保留在筆記與匯出中；比較結論仍需人工確認。詳見 [U17](docs/RETRIEVAL.md#topic-focused-source-comparison-u17)。
 - **Hybrid retrieval：** query rewrite、Chroma vector search、SQLite keyword search、LLM reranking、abstain threshold 與每則訊息的 retrieval debug details。
 - **Notebook domain controls：** notebook owner 可維護有界的 terms、synonyms、query expansions、answer notes 與 answer policy；hints 只在 query time 生效，不需 re-index 或額外 LLM call。
 - **Admin surfaces：** 使用者管理、vector-index console、LLM settings、audit trail，以及支援 retrieval profiles、answer/citation judging、E2 mode comparison、exports 與調參指南的 in-deployment Eval Workbench。
@@ -163,8 +169,16 @@ model 與 API key 都是選填：
 - 沒有 offline embedding fallback：接受上傳前必須先設定 embedding model。
 - 共用／高頻 UI copy 已使用 `zh-TW` catalog（U15a）；既有 template 仍有 inline
   zh-TW 文案，需在 U15b 加入 `en` 與 admin/per-user locale controls 前完成盤點與抽取。
+  詳見 [`docs/I18N.md`](docs/I18N.md)。
+- 企業認證是高優先的客戶需求。信任反向代理標頭模式（`I1a`）、OIDC（`I1b`）與
+  `/admin/auth` 維運診斷頁（`I1d`）已實作，並透過 `[auth]` 設定預設關閉；SAML 仍是依客戶需求的相容路徑。
+  除非部署明確選擇關閉，請保留本機 break-glass admin。詳見
+  [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) 與 `ROADMAP.md` `I1`。
 - Admin LLM settings 目前仍是單一全域設定；chat/embedding diagnostics 已完成，多 profile 管理與安全切換仍追蹤在 `ROADMAP.md` O1 Phase 2。
 - Ingestion diagnostics、Q&A/一般資料列試算表與 PPTX text-first ingestion 已完成；下一個來源格式是具 SSRF 防護的 Web URL ingestion（`ROADMAP.md` A6），OCR/vision 仍依模型能力與客戶需求投入。
+- 圖片搜尋 v1 追蹤在 `ROADMAP.md` A9：以 OCR 與 vision caption 作為文字，用目前設定的 embedding model
+  嵌入這些衍生文字，並以圖片縮圖／預覽作為引用來源。除非明確啟用 OCR-only 模式，否則圖片上傳需先通過
+  `/settings` 的圖片理解診斷。
 - Keyword search 仍使用 SQLite `LIKE`；FTS5 + BM25 追蹤在 `docs/QUALITY.md` / `docs/PERFORMANCE.md`。
 
 ## License
