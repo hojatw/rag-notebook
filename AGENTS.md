@@ -171,7 +171,7 @@ drift in the first place.
 - Preserve per-user and per-notebook authorization checks on every route that reads or mutates notebook data.
 - Use `load_llm_settings()` when plaintext API keys are needed; do not bypass decryption by reading `llm_settings` directly.
 - Keep password hashing and API-key encryption centralized in `app/security.py`.
-- CSRF protection, streaming responses, LLM retry/backoff, and worker-backed ingest are implemented; keep them working when touching forms, HTMX requests, chat streaming, provider HTTP, or ingest flow. See `docs/SECURITY.md` and `docs/PERFORMANCE.md`.
+- Keep CSRF protection, streaming responses, LLM retry/backoff, and worker-backed ingest working when touching forms, HTMX requests, chat streaming, provider HTTP, or ingest flow. CSRF (incl. multipart) and the streaming abstain-marker invariants → `docs/SECURITY.md`; retry/backoff, streaming, and the ingest queue → `docs/PERFORMANCE.md`.
 
 ## Git Hygiene
 

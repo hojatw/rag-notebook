@@ -29,6 +29,7 @@ NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload -
 - `app/ingest.py` — text extraction (PDF, DOCX, HTML, subtitles, **PPTX** slide/table/notes sections, **XLSX/CSV** row-shaped chunks), chunking, vector upsert, per-source summary (best-effort after indexing), and the A6a ingestion diagnostics (`ExtractionResult` → `collect_ingest_diagnostics` → `sources.diagnostics_json`). **A new extractor must return its own `ExtractionResult.extractor`/`notes` rather than failing silently.**
 - `app/jobs.py` — DB-backed ingest queue (`ingest_jobs` table): `enqueue_source`, atomic `claim_next_job`, retry/visibility-timeout. The single swap-point if ingest ever moves to Redis/RQ.
 - `app/worker.py` — ingest worker loop; runs standalone (`python -m app.worker`) or inline in the web lifespan.
+- `app/worker_health.py` — loopback-only liveness server + probe CLI for the standalone worker (`python -m app.worker_health`); checks the event loop only, deliberately imports no ingest/Chroma/SQLite code.
 - `app/llm.py` — LLM/embedding HTTP, query rewrite, rerank, grounded answer generation, starter questions, briefing, and tools. Providers: `openai_compatible` and `azure_openai` only (Ollama/vLLM/TEI go through the OpenAI-compatible `/v1` path). Chat and embedding are **independent connections** (own provider/base-url/key/api-version) resolved via `chat_settings()` / `embedding_settings()`; API key is optional (blank → no auth header). `build_chat_request` omits `temperature` and picks `max_tokens` vs `max_completion_tokens` from the **probed** capability (`chat_sampling_support`), never from the model name; output caps come from `[max_tokens]` keyed by `call_type`. E2 answer policy/notes stay in bounded user-role JSON, and answer streaming buffers/classifies the structural abstain marker before emitting or persisting text.
 - `app/vector_store.py` — Chroma persistent client, diff/full sync, `index_status`, `clear_all_vectors`, `reset_collection` (the only thing that releases a locked dimension).
 - `app/index_migration.py` — O0 embedding-dimension migration: classifies each source by the dimension of its existing vectors (reusable / recoverable / needs re-embedding / unaffected), drives the `/admin/index` migration flow, and owns the `vector_index_state` generation + lock that pauses the ingest queue mid-swap. Read `docs/archive/O0_DIMENSION_RESET_PLAN.md` before touching it.
@@ -44,7 +45,7 @@ NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload -
 Server-rendered Jinja with progressive enhancement via HTMX + Alpine — **no build step, no npm, no CDN** (vendor JS is self-hosted). HTMX partials live in `app/templates/_*.html`. Cross-fragment live updates are driven by custom `HX-Trigger` events broadcast from source-row polling:
 
 - `source-status-changed` — every status change; the left source rows listen (fast row sync).
-- `indexed-sources-changed` — only on `indexed`/`failed`; the Studio briefing strip + tools launcher (`_studio_tools.html`) and the center chat empty-state (which now hosts the relocated starter questions) listen, so they don't re-render on every 2s processing tick.
+- `indexed-sources-changed` — only on `indexed`/`failed`; the Studio briefing strip + tools launcher (`_studio_tools.html`) and the center chat empty-state (which hosts the starter questions) listen, so they don't re-render on every 2s processing tick.
 
 When adding a fragment that depends on indexed-source availability, listen for `indexed-sources-changed`, not the per-tick event.
 
@@ -55,7 +56,7 @@ When adding a fragment that depends on indexed-source availability, listen for `
 - Never modify or commit `data/` or `logs/` (user state); keep `.env` and real secrets uncommitted. Changing `NOTEBOOKLM_SECRET` invalidates encrypted API keys.
 - Preserve per-user / per-notebook authorization checks on every route that reads or mutates notebook data.
 - Keep password hashing and API-key encryption centralized in `app/security.py`.
-- CSRF protection, streaming responses, LLM retry/backoff, and worker-backed ingest are implemented; keep them working when touching forms, HTMX requests, chat streaming, provider HTTP, or ingest flow. See `docs/SECURITY.md` and `docs/PERFORMANCE.md`.
+- Keep CSRF protection, streaming responses, LLM retry/backoff, and worker-backed ingest working when touching forms, HTMX requests, chat streaming, provider HTTP, or ingest flow. CSRF (incl. multipart) and the streaming abstain-marker invariants → `docs/SECURITY.md`; retry/backoff, streaming, and the ingest queue → `docs/PERFORMANCE.md`.
 
 ## Verifying in the browser
 
