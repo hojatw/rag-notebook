@@ -48,6 +48,29 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ---
 
+## Collaboration and sharing
+
+### Medium priority — sized, not scheduled
+
+#### [ ] C1 · Notebook and output sharing
+- **Issue:** every notebook belongs to exactly one user, and authorization is uniformly "owner only". `get_notebook(conn, notebook_id, user_id)` (`app/main.py`) raises 404 unless `notebooks.user_id` matches, and it has **38 call sites**; `app/main.py` holds about **60 more SQL statements** filtering on `user_id = ?` (mostly `sources`, `notes`, `messages`, `conversations`, `chunks`); and retrieval scopes all three candidate paths by the caller's `user_id` — the Chroma `where` filter (`build_where` in `app/vector_store.py`), the keyword SQLite scan, and the Chroma-down fallback scan (`app/retrieval.py`). Enterprise use asks for sharing early — the meeting-consolidation scenario in the 2026-09-11 enterprise-workspace proposal needs a project lead to confirm what an organiser prepared — and today the only path is an exported file.
+- **Why it is not small:** the uniform owner-only rule is what makes today's authorization easy to reason about. Sharing replaces one question ("is this mine?") with a role matrix, and any route classified wrongly becomes an IDOR. Each individual code change is small; the cost is reviewing every site and proving the matrix with tests.
+- **Options, smallest first.** Sizes are indicative, from a static read of the code on 2026-09-11 — re-estimate after C1b's first PR:
+
+  | Option | What it gives | Main work | Indicative size |
+  |---|---|---|---|
+  | **C1a · Share a saved output (snapshot)** | Owner shares one saved note/report read-only with named users | a `note_shares` table, one read-only viewer route, a "shared with me" list, grant/revoke audit events. Does **not** touch retrieval or notebook routes. | S · ~2–4 days |
+  | **C1b · Read-only notebook membership** | Members browse sources, open previews, ask questions in their own conversations, read the outputs shelf; no upload/delete/edit | a `notebook_members(notebook_id, user_id, role)` table; replace `get_notebook` with an access helper that takes the required level (`read` / `write` / `owner`) and classify all 38 call sites; review the ~60 `user_id` filters (most must scope by the authorised notebook and its owner, not the caller); run retrieval with the notebook owner's id **only after** the access check; hide mutation controls; settle the decisions below | L · ~2–4 weeks, dominated by review and the authorization-matrix tests |
+  | **C1c · Group grants** | Share with an SSO group instead of named users | resolve membership from `external_identities.groups_json`. That column is a **login-time snapshot**: a user removed from a group keeps access until their next login, and local accounts have no groups. | M on top of C1b · ~3–5 days |
+  | **C1d · Editor role** | Members can upload, delete, and edit notes | ownership of uploaded sources, deletion rights, conflicting note edits (today last write wins), audit attribution | XL · not estimated; customer-driven only |
+
+- **Decisions C1b cannot skip:** (1) whether a member's saved outputs go to the shared shelf or a private one; (2) whether member actions may write the notebook's derived caches (`notebooks.suggestions_json`, the briefing) — those are writes to a row the member does not own; (3) whether shared notebooks appear in global search (`U9`) and in exports; (4) how an owner picks users without every user being able to enumerate the user directory (admin-assigned, or exact-email match); (5) what happens to members when the owner's account is deleted (today `ON DELETE CASCADE` removes the notebook); (6) whether read access is audited — `E1` already lists read-access audit as waiting for a customer requirement.
+- **Guardrails:** one access helper is the only way a route resolves a notebook; never trust a notebook/source/chunk/note id from the request without resolving it through that helper; ship an authorization-matrix test (every notebook route × owner / member / non-member, plus a cross-notebook id-substitution case) and see it fail before trusting it; record grant/revoke in `audit_events`; update [`SCHEMA.md`](SCHEMA.md) and [`ROUTES.md`](ROUTES.md) in the same change.
+- **Recommended sequencing:** C1a first if a customer needs in-app review of a deliverable — it covers "the lead confirms what the organiser prepared" without widening notebook access. C1b only when a customer needs several people working from the same live notebook. Its first PR should centralise the access check behind the helper with today's owner-only behaviour kept bit-identical; that PR is worth landing on its own because it shrinks the review surface for every later route.
+- **Restart condition:** a customer — starting with the meeting-transcript trial — asks for review or collaboration inside the app rather than through exported files.
+
+---
+
 ## UX improvements
 
 ### High priority
