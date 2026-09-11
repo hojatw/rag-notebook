@@ -113,8 +113,10 @@ gh release create v$(cat VERSION) --generate-notes
 
 ## CI
 
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) 在**每一支 PR** 與推上
-`main` 時執行，Python 3.12：
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) 在 PR 與推上 `main` 時執行，
+Python 3.12——**但只改文件的變更會跳過**：若一次變更的所有檔案都符合 `**/*.md`、
+`docs/**` 或 `LICENSE`，CI 不會啟動；只要有任何一個其他檔案（程式、測試、
+`config.example.toml`、`VERSION`、`.github/` 本身）被改到，就照常跑完整流程：
 
 ```text
 pip install -r requirements.txt -r requirements-dev.txt
@@ -125,6 +127,19 @@ pytest -q            # 帶 NOTEBOOKLM_SECRET=ci-test-secret
 也就是說本機的 `.venv/bin/pytest` 綠了，CI 就會綠——**兩邊跑的是同一組檢查**，
 CI 沒有額外的門檻，也沒有涵蓋本機沒跑到的東西。反過來說，本機沒跑測試就送 PR，
 CI 只是幫你晚幾分鐘發現同一件事。
+
+**為什麼可以安全跳過：** 沒有任何測試會讀 Markdown 檔（`config.example.toml` 有測試
+在守，所以它**不在**忽略清單內）；而 `main` 目前沒有設定 required status check，
+被跳過的 workflow 不會擋住合併。
+
+**若日後把 CI 設成 required check，必須先改寫法。** `paths-ignore` 會讓整個
+workflow 不啟動，GitHub 就永遠等不到那個必要檢查，純文件 PR 會停在
+「Expected — Waiting for status to be reported」無法合併。屆時改成「workflow
+每次都啟動、job 名稱不變，只在有程式變更時才執行測試步驟」：拿掉 `paths-ignore`，
+在 job 內先用路徑判斷（例如 `dorny/paths-filter`，或 `git diff --name-only`
+比對 base）算出 `code_changed`，再讓 install／compile／pytest 各步驟加上
+`if: steps.filter.outputs.code == 'true'`。這樣 required check 永遠會回報，
+純文件變更時它只是很快地以成功結束。
 
 CI **不會**做的事（需要人）：瀏覽器走查、檢索 eval（`tests.eval_retrieval` 需要
 已設定 embedding model；chat model 與 API key 選填）、Docker build 煙霧測試。這些的判準見

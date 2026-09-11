@@ -1,9 +1,22 @@
 name: CI
 
+# Docs-only changes skip CI: no test reads a Markdown file, and main has no
+# required status checks, so a skipped run cannot block a merge. If CI ever
+# becomes a required check, switch to the always-run pattern described in
+# docs/RELEASE.md -> CI, or docs-only PRs will wait forever for a check that
+# never starts. A change touching any non-ignored file still runs the full job.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
 
 permissions:
   contents: read

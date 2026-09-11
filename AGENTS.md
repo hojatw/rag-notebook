@@ -74,8 +74,9 @@ For front-end changes, also smoke-test the affected page in a browser at **both*
 desktop and mobile widths — layout regressions in this app have repeatedly been
 width-specific and invisible in tests.
 
-CI runs the same `py_compile` + `pytest` pair on every PR, so a green local run is
-a green CI run; see [`docs/RELEASE.md`](docs/RELEASE.md).
+CI runs the same `py_compile` + `pytest` pair on every PR that touches anything
+besides Markdown / `docs/` / `LICENSE` (docs-only changes skip it), so a green
+local run is a green CI run; see [`docs/RELEASE.md`](docs/RELEASE.md).
 
 For retrieval changes, also run the eval harness when an embedding model is configured (chat model and API key are optional):
 
