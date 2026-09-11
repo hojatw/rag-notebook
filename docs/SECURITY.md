@@ -219,7 +219,22 @@ A Bleichenbacher oracle in **PKCS#7 `EnvelopedData` decryption**. This app's onl
 
 ### GHSA-fp3f-mc75-235c / GHSA-fwg2-594c-jp42 — `pypdf < 6.15.0` (medium) — applicable, patched
 
-Unbounded memory/CPU on crafted `/ToUnicode` streams and CID font width ranges. Unlike the other two entries here this **is** reachable: the app parses user-uploaded PDFs. It is denial-of-service only (no code execution, no disclosure), and ingest runs in the worker behind `[runtime].extract_max_file_bytes` with per-source failure isolation, so the blast radius is one stuck ingest job rather than the web process. Patched to `6.15.0` — a direct application of the "keep these parsers patched" rule above.
+Unbounded memory/CPU on crafted `/ToUnicode` streams and CID font width ranges. Unlike the other two entries here this **is** reachable: the app parses user-uploaded PDFs. It is denial-of-service only (no code execution, no disclosure), and ingest runs in the worker behind `[runtime].extract_max_file_bytes` with per-source failure isolation, so the blast radius is one stuck ingest job rather than the web process — under the Docker Compose topology; see the next entry for the inline-worker caveat. Patched to `6.15.0` — a direct application of the "keep these parsers patched" rule above.
+
+### GHSA-763m-79hh-57f2 / GHSA-23w6-3w8w-8484 / GHSA-jp53-mhqp-8xcg — `pypdf < 6.16.1` (medium) — one applicable, patched
+
+Three denial-of-service advisories, triaged 2026-09-11. Dependabot raised six alerts because each advisory is reported against both `requirements.txt` and `requirements-dev.txt` (the latter includes the former with `-r`). All three are fixed by `6.16.2` (#111), which also supersedes Dependabot's security-group PR #113 (`6.16.1`).
+
+| Advisory | Issue | Reachable in this app? |
+|---|---|---|
+| GHSA-763m-79hh-57f2 (CVE-2026-84311) | Long runtime / large memory when extracting XForm objects | **Yes, on the fallback path.** PDFs are parsed with pdfplumber (pdfminer.six) first; pypdf's `page.extract_text()` runs only when pdfplumber returns nothing (`_extract_pdf_with_pypdf` in `app/ingest.py`, recorded as the `pdf_structure_fallback` note). A crafted upload that defeats pdfplumber reaches it. |
+| GHSA-23w6-3w8w-8484 (CVE-2026-84310) | Long runtime / large memory when retrieving outlines | **Not today** — nothing reads `PdfReader.outline`. **It becomes reachable with ROADMAP `A12` Phase 1**, whose first detection signal is exactly the PDF outline. |
+| GHSA-jp53-mhqp-8xcg (CVE-2026-84309) | Possible infinite loop in `TreeObject.insert_child` | **No.** In pypdf `6.15.0` its only callers are in `_writer.py` (and `TreeObject.add_child`, which requires a `PdfWriter`); the app only reads PDFs and never builds or modifies one. |
+
+- **Impact:** denial of service only — no code execution, no disclosure. Uploads are authenticated and bounded by `[runtime].extract_max_file_bytes`, and a parser failure fails one source.
+- **Blast radius depends on the worker topology** — this also qualifies the `6.15.0` entry above. Docker Compose sets `NOTEBOOKLM_INLINE_WORKER=0` on the web app and parses in the dedicated `worker` service, so a runaway parse stalls one ingest job. A bare `uvicorn` run keeps the default inline worker (`NOTEBOOKLM_INLINE_WORKER=1`), where extraction runs in a thread **inside the web process**: CPU contention slows the web app, and memory exhaustion would take it down.
+- **Action:** patched to `6.16.2` (#111). Operators only need to rebuild the image or rerun `./setup.sh`; re-indexing is not required for the security fix.
+- **Revisit when:** `A12` Phase 1 starts reading PDF outlines — keep `pypdf >= 6.16.1` as a floor from then on.
 
 ### ChromaDB `1.5.9` advisory cluster — current application paths not affected; patched release pending
 

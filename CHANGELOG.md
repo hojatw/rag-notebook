@@ -11,6 +11,13 @@
 
 ### 依賴
 
+- **安全性更新**：`pypdf` 6.15.0 → 6.16.2（#111），修正三個中度的阻斷服務類漏洞
+  （GHSA-763m-79hh-57f2、GHSA-23w6-3w8w-8484、GHSA-jp53-mhqp-8xcg）。本專案只在
+  pdfplumber 抽不出內容時才改用 pypdf，其中 XForm 那一項在這條退回路徑上踩得到；
+  另外兩項目前踩不到。判定紀錄見 `docs/SECURITY.md`。只需重建 image 或重跑
+  `./setup.sh`，不必重新索引。
+- `cryptography` 50.0.0 → 50.0.1（#112）
+- `uvicorn` 0.52.3 → 0.52.4（#102）
 - 移除未使用的 `authlib`。OIDC ID token 驗證（I1b）自始只直接 import `joserfc`
   （`joserfc` 本就獨立 pin 在 `requirements.txt`），`authlib` 在 `app/`、`tests/`
   皆無任何 import，已安裝套件也無一宣告依賴它；Dependabot #114（authlib 1.7.2 →
