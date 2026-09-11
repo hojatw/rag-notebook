@@ -15,10 +15,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 1. **Enterprise authentication:** `I1a` trusted reverse-proxy header mode, `I1b` OIDC, and `I1d` operator diagnostics are implemented; answer customer-discovery questions for each deployment, then add `I1c` SAML only when a customer IdP requires it.
 2. **Answer-quality loop:** `E1e-2` answer/citation judging and the `E2` notebook domain hints / answer policy capability are implemented. Next, complete Q1-3's customer-approved in-deployment Eval Set workflow, then validate E2 through judged with/without-hints comparisons without exporting customer data.
 3. **Admin LLM operations:** `O1` Phase 1 is done; next LLM-ops work is Phase 2 profile management and safe activation once needed.
-4. **Format foundation:** `A6a` ingestion diagnostics is implemented — every new extractor reports its own signals through it.
-5. **Source-format MVP path:** `A6c` spreadsheets and `A6b` PPTX Phase 1 are implemented; next is `A6` Web URL with SSRF guards.
-6. **Image/OCR path:** `A8` OCR and `A9` image search v1 depend on extraction diagnostics and capability checks; block image uploads unless `/settings` image understanding succeeds or a non-LLM OCR-only path is explicitly enabled.
-7. **Customer-driven later work:** keep `A10`/`A11` low priority unless a customer requirement or verified serving capability changes the economics.
+4. **Worker observability:** implement `O2` so standalone-worker ingest failures persist in per-worker files and remain diagnosable after container-log rotation; do not let multiple workers share one rotating file.
+5. **Format foundation:** `A6a` ingestion diagnostics is implemented — every new extractor reports its own signals through it.
+6. **Source-format MVP path:** `A6c` spreadsheets and `A6b` PPTX Phase 1 are implemented; next is `A6` Web URL with SSRF guards.
+7. **Image/OCR path:** `A8` OCR and `A9` image search v1 depend on extraction diagnostics and capability checks; block image uploads unless `/settings` image understanding succeeds or a non-LLM OCR-only path is explicitly enabled.
+8. **Customer-driven later work:** keep `A10`/`A11` low priority unless a customer requirement or verified serving capability changes the economics.
 
 ---
 
@@ -243,6 +244,21 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   5. **[done]** Admin copy, audit metadata, README (both languages), `AGENTS.md`, `RETRIEVAL.md`, and `DEVELOPMENT.md` all describe the same flow; the temporary warnings are removed.
 - **Kept:** `scripts/reset_chroma_dimension.py` stays as **break-glass** for when the app will not start and `/admin/index` is unreachable (decision D4). It classifies sources by the same rules but marks them `failed` rather than `stale_embedding`, since it cannot assume the deployment knows the newer status.
 - **Implementation plan and design decisions:** [`O0_DIMENSION_RESET_PLAN.md`](archive/O0_DIMENSION_RESET_PLAN.md).
+
+### High priority — operational observability
+
+#### [ ] O2 · Persist standalone-worker logs safely
+- **Issue:** The web app writes rotating logs to `logs/app.log`, but the standalone ingest worker configures only console logging. Consequently, `ingest_failed`, its `failed_stage`, and the Python traceback may exist only in the container stdout/stderr stream and be absent from the bind-mounted `logs/` directory used for durable collection. This makes a user-reported extraction or embedding failure difficult to diagnose after container-log rotation.
+- **Target model:** move console + rotating-file setup into a side-effect-free shared logging helper. Keep the web app on `logs/app.log`; write each standalone worker to its own UTF-8 file selected by a stable, validated worker id (for example `logs/worker-worker01.log`). Preserve console output so `docker compose logs` remains useful.
+- **Multi-worker guardrail:** never point multiple worker processes or containers at the same `RotatingFileHandler` path; Python's standard handler does not coordinate cross-process rotation, so sharing can lose, overwrite, or mis-rotate records. `NOTEBOOKLM_WORKER_ID` must be stable and unique per concurrently running worker, accept only a bounded safe character set, and feed a documented `NOTEBOOKLM_WORKER_LOG_FILE` template. Do not use PID as the durable identity because restarts would create unbounded filenames. The default one-worker Compose deployment must work without manual configuration; scaling examples must assign unique ids/files.
+- **Scope boundary:** this item provides collector-ready local files only. Installation, configuration, field extraction, delivery, or acceptance testing for Splunk or any other external log server is explicitly out of scope.
+- **Acceptance criteria:**
+  1. Web and standalone-worker INFO/WARNING/ERROR records persist to separate files under the existing `./logs:/app/logs` mount, while both remain visible through container logs.
+  2. A controlled ingest failure records `source_id`, `job_id` where available, `failed_stage`, exception class/message, and full traceback in the responsible worker's file without logging API keys, source text, prompts, or model output.
+  3. Two concurrently running test workers use distinct files; rotation and restart do not overwrite, duplicate, or cross-route their records. Duplicate logging initialization does not duplicate lines.
+  4. Configuration covers log level, worker id/file, maximum bytes, and backup count; invalid level/id/path inputs fail clearly or use an explicitly tested safe fallback.
+  5. `docs/DEVELOPMENT.md` and Docker Compose examples document single- and multi-worker setup, file ownership/readability, rotation retention, disk-capacity implications, and recovery through console logs when file creation fails.
+- **Estimate:** 11–16 engineering hours (plan as 2 person-days), including implementation, unit/multi-worker tests, Docker rotation/restart verification, documentation, and review fixes; excludes every external log-server integration.
 
 ### Medium priority — safer LLM configuration and deployment flexibility
 
