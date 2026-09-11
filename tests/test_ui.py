@@ -3546,6 +3546,20 @@ def test_healthz_reports_build(monkeypatch, tmp_path):
         assert "commit" in body
 
 
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+def test_framework_api_docs_are_disabled(monkeypatch, tmp_path, path):
+    """FastAPI's stock docs endpoints must not exist: unauthenticated they would
+    publish every route (including /admin/* and /settings*) and their parameter
+    names, and Swagger UI / ReDoc pull JS/CSS from a public CDN."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with FastAPITestClient(main.app) as client:
+        resp = client.get(path, follow_redirects=False)
+        assert resp.status_code == 404
+        assert "swagger" not in resp.text.lower()
+        assert '"paths"' not in resp.text
+
+
 def test_footer_shows_build_label(monkeypatch, tmp_path):
     """Every page footer carries the version so a screenshot ties to a build."""
     main, _db = _fresh_app(monkeypatch, tmp_path)
