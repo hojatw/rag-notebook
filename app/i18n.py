@@ -656,6 +656,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "feedback.rating_partial": "方向對但不完整",
         "feedback.rating_unusable": "不能用",
         "feedback.saved": "已記錄，感謝回饋",
+        "feedback.recorded_as": "已記錄：",
         "feedback.add_reason": "補充原因",
         "feedback.hide_reasons": "收合",
         "feedback.reason_legend": "問題出在哪裡？（可複選，選填）",

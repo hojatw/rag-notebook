@@ -4839,3 +4839,53 @@ def test_admin_feedback_page_is_admin_only(monkeypatch, tmp_path):
         assert response.status_code == 303
         denied = client.get("/admin/feedback")
         assert denied.status_code == 403
+
+
+def test_feedback_panel_state_is_server_rendered_not_alpine_only(monkeypatch, tmp_path):
+    """The reasons panel must be correct in the returned HTML, not after Alpine runs.
+
+    HTMX inserts the fragment and Alpine initialises a tick later, so a panel
+    whose initial visibility depends on `x-show` alone is painted first and
+    hidden afterwards — it flashed on every click. Anything that starts hidden
+    therefore carries an inline `display: none`, and anything that should not
+    exist at all (reasons for a usable answer) is simply not rendered.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+        _uid, nb, convo, msg = _seed_answer(main, db)
+        url = f"/notebooks/{nb}/chat/{convo}/messages/{msg}/feedback"
+
+        # Rating it usable ends the interaction: no reasons panel, no toggle.
+        usable = client.post(url, data={"rating": "usable"})
+        assert "feedback-reasons" not in usable.text
+        assert "feedback-toggle" not in usable.text
+
+        # A problem rating asks why, and the panel is open in the markup itself.
+        unusable = client.post(url, data={"rating": "unusable"})
+        assert "feedback-reasons" in unusable.text
+        panel = unusable.text.split('class="feedback-reasons"')[1][:120]
+        assert "display: none" not in panel
+
+        # With reasons recorded the panel starts collapsed — and is rendered
+        # collapsed, rather than being shown and then hidden by Alpine.
+        with_reasons = client.post(url, data={"rating": "unusable", "reasons": ["citation"]})
+        panel = with_reasons.text.split('class="feedback-reasons"')[1][:120]
+        assert "display: none" in panel
+
+
+def test_feedback_shows_what_was_recorded_after_submitting_reasons(monkeypatch, tmp_path):
+    """Submitting reasons collapses the panel; without a summary the swap would
+    look like nothing happened at all."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+        _uid, nb, convo, msg = _seed_answer(main, db)
+        response = client.post(
+            f"/notebooks/{nb}/chat/{convo}/messages/{msg}/feedback",
+            data={"rating": "partial", "reasons": ["generation", "other"], "other_reason": "少了劑量說明"},
+        )
+        assert "已記錄：" in response.text
+        assert "方向對但不完整" in response.text
+        assert "找到了但答錯或不完整" in response.text
+        assert "少了劑量說明" in response.text
