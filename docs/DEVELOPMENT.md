@@ -356,9 +356,10 @@ git diff --check
 16 核上全套 471 個測試從單核 132 秒降到約 27 秒，CI 上 `pytest -q` 會自動沿用
 同一組設定。
 
-耗時幾乎不是來自測試數量，而是每個測試的固定重建成本：`tests/test_ui.py` 的
-133 個測試佔了全套 60%，每個要 `importlib.reload` 整組 app 模組、重建 SQLite
-schema、重種帳號再登入一次（約 0.57 秒），真正被斷言的請求只花 0.02–0.05 秒。
+耗時幾乎不是來自測試數量，而是每個測試的固定重建成本：`tests/test_ui_*.py` 的
+133 個路由層測試佔了全套 60%，每個要 `importlib.reload` 整組 app 模組、重建
+SQLite schema、重種帳號再登入一次（約 0.57 秒，見 `tests/ui_helpers.py` 的
+`_fresh_app`），真正被斷言的請求只花 0.02–0.05 秒。
 所以「刪測試」幾乎省不到時間（`tests/test_llm.py` 的 61 個測試只花 0.73 秒），
 平行化才是不犧牲覆蓋率的解法。
 
@@ -370,7 +371,7 @@ SQLite/Chroma 的檔案 I/O 競爭吃掉了多出來的平行度。CI runner 核
 不共用 `data/`。除錯時用 `-n0` 關掉並行，否則 `-s` 的輸出與 pdb 會被 worker 吃掉：
 
 ```bash
-.venv/bin/pytest -n0 -s tests/test_ui.py::test_csrf_token_required_for_login_post
+.venv/bin/pytest -n0 -s tests/test_ui_auth.py::test_csrf_token_required_for_login_post
 ```
 
 Current expected test-tooling warning: `fastapi.testclient` may emit

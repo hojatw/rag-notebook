@@ -217,7 +217,7 @@ curl -i -H "X-Forwarded-User: mallory" http://localhost:8000/auth/trusted-header
 ### Level 0 — 單元測試（CI 每個 PR 都會跑全套件）
 auth 相關測試涵蓋正／負路徑。改動認證相關程式後，可只跑這一組快速回歸：
 ```bash
-.venv/bin/pytest tests/test_ui.py -k "auth or oidc or trusted or sso" tests/test_config.py
+.venv/bin/pytest tests/test_ui_auth.py tests/test_config.py
 ```
 
 ### Level 1 — 本機整合（不需客戶環境）

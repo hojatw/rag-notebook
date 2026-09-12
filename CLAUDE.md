@@ -12,7 +12,7 @@ NotebookLM-style RAG proof of concept: FastAPI + Jinja2 + HTMX + Alpine.js, SQLi
 ./setup.sh                                                        # build/refresh .venv (Python 3.12, matches Docker)
 NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload --port 8000
 .venv/bin/pytest                                                  # full test suite（預設 -n auto 並行，見 pytest.ini）
-.venv/bin/pytest -n0 -s tests/test_ui.py::test_name                # 單一測試除錯：關掉並行才看得到輸出
+.venv/bin/pytest -n0 -s tests/test_ui_auth.py::test_name           # 單一測試除錯：關掉並行才看得到輸出
 .venv/bin/python -m py_compile app/*.py tests/*.py
 .venv/bin/python -m tests.eval_retrieval                          # retrieval eval (embedding model required; chat/key optional)
 ```
@@ -39,7 +39,7 @@ NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload -
 - `app/version.py` — build identity (`VERSION` file + git sha) shown in the footer, `app_started`, and `/healthz`.
 - `app/security.py` — password hashing, signed session cookies, Fernet API-key encryption (KDF over `NOTEBOOKLM_SECRET`).
 - `app/templates/` — Jinja; HTMX partials are `_*.html`. `app/static/` — `style.css` + `app.js`; self-hosted vendor JS in `app/static/vendor/`.
-- `tests/` — pytest suites + retrieval eval harness (`eval_retrieval.py`, `eval_questions.json`).
+- `tests/` — pytest suites + retrieval eval harness (`eval_retrieval.py`, `eval_questions.json`). The route-level UI suites are split by product surface: `test_ui_auth.py` (登入／工作階段／SSO), `test_ui_notebook.py` (notebook／來源／上傳), `test_ui_chat.py` (問答), `test_ui_studio.py` (Studio 工具與產出架), `test_ui_admin.py` (Eval Workbench／索引／設定), `test_ui_feedback.py` (E3a 回饋), `test_ui_shell.py` (外框／錯誤頁／主題). 共用固件在 `tests/ui_helpers.py` (`TestClient`, `_fresh_app`, `_login`, …) — 新的 UI 測試從那裡 import，不要再自己刻一份 app 重建流程。
 
 ## Frontend model
 

@@ -151,6 +151,12 @@ drift in the first place.
 - Prefer existing helper functions and route patterns in `app/main.py` (core routes + shared web helpers), `app/retrieval.py` (retrieval engine), `app/domain_policy.py` (E2 validation, matching, snapshots), the admin route modules (`app/evals.py`, `app/admin.py`, `app/settings.py`), `app/db.py`, `app/llm.py`, `app/ingest.py`, and `app/vector_store.py`. New routes mount on `app` via `app.include_router(...)` at the bottom of `app/main.py`; route modules import shared helpers (`render`, `require_admin`, `record_audit_event`) back from `app.main`, so reach the app only through `app.main` (the package import root).
 - Schema changes are currently handled through idempotent SQLite setup/migration helpers in `app/db.py`; add tests for new persistence behavior. **When you change the schema (new table, column, index, or constraint), update [`docs/SCHEMA.md`](docs/SCHEMA.md) in the same change** — it is the human-readable reference and must not drift from `app/db.py`.
 - Keep generated UI fragments in `app/templates/_*.html` when they are HTMX partials.
+- Route-level UI tests are split by product surface across `tests/test_ui_*.py`
+  (`auth`, `notebook`, `chat`, `studio`, `admin`, `feedback`, `shell`). Put a new
+  test in the file whose surface it exercises, and take `TestClient` / `_fresh_app`
+  / `_login` / the seeding helpers from `tests/ui_helpers.py` rather than writing
+  another app-rebuild routine. A helper that a second file starts needing moves
+  into `ui_helpers.py`; one used by a single file stays in that file.
 - Keep Markdown rendering sanitized through the existing marked + DOMPurify path.
 - Avoid broad refactors unless they directly reduce risk for the requested change.
 - Tunable parameters (retrieval weights, top-k, chunking sizes, retry, queue timeouts, TTLs) live in `app/config.py`, resolved as defaults ← `config.toml` ← `NOTEBOOKLM_<GROUP>_<FIELD>` env. Add new tunables there rather than hardcoding; keep the dataclass defaults equal to current behavior and update `config.example.toml` (kept in sync by `tests/test_config.py`).
