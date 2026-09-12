@@ -11,7 +11,8 @@ NotebookLM-style RAG proof of concept: FastAPI + Jinja2 + HTMX + Alpine.js, SQLi
 ```bash
 ./setup.sh                                                        # build/refresh .venv (Python 3.12, matches Docker)
 NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload --port 8000
-.venv/bin/pytest                                                  # full test suite
+.venv/bin/pytest                                                  # full test suite（預設 -n auto 並行，見 pytest.ini）
+.venv/bin/pytest -n0 -s tests/test_ui.py::test_name                # 單一測試除錯：關掉並行才看得到輸出
 .venv/bin/python -m py_compile app/*.py tests/*.py
 .venv/bin/python -m tests.eval_retrieval                          # retrieval eval (embedding model required; chat/key optional)
 ```

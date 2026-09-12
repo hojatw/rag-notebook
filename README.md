@@ -229,7 +229,8 @@ endpoint, not stored chunks.
 ## Development Checks
 
 ```bash
-.venv/bin/pytest
+.venv/bin/pytest                     # 預設並行執行（見 pytest.ini），約 27 秒
+.venv/bin/pytest -n0                 # 序列執行；除錯單一測試時用
 .venv/bin/python -m py_compile app/*.py tests/*.py
 git diff --check
 ```
