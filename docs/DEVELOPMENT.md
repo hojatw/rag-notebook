@@ -300,6 +300,13 @@ reference corpus. Re-derive it if answers differ in shape — the method is:
    hence 120: it covers 91% of "full first sentence + marker" cases while 25% of
    answers still finish inside the gate and stay fully buffered.
 
+## 疑難排解
+
+實際發生過的事故（症狀、log 字串、根因、處理、預防）收在
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)。目前收錄：向量索引損毀導致**答案悄悄
+變差但系統不報錯**、以及 chunk 超過 embedding token 上限導致來源索引失敗。
+解決新的事故之後請補一則進去。
+
 ## Logging
 
 ```bash

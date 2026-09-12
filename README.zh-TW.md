@@ -43,10 +43,19 @@ closed。Compose file 會 bind-mount `./data` 與 `./logs`，所以 rebuild 後�
 
 ```bash
 git pull
+docker compose stop app worker     # 先讓舊行程完全停止，再啟動新的
 docker compose up --build -d
 ```
 
-不使用 Docker 時，執行 `git pull` 後再跑 `./setup.sh` 更新 `.venv`，然後重啟 app（若有獨立 worker 也一併重啟）。
+先停止很重要：兩組行程同時寫 `data/chroma` 可能讓持久化的向量索引損毀，而系統
+**不會報錯**，只會降級成品質較差的回退路徑繼續回答。症狀與復原步驟見
+[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)。
+
+不使用 Docker 時，執行 `git pull` 後再跑 `./setup.sh` 更新 `.venv`，然後重啟 app
+（若有獨立 worker 也一併重啟）；同樣要先停掉兩者再啟動。
+
+升級後請隨便問一題，並確認 `logs/app.log` 沒有出現 `retrieve_vector_failed`——
+這是目前最快的健檢。
 
 重設，會刪除使用者、notebooks、uploads、vectors 與 logs：
 
