@@ -512,3 +512,9 @@ Not product-facing. Codebase-structure work that is neither a performance nor a 
 - **The first step is not moving routes.** `app/main.py` is the package's import root, and the route modules import `render` / `require_admin` / `record_audit_event` back from it; that circular dependency is what makes further splitting risky. Move the shared helpers into `app/web.py` first, break the cycle, and every later extraction becomes a safe, mechanical move.
 - **How to do it:** its own round, never mixed into a feature diff — a pure move is only reviewable when nothing else changes. The full test suite is the safety net; route behaviour must not change.
 - **Priority:** low (P3). Worth scheduling before the next large feature that would add a new block of routes to `app/main.py`.
+
+#### [ ] M2 · Raise PBKDF2 iterations to 600,000 with rehash-on-login (reviewed 2026-09-12, deliberately deferred)
+- **Current state:** password hashing is PBKDF2-HMAC-SHA256 at 200,000 iterations — above the NIST floor, about a third of OWASP's current figure. The full reasoning, the measured costs, and what a correct change would involve are recorded in [`SECURITY.md`](SECURITY.md) → *Password hashing cost*.
+- **Why deferred:** iteration count buys a linear factor while the SEC-4 rate limiting, the PBKDF2 concurrency leases, and the move toward SSO already bound the realistic attack paths. Changing the constant alone would not protect any existing account.
+- **Restart condition:** a customer or compliance requirement naming a KDF or iteration count, local passwords becoming the primary login path at scale, or suspected exposure of `data/app.sqlite3`.
+- **Priority:** low — customer-driven only.

@@ -187,6 +187,61 @@ deletion already defaulted to `Path=/`; this is contract hardening, not evidence
 of a reproduced logout failure. HTTP and HTTPS regressions now pin both sides
 so their security attributes cannot silently drift later.
 
+### Password hashing cost — deliberately left at 200,000 iterations (2026-09-12)
+
+`hash_password` / `verify_password` (`app/security.py`) use PBKDF2-HMAC-SHA256
+at **200,000 iterations** (~85 ms per check on the development machine). The
+number came in with the initial squashed commit and **no rationale was ever
+recorded** — it was reviewed on 2026-09-12 and deliberately kept. The reasoning
+is written down here so the next person does not have to re-derive it.
+
+**Where 200,000 sits against published guidance**
+
+| Source | PBKDF2-HMAC-SHA256 |
+|---|---|
+| OWASP Password Storage Cheat Sheet (current) | 600,000 |
+| NIST SP 800-63B | 10,000 (a floor, not a recommendation) |
+| Django's built-in default | raised every release; recently in the 700k–1.2M range |
+
+So 200,000 is far above the NIST floor and roughly a third of OWASP's current
+figure. OWASP also ranks PBKDF2 **last** among password KDFs (Argon2id > scrypt
+> bcrypt > PBKDF2), recommending it only where FIPS-140 compliance forces it,
+because PBKDF2 is memory-light and therefore GPU- and ASIC-friendly.
+
+**Why it is not scheduled**
+
+- Iteration count buys a **linear** factor; password entropy buys an exponential
+  one. 200k → 600k is 3×, worth about half a character of password length.
+- It only matters if `data/app.sqlite3` is exfiltrated and cracked offline.
+  Online guessing is already bounded by the SEC-4 account failure buckets and
+  the `login_verification_leases` concurrency cap (below), and a missing account
+  walks the same bounded path via `DUMMY_PASSWORD_HASH`.
+- With `I1a`/`I1b` enterprise SSO available, local passwords are a shrinking
+  share of the login surface (see `AUTHENTICATION.md`).
+
+**What raising it would actually require** — the constant is the easy part:
+
+1. `verify_password` reads the iteration count back out of the stored
+   `pbkdf2_sha256$<iterations>$<salt>$<digest>` string, so raising the default
+   **does not break existing accounts** — but it also does not protect them.
+   They stay at 200,000 for ever.
+2. The real work is **rehash-on-login**: on a successful check, if the stored
+   iteration count is below the current default, re-hash and store. Without it,
+   in a deployment where accounts are created once and never again, changing the
+   constant protects almost nobody.
+3. Login latency goes 85 ms → ~255 ms per check, including the dummy-hash path
+   for unknown usernames. The deployment can absorb this; the lease cap already
+   bounds the CPU a login storm can consume.
+
+**Restart condition:** a customer or compliance requirement that names an
+iteration count or a KDF, a deployment where local passwords (not SSO) are the
+primary login path for a large user base, or any suspected exposure of
+`data/app.sqlite3`. If it is picked up, do the full version — constant **plus**
+rehash-on-login — not the constant alone.
+
+Switching to Argon2id is explicitly **not** proposed: it changes the stored hash
+format and needs its own migration path, which is out of proportion for a POC.
+
 ### Local-login rate limiting (SEC-4, 2026-08-23)
 
 The limiter has one configurable account failure bucket (default 5 attempts per
