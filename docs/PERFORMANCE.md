@@ -88,6 +88,13 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deliberate
 - **Fix:** A short TTL cache (e.g. 10–60 min) for the discovery document and JWKS, keyed by discovery URL. On a signature failure with an unknown `kid`, refetch JWKS once before rejecting, so IdP key rotation still works.
 - **Restart condition:** login latency complaints, IdP rate limiting, or OIDC becoming the default login path for a larger user base.
 
+### [ ] P2-6 · Cache the Fernet key derivation (noticed 2026-09-12 while profiling the test suite)
+- **Issue:** `_fernet(secret)` (`app/security.py`) runs a full 200,000-iteration PBKDF2 on **every** call, and nothing caches the result. `load_llm_settings()` (`app/db.py`) calls `decrypt_secret` twice per invocation — once for the chat API key, once for the embedding key — and there are ~19 call sites across `app/main.py`, `app/ingest.py`, `app/evals.py` and `app/settings.py`, including the chat / ask / ingest hot paths.
+- **Impact:** ~85 ms per derivation measured locally, so ~170 ms of pure CPU added to every request that touches an LLM setting — **but only when an API key is actually stored.** `decrypt_secret` returns early on an empty token, so the current target deployment (keyless Gemma + e5, see `DEPLOYMENT_CONTEXT.md`) pays nothing. This is latent cost that appears the moment a deployment configures a key.
+- **Fix:** Memoise the derived cipher per secret (`functools.lru_cache` over a small `_fernet_cached(secret)`, or a module-level dict). No new exposure: the derived key is a deterministic function of `NOTEBOOKLM_SECRET`, which the process already holds in its environment for the whole of its lifetime. Keep the cache keyed by secret so a rotated `NOTEBOOKLM_SECRET` cannot be served a stale cipher.
+- **Restart condition:** any deployment that stores a real API key, or a measured request-latency regression on `/ask` / ingest. Cheap enough (~10 lines) to do opportunistically before then.
+- **Priority:** low — zero effect on the known customer deployment, which runs keyless.
+
 ---
 
 ## P3 — UX / product tradeoffs

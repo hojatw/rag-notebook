@@ -350,6 +350,29 @@ exceptions with stack traces.
 git diff --check
 ```
 
+### 測試為什麼是並行的
+
+`pytest.ini` 設了 `addopts = -n auto --maxprocesses=8`（pytest-xdist），本機
+16 核上全套 471 個測試從單核 132 秒降到約 27 秒，CI 上 `pytest -q` 會自動沿用
+同一組設定。
+
+耗時幾乎不是來自測試數量，而是每個測試的固定重建成本：`tests/test_ui.py` 的
+133 個測試佔了全套 60%，每個要 `importlib.reload` 整組 app 模組、重建 SQLite
+schema、重種帳號再登入一次（約 0.57 秒），真正被斷言的請求只花 0.02–0.05 秒。
+所以「刪測試」幾乎省不到時間（`tests/test_llm.py` 的 61 個測試只花 0.73 秒），
+平行化才是不犧牲覆蓋率的解法。
+
+上限 8 是實測的：16 個 worker（29 秒）比 8 個（27 秒）還慢，worker 啟動與
+SQLite/Chroma 的檔案 I/O 競爭吃掉了多出來的平行度。CI runner 核心數更少，
+`auto` 會自己降下去，上限不影響它。
+
+平行化安全的前提是**每個測試都用 `tmp_path` 取得自己的 `NOTEBOOKLM_DATA_DIR`**，
+不共用 `data/`。除錯時用 `-n0` 關掉並行，否則 `-s` 的輸出與 pdb 會被 worker 吃掉：
+
+```bash
+.venv/bin/pytest -n0 -s tests/test_ui.py::test_csrf_token_required_for_login_post
+```
+
 Current expected test-tooling warning: `fastapi.testclient` may emit
 `StarletteDeprecationWarning` about its underlying `httpx` integration. This is
 not an application runtime warning; revisit it when upgrading FastAPI,
