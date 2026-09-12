@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import os
 import secrets
+from functools import lru_cache
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -46,11 +47,28 @@ def get_app_secret() -> str:
     )
 
 
+@lru_cache(maxsize=8)
+def _derive_fernet_key(secret: str) -> bytes:
+    """Derive (and memoise) the Fernet key for an application secret.
+
+    The derivation is a 200,000-iteration PBKDF2 — about 85 ms — and every
+    `load_llm_settings()` decrypts two API keys, on request paths that include
+    chat, ask and ingest. Without the cache that is ~170 ms of pure CPU per
+    request in any deployment that actually stores a key.
+
+    Caching adds no exposure: the key is a deterministic function of
+    NOTEBOOKLM_SECRET, which the process already holds in its environment for
+    its whole lifetime. The cache is keyed by the secret, so rotating
+    NOTEBOOKLM_SECRET cannot be served a stale key. `maxsize` is generous only
+    for tests — a running process derives exactly one.
+    """
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=ENCRYPTION_SALT, iterations=200_000)
+    return base64.urlsafe_b64encode(kdf.derive(secret.encode("utf-8")))
+
+
 def _fernet(secret: str) -> Fernet:
     """Derive a Fernet cipher from the application secret."""
-    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=ENCRYPTION_SALT, iterations=200_000)
-    key = base64.urlsafe_b64encode(kdf.derive(secret.encode("utf-8")))
-    return Fernet(key)
+    return Fernet(_derive_fernet_key(secret))
 
 
 def encrypt_secret(plaintext: str, secret: str) -> str:

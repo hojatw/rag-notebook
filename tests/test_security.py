@@ -38,6 +38,39 @@ def test_decrypt_legacy_plaintext_passthrough():
     assert decrypt_secret("sk-old-plaintext", SECRET) == "sk-old-plaintext"
 
 
+def test_fernet_key_is_derived_once_per_secret(monkeypatch):
+    """P2-6: the 200k-iteration KDF runs once per secret, not once per call.
+
+    Asserts the property the request path cares about — how many times PBKDF2
+    actually runs — rather than `lru_cache`'s own bookkeeping, which would pass
+    even if `_fernet` stopped going through the cached helper.
+    """
+    from app import security
+
+    security._derive_fernet_key.cache_clear()
+    derivations = []
+    real_pbkdf2 = security.PBKDF2HMAC
+
+    def counting_pbkdf2(**kwargs):
+        derivations.append(kwargs["iterations"])
+        return real_pbkdf2(**kwargs)
+
+    monkeypatch.setattr(security, "PBKDF2HMAC", counting_pbkdf2)
+    try:
+        token = security.encrypt_secret("sk-abc-123", "secret-a")
+        assert security.decrypt_secret(token, "secret-a") == "sk-abc-123"
+        assert security.decrypt_secret(token, "secret-a") == "sk-abc-123"
+        assert derivations == [200_000], "three calls, one secret -> one derivation"
+
+        # A different secret must derive its own key, and must not open the
+        # first one's ciphertext — the cache is keyed by secret, so rotating
+        # NOTEBOOKLM_SECRET cannot be served a stale key.
+        assert security.decrypt_secret(token, "secret-b") == ""
+        assert derivations == [200_000, 200_000]
+    finally:
+        security._derive_fernet_key.cache_clear()
+
+
 def test_decrypt_with_wrong_secret_returns_empty():
     """A cipher decrypted with the wrong secret returns empty, not garbage."""
     token = encrypt_secret("sk-abc-123", SECRET)
