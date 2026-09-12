@@ -4919,3 +4919,34 @@ def test_switching_to_usable_clears_any_reasons_already_ticked(monkeypatch, tmp_
         # ...and the stale reasons are gone from the rendered fragment too.
         assert "引用跟內容對不上" not in response.text
         assert "引用錯頁" not in response.text
+
+
+def test_admin_feedback_page_sends_the_whole_answer_not_a_truncated_one(monkeypatch, tmp_path):
+    """The answer preview is clamped in CSS and expanded in place, so the full
+    text has to be in the HTML. Truncating server-side would make the expand
+    button reveal the same cut-off text."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    tail = "這句話只出現在回答的最後一段"
+    with TestClient(main.app) as client:
+        _login(client)
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+            notebook_id = conn.execute(
+                "INSERT INTO notebooks (user_id, title) VALUES (?, '長回答')", (user["id"],)
+            ).lastrowid
+            convo_id = conn.execute(
+                "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, 'T')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            message_id = conn.execute(
+                "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'assistant', ?)",
+                (convo_id, user["id"], "前面很長的內容。" * 40 + tail),
+            ).lastrowid
+
+        client.post(
+            f"/notebooks/{notebook_id}/chat/{convo_id}/messages/{message_id}/feedback",
+            data={"rating": "partial"},
+        )
+        page = client.get("/admin/feedback")
+        assert tail in page.text
+        assert "feedback-answer-toggle" in page.text

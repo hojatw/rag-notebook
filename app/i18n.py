@@ -692,6 +692,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "feedback_admin.col_reasons": "原因",
         "feedback_admin.col_other": "補充說明",
         "feedback_admin.col_context": "當時設定",
+        "feedback_admin.answer_expand": "展開全文",
+        "feedback_admin.answer_collapse": "收合",
         "feedback_admin.empty": "目前沒有符合條件的回饋。",
         "feedback_admin.context_outcome": "結果",
         "feedback_admin.context_model": "模型",

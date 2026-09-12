@@ -2452,13 +2452,16 @@ legend {
   vertical-align: top;
 }
 
-.feedback-col-time { width: 12%; }
-.feedback-col-user { width: 9%; }
-.feedback-col-notebook { width: 21%; }
-.feedback-col-rating { width: 10%; }
-.feedback-col-reasons { width: 18%; }
-.feedback-col-other { width: 14%; }
-.feedback-col-context { width: 16%; }
+/* The rating column must fit the longest label (方向對但不完整) on one line:
+   at 10% it was ~88px against a ~104px pill, so the tag spilled into the
+   reasons column and the two read as one run-on line. */
+.feedback-col-time { width: 11%; }
+.feedback-col-user { width: 8%; }
+.feedback-col-notebook { width: 22%; }
+.feedback-col-rating { width: 14%; }
+.feedback-col-reasons { width: 17%; }
+.feedback-col-other { width: 13%; }
+.feedback-col-context { width: 15%; }
 
 .feedback-reason-tags {
   display: flex;
@@ -2467,14 +2470,33 @@ legend {
 }
 
 /* The rated answer itself, so an admin can see what was being judged without
-   opening the notebook. Bounded: this is a review list, not a transcript. */
+   opening the notebook. Clamped to keep rows scannable, but expandable in
+   place — the whole answer is already in the HTML, so nothing is lost. */
 .feedback-answer-preview {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
   color: var(--muted-strong);
+  margin: 4px 0 0;
 }
+
+.feedback-answer-preview.is-expanded {
+  display: block;
+  overflow: visible;
+}
+
+.feedback-answer-toggle {
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-deep);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.feedback-answer-toggle:hover { text-decoration: underline; }
 
 .feedback-tag-unusable { background: var(--danger-soft, var(--accent-wash)); }
 

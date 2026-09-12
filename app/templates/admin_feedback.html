@@ -86,10 +86,14 @@
               <tr>
                 <td class="nowrap small">{{ entry.created_at }}</td>
                 <td class="small">{{ entry.username }}</td>
-                <td class="small">
+                <td class="small" x-data="{ expanded: false }">
                   <a href="/notebooks/{{ entry.notebook_id }}">{{ entry.notebook_title }}</a>
                   {% if entry.answer_content %}
-                    <p class="feedback-answer-preview small">{{ entry.answer_content }}</p>
+                    <p class="feedback-answer-preview small" :class="{ 'is-expanded': expanded }">{{ entry.answer_content }}</p>
+                    {% if entry.answer_content|length > 60 %}
+                      <button type="button" class="feedback-answer-toggle" @click="expanded = !expanded"
+                              x-text="expanded ? '{{ t('feedback_admin.answer_collapse') }}' : '{{ t('feedback_admin.answer_expand') }}'">{{ t('feedback_admin.answer_expand') }}</button>
+                    {% endif %}
                   {% endif %}
                 </td>
                 <td class="small">
