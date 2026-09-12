@@ -3378,7 +3378,7 @@ def submit_answer_feedback(
     normalized_rating = feedback_lib.normalize_rating(rating)
     if normalized_rating is None:
         raise HTTPException(status_code=400, detail=i18n.t("feedback.invalid_rating"))
-    normalized_reasons = feedback_lib.normalize_reasons(reasons)
+    normalized_reasons = feedback_lib.normalize_reasons(reasons, normalized_rating)
     normalized_other = feedback_lib.normalize_other_reason(other_reason, normalized_reasons)
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])

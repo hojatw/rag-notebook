@@ -4724,7 +4724,9 @@ def test_answer_feedback_rejects_unknown_rating_and_drops_unknown_reasons(monkey
         assert bad.status_code == 400
         assert _feedback_rows(db) == []
 
-        client.post(url, data={"rating": "usable", "reasons": ["retrieval", "made_up", "retrieval"]})
+        # A rating that keeps reasons — `usable` deliberately clears them, which
+        # is a different rule with its own test.
+        client.post(url, data={"rating": "partial", "reasons": ["retrieval", "made_up", "retrieval"]})
         assert json.loads(_feedback_rows(db)[0]["reasons_json"]) == ["retrieval"]
 
 
@@ -4889,3 +4891,31 @@ def test_feedback_shows_what_was_recorded_after_submitting_reasons(monkeypatch, 
         assert "方向對但不完整" in response.text
         assert "找到了但答錯或不完整" in response.text
         assert "少了劑量說明" in response.text
+
+
+def test_switching_to_usable_clears_any_reasons_already_ticked(monkeypatch, tmp_path):
+    """The rating buttons and the reason checkboxes share one form, so a user
+    who ticks reasons and then picks 可以直接採用 posts both. Recording those
+    reasons would store a problem the user just said did not exist — and the
+    admin page counts reasons, so it would also inflate the failure tally.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+        _uid, nb, convo, msg = _seed_answer(main, db)
+        url = f"/notebooks/{nb}/chat/{convo}/messages/{msg}/feedback"
+
+        client.post(url, data={"rating": "unusable", "reasons": ["citation", "other"], "other_reason": "引用錯頁"})
+        assert json.loads(_feedback_rows(db)[0]["reasons_json"]) == ["citation", "other"]
+
+        # Change of mind: the answer was fine after all.
+        response = client.post(
+            url, data={"rating": "usable", "reasons": ["citation", "other"], "other_reason": "引用錯頁"}
+        )
+        row = _feedback_rows(db)[0]
+        assert row["rating"] == "usable"
+        assert json.loads(row["reasons_json"]) == []
+        assert row["other_reason"] == ""
+        # ...and the stale reasons are gone from the rendered fragment too.
+        assert "引用跟內容對不上" not in response.text
+        assert "引用錯頁" not in response.text
