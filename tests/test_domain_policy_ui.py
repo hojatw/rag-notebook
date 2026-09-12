@@ -5,7 +5,7 @@ import threading
 import pytest
 from fastapi.testclient import TestClient as FastAPITestClient
 
-from test_ui import TestClient, _fresh_app, _login, _seed_notebook
+from tests.ui_helpers import TestClient, _fresh_app, _login, _seed_notebook
 
 
 def _hint_form(**overrides):

@@ -165,7 +165,7 @@ still enforced auth, so no data leaked, but on a service meant to sit behind
 enterprise SSO this was unauthenticated information disclosure. Swagger UI and
 ReDoc also load their assets from a public CDN (jsdelivr), which breaks the
 no-CDN rule. Nothing in the app, tests, middleware, or docs used them. The app
-is a server-rendered HTML app with no API clients. `tests/test_ui.py::test_framework_api_docs_are_disabled`
+is a server-rendered HTML app with no API clients. `tests/test_ui_shell.py::test_framework_api_docs_are_disabled`
 checks that all three return 404 unauthenticated.
 
 **Restart condition:** if an API client ever needs a machine-readable schema,

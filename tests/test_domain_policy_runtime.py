@@ -1,6 +1,6 @@
 import json
 
-from test_ui import TestClient, _fresh_app, _login, _seed_notebook
+from tests.ui_helpers import TestClient, _fresh_app, _login, _seed_notebook
 
 
 def test_streaming_runtime_applies_domain_context_and_never_persists_marker(monkeypatch, tmp_path):

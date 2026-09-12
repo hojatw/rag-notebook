@@ -10,7 +10,7 @@ from types import SimpleNamespace
 def _fresh_modules(monkeypatch, tmp_path):
     """Reload the app graph against an isolated temp DB and return (evals, db).
 
-    Mirrors tests/test_ui._fresh_app: app.main is imported first because it is the
+    Mirrors tests/ui_helpers._fresh_app: app.main is imported first because it is the
     package import root that the route modules import shared helpers back from.
     """
     monkeypatch.setenv("NOTEBOOKLM_DATA_DIR", str(tmp_path / "data"))
