@@ -32,6 +32,9 @@ that drives the **real producer** rather than hand-writing the value.
 
 | Field | Written by | Read by | Allowed values | Contract test (drives the real producer) |
 |---|---|---|---|---|
+| `answer_feedback.rating` | `main.submit_answer_feedback` | `admin.admin_feedback`, `_feedback.html` | `usable` · `partial` · `unusable` — the single source is `RATINGS` in `app/feedback.py`; both sides import it rather than spelling the strings | `test_answer_feedback_submit_then_change_keeps_one_row` |
+| `answer_feedback.reasons_json` | `main.submit_answer_feedback` | `admin.admin_feedback` (exact match via `json_each`) | JSON array of `retrieval` · `generation` · `citation` · `grounding` · `over_abstain` · `non_quality` · `other`, unknown values dropped on write (`REASONS` in `app/feedback.py`) | `test_answer_feedback_rejects_unknown_rating_and_drops_unknown_reasons` |
+| `answer_feedback.context_json` | `feedback.freeze_context` | `admin_feedback.html` | `retrieval_params` (frozen copy of the active profile params), `chat_model`, `outcome`, `domain_hints_enabled`, `answer_policy_enabled`, `retrieved_chunks`, `top_score` — identifiers, flags and numbers only, never question/answer/snippet text | `test_answer_feedback_freezes_the_retrieval_configuration` |
 | `sources.status` | `main` upload + reindex (`uploaded`); `ingest.process_source`; `index_migration` | `_source_item.html` **polling gate**, `source_status_labels`, retrieval filters, `index_migration` | `uploaded` · `processing` · `indexed` · `failed` · `stale_embedding` | `test_reindex_marks_the_source_queued_so_its_row_keeps_polling` |
 | `llm_settings.diagnostics_json` → `chat.status`, `embedding.status` | `llm.probe_*_diagnostics` → `settings.store_llm_diagnostic` | `_settings_diag_*.html`, `index_migration.target_dimension_from_diagnostics` **(migration gate)** | `succeeded` · `failed` — use `llm.DIAGNOSTIC_STATUS_*`, never a literal | `test_probe_output_actually_opens_the_migration_gate` |
 | …`chat.capabilities.sampling_params.status` / `max_tokens_field.field` / `reasoning_effort.status` + `supported_values` | `llm._probe_sampling_params` | `_settings_diag_chat.html`, **and `chat_sampling_support` → `build_chat_request` on every LLM call** | status: `succeeded` · `failed` · `not_tested` · `skipped`; field: `max_tokens` \| `max_completion_tokens`; effort values: `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`. Auto always probes `low`/`medium`; fixed mode also probes only its selected value. Runtime accepts effort only when its status succeeded, the exact value was positively probed, and `chat.settings_fingerprint` still matches the current non-secret settings | `test_settings_fixed_reasoning_effort_round_trips_real_probe_contract` |
@@ -503,6 +506,28 @@ Per-question retrieval result for one eval run. When the run has `judge_enabled 
 | `answer_text` | TEXT DEFAULT `''` | E1e-2: generated answer for this item (or canned refusal on abstain). Surfaced only in full internal exports, never sanitized ones |
 | `answer_outcome` | TEXT DEFAULT `''` | E1e-2: `answered`, `abstained`, or `error`; empty on retrieval-only runs |
 | `created_at` | TEXT | |
+
+## `answer_feedback`
+E3a: one user's rating of one assistant answer ([`ROADMAP.md`](ROADMAP.md) `E3`).
+
+**This is the one governance-adjacent table that deliberately stores user-written text** (`other_reason`). It therefore sits at the same protection level as `messages` — per-user scoped, CASCADE with the user and the message — and must never be copied into `llm_usage_events`, `ai_safety_events`, or a sanitized eval export. The audit trail records that feedback happened (rating, reason ids, character count), never the text itself.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `message_id` | INTEGER NOT NULL → `messages(id)` CASCADE | the assistant answer being rated |
+| `user_id` | INTEGER NOT NULL → `users(id)` CASCADE | who rated it |
+| `notebook_id` | INTEGER NOT NULL → `notebooks(id)` CASCADE | denormalized for the admin filter |
+| `conversation_id` | INTEGER NOT NULL → `conversations(id)` CASCADE | denormalized for the route scope check |
+| `rating` | TEXT NOT NULL | `usable` \| `partial` \| `unusable` — vocabulary in `app/feedback.py` |
+| `reasons_json` | TEXT NOT NULL DEFAULT `'[]'` | JSON array of reason tokens (see value contracts) |
+| `other_reason` | TEXT NOT NULL DEFAULT `''` | **user-written**, kept only when `other` is among the reasons, bounded by `[feedback].other_reason_max_chars` |
+| `context_json` | TEXT NOT NULL DEFAULT `'{}'` | frozen snapshot of what produced the answer (see value contracts) |
+| `created_at` / `updated_at` | TEXT | `updated_at` bumped when the user changes their mind |
+
+`UNIQUE(message_id, user_id)`: one row per user per answer. Re-rating upserts — the admin page counts rows, so a second row would silently inflate every total.
+
+Indexes: `idx_answer_feedback_created`, `idx_answer_feedback_rating_created`, `idx_answer_feedback_notebook_created`.
 
 ## `audit_events`
 Durable admin-visible audit trail for security/compliance-relevant operations. It is append-only by convention and backs `/admin/audit`. `metadata_json` must contain identifiers and compact summaries only; do **not** store API keys, full export payloads, prompts, retrieved snippets, or copied source text here.

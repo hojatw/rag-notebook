@@ -163,6 +163,14 @@ oidc_allowed_algorithms = "RS256"
 # --- LLM output caps (LLM-3) -------------------------------------------------
 # Truncation limits, not length targets. Sized for zh-TW output (~1 token/char);
 # replace with measured p95 x 1.5 from llm_usage_events once you have traffic.
+[feedback]
+# E3a 回答回饋（ROADMAP E3）。關閉後聊天畫面不顯示回饋控制項，
+# 管理頁仍可查閱既有紀錄。
+enabled = true
+other_reason_max_chars = 200      # 使用者自填「其他」原因的長度上限
+admin_page_limit = 100            # 管理頁預設每頁筆數
+admin_page_limit_max = 300        # 管理頁每頁筆數上限
+
 [max_tokens]
 settings_chat_probe = 128
 settings_stream_probe = 128

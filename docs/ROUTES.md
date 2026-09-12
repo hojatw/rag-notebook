@@ -53,6 +53,7 @@ POST /notebooks/{id}/minutes                              structured meeting min
 POST /notebooks/{id}/artifacts/{kind}                     A4 artifact: study_guide | faq | timeline (result + save button)
 POST /notebooks/{id}/translate                            A5 translate one source's summary into a target language (result + save button)
 
+POST /notebooks/{id}/chat/{cid}/messages/{mid}/feedback    rate one answer (E3a); upserts, returns the feedback fragment
 POST /notebooks/{id}/notes/pin                            pin assistant message into notes
 POST /notebooks/{id}/notes/add                            save a raw note (title + content)
 POST /notebooks/{id}/notes/{note_id}/edit                 edit a note's title/content in place (U8)
@@ -102,6 +103,7 @@ POST /admin/evals/profiles/{profile_id}/apply             apply a profile to liv
 POST /admin/evals/profiles/{profile_id}/delete            delete a candidate profile (active profile is protected)
 GET  /admin/evals/compare?base&candidate                  compare two succeeded runs: param/metric/per-question diff
 
+GET  /admin/feedback                                      answer-feedback review (E3a; admin read is audited)
 GET  /admin/audit                                         admin audit trail with filters
 
 GET  /settings                                            admin LLM settings (admin only)

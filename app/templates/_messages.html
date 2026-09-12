@@ -105,6 +105,15 @@
           {% endif %}
         </details>
       {% endif %}
+
+      {# E3a: rate this answer. Only for assistant messages, and only where a
+         conversation exists (the fragment posts to a conversation-scoped
+         route). Never shown for the user's own messages. #}
+      {% if feedback_enabled|default(false) and message.role == "assistant" and conversation %}
+        {% with feedback=(message_feedback|default({})).get(message.id) %}
+          {% include "_feedback.html" %}
+        {% endwith %}
+      {% endif %}
     </article>
   {% else %}
     {% include "_chat_empty.html" %}
