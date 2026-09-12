@@ -128,10 +128,31 @@ Python 3.12——**但只改文件的變更會跳過**：若一次變更的所�
 `config.example.toml`、`VERSION`、`.github/` 本身）被改到，就照常跑完整流程：
 
 ```text
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -r requirements.txt -r requirements-dev.txt   # 命中 venv 快取時跳過
 python -m py_compile app/*.py tests/*.py
-pytest -q            # 帶 NOTEBOOKLM_SECRET=ci-test-secret
+pytest -q            # 帶 NOTEBOOKLM_SECRET=ci-test-secret，預設 -n auto 並行
 ```
+
+**CI 會快取整個 `.venv`**（`actions/cache`，鍵含 runner OS、**完整**的 Python 版本、
+以及 `requirements.txt` + `requirements-dev.txt` 的雜湊）。命中時整個安裝步驟跳過。
+
+兩件要知道的事：
+
+1. **鍵裡放的是完整 Python 版本（如 `3.12.14`）而非 `3.12`。** venv 的
+   `bin/python` 是指向 `/opt/hostedtoolcache/Python/<完整版本>/` 的符號連結，
+   runner image 把 3.12.14 換成 3.12.15 時，還原回來的 venv 會指到不存在的
+   直譯器。用完整版本當鍵，這種情況會自然地 cache miss 並重建。
+2. **快取等於把傳遞依賴也凍結住**，直到 `requirements*.txt` 改動為止。直接依賴
+   本來就釘死了，傳遞依賴沒有——所以這讓 CI 更可重現，代價是不會再「碰巧」裝到
+   傳遞依賴的新版。這裡可以接受，因為依賴更新是由 Dependabot 與 SECURITY.md 的
+   判定紀錄驅動的（Dependabot 的 PR 會改到 `requirements*.txt`，鍵就變了）。
+
+快取以分支為範圍：feature 分支第一次跑是冷的，之後才會命中；合進 `main` 後
+`main` 也要先冷跑一次。
+
+**同一支 PR 連續推 commit 時，先前還在跑的 run 會被取消**（`concurrency` +
+`cancel-in-progress`）。`main` 上刻意不取消——每次推上去都是一個 merge commit，
+它的結果要留在紀錄上，不該被後一次合併抹掉。
 
 也就是說本機的 `.venv/bin/pytest` 綠了，CI 就會綠——**兩邊跑的是同一組檢查**，
 CI 沒有額外的門檻，也沒有涵蓋本機沒跑到的東西。反過來說，本機沒跑測試就送 PR，
