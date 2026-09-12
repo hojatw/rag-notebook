@@ -2439,7 +2439,11 @@ legend {
 
 .feedback-table {
   table-layout: fixed;
-  min-width: 960px;
+  /* Only as wide as a narrow window needs; the columns below are percentages
+     so the table always fits its container on a desktop. Fixed pixel widths
+     summed to 1116px inside an 878px container, which put a horizontal
+     scrollbar under the table even on a wide screen. */
+  min-width: 780px;
 }
 
 .feedback-table th,
@@ -2448,13 +2452,13 @@ legend {
   vertical-align: top;
 }
 
-.feedback-col-time { width: 120px; }
-.feedback-col-user { width: 96px; }
-.feedback-col-notebook { width: 150px; }
-.feedback-col-rating { width: 120px; }
-.feedback-col-reasons { width: 220px; }
-.feedback-col-other { width: 200px; }
-.feedback-col-context { width: 210px; }
+.feedback-col-time { width: 12%; }
+.feedback-col-user { width: 9%; }
+.feedback-col-notebook { width: 21%; }
+.feedback-col-rating { width: 10%; }
+.feedback-col-reasons { width: 18%; }
+.feedback-col-other { width: 14%; }
+.feedback-col-context { width: 16%; }
 
 .feedback-reason-tags {
   display: flex;
