@@ -11,7 +11,7 @@
 > 讀 backlog 裡的判斷時，請把它當成「當初是在什麼條件下做的決定」。
 
 > **刻意去識別化。** 客戶名稱、機房、實際硬體型號等資訊不寫進 repo；需要那些細節時
-> 看本機的 `handover.md`（gitignored）。這裡只保留**會影響工程判斷**的事實。
+> 看本機的 `local/handover.md`（gitignored）。這裡只保留**會影響工程判斷**的事實。
 
 ## 塑造了現有設計的幾個事實
 
@@ -69,7 +69,7 @@ Redis 被明確延後——見 `PERFORMANCE.md` `P1-1`）。
 
 ## 這份文件不涵蓋的
 
-- **具體的客戶、硬體、網路拓撲** —— 見本機 `handover.md`。
+- **具體的客戶、硬體、網路拓撲** —— 見本機 `local/handover.md`。
 - **每個部署的認證方式** —— 見 [`AUTHENTICATION.md`](AUTHENTICATION.md) 與
   [`SSO_DEPLOYMENT.zh-TW.md`](SSO_DEPLOYMENT.zh-TW.md)。
 - **實際的效能數字** —— 沒有量過的就不寫。目前只有零星實測散在各 backlog 條目裡，

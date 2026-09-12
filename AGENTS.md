@@ -21,7 +21,7 @@ Treat it as a POC, not a production service. Keep changes scoped and behavior-pr
 - Read `docs/I18N.md` before adding user-facing copy or changing language behavior — UI strings go through the `app/i18n.py` catalog (`t()` / `window.I18N`), never hardcoded. It covers adding strings/locales, switching the locale, and known exceptions.
 - Read `docs/DEPLOYMENT_CONTEXT.md` when a decision hinges on deployment realities — the fixed/borrowed serving side, user scale, corpus shape, or language mix. Most trade-offs recorded in `PERFORMANCE.md` / `QUALITY.md` / `ROADMAP.md` are derived from those facts; this is where they are written down.
 - Read `docs/RELEASE.md` before touching `VERSION`, `CHANGELOG.md`, or anything under `.github/`. The short version: feature PRs only append to CHANGELOG's `[未發布]` and must **not** bump `VERSION` — the bump is its own `chore(release)` PR.
-- Read `handover.md` when present for local cross-session work state. It is gitignored and may contain current priorities, but it is not a durable project rule source.
+- Read `local/handover.md` when present for local cross-session work state. It is gitignored and may contain current priorities, but it is not a durable project rule source. Everything under `local/` is untracked by design — this repo is public, so internal-only material lives there and never in `docs/`; see [`local/README.md`](local/README.md).
 
 ### The rest of `docs/`, by purpose
 
@@ -177,4 +177,4 @@ drift in the first place.
 
 - Do not revert user changes unless explicitly asked.
 - Keep commits focused and include tests or verification notes when making code changes.
-- `handover.md` is a local handoff document and should normally remain untracked.
+- `local/` holds untracked, human-written local notes (`local/handover.md` among them) and must stay untracked apart from its committed `README.md`. Runtime config and state (`.env`, `config.toml`, `data/`, `logs/`) keep their own paths and their own ignore rules — do not move them into `local/`.
