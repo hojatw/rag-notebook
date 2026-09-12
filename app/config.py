@@ -326,6 +326,21 @@ class AuthConfig:
 
 
 @dataclasses.dataclass
+class FeedbackConfig:
+    """E3a answer feedback (`ROADMAP.md` E3).
+
+    `other_reason_max_chars` bounds the one free-text field a user can submit.
+    It is deliberately small: this is a label for a reason the fixed tags did
+    not cover, not a place to write an essay or paste document content.
+    """
+
+    enabled: bool = True
+    other_reason_max_chars: int = 200
+    admin_page_limit: int = 100         # rows per admin feedback page
+    admin_page_limit_max: int = 300
+
+
+@dataclasses.dataclass
 class AppConfig:
     retrieval: RetrievalConfig = dataclasses.field(default_factory=RetrievalConfig)
     chunking: ChunkingConfig = dataclasses.field(default_factory=ChunkingConfig)
@@ -339,6 +354,7 @@ class AppConfig:
     runtime: RuntimeConfig = dataclasses.field(default_factory=RuntimeConfig)
     ui: UIConfig = dataclasses.field(default_factory=UIConfig)
     auth: AuthConfig = dataclasses.field(default_factory=AuthConfig)
+    feedback: FeedbackConfig = dataclasses.field(default_factory=FeedbackConfig)
 
 
 def _coerce(raw: Any, field_type: type) -> Any:

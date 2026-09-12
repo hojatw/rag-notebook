@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings feedback-page">
+  <header class="settings-head">
+    <p class="eyebrow">{{ t('common.admin_console') }}</p>
+    <h1>{{ t('feedback_admin.title') }}</h1>
+    <p class="muted">{{ t('feedback_admin.intro') }}</p>
+  </header>
+
+  {# The warning is deliberately on the page, not only in the docs: counts
+     invite trend-reading, and these are an uncontrolled sample. #}
+  <p class="notice small">{{ t('feedback_admin.not_a_metric') }}</p>
+
+  <section class="settings-section">
+    <h2>{{ t('feedback_admin.total') }}：{{ counts.total }}</h2>
+    <div class="feedback-counts">
+      <div>
+        <h3 class="small">{{ t('feedback_admin.by_rating') }}</h3>
+        <ul class="feedback-count-list">
+          {% for value in feedback_ratings %}
+            <li><span>{{ t(feedback_rating_label_keys[value]) }}</span><strong>{{ counts.by_rating[value] }}</strong></li>
+          {% endfor %}
+        </ul>
+      </div>
+      <div>
+        <h3 class="small">{{ t('feedback_admin.by_reason') }}</h3>
+        <ul class="feedback-count-list">
+          {% for value in feedback_reasons %}
+            <li><span>{{ t(feedback_reason_label_keys[value]) }}</span><strong>{{ counts.by_reason[value] }}</strong></li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <form method="get" action="/admin/feedback" class="inline-form feedback-filter-form">
+      <label>
+        {{ t('feedback_admin.filter_rating') }}
+        <select name="rating">
+          <option value="">—</option>
+          {% for value in feedback_ratings %}
+            <option value="{{ value }}" {% if filters.rating == value %}selected{% endif %}>{{ t(feedback_rating_label_keys[value]) }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        {{ t('feedback_admin.filter_reason') }}
+        <select name="reason">
+          <option value="">—</option>
+          {% for value in feedback_reasons %}
+            <option value="{{ value }}" {% if filters.reason == value %}selected{% endif %}>{{ t(feedback_reason_label_keys[value]) }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        {{ t('feedback_admin.filter_notebook') }}
+        <input name="notebook_id" type="number" min="1" value="{{ filters.notebook_id }}">
+      </label>
+      <label>
+        {{ t('feedback_admin.filter_since') }}
+        <input name="since" type="date" value="{{ filters.since }}">
+      </label>
+      <button type="submit" class="small">{{ t('feedback_admin.filter_apply') }}</button>
+      <a class="ghost small" href="/admin/feedback">{{ t('feedback_admin.filter_clear') }}</a>
+    </form>
+  </section>
+
+  <section class="settings-section">
+    {% if entries %}
+      <div class="table-scroll">
+        <table class="data-table feedback-table">
+          <thead>
+            <tr>
+              <th>{{ t('feedback_admin.col_created') }}</th>
+              <th>{{ t('feedback_admin.col_user') }}</th>
+              <th>{{ t('feedback_admin.col_notebook') }}</th>
+              <th>{{ t('feedback_admin.col_rating') }}</th>
+              <th>{{ t('feedback_admin.col_reasons') }}</th>
+              <th>{{ t('feedback_admin.col_other') }}</th>
+              <th>{{ t('feedback_admin.col_context') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for entry in entries %}
+              <tr>
+                <td class="nowrap small">{{ entry.created_at }}</td>
+                <td class="small">{{ entry.username }}</td>
+                <td class="small">
+                  <a href="/notebooks/{{ entry.notebook_id }}">{{ entry.notebook_title }}</a>
+                </td>
+                <td class="small">
+                  <span class="tag feedback-tag-{{ entry.rating }}">{{ t(feedback_rating_label_keys[entry.rating]) }}</span>
+                </td>
+                <td class="small">
+                  {% for reason in entry.reasons %}
+                    <span class="tag">{{ t(feedback_reason_label_keys[reason]) }}</span>
+                  {% endfor %}
+                </td>
+                <td class="small">{{ entry.other_reason }}</td>
+                <td class="small feedback-context">
+                  {{ t('feedback_admin.context_outcome') }}: {{ entry.context.outcome or '—' }}<br>
+                  {{ t('feedback_admin.context_model') }}: {{ entry.context.chat_model or '—' }}<br>
+                  {{ t('feedback_admin.context_hints') }}: {{ t('feedback_admin.context_on') if entry.context.domain_hints_enabled else t('feedback_admin.context_off') }} ·
+                  {{ t('feedback_admin.context_policy') }}: {{ t('feedback_admin.context_on') if entry.context.answer_policy_enabled else t('feedback_admin.context_off') }}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="muted">{{ t('feedback_admin.empty') }}</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

@@ -1,0 +1,62 @@
+{# E3a: per-answer feedback control. Rendered inline under an assistant message
+   and returned on its own after a POST, so rating an answer never re-renders
+   the conversation. Context: notebook, conversation, message, feedback (this
+   user's existing row or None), feedback_saved (True right after a submit). #}
+<div class="answer-feedback" id="feedback-msg-{{ message.id }}"
+     x-data="{ open: {{ 'true' if feedback and feedback.reasons else 'false' }},
+               rating: '{{ (feedback.rating if feedback else '') }}',
+               other: {{ 'true' if feedback and 'other' in feedback.reasons else 'false' }} }">
+  <form hx-post="/notebooks/{{ notebook.id }}/chat/{{ conversation.id }}/messages/{{ message.id }}/feedback"
+        hx-target="#feedback-msg-{{ message.id }}"
+        hx-swap="outerHTML">
+    {{ csrf_input() }}
+
+    <div class="feedback-row">
+      <span class="muted small feedback-prompt">{{ t('feedback.prompt') }}</span>
+      {% for value in feedback_ratings %}
+        <button type="submit" name="rating" value="{{ value }}"
+                class="ghost small feedback-rating{% if feedback and feedback.rating == value %} selected{% endif %}"
+                :class="{ 'selected': rating === '{{ value }}' }"
+                @click="rating = '{{ value }}'; open = true"
+                aria-pressed="{{ 'true' if feedback and feedback.rating == value else 'false' }}">
+          {{ t(feedback_rating_label_keys[value]) }}
+        </button>
+      {% endfor %}
+      {% if feedback_saved %}
+        <span class="feedback-saved small" role="status">{{ t('feedback.saved') }}</span>
+      {% endif %}
+      <button type="button" class="ghost small feedback-toggle" x-show="rating" x-cloak
+              @click="open = !open"
+              x-text="open ? '{{ t('feedback.hide_reasons') }}' : '{{ t('feedback.add_reason') }}'">{{ t('feedback.add_reason') }}</button>
+    </div>
+
+    {# Reasons stay optional: the whole point of E3a is that one click is
+       enough. They are what makes a rating diagnosable, so they are offered
+       immediately after rating rather than behind a second page. #}
+    <div class="feedback-reasons" x-show="open" x-cloak>
+      <fieldset>
+        <legend class="muted small">{{ t('feedback.reason_legend') }}</legend>
+        {% for value in feedback_reasons %}
+          <label class="feedback-reason">
+            <input type="checkbox" name="reasons" value="{{ value }}"
+                   aria-label="{{ t(feedback_reason_label_keys[value]) }}"
+                   {% if feedback and value in feedback.reasons %}checked{% endif %}
+                   {% if value == 'other' %}@change="other = $event.target.checked"{% endif %}>
+            <span>{{ t(feedback_reason_label_keys[value]) }}</span>
+          </label>
+        {% endfor %}
+      </fieldset>
+      <label class="feedback-other" x-show="other" x-cloak>
+        <span class="muted small">{{ t('feedback.other_label') }}</span>
+        <input type="text" name="other_reason" maxlength="{{ feedback_other_max_chars }}"
+               value="{{ feedback.other_reason if feedback else '' }}"
+               placeholder="{{ t('feedback.other_placeholder') }}">
+      </label>
+      <div class="feedback-submit-row">
+        <button type="submit" name="rating" class="small"
+                :value="rating" x-show="rating" x-cloak>{{ t('feedback.submit_reasons') }}</button>
+        <span class="muted small feedback-notice">{{ t('feedback.admin_notice') }}</span>
+      </div>
+    </div>
+  </form>
+</div>

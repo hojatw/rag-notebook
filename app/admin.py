@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from . import feedback as feedback_lib
 from . import i18n, index_migration
 from .config import config
 from .db import connect, loads
@@ -301,6 +302,69 @@ def admin_index_clear(request: Request, user: Annotated[dict, Depends(require_ad
     )
     logger.info("admin_index_cleared admin_user_id=%s deleted=%s", user["id"], count)
     return RedirectResponse(f"/admin/index?msg=cleared-{count}", status_code=303)
+
+
+@router.get("/admin/feedback", response_class=HTMLResponse)
+def admin_feedback(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+    rating: str = "",
+    reason: str = "",
+    notebook_id: int = 0,
+    since: str = "",
+    limit: int = 0,
+):
+    """E3a: review answer feedback from every user.
+
+    This page shows other users' questions and their free-text notes, so the
+    read itself is audited — feedback is content a user actively submitted for
+    review, not telemetry they never saw.
+    """
+    rating = rating.strip()
+    reason = reason.strip()
+    since = since.strip()[:10]
+    limit = limit or config.feedback.admin_page_limit
+    limit = max(1, min(int(limit), config.feedback.admin_page_limit_max))
+    with connect() as conn:
+        entries = feedback_lib.admin_list(
+            conn,
+            rating=rating,
+            reason=reason,
+            notebook_id=notebook_id or None,
+            since=since,
+            limit=limit,
+        )
+        counts = feedback_lib.admin_counts(conn)
+    record_audit_event(
+        request,
+        user,
+        "answer_feedback_viewed",
+        "feedback",
+        None,
+        {
+            "returned": len(entries),
+            "rating": rating,
+            "reason": reason,
+            "notebook_id": notebook_id or None,
+            "since": since,
+        },
+    )
+    return render(
+        request,
+        "admin_feedback.html",
+        {
+            "user": user,
+            "entries": entries,
+            "counts": counts,
+            "filters": {
+                "rating": rating,
+                "reason": reason,
+                "notebook_id": notebook_id or "",
+                "since": since,
+                "limit": limit,
+            },
+        },
+    )
 
 
 @router.get("/admin/audit", response_class=HTMLResponse)

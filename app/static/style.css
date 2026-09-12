@@ -308,6 +308,12 @@ nav {
   min-width: 0;
 }
 
+/* Nine nav items fit a wide window but not a 1024px one; let the row wrap
+   between items instead of breaking a label in the middle of a word. */
+.primary-nav a {
+  white-space: nowrap;
+}
+
 nav a {
   color: var(--muted-strong);
   text-decoration: none;
@@ -2319,6 +2325,101 @@ legend {
   align-items: center;
   gap: 6px;
 }
+
+/* E3a answer feedback: one row of ratings under an answer, reasons revealed
+   only after a rating. Tokens only — no hardcoded colours, so it follows the
+   light/dark theme layer like every other component. */
+.answer-feedback {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.feedback-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.feedback-prompt { margin-right: 2px; }
+
+.feedback-rating.selected {
+  background: var(--accent-soft);
+  border-color: var(--line-accent);
+  color: var(--accent-deep);
+}
+
+.feedback-saved { color: var(--ok); }
+
+.feedback-reasons {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.feedback-reasons fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.feedback-reasons legend { padding: 0 0 4px; }
+
+.feedback-reason {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.feedback-other {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 420px;
+}
+
+.feedback-submit-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.feedback-notice { flex: 1 1 240px; }
+
+/* Admin review page */
+.feedback-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 32px;
+}
+
+.feedback-count-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 240px;
+}
+
+.feedback-count-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.feedback-context { line-height: 1.5; }
+
+.feedback-table .tag { white-space: nowrap; }
+
+.feedback-tag-unusable { background: var(--danger-soft, var(--accent-wash)); }
 
 /* Follow-up question chips under the latest answer (A2) */
 .followups {
@@ -4898,6 +4999,7 @@ legend {
   .action-cell,
   .source-actions,
   .message-actions,
+  .feedback-submit-row,
   .profile-card-foot {
     align-items: stretch;
     flex-direction: column;

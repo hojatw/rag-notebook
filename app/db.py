@@ -399,6 +399,38 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_audit_events_action_created
             ON audit_events(action, created_at DESC);
 
+            -- E3a answer feedback. Unlike the governance tables below, this one
+            -- deliberately holds user-written text (the optional free-text
+            -- "other" reason), so it sits at the same protection level as
+            -- `messages`: per-user scoped, CASCADE with the user and message,
+            -- never copied into llm_usage_events / ai_safety_events or into a
+            -- sanitized eval export. `context_json` freezes the retrieval
+            -- configuration that produced the answer, because the active
+            -- profile can be changed afterwards (see ROADMAP E3).
+            CREATE TABLE IF NOT EXISTS answer_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+                conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                rating TEXT NOT NULL,
+                reasons_json TEXT NOT NULL DEFAULT '[]',
+                other_reason TEXT NOT NULL DEFAULT '',
+                context_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(message_id, user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_answer_feedback_created
+            ON answer_feedback(created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_answer_feedback_rating_created
+            ON answer_feedback(rating, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_answer_feedback_notebook_created
+            ON answer_feedback(notebook_id, created_at DESC);
+
             -- High-volume AI governance telemetry (G1a/G1b). This is kept
             -- separate from audit_events because usage/cost events are much
             -- more frequent and should store only compact attribution and

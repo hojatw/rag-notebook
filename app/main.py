@@ -46,6 +46,7 @@ from .domain_policy import (
     spreadsheet_answer_guard,
     update_domain_hint,
 )
+from . import feedback as feedback_lib
 from .governance import record_ai_safety_events
 from .ingest import supported, upload_limit_for
 from .jobs import enqueue_source
@@ -308,6 +309,14 @@ SAVABLE_NOTE_KINDS = tuple(k for k in NOTE_KINDS if k != "pinned")
 # site of _notes_section.html gets the canonical order without threading it
 # through five call sites.
 templates.env.globals["note_kind_order"] = NOTE_KINDS
+# E3a feedback vocabulary. Registered as globals so the fragment and the admin
+# page read the same lists from `app/feedback.py` instead of each template
+# spelling the values out — the writer/reader drift AGENTS.md warns about.
+templates.env.globals["feedback_ratings"] = feedback_lib.RATINGS
+templates.env.globals["feedback_reasons"] = feedback_lib.REASONS
+templates.env.globals["feedback_rating_label_keys"] = feedback_lib.RATING_LABEL_KEYS
+templates.env.globals["feedback_reason_label_keys"] = feedback_lib.REASON_LABEL_KEYS
+templates.env.globals["feedback_other_max_chars"] = config.feedback.other_reason_max_chars
 
 
 def csrf_token_for_request(request: Request) -> str:
@@ -2145,6 +2154,10 @@ def notebook_view(
             (notebook_id, user["id"]), NOTES_LIMIT,
         )
     pinned_message_ids = {n["source_message_id"] for n in notes if n["source_message_id"] is not None}
+    with connect() as conn:
+        message_feedback = feedback_lib.feedback_for_messages(
+            conn, [m["id"] for m in messages], user["id"]
+        )
     indexed_sources = [s for s in sources if s["status"] == "indexed"]
     cached_suggestions = _cached_suggestions(notebook)
     cached_briefing = _cached_briefing(notebook)
@@ -2162,6 +2175,8 @@ def notebook_view(
             "messages": messages,
             "notes": notes,
             "pinned_message_ids": pinned_message_ids,
+            "message_feedback": message_feedback,
+            "feedback_enabled": config.feedback.enabled,
             "sources_truncated": sources_truncated,
             "conversations_truncated": conversations_truncated,
             "messages_truncated": messages_truncated,
@@ -3338,6 +3353,95 @@ def add_note(
     return render(request, "_notes_section.html", {"notebook": notebook, "notes": notes})
 
 
+@app.post(
+    "/notebooks/{notebook_id}/chat/{conversation_id}/messages/{message_id}/feedback",
+    response_class=HTMLResponse,
+)
+def submit_answer_feedback(
+    request: Request,
+    notebook_id: int,
+    conversation_id: int,
+    message_id: int,
+    user: Annotated[dict, Depends(require_login)],
+    rating: str = Form(...),
+    reasons: Annotated[list[str], Form()] = [],
+    other_reason: str = Form(""),
+):
+    """Record this user's rating of one assistant answer (E3a).
+
+    Feedback never blocks or alters the answer flow: it is a separate POST that
+    swaps its own fragment. Submitting again updates the existing row rather
+    than adding a second one, so the admin totals stay honest.
+    """
+    if not config.feedback.enabled:
+        raise HTTPException(status_code=404)
+    normalized_rating = feedback_lib.normalize_rating(rating)
+    if normalized_rating is None:
+        raise HTTPException(status_code=400, detail=i18n.t("feedback.invalid_rating"))
+    normalized_reasons = feedback_lib.normalize_reasons(reasons)
+    normalized_other = feedback_lib.normalize_other_reason(other_reason, normalized_reasons)
+    with connect() as conn:
+        get_notebook(conn, notebook_id, user["id"])
+        message = conn.execute(
+            """
+            SELECT m.id, m.metadata_json
+            FROM messages m JOIN conversations c ON c.id = m.conversation_id
+            WHERE m.id = ? AND m.user_id = ? AND m.role = 'assistant'
+              AND m.conversation_id = ? AND c.notebook_id = ? AND c.user_id = ?
+            """,
+            (message_id, user["id"], conversation_id, notebook_id, user["id"]),
+        ).fetchone()
+        if message is None:
+            raise HTTPException(status_code=404, detail=i18n.t("error.message_not_found"))
+        settings = load_llm_settings(conn) or {}
+        try:
+            message_metadata = loads(message["metadata_json"] or "{}")
+        except ValueError:
+            message_metadata = {}
+        feedback_lib.save_feedback(
+            conn,
+            message_id=message_id,
+            user_id=user["id"],
+            notebook_id=notebook_id,
+            conversation_id=conversation_id,
+            rating=normalized_rating,
+            reasons=normalized_reasons,
+            other_reason=normalized_other,
+            context=feedback_lib.freeze_context(
+                message_metadata,
+                active_retrieval_params(),
+                chat_model=settings.get("chat_model", ""),
+            ),
+        )
+        conn.commit()
+        current = feedback_lib.get_feedback(conn, message_id, user["id"])
+    # Identifiers and counts only — never the free-text reason itself.
+    record_audit_event(
+        request,
+        user,
+        "answer_feedback_submitted",
+        "message",
+        message_id,
+        {
+            "notebook_id": notebook_id,
+            "rating": normalized_rating,
+            "reasons": normalized_reasons,
+            "other_reason_chars": len(normalized_other),
+        },
+    )
+    return render(
+        request,
+        "_feedback.html",
+        {
+            "notebook": {"id": notebook_id},
+            "conversation": {"id": conversation_id},
+            "message": {"id": message_id},
+            "feedback": current,
+            "feedback_saved": True,
+        },
+    )
+
+
 @app.post("/notebooks/{notebook_id}/notes/pin", response_class=HTMLResponse)
 def pin_note(
     request: Request,
@@ -3841,12 +3945,17 @@ def _messages_context(notebook_id: int, user_id: int, conversation_id: int) -> d
             ).fetchall()
         }
     recent = [dict(r) for r in rows]
+    rendered = [message_with_citations(row) for row in reversed(recent[:200])]
+    with connect() as conn:
+        message_feedback = feedback_lib.feedback_for_messages(conn, [m["id"] for m in rendered], user_id)
     return {
         "notebook": notebook,
         "conversation": dict(convo_row) if convo_row else None,
-        "messages": [message_with_citations(row) for row in reversed(recent[:200])],
+        "messages": rendered,
         "messages_truncated": len(recent) > 200,
         "pinned_message_ids": pinned_message_ids,
+        "message_feedback": message_feedback,
+        "feedback_enabled": config.feedback.enabled,
         "llm_status": llm_status,
     }
 
