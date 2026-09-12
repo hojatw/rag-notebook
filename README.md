@@ -52,11 +52,21 @@ or another one-off step:
 
 ```bash
 git pull
+docker compose stop app worker     # let the old processes exit before the new ones start
 docker compose up --build -d
 ```
 
+Stopping first matters: two sets of processes writing `data/chroma` at the same
+time can corrupt the persisted vector index, and the app keeps answering from a
+degraded fallback instead of failing loudly. Symptoms and recovery are in
+[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+
 Without Docker, run `git pull` then `./setup.sh` to refresh `.venv`, and restart
-the app (and the standalone worker, if you run one).
+the app (and the standalone worker, if you run one) — again, stop both before
+starting either.
+
+After any upgrade, ask one question and confirm `logs/app.log` has no
+`retrieve_vector_failed`; that is the quickest health check.
 
 Reset, deleting users, notebooks, uploads, vectors, and logs:
 

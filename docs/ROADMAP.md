@@ -293,6 +293,13 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ### High priority — operational observability
 
+#### [ ] O3 · Make a failing vector search visible to admins
+- **Issue:** when Chroma cannot answer a query, `retrieve()` falls back to a capped SQLite scan (`PERFORMANCE.md` `P1-3`) and the app keeps answering — quietly and worse. The only signal is a `retrieve_vector_failed` WARNING in `logs/app.log`; no page says anything, and `/admin/index` only reveals it if an admin happens to look.
+- **Evidence this matters:** a customer deployment ran in that degraded state for about **two hours** on 2026-09-09 with nobody noticing (the persisted HNSW segment was corrupt — see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) §1). Users experienced it as "the answers got worse", which is exactly the failure mode this project treats as the worst kind.
+- **Smallest useful fix:** record the last vector-search failure (timestamp + error class, no payload) and surface it as an admin-visible banner or a health row on `/admin/index`, cleared by the next successful query. A per-message hint in the retrieval debug pane ("vector search unavailable — degraded results") is a cheap second step.
+- **Guardrail:** never block answering on this — the fallback exists so the app keeps working; the point is that somebody must be told.
+- **Related:** `O2` (worker logs) covers a different blind spot; both are operational observability.
+
 #### [ ] O2 · Persist standalone-worker logs safely
 - **Issue:** The web app writes rotating logs to `logs/app.log`, but the standalone ingest worker configures only console logging. Consequently, `ingest_failed`, its `failed_stage`, and the Python traceback may exist only in the container stdout/stderr stream and be absent from the bind-mounted `logs/` directory used for durable collection. This makes a user-reported extraction or embedding failure difficult to diagnose after container-log rotation.
 - **Target model:** move console + rotating-file setup into a side-effect-free shared logging helper. Keep the web app on `logs/app.log`; write each standalone worker to its own UTF-8 file selected by a stable, validated worker id (for example `logs/worker-worker01.log`). Preserve console output so `docker compose logs` remains useful.
