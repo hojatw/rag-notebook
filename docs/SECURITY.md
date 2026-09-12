@@ -129,6 +129,24 @@ A full review on **2026-08-22** surfaced eight hardening items (`SEC-1`–`SEC-8
 
 **Fixed:** `SEC-1` bootstrap accounts (above), `SEC-2` upload size limits / multipart buffering (see the parser note below), `SEC-3` session lifetime + revocation (below), `SEC-4` shared login rate limiting, `SEC-5` Traditional/Simplified Chinese prompt-injection telemetry patterns, `SEC-6` explicit session-user field projection that excludes `password_hash`, `SEC-7` generic user-creation errors, and `SEC-8` aligned session-cookie deletion attributes.
 
+### Framework API docs disabled (2026-09-11)
+
+FastAPI's stock `/docs` (Swagger UI), `/redoc` and `/openapi.json` are turned
+off (`docs_url=None, redoc_url=None, openapi_url=None` in `app/main.py`). They
+were reachable without logging in, and the schema listed every route, including
+all `/admin/*` and `/settings*` endpoints with their parameter names. The routes
+still enforced auth, so no data leaked, but on a service meant to sit behind
+enterprise SSO this was unauthenticated information disclosure. Swagger UI and
+ReDoc also load their assets from a public CDN (jsdelivr), which breaks the
+no-CDN rule. Nothing in the app, tests, middleware, or docs used them. The app
+is a server-rendered HTML app with no API clients. `tests/test_ui.py::test_framework_api_docs_are_disabled`
+checks that all three return 404 unauthenticated.
+
+**Restart condition:** if an API client ever needs a machine-readable schema,
+serve it from an admin-only route that calls `app.openapi()` behind
+`require_admin`, not by re-enabling the public defaults. Serve any interactive
+viewer from self-hosted assets in `app/static/vendor/`.
+
 ### Admin error and logout-cookie hygiene (SEC-7 / SEC-8, 2026-08-29)
 
 User-creation failures now return a catalogued generic message to the admin;

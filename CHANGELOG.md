@@ -9,6 +9,15 @@
 
 ## [未發布]
 
+### 安全性
+
+- **關閉 FastAPI 預設的 `/docs`、`/redoc`、`/openapi.json`**：這三個端點原本不需登入
+  就能存取，schema 會列出全部路由（含所有 `/admin/*`、`/settings*`）與參數名稱；路由
+  本身仍有權限檢查，沒有資料外洩，但對預期放在企業 SSO 後方的服務屬未經驗證的資訊
+  揭露。Swagger UI／ReDoc 另從公開 CDN 載入資源，違反「不用 CDN」的規則。現在三者
+  一律回 404。系統內沒有任何功能使用它們，升級不需任何動作。決策與重啟條件記錄在
+  `docs/SECURITY.md`。
+
 ### 修正
 
 - **「設定」頁的 embedding 維度不符警告不再叫管理員「先 Clear 再 Rebuild」**：Chroma

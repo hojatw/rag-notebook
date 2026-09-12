@@ -243,7 +243,17 @@ async def lifespan(_app: FastAPI):
         logger.info("app_stopped")
 
 
-app = FastAPI(title="NotebookLM-like RAG POC", lifespan=lifespan)
+# FastAPI's stock /docs, /redoc and /openapi.json are disabled: unauthenticated
+# they list every route (incl. /admin/*, /settings*) with parameter names, and
+# Swagger UI / ReDoc load assets from a public CDN. Nothing in the app uses them.
+# See docs/SECURITY.md "Hardening status" for the restart condition.
+app = FastAPI(
+    title="NotebookLM-like RAG POC",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 

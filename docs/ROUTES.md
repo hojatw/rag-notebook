@@ -112,3 +112,7 @@ POST /settings/test-embedding                             test embedding model +
        (#chat-diagnostics / #embedding-diagnostics); a plain POST still gets
        the full page, so the endpoints keep working without JS.
 ```
+
+FastAPI's built-in `/docs`, `/redoc` and `/openapi.json` are intentionally
+**disabled** (they return 404). This file is the route reference; see
+[`SECURITY.md`](SECURITY.md) "Hardening status" for why and when to revisit.
