@@ -166,8 +166,9 @@ now CJK-aware (`[diagnostics].cjk_chars_per_token` and
 `latin_chars_per_token`) but remain approximations rather than provider/tokenizer
 measurements. Those two are the *chat-usage* ratios and are separate from the
 `[diagnostics].tokens_per_*` costs, which price the embedding input window per
-character class — `governance.estimate_tokens` only ever receives a character
-count, never the text, so it cannot classify anything. A row is also marked estimated when a provider returns only part of
+character class — `governance.estimate_tokens` receives only a total character
+count plus a CJK character count (two classes), while the embedding-window
+estimate classifies the text itself into five classes. A row is also marked estimated when a provider returns only part of
 the usage shape and the missing prompt/completion component must be synthesized;
 prompt + total or completion + total can be completed exactly by subtraction.
 
@@ -286,8 +287,9 @@ reference corpus. Re-derive it if answers differ in shape — the method is:
 
 1. Fit latency against `completion_tokens` over `llm_usage_events` where
    `call_type='answer_stream'`. **Exclude `is_estimated = 1` rows**: their token
-   counts are a chars/4 fallback, which pins the chars-per-token ratio at 4.00
-   and wrecks the fit.
+   counts are computed from the configured `[diagnostics]` chars-per-token
+   ratios rather than measured, so they pin the chars-per-token ratio to those
+   constants and wreck the fit.
 2. Convert the gate from tokens to characters using a **low** chars-per-token
    percentile (p10), so the cost estimate assumes the slowest case — dense CJK
    prose, where a character costs roughly a token.
@@ -386,7 +388,8 @@ app/evals.py           Admin Eval Workbench router (/admin/evals/*).
 app/admin.py           Admin console router (/admin/index*, /admin/audit, /admin/users*).
 app/settings.py        Admin LLM settings router (/settings, connection diagnostics).
 app/config.py          Centralized tunables (defaults <- config.toml <- env vars).
-app/db.py              SQLite schema, default-notebook migration, load_llm_settings.
+app/db.py              SQLite schema + idempotent migrations (_ensure_column), load_llm_settings
+                       (the only sanctioned way to read the decrypted API key).
 app/ingest.py          Text extraction (PDF/DOCX/HTML/subtitles/PPTX/XLSX/CSV), chunking,
                        vector upsert, per-source summary, A6a ingestion diagnostics.
 app/jobs.py            DB-backed ingest queue (ingest_jobs): enqueue + atomic claim + retry.
@@ -399,11 +402,13 @@ app/index_migration.py O0 embedding-dimension migration: source classification b
                        vector_index_state generation + lock.
 app/i18n.py            UI message catalog (t() / window.I18N); see docs/I18N.md.
 app/version.py         Build identity (VERSION + git sha) for footer/logs/healthz.
-app/vector_store.py    Chroma persistent client + diff sync + index_status + clear_all_vectors.
+app/vector_store.py    Chroma persistent client + diff sync + index_status + clear_all_vectors +
+                       reset_collection (the only thing that releases a locked dimension).
 app/security.py        Password hashing, signed session cookies, Fernet API-key encryption.
 app/templates/         Jinja pages and HTMX partials.
 app/static/            CSS, app JS, and self-hosted vendor assets.
 tests/                 Pytest suites and retrieval eval harness.
+scripts/               Offline operator scripts (reset_chroma_dimension.py break-glass; see below).
 config.example.toml    Tunable-config template.
 
 Runtime-generated, gitignored:

@@ -18,7 +18,8 @@ internet exposure.
 ## Quick Start
 
 ```bash
-cd notebooklm-rag-poc
+git clone https://github.com/hojatw/rag-notebook.git
+cd rag-notebook
 ./setup.sh
 NOTEBOOKLM_ALLOW_INSECURE_DEV_SECRET=1 .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
@@ -45,12 +46,17 @@ Docker Compose requires `NOTEBOOKLM_SECRET` in `.env`; the app fails closed when
 it is missing. The compose file bind-mounts `./data` and `./logs` so user state
 survives rebuilds.
 
-Upgrade:
+Upgrade — first read the **升級注意事項 (upgrade notes)** for every version you
+are skipping in [`CHANGELOG.md`](CHANGELOG.md); some releases require a reindex
+or another one-off step:
 
 ```bash
 git pull
 docker compose up --build -d
 ```
+
+Without Docker, run `git pull` then `./setup.sh` to refresh `.venv`, and restart
+the app (and the standalone worker, if you run one).
 
 Reset, deleting users, notebooks, uploads, vectors, and logs:
 
@@ -101,7 +107,7 @@ or the deployment intentionally enables an OCR-only path.
 
 The settings page has **two independent cards** — a **Chat model** card and an
 **Embedding model** card — each with its own provider, base URL, API key, model,
-and **Test** button. They can point at completely different services (e.g. a
+Azure API version (for Azure OpenAI), and **Test** button. They can point at completely different services (e.g. a
 hosted chat model plus a local e5 embedding server).
 
 OpenAI-compatible example (chat card):
@@ -175,8 +181,12 @@ endpoint, not stored chunks.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) - product/admin roadmap: UX, Eval
   Workbench, AI governance, LLM operations, source-format support, and new AI
   features.
+- [`docs/PRODUCT_BRIEF.zh-TW.md`](docs/PRODUCT_BRIEF.zh-TW.md) - short
+  customer-facing product brief in Traditional Chinese (first contact).
 - [`docs/PRODUCT_WHITEPAPER.zh-TW.md`](docs/PRODUCT_WHITEPAPER.zh-TW.md) -
-  customer-facing product whitepaper in Traditional Chinese.
+  complete customer-facing product whitepaper in Traditional Chinese: every
+  capability, current limits, security design, and deployment needs. The brief
+  is condensed from it.
 - [`docs/RETRIEVAL.md`](docs/RETRIEVAL.md) - retrieval pipeline, ranking,
   reranking, eval workflow, and tuning knobs.
 - [`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) - local login, enterprise

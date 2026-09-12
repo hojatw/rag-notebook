@@ -15,6 +15,7 @@ SQLite database at `data/app.sqlite3` (metadata; vectors also live in Chroma und
 - **Timestamps** are `TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP` (SQLite ISO-8601 strings, UTC).
 - **Foreign keys** use `ON DELETE CASCADE` (a deleted parent removes its children) unless noted. `PRAGMA foreign_keys = ON` is set per connection in `connect()`.
 - **Migrations** are idempotent: base tables via `CREATE TABLE IF NOT EXISTS`, later columns via `_ensure_column()` (a guarded `ALTER TABLE ADD COLUMN`, safe under concurrent startup — see the app/worker race fix). There is no migration-version table; the column set *is* the version.
+- **Every column with a `DEFAULT` is also `NOT NULL`** in the DDL, even where a table below abbreviates it as `TEXT DEFAULT ''` — no defaulted column is nullable. Columns without a default are nullable unless `NOT NULL` is written out.
 - WAL mode + tuning pragmas (`synchronous=NORMAL`, `cache_size`, `mmap_size`) are set in `connect()`.
 
 ## Value contracts (what the untyped fields are allowed to contain)
@@ -542,3 +543,19 @@ Durable admin-visible audit trail for security/compliance-relevant operations. I
 | `idx_eval_results_run` | eval_results | `(run_id, eval_item_id)` |
 | `idx_audit_events_created` | audit_events | `(created_at DESC, id DESC)` |
 | `idx_audit_events_action_created` | audit_events | `(action, created_at DESC)` |
+| `idx_llm_usage_events_created` | llm_usage_events | `(created_at DESC, id DESC)` |
+| `idx_llm_usage_events_call_created` | llm_usage_events | `(call_type, created_at DESC)` |
+| `idx_llm_usage_events_user_created` | llm_usage_events | `(user_id, created_at DESC)` |
+| `idx_llm_usage_events_notebook_created` | llm_usage_events | `(notebook_id, created_at DESC)` |
+| `idx_llm_usage_events_eval_run_created` | llm_usage_events | `(eval_run_id, created_at DESC)` |
+| `idx_ai_safety_events_created` | ai_safety_events | `(created_at DESC, id DESC)` |
+| `idx_ai_safety_events_category_created` | ai_safety_events | `(category, created_at DESC)` |
+| `idx_ai_safety_events_user_created` | ai_safety_events | `(user_id, created_at DESC)` |
+| `idx_ai_safety_events_notebook_created` | ai_safety_events | `(notebook_id, created_at DESC)` |
+| `idx_external_identities_user` | external_identities | `(user_id)` |
+| `idx_login_rate_limits_updated` | login_rate_limits | `(updated_at)` |
+| `idx_login_verification_leases_expires` | login_verification_leases | `(expires_at)` |
+| `idx_notebook_domain_hints_notebook` | notebook_domain_hints | `(notebook_id, enabled, id)` |
+| `uq_notebook_domain_hints_term` | notebook_domain_hints | **UNIQUE** `(notebook_id, term COLLATE NOCASE)` |
+
+Implicit unique indexes from column/table constraints (`users.username`, `login_verification_leases.account_hash`, `external_identities(provider, subject)`, `ingest_jobs.source_id`) are documented on their tables and not repeated here.

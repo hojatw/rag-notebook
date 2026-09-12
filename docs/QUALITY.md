@@ -189,6 +189,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ---
 
+### [ ] Q1-9 · Keyword candidates are truncated before they are scored (from review item QLT-1, 2026-08-22)
+- **Issue:** `keyword_candidates_from_sqlite` (`app/retrieval.py`) runs `WHERE … LIKE … ORDER BY chunks.id DESC LIMIT ?` and only **then** applies `keyword_score`. The cut is by recency (newest chunk ids first), not by how well a chunk matches.
+- **Impact:** A **quality** problem, not only a speed one: on a large corpus an older chunk with a much better keyword match can be dropped before it is ever scored, so the keyword arm of hybrid retrieval quietly favours recently indexed sources. Independent of `P1-2` in `PERFORMANCE.md` (FTS5 + BM25) and fixable before it — e.g. rank the pre-cut by number of matched terms instead of by id.
+- **Blocked on:** `Q1-3`. The fix is intuitively right but changes retrieval results, so it needs a representative eval set to show it helps rather than merely changes rankings.
+
 ## P2 — minor / known nuances
 
 ### [x] Q2-1 · Cross-section chunking blends DOCX meta-sections / tables

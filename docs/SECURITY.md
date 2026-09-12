@@ -2,7 +2,7 @@
 
 ## Project status
 
-This is a **single-machine proof of concept**, not a hardened production service. It is suitable for local experiments and small trusted single-machine deployments after you set a strong `NOTEBOOKLM_SECRET`. Do not expose it directly to the public internet without adding the hardening items listed below.
+This is a **single-machine proof of concept**, not a hardened production service. It is suitable for local experiments and small trusted single-machine deployments after you set a strong `NOTEBOOKLM_SECRET`. Do not expose it directly to the public internet: read the known limits recorded below first, and keep it behind a reverse proxy that terminates TLS and applies verified client-IP rate limiting.
 
 ### What "proof of concept" is actually claiming — and when to drop it
 
@@ -14,7 +14,7 @@ The label currently carries **two different statements**, and only one of them i
 So the question is not "when does this become production", it is "when can the scope be stated as a scope, and the maturity gap be declared closed". Three conditions, all checkable — **not a judgement call**:
 
 1. **Login rate limiting — satisfied 2026-08-23 (`SEC-4`).** `POST /login` now uses a shared SQLite account failure bucket plus short cross-process password-verification leases, returns a generic HTTP 429 with `Retry-After`, and stores HMAC account ids instead of usernames. A reverse proxy must still provide verified client-IP limiting for network deployments.
-2. **A representative eval set exists (`Q1-3` in [`QUALITY.md`](QUALITY.md)).** This is the important one. The Eval Workbench can run retrieval and judged comparisons, but **there is still no customer-approved representative set that can establish whether a retrieval change helps the target deployment**. Six items say so in their own text — `Q0-2` and `Q1-4` ("needs Q1-3"), `Q1-6` ("this is Q1-3's job"), `Q1-7` ("to prove the arm helps rather than merely changes results"), `QLT-1` in the review backlog, and `Q1-2`/`P1-2` (blocked on a representative CJK corpus) — plus `Q1-1` indirectly. A retrieval system whose target quality has not been measured should not claim to be past proof-of-concept; that is a factual statement about what is known, not modesty.
+2. **A representative eval set exists (`Q1-3` in [`QUALITY.md`](QUALITY.md)).** This is the important one. The Eval Workbench can run retrieval and judged comparisons, but **there is still no customer-approved representative set that can establish whether a retrieval change helps the target deployment**. Six items say so in their own text — `Q0-2` and `Q1-4` ("needs Q1-3"), `Q1-6` ("this is Q1-3's job"), `Q1-7` ("to prove the arm helps rather than merely changes results"), `Q1-9`, and `Q1-2`/`P1-2` (blocked on a representative CJK corpus) — plus `Q1-1` indirectly. A retrieval system whose target quality has not been measured should not claim to be past proof-of-concept; that is a factual statement about what is known, not modesty.
 3. **Someone other than the author has completed an upgrade using only the documentation.** `RELEASE.md` and the CHANGELOG upgrade notes exist, but have never been executed by a second person. Until they have, "it is documented" is untested.
 
 Deliberately **not** on this list: backup/restore drills, monitoring, and uptime targets. Those belong to whoever operates a given deployment, and their absence says nothing about this repository's maturity.
@@ -125,7 +125,7 @@ lengths/fingerprints; it must never contain domain text or snapshots.
 
 ## Hardening status
 
-A full review on **2026-08-22** surfaced a set of hardening items. They are triaged and tracked in `docs/REVIEW_BACKLOG_2026-08-22.md` with priorities and locations, and are folded back into this file as each lands.
+A full review on **2026-08-22** surfaced eight hardening items (`SEC-1`–`SEC-8`). All of them have landed and their durable record is the sections below; the temporary review backlog that staged them is no longer the source of truth.
 
 **Fixed:** `SEC-1` bootstrap accounts (above), `SEC-2` upload size limits / multipart buffering (see the parser note below), `SEC-3` session lifetime + revocation (below), `SEC-4` shared login rate limiting, `SEC-5` Traditional/Simplified Chinese prompt-injection telemetry patterns, `SEC-6` explicit session-user field projection that excludes `password_hash`, `SEC-7` generic user-creation errors, and `SEC-8` aligned session-cookie deletion attributes.
 
@@ -199,14 +199,11 @@ Ingestion now parses `.pptx` (`python-pptx`, which pulls in **Pillow**) and `.xl
 Current mitigations are structural rather than sandboxing:
 
 - Uploads are authenticated — a user must already have an account, so this is not an anonymous-internet surface.
-- **Bounded before anything is stored or parsed (SEC-2, 2026-08-22).** `[runtime].upload_max_file_bytes` caps each file *at upload time*, for every format, enforced while streaming to disk (and drops to the stricter `extract_max_file_bytes` for `.xlsx`/`.pptx`/`.csv`, so those fail up front rather than in the worker) — an oversized file is refused with 413 and its partial write removed. A whole request is bounded at `upload_max_file_bytes * upload_batch_limit` and refused from `Content-Length` **before any body is read**. Previously nothing capped upload size at all: only file *count* was limited, and `extract_max_file_bytes` (then named `max_source_bytes`) applied at parse time, once the file was already on disk. Worse, the CSRF middleware called `await request.body()` on multipart requests to regex the token out of the raw body — and the upload form is a plain HTML form that carries no header to short-circuit that — so every upload was materialised in memory in full. A handful of large files was enough to exhaust it, from an ordinary authenticated account and with no vulnerability involved. The middleware no longer reads multipart bodies; upload routes validate CSRF from their own parsed form via `verify_multipart_csrf`, and a startup assertion fails the boot if a multipart route omits it, so the check cannot be dropped silently.
-- Parsing runs in the ingest worker, not the request path; `[runtime].extract_max_file_bytes` caps every format with stricter parser-cost bounds (`.xlsx` / `.pptx` / `.csv`) **before** a parser sees the file. CSV rows now stream incrementally, but the cap still bounds total parse work and pathological single records/fields; `[spreadsheet].max_rows` / `max_cols` bound retained per-sheet data, and a parser exception fails that one source (`status='failed'` with `failed_stage`) rather than the process.
+- **Bounded before anything is stored or parsed (SEC-2, 2026-08-22).** `[runtime].upload_max_file_bytes` caps each file *at upload time*, for every format, enforced while streaming to disk (and drops to the stricter `extract_max_file_bytes` for `.xlsx`/`.pptx`/`.csv`, so those fail up front rather than in the worker) — an oversized file is refused with 413 and its partial write removed. A whole request is bounded at `upload_max_file_bytes * upload_batch_limit` and refused from `Content-Length` **before any body is read**. The CSRF middleware deliberately does **not** read multipart bodies: it used to call `await request.body()` to find the token, which buffered every upload in memory and let an ordinary account exhaust it with a few large files. Instead, upload routes validate CSRF from their own parsed form via `verify_multipart_csrf`, and a startup assertion fails the boot if a multipart route omits it, so the check cannot be dropped silently.
+- Parsing runs in the ingest worker, not the request path; `[runtime].extract_max_file_bytes` is a stricter parser-cost cap applied **only** to `.xlsx` / `.pptx` / `.csv` (`STRICT_EXTRACT_CAP_SUFFIXES` in `app/ingest.py`) **before** their parser sees the file. PDF, DOCX, HTML, text, and subtitles are bounded only by the upload cap above. CSV rows now stream incrementally, but the cap still bounds total parse work and pathological single records/fields; `[spreadsheet].max_rows` / `max_cols` bound retained per-sheet data, and a parser exception fails that one source (`status='failed'` with `failed_stage`) rather than the process.
 - Phase 1 PPTX **never decodes image bytes** — images are counted, not opened — so Pillow is currently a transitive dependency that ingest does not actually exercise. That changes the day `A8`/`A9` add OCR or vision, which is when this note needs revisiting.
 
 **Keep these parsers patched** (they are the highest-value dependency updates in this project), and re-evaluate isolation if the app is ever exposed to untrusted uploaders.
-
-(Resolved: CSRF protection on unsafe routes, streaming responses, LLM/embedding HTTP retry/backoff, and worker-backed ingest — a DB-backed queue (`app/jobs.py`) with a dedicated/inline worker — are now implemented. See `docs/PERFORMANCE.md`.)
-
 ## Triaged dependency-audit findings
 
 The items below are surfaced by Dependabot / `pip-audit`. Each records how it was assessed against *this* deployment, so the alerts are not repeatedly re-investigated. An advisory that turns out not to apply is still patched when the upgrade is cheap — the note explains why the alert existed, not why the upgrade was skipped.
@@ -219,7 +216,7 @@ A Bleichenbacher oracle in **PKCS#7 `EnvelopedData` decryption**. This app's onl
 
 ### GHSA-fp3f-mc75-235c / GHSA-fwg2-594c-jp42 — `pypdf < 6.15.0` (medium) — applicable, patched
 
-Unbounded memory/CPU on crafted `/ToUnicode` streams and CID font width ranges. Unlike the other two entries here this **is** reachable: the app parses user-uploaded PDFs. It is denial-of-service only (no code execution, no disclosure), and ingest runs in the worker behind `[runtime].extract_max_file_bytes` with per-source failure isolation, so the blast radius is one stuck ingest job rather than the web process — under the Docker Compose topology; see the next entry for the inline-worker caveat. Patched to `6.15.0` — a direct application of the "keep these parsers patched" rule above.
+Unbounded memory/CPU on crafted `/ToUnicode` streams and CID font width ranges. Unlike the other two entries here this **is** reachable: the app parses user-uploaded PDFs. It is denial-of-service only (no code execution, no disclosure), and ingest runs in the worker with per-source failure isolation — PDFs are bounded only by the upload cap `[runtime].upload_max_file_bytes` (50 MB), not the stricter `extract_max_file_bytes`, which does not apply to PDF — so the blast radius is one stuck ingest job rather than the web process — under the Docker Compose topology; see the next entry for the inline-worker caveat. Patched to `6.15.0` — a direct application of the "keep these parsers patched" rule above.
 
 ### GHSA-763m-79hh-57f2 / GHSA-23w6-3w8w-8484 / GHSA-jp53-mhqp-8xcg — `pypdf < 6.16.1` (medium) — one applicable, patched
 
@@ -231,7 +228,7 @@ Three denial-of-service advisories, triaged 2026-09-11. Dependabot raised six al
 | GHSA-23w6-3w8w-8484 (CVE-2026-84310) | Long runtime / large memory when retrieving outlines | **Not today** — nothing reads `PdfReader.outline`. **It becomes reachable with ROADMAP `A12` Phase 1**, whose first detection signal is exactly the PDF outline. |
 | GHSA-jp53-mhqp-8xcg (CVE-2026-84309) | Possible infinite loop in `TreeObject.insert_child` | **No.** In pypdf `6.15.0` its only callers are in `_writer.py` (and `TreeObject.add_child`, which requires a `PdfWriter`); the app only reads PDFs and never builds or modifies one. |
 
-- **Impact:** denial of service only — no code execution, no disclosure. Uploads are authenticated and bounded by `[runtime].extract_max_file_bytes`, and a parser failure fails one source.
+- **Impact:** denial of service only — no code execution, no disclosure. Uploads are authenticated and PDFs are bounded by `[runtime].upload_max_file_bytes` (50 MB; the stricter `extract_max_file_bytes` does not apply to PDF), and a parser failure fails one source.
 - **Blast radius depends on the worker topology** — this also qualifies the `6.15.0` entry above. Docker Compose sets `NOTEBOOKLM_INLINE_WORKER=0` on the web app and parses in the dedicated `worker` service, so a runaway parse stalls one ingest job. A bare `uvicorn` run keeps the default inline worker (`NOTEBOOKLM_INLINE_WORKER=1`), where extraction runs in a thread **inside the web process**: CPU contention slows the web app, and memory exhaustion would take it down.
 - **Action:** patched to `6.16.2` (#111). Operators only need to rebuild the image or rerun `./setup.sh`; re-indexing is not required for the security fix.
 - **Revisit when:** `A12` Phase 1 starts reading PDF outlines — keep `pypdf >= 6.16.1` as a floor from then on.
@@ -244,11 +241,15 @@ being represented in both `requirements.txt` and `requirements-dev.txt` (the
 latter includes the former with `-r`). The affected package is still pinned at
 `chromadb==1.5.9` in [`requirements.txt`](../requirements.txt).
 
-Rechecked on 2026-08-30 for `0.6.0`: GitHub reports no open Dependabot alerts;
-the previously triaged alerts remain an accepted deployment-scope risk, not a
-patched dependency. PyPI still publishes `1.5.9` as latest, all four GitHub
-advisories still have no `first_patched_version`, and the embedded-only usage
-described below is unchanged. This release does not change alert dispositions.
+Rechecked on 2026-09-11 (after `0.7.1`): GitHub reports no open Dependabot
+alerts **because the ChromaDB alerts are dismissed, not fixed** — seven as
+`tolerable_risk` (#33, #40–#45) and one as `not_used` (#30). An open-alert count
+of zero therefore does not mean `chromadb` is clean; these remain an accepted
+deployment-scope risk, not a patched dependency. PyPI still publishes `1.5.9` as
+latest, all four GitHub advisories still have no `first_patched_version`, and
+the embedded-only usage described below is unchanged. When a patched release
+ships, the dismissed alerts will not reopen on their own — check the advisories
+directly rather than waiting for Dependabot.
 
 The four advisories are:
 

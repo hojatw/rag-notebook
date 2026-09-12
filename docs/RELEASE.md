@@ -68,7 +68,16 @@ docker build --build-arg NOTEBOOKLM_GIT_SHA=$(git rev-parse --short HEAD) -t not
    新的空 `## [未發布]`。
 3. 讀過一遍整段——多支 PR 累積下來常會有重複或前後矛盾的敘述，這是唯一會一次看到
    全部條目的時機。
-4. Merge 後打 tag 並建立 GitHub Release：
+4. **核對客戶向文件。** 對照這一版 `[未發布]` 的條目，檢查
+   [`PRODUCT_WHITEPAPER.zh-TW.md`](PRODUCT_WHITEPAPER.zh-TW.md)（完整版，以事實為準）
+   與 [`PRODUCT_BRIEF.zh-TW.md`](PRODUCT_BRIEF.zh-TW.md)（產品簡介）：
+   - 新上線的功能要補進完整版；若是客戶在意的能力，也評估是否寫進簡介。
+   - 被修掉的限制要從完整版的「目前版本的限制」移除，簡介「最適合的使用方式」同步。
+   - **簡介不得出現完整版沒有的主張**——簡介是完整版的濃縮，不是另一份來源。
+   - 兩份開頭的「內容對應 vX.Y.Z；最後核對日」改成這一版與今天。
+   這些文件寫給客戶看，沒有測試會發現它們過期；2026-09 的一次稽核就發現白皮書
+   漏列了半數已上線功能，也把幾項能力寫得比實際強。
+5. Merge 後打 tag 並建立 GitHub Release：
 
 ```bash
 git tag v$(cat VERSION) && git push origin v$(cat VERSION)

@@ -21,16 +21,16 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deliberate
 - **Fix:** Add `PRAGMA synchronous = NORMAL` (safe under WAL) + a larger `PRAGMA cache_size` / `PRAGMA mmap_size`. Move the one-time `journal_mode` set out of the per-connection path if convenient.
 
 ### [x] P0-3 · LLM / embedding retry + backoff + generous timeout
-- **Issue:** No HTTP retry/backoff (architectural follow-up #14); each question makes 3 chat calls (rewrite, rerank, answer) + embeddings.
+- **Issue:** No HTTP retry/backoff; each question makes 3 chat calls (rewrite, rerank, answer) + embeddings.
 - **Impact:** On the shared/throttled endpoint, a single slow or `429` call fails the whole question.
-- **Fix:** Wrap chat + embedding HTTP in exponential backoff (e.g. `tenacity`, ~3 attempts); set a generous `Timeout seconds` in `/settings`.
+- **Fix:** **Done.** Chat + embedding HTTP go through `_post_json_with_retry` (`app/llm.py`, no third-party retry library): network/timeout errors and `429`/`5xx` are retried with exponential backoff + jitter, tuned via `[llm_retry]` (`max_attempts`, `backoff_base_s`). Set a generous `Timeout seconds` in `/settings`.
 
 ---
 
 ## P1 — important at launch scale
 
 ### [x] P1-1 · Move ingest off the web process
-- **Issue:** Background ingest ran in-process (FastAPI `BackgroundTasks`); `pdfplumber` extraction of hundreds-of-page PDFs is slow and CPU-heavy (architectural follow-up #13).
+- **Issue:** Background ingest ran in-process (FastAPI `BackgroundTasks`); `pdfplumber` extraction of hundreds-of-page PDFs is slow and CPU-heavy.
 - **Impact:** A bulk upload blocked the single web process and degraded every user's requests; a restart dropped the queue with no retry.
 - **Fix:** **Done — DB-backed queue, no new infra (Redis deferred).** Uploads/reindex now `enqueue_source()` into an `ingest_jobs` SQLite table (`app/jobs.py`); a worker drains it via `process_source`. Two modes: a dedicated `python -m app.worker` process (compose `worker` service; `NOTEBOOKLM_INLINE_WORKER=0` on the web app) gives true off-process isolation, **or** an inline worker in the web lifespan (`NOTEBOOKLM_INLINE_WORKER=1`, the default) so a lone `uvicorn` still ingests. The queue also **fixes the restart-drops-the-queue gap** (queued jobs survive) and adds crash recovery via a visibility timeout + capped retries. `app/jobs.py` is the single swap-point for Redis + RQ later. Same single-machine constraint as P2-3: valid while all processes share one `data/app.sqlite3`.
 
@@ -44,8 +44,6 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deliberate
 - **Issue:** When Chroma is unavailable, `retrieve()` decoded **every** chunk's `embedding_json` and computed cosine in pure Python.
 - **Impact:** `O(all_chunks × queries × dim)` per request — a transient Chroma hiccup at scale would hang / melt the process.
 - **Fix:** **Done.** `fetch_candidate_rows` now `ORDER BY chunks.id DESC LIMIT FALLBACK_MAX_CHUNKS` (2000), so the degraded fallback is bounded; the failure logs a warning pointing at `/admin/index` Rebuild. The explicit "score these rows" path (`user_id=None`, used by tests) is unaffected.
-
----
 
 ### [x] P1-4 · Upload ran its blocking I/O on the event loop
 - **Issue:** `upload_source` (`app/main.py`) was an `async def` whose body was entirely **blocking**: copying each file to disk, several SQLite writes, and `enqueue_source()`. Nothing in it awaited.
@@ -84,14 +82,20 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deliberate
 - **Impact:** SQLite is normally fast, but lock waits or slow local storage could pause every request handled by that worker. The problem becomes visible under concurrent use even though each individual query is small.
 - **Fix:** **Done.** Route-local SQLite phases now run through `asyncio.to_thread`; each synchronous helper opens and closes its own connection inside the worker thread, so no `sqlite3.Connection` crosses thread boundaries. Related queries stay grouped into one phase to avoid a thread handoff per SQL statement. LLM/network awaits and HTML rendering remain on the event loop. A route-level regression test delays the real connection boundary and confirms the event loop continues ticking; existing route behavior tests cover persistence, authorization, caching, streaming, and rendered results.
 
+### [ ] P2-5 · Cache OIDC discovery + JWKS (low priority; from review item PERF-3, 2026-08-22)
+- **Issue:** `_oidc_discover()` (`app/main.py`) fetches the IdP's `/.well-known/openid-configuration` on **every** OIDC login start and callback, and the callback then fetches `jwks_uri` as well — nothing is cached.
+- **Impact:** Extra outbound HTTPS round-trips per login (discovery on `/auth/oidc/login`, discovery + JWKS on the callback), so login latency and availability track the IdP's metadata endpoints. At ~200 users logging in a few times a day this is small, which is why it is not scheduled.
+- **Fix:** A short TTL cache (e.g. 10–60 min) for the discovery document and JWKS, keyed by discovery URL. On a signature failure with an unknown `kid`, refetch JWKS once before rejecting, so IdP key rotation still works.
+- **Restart condition:** login latency complaints, IdP rate limiting, or OIDC becoming the default login path for a larger user base.
+
 ---
 
 ## P3 — UX / product tradeoffs
 
 ### [x] P3-1 · Streaming responses
-- **Issue:** Answers were returned only after the full chat call completed (architectural follow-up #18-streaming).
+- **Issue:** Answers were returned only after the full chat call completed.
 - **Impact:** High perceived latency, worse with a large/slow model.
-- **Fix:** **Done.** Added a streaming chat path that emits retrieval/generation status, then swaps in the saved Markdown/citation message when complete. E2's structural abstention protocol requires the provider completion to be buffered (hard cap: 100,000 characters) and classified before any answer text is emitted; therefore the final classified answer is currently sent as one answer event rather than incremental provider chunks. This prevents a late or truncated `[[RAG_ABSTAIN]]` marker from leaking earlier text. Non-streaming chat helpers remain for Studio features.
+- **Fix:** **Done.** Added a streaming chat path that emits retrieval/generation status, then swaps in the saved Markdown/citation message when complete. E2's structural abstention protocol means the provider completion is buffered (hard cap: 100,000 characters) and classified before answer text is emitted, so a late or truncated `[[RAG_ABSTAIN]]` marker cannot leak earlier text. By default (`runtime.answer_stream_gate_chars = 0`) the whole classified answer is sent as one event; a positive gate streams incrementally after the first N characters are classified, and an SSE `discard` event clears any preamble if the model abstains later. The invariants and the residual exposure of a positive gate are specified in `docs/SECURITY.md` → *E2 notebook domain hints and answer policy*. Non-streaming chat helpers remain for Studio features.
 
 ### [ ] P3-2 · Make query-rewrite / rerank optional or cached
 - **Issue:** Each question runs 3 sequential LLM calls (rewrite → rerank → answer).

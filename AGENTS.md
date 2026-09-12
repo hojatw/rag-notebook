@@ -30,10 +30,10 @@ The list above is task-gated: load a file when your change touches its area. For
 - **Contracts** (read before changing that area): `RETRIEVAL.md`, `SCHEMA.md`, `ROUTES.md`, `UI.md`, `I18N.md`, `SECURITY.md`, `AUTHENTICATION.md`, and `UX_REVIEW_GUIDE.md` (the durable rubric every UX review is judged by — the latest completed findings log is archived at `archive/2026-06-19-UX_REVIEW.md`).
 - **Operating**: `DEVELOPMENT.md`, `SSO_DEPLOYMENT.zh-TW.md`, `RELEASE.md`.
 - **Grounding facts**: `DEPLOYMENT_CONTEXT.md`.
-- **Backlogs** (living, tick-off format): `ROADMAP.md`, `QUALITY.md`, `PERFORMANCE.md`. `REVIEW_BACKLOG_2026-08-22.md` is a **temporary** staging list from one review pass — its items dissolve into the three above as they land, and the file is deleted once empty.
+- **Backlogs** (living, tick-off format): `ROADMAP.md`, `QUALITY.md`, `PERFORMANCE.md`. Codebase-maintenance items that fit none of them go in `ROADMAP.md` → *Engineering maintenance*. A one-off review may stage its findings in a temporary `REVIEW_BACKLOG_<date>.md`; its items dissolve into these backlogs as they land, and the file is deleted once empty (the 2026-08-22 list was closed out this way on 2026-09-11).
 - **Design deep-dives**: `SPREADSHEET_INGESTION.md`, `PRODUCT_DESIGN_NOTES.md` (unscheduled product exploration, deliberately kept out of `ROADMAP.md` so the backlog stays scannable).
 - **Proposals under discussion**: `FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE.zh-TW.md` (a colleague's product-direction proposal, 2026-09-10) and its review `FEATURE_PROPOSAL_ENTERPRISE_WORKSPACE_REVIEW.zh-TW.md` (2026-09-11). Neither is scheduled work — whatever is adopted moves into `ROADMAP.md` / `QUALITY.md` (so far `C1`, `T1`, `Q1-8`).
-- **Customer-facing**: `PRODUCT_WHITEPAPER.zh-TW.md`.
+- **Customer-facing** (the repo is public — never put internal-only material here): `PRODUCT_WHITEPAPER.zh-TW.md` (complete edition, the source of truth for every customer-facing claim) and `PRODUCT_BRIEF.zh-TW.md` (short brief condensed from it — it must never claim anything the complete edition does not). Both are re-checked at release time; see `docs/RELEASE.md`.
 - **Closed implementation plans**, kept as design records rather than instructions: `archive/O0_DIMENSION_RESET_PLAN.md`, `archive/E1E2_ANSWER_JUDGING_PLAN.md`. Both describe work that is **already done** — read them for *why* a design is shaped the way it is, never as a to-do list.
 
 ## Runtime And Dependencies
@@ -171,7 +171,7 @@ drift in the first place.
 - Preserve per-user and per-notebook authorization checks on every route that reads or mutates notebook data.
 - Use `load_llm_settings()` when plaintext API keys are needed; do not bypass decryption by reading `llm_settings` directly.
 - Keep password hashing and API-key encryption centralized in `app/security.py`.
-- CSRF protection, streaming responses, LLM retry/backoff, and worker-backed ingest are implemented; keep them working when touching forms, HTMX requests, chat streaming, provider HTTP, or ingest flow. See `docs/SECURITY.md` and `docs/PERFORMANCE.md`.
+- Keep CSRF protection, streaming responses, LLM retry/backoff, and worker-backed ingest working when touching forms, HTMX requests, chat streaming, provider HTTP, or ingest flow. CSRF (incl. multipart) and the streaming abstain-marker invariants → `docs/SECURITY.md`; retry/backoff, streaming, and the ingest queue → `docs/PERFORMANCE.md`.
 
 ## Git Hygiene
 
