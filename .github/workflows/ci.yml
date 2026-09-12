@@ -18,6 +18,14 @@ on:
       - "docs/**"
       - "LICENSE"
 
+# Pushing again to the same PR cancels the superseded run instead of letting two
+# runs of the same branch compete for a runner. Deliberately NOT applied to
+# `main`: each push there is a merge commit whose result we want on the record,
+# and a later merge must not erase the previous one's status.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -30,22 +38,54 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
+        id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          # pip's *download* cache. Keeps the cold path (a venv-cache miss) from
+          # re-downloading; it does not skip installing, which is why the venv
+          # cache below exists as well.
           cache: pip
 
+      # `cache: pip` above was already hitting, yet installing still took ~26s of
+      # an ~81s job: the downloads were cached but 108 packages (chromadb alone
+      # pulls opentelemetry, grpcio, onnxruntime and the kubernetes client) still
+      # had to be resolved and unpacked every run. Caching the built venv skips
+      # that entirely.
+      #
+      # The key must carry the *resolved* Python version, not "3.12": a venv's
+      # bin/python symlinks into /opt/hostedtoolcache/Python/<full version>/, so
+      # a runner image that moves 3.12.14 -> 3.12.15 would restore a venv whose
+      # interpreter no longer exists. `steps.setup-python.outputs.python-version`
+      # is the full version, so such a bump misses the cache and rebuilds.
+      #
+      # Trade-off: direct dependencies are pinned but transitive ones are not, so
+      # a cached venv also freezes the transitive set until requirements*.txt
+      # changes. That makes CI more reproducible, at the cost of no longer
+      # picking up a transitive release by accident — which is fine here because
+      # dependency updates are driven by Dependabot and the SECURITY.md triage
+      # log, not by whatever a fresh install happened to resolve. A Dependabot PR
+      # edits requirements*.txt, which changes the key and rebuilds.
+      - name: Restore virtualenv
+        id: venv-cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+
       - name: Install dependencies
+        if: steps.venv-cache.outputs.cache-hit != 'true'
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Compile Python files
         run: |
-          python -m py_compile app/*.py tests/*.py
+          .venv/bin/python -m py_compile app/*.py tests/*.py
 
       - name: Run tests
         env:
           NOTEBOOKLM_SECRET: ci-test-secret
         run: |
-          pytest -q
+          .venv/bin/pytest -q
