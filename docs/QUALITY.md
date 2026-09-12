@@ -133,6 +133,48 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Impact:** Can't measure any of the above — tuning is blind.
 - **Fix:** Build an eval set from representative customer-style documents with harder questions. **Prerequisite for tuning Q0-2 / Q1-1 / Q1-2 / Q1-4.** If customer data cannot leave the deployment, use the admin-only in-deployment eval workbench tracked in `ROADMAP.md` E1 to create, run, compare, apply, and export eval/profile results without exporting source data by default.
 
+#### 進度與現場限制（2026-09-12）
+
+**已取得（素材的一半）：** 客戶在協助排查 0.7.0 的 embedding token 問題時提供了
+**兩份可公開的真實文件**，其中一份能重現該問題。它們表格密度高，正是這個部署最難處理
+的文件型態。因為可公開，**這兩份可以在客戶環境外使用**——原本「資料不能離開部署環境」
+是 `Q1-3` 最大的障礙，這一段被解開了。
+
+**仍然缺的（另一半）：** 問題、客戶認可的正確答案、答案出自哪一段。注意「客戶認可」
+指的是**他們確認答案正確**，不是同意我們使用檔案。少了這一層，eval 只能證明
+「回答變了」，不能證明「回答變好了」。
+
+**現場限制，決定了可行的做法（由實際跑客戶端的人回報）：**
+
+- 實際試用的業務單位使用者**沒有餘裕替我們出題**。要求他們產出題目與標準答案，
+  在這個客戶不可行。
+- **多數來源資料拿不出來**，散落在各使用者的 notebook 裡。
+- 必須**進客戶環境**才看得到來源與回答的實際狀況，且**任何結果都無法帶出**。
+
+**因此 `Q1-3` 的取得方式應該從「請客戶出題」改為「從實際使用中蒐集」：**
+
+1. **拿真實問題，而不是想像的問題。** 使用者已經問過的問題就在 `messages` 裡，
+   在客戶環境內由管理員挑出代表性的題目。（伺服器日誌只記 `question_chars`，
+   不記題目內容，所以日誌幫不上忙——必須在環境內看資料庫。）
+2. **答案的認定由使用者回饋來判斷，而不是請他們寫標準答案。** 收集輕量回饋，成本落在
+   一次點擊，而不是一份作業。目前產品**沒有這個機制**，它是這條路的前置工作，已列為
+   [`ROADMAP.md`](ROADMAP.md) `E3`（評價與原因標籤 → 選填的正確答案與段落指認 →
+   一鍵轉成 eval 題目）。
+3. **在環境內完成評分與比較，只帶走不含內容的指標。** 這正是 `E1` Eval Workbench
+   的設計目的：去識別化匯出只有設定與彙總指標，不含題目、證據與答案。
+4. **先用那兩份可公開文件建立第一版題集。** 它能讓 eval 脫離 demo notebook，
+   在自己的環境就能反覆調參——雖然還稱不上「客戶認可」，但比現況好得多。
+
+**界線（不要讓小題集撐起大決策）：** 兩份文件足以建立「比 demo 難」的第一版題集，
+但**不足以支撐會改變檢索行為的決策**，例如 `Q1-2`／`P1-2` 的 FTS5 與中文斷詞——
+那些需要更大、更多樣的語料。在語料補足之前，用這批題集得到的結論只能當方向，
+不能當結案依據。
+
+**對「脫離 POC」條件的影響：** [`SECURITY.md`](SECURITY.md) 的條件 2 要求
+「客戶認可的代表性題集」。若這個客戶無法提供認可答案，該條件在目前的措辭下可能
+**永遠無法滿足**——屆時要調整的是條件的措辭（改為可達成、且同樣能證明「調整有效」
+的證據形式），而不是降低標準或宣稱已達成。這個決定尚未做出。
+
 ### [ ] Q1-4 · Cross-lingual retrieval (e.g. Chinese question ↔ English sources)
 - **Issue:** A query only retrieves cross-language content through the **vector** arm (multilingual embedding); the **keyword** arm (`LIKE` on tokens) is dead across scripts, and cross-lingual cosine scores run lower — so a Chinese question against English-only sources retrieves fewer/weaker chunks (some trimmed by the `0.25` abstain threshold), yielding thin answers. Confirmed on a real notebook: the same Chinese questions answered richly once a same-language source was added. Same drug in EN (FDA label) + zh (仿單) is a ready-made test case.
 - **Impact:** Mixed-language notebooks under-serve questions asked in the "other" language — a likely real usage pattern for this deployment.

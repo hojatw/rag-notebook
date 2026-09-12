@@ -242,6 +242,42 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] E2e — Export/audit boundaries for hint/policy changes and exports. Sanitized output exposes content-free summaries and a version fingerprint; full internal export is a CSRF-protected confirmed POST with high-sensitivity audit. Route-level tests pin that neither domain text nor raw version token reaches sanitized export/audit metadata.
 - **Quality reference:** see `QUALITY.md` Q1-5. Q1-3/customer Eval Set work remains **PENDING**; no customer data has been exported and no LLM-generated draft policy changes that decision.
 
+#### [ ] E3 · In-product answer feedback, harvested into eval items
+
+- **Why now:** `Q1-3` (a representative eval set) is the last substantive blocker on dropping "proof of concept" (`SECURITY.md`), and the field constraints recorded in [`QUALITY.md`](QUALITY.md) `Q1-3` rule out the obvious approach: the business users trialling the app have no time to author questions and expected answers, most source data cannot leave the deployment, and results cannot be carried out. The remaining path is to let the eval set **grow out of ordinary use** — one click at a time, inside the customer's environment.
+- **What it is not.** Feedback **cannot validate a parameter change.** Each rating comes from a different question, a different moment, and a different user's expectations; "fewer bad ratings this week" is an uncontrolled comparison and would repeat the blind-tuning problem in a new costume. Feedback does two things: **it tells you which stage of the pipeline is failing**, and **it produces eval items**. Before/after comparison still runs through the Eval Workbench on a fixed set. Say this on the admin page itself, so the numbers are not read as a quality trend.
+- **Rating scale — defined by what the user would do with the answer**, not by how they felt about it (a neutral "fine" collects clicks and no signal):
+  - 可以直接採用
+  - 方向對但不完整
+  - 不能用
+- **Reason tags** (multi-select; shown for any rating, expected mostly on the lower two). They map one-to-one onto the pipeline stage that failed, which is what makes a rating diagnosable — and onto the judge dimensions `E1e-2` already scores:
+
+  | User-facing label | Stage | Judge dimension |
+  |---|---|---|
+  | 找不到我要的資料 | retrieval recall | — |
+  | 找到了但答錯或不完整 | generation | answer quality |
+  | 引用跟內容對不上 | citation | citation correctness |
+  | 資料裡沒有卻硬答 | grounding | groundedness |
+  | 明明有資料卻說找不到 | over-abstention | abstain correctness |
+  | 太慢或格式問題 | not a quality issue | — |
+  | 其他（可自填） | — | — |
+
+- **Scope of v1: chat answers only.** Studio artifacts (minutes, comparison, study guide, FAQ, timeline, translation) are also generated answers and are deliberately **out of scope** for the first version — decide separately once the chat flow has real usage. One feedback row per message per user; the user may change it (upsert, `updated_at`), and changing it must not create a second row.
+- **Context must be frozen with the feedback, or it is unusable later.** Store the `message_id` — `messages.metadata_json` and `citations_json` already carry the retrieval debug, outcome and cited chunks, so most context comes free. What does **not** come free is the retrieval configuration: `ACTIVE_RETRIEVAL_PARAMS` changes when an admin applies a profile, so the feedback row must freeze the active profile id/revision (and whether domain hints / answer policy were on) at the moment the answer was produced, the way `eval_runs` freezes its snapshots.
+- **Phased:**
+  - [ ] **E3a — rating + reason tags + admin list.** One click, no typing. Admin page lists feedback with filters (rating, reason, notebook, date), links through to the message and its retrieval debug, and shows counts by reason over time. This phase alone answers "which kind of question fails most often", which is the question that decides what to work on next.
+  - [ ] **E3b — optional correction.** Revealed only after 不能用 / 方向對但不完整: a free-text "正確答案應該是" plus **evidence by selection, not by typing** — the citation chips and the source preview drawer already exist, so the user marks "應該是 [2] 那一段" or selects a passage in the preview. Typing a location is homework; clicking one is feedback. Expect a low fill rate and design E3a so it still pays for itself alone.
+  - [ ] **E3c — convert feedback into an eval item.** One action on the admin page pre-fills question, expected answer (from the correction) and expected evidence (from the selected chunks) into an eval set. **Admin approval still required** — this reuses E1's existing rule that generated candidates are drafts, never ground truth. Without this phase the feature is an archive nobody reads; it is what makes E3 serve `Q1-3`.
+- **Guardrails:**
+  - **This is the project's first deliberate exception to "governance metadata never copies user text."** The correction field is user-written content about a specific answer. It therefore lives in its own table at the same protection level as `messages` (per-user scoped, CASCADE with the user/message) — **never** in `llm_usage_events` or `ai_safety_events`, and never in the sanitized eval export. New table → update [`SCHEMA.md`](SCHEMA.md), including its value contract for rating/reason vocabularies (prefer shared constants over repeated literals so writer and reader cannot drift).
+  - **Audit both directions:** record that a user submitted feedback (identifiers only, never the text), **and record admin reads of the feedback page** — it exposes other users' questions and corrections. Cross-user admin visibility is not new (`eval_sets.target_user_id` already lets an admin build items from another user's notebook), but this is content a user actively submits, so it gets its own audit action.
+  - **Tell the user.** The feedback control states that feedback is shared with the system administrator (through the i18n catalog, per [`I18N.md`](I18N.md)) — do not collect corrections silently.
+  - Feedback is optional and never blocks the answer flow; submitting it is a CSRF-protected POST rendering an HTMX partial (`_*.html`), consistent with the rest of the app.
+  - Ratings are **not** a quality metric to report to a customer. "90% 可以直接採用" measures satisfaction with the questions people happened to ask, not retrieval quality.
+- **Quality reference:** [`QUALITY.md`](QUALITY.md) `Q1-3` (why this exists and what it must produce) and `SECURITY.md` → *What "proof of concept" is actually claiming* condition 2.
+
+---
+
 ---
 
 ## AI governance
