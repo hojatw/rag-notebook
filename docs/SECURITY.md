@@ -57,6 +57,32 @@ The app keeps a DB-backed admin audit trail in `audit_events`, viewable at `/adm
 
 Audit metadata is intentionally compact: store action identifiers, target ids, flags, and parameter summaries only. Do **not** copy API keys, source text, retrieved snippets, prompts, or full exported payloads into `audit_events`; the audit trail should prove that an action happened, not duplicate sensitive content.
 
+### Answer feedback (E3a, 2026-09-12)
+
+`answer_feedback` is **the one place the app deliberately stores user-written
+text outside `messages`**: the optional free-text "other" reason. It therefore
+sits at the same protection level as `messages` — per-user scoped, CASCADE with
+the user and the message — and must never be copied into `llm_usage_events`,
+`ai_safety_events`, or a sanitized eval export. The general rule elsewhere in
+this file (governance metadata never duplicates user content) is unchanged; this
+table is an explicit, bounded exception, and `[feedback].other_reason_max_chars`
+is what bounds it.
+
+Both directions are audited, and neither audit event carries the text:
+
+- `answer_feedback_submitted` — rating, reason ids, and the **character count**
+  of the free-text reason. The reason itself is not copied.
+- `answer_feedback_viewed` — recorded when an admin opens `/admin/feedback`.
+  That page shows **other users' questions, answers and free-text notes**, which
+  is why reading it is an audited event rather than an ordinary page view.
+  Cross-user admin visibility is not new (`eval_sets.target_user_id` already lets
+  an admin build eval items from another user's notebook), but this is content a
+  user actively submitted, so it gets its own action.
+
+The feedback control states, before submission, that feedback is shared with the
+system administrator. Do not collect corrections silently: if a future phase
+(`E3b`) adds a "the correct answer is…" field, that promise has to stay visible.
+
 ### E2 notebook domain hints and answer policy
 
 Domain settings are owner-scoped notebook data. `GET` and every mutation under
