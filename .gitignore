@@ -32,8 +32,11 @@ htmlcov/
 !.claude/commands/
 !.claude/settings.json
 
-# Local engineering handoff notes
-handover.md
+# Local, human-written notes that must never reach this public repo
+# (handover notes, sales/internal guides, customer-environment notes).
+# The directory's own README is the one committed file — it explains the rule.
+local/*
+!local/README.md
 
 # Docker compose env (.env.example is committed)
 .env
