@@ -274,6 +274,18 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - **Tell the user.** The feedback control states that feedback is shared with the system administrator (through the i18n catalog, per [`I18N.md`](I18N.md)) — do not collect corrections silently.
   - Feedback is optional and never blocks the answer flow; submitting it is a CSRF-protected POST rendering an HTMX partial (`_*.html`), consistent with the rest of the app.
   - Ratings are **not** a quality metric to report to a customer. "90% 可以直接採用" measures satisfaction with the questions people happened to ask, not retrieval quality.
+- **Sizing (2026-09-12), calibrated against merged work in this repo** — the upload-cap PR (17 files, 651 lines incl. 240 of tests) and the security/governance batch (24 files, 1022 lines) are the closest comparables; `E2a` (34 files, 3451 lines) is what a *large* feature looks like here, and E3 is not that:
+
+  | Scope | Estimate |
+  |---|---|
+  | `E3a` alone | **2–3 person-days** |
+  | `E3a` + `E3b` limited to picking an existing citation chip | **3.5–5 person-days** |
+  | All three phases, with in-preview passage selection | **6–8 person-days** |
+
+  Assumes someone familiar with this codebase, following existing patterns (no new framework, no build step), including tests, the desktop + mobile browser pass AGENTS requires, doc sync and CHANGELOG. `E3c` is cheaper than it sounds because `eval_items` already has `expected_answer` / `expected_substrings_json` / `approved` and `E1e-1`'s draft-then-approve flow exists — it is wiring, not new machinery. The wildcard is `E3b`'s evidence picker: clicking an existing citation chip is 1–1.5 days, selecting a passage inside the source preview adds 1–2 more (mapping a selection back to a chunk, cross-paragraph selection, mobile text selection).
+
+- **Recommended sequencing: ship `E3a` alone, then stop and look at the data.** It already answers "which kind of question fails most often", and — more importantly — **if users will not spend one click, `E3b` and `E3c` should not be built at all.** Nobody can predict the response rate in advance; 2–3 days buys that answer before 6–8 are committed. Keep the in-preview passage picker out of `E3b` until someone actually complains that chips are not precise enough.
+- **What tends to inflate this:** admin-page filters growing into charts (first version: filter by rating/reason/date plus one count table, nothing more); deciding how to freeze retrieval configuration (store a snapshot like `eval_runs` does, not a profile id — profile contents change); and the authorization matrix tests for an admin page that shows other users' questions (ordinary user blocked, admin allowed and audited).
 - **Quality reference:** [`QUALITY.md`](QUALITY.md) `Q1-3` (why this exists and what it must produce) and `SECURITY.md` → *What "proof of concept" is actually claiming* condition 2.
 
 ---
