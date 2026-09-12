@@ -917,7 +917,8 @@ li code {
 /* Two admin width tiers: form pages use .settings (720px); data-heavy pages
    (eval + audit — wide tables/grids) share this one wide tier. docs/UI.md §2.1. */
 .eval-workbench,
-.audit-page {
+.audit-page,
+.feedback-page {
   max-width: 1120px;
 }
 
@@ -2352,6 +2353,16 @@ legend {
 
 .feedback-saved { color: var(--ok); }
 
+.feedback-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+
+.feedback-notice { margin: 8px 0 0; }
+
 .feedback-reasons {
   margin-top: 8px;
   display: flex;
@@ -2393,18 +2404,17 @@ legend {
 
 .feedback-notice { flex: 1 1 240px; }
 
-/* Admin review page */
+/* Admin review page — same wide tier and table handling as the audit log. */
 .feedback-counts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 32px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--sp-5) var(--sp-6);
 }
 
 .feedback-count-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  min-width: 240px;
 }
 
 .feedback-count-list li {
@@ -2415,9 +2425,78 @@ legend {
   border-bottom: 1px solid var(--line);
 }
 
-.feedback-context { line-height: 1.5; }
+.feedback-context { line-height: 1.6; }
 
 .feedback-table .tag { white-space: nowrap; }
+
+.feedback-filter-form { align-items: flex-end; }
+.feedback-filter-form label { min-width: 150px; }
+
+.feedback-table-wrap {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.feedback-table {
+  table-layout: fixed;
+  /* Only as wide as a narrow window needs; the columns below are percentages
+     so the table always fits its container on a desktop. Fixed pixel widths
+     summed to 1116px inside an 878px container, which put a horizontal
+     scrollbar under the table even on a wide screen. */
+  min-width: 780px;
+}
+
+.feedback-table th,
+.feedback-table td {
+  padding: 12px 14px;
+  vertical-align: top;
+}
+
+/* The rating column must fit the longest label (方向對但不完整) on one line:
+   at 10% it was ~88px against a ~104px pill, so the tag spilled into the
+   reasons column and the two read as one run-on line. */
+.feedback-col-time { width: 11%; }
+.feedback-col-user { width: 8%; }
+.feedback-col-notebook { width: 22%; }
+.feedback-col-rating { width: 14%; }
+.feedback-col-reasons { width: 17%; }
+.feedback-col-other { width: 13%; }
+.feedback-col-context { width: 15%; }
+
+.feedback-reason-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* The rated answer itself, so an admin can see what was being judged without
+   opening the notebook. Clamped to keep rows scannable, but expandable in
+   place — the whole answer is already in the HTML, so nothing is lost. */
+.feedback-answer-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--muted-strong);
+  margin: 4px 0 0;
+}
+
+.feedback-answer-preview.is-expanded {
+  display: block;
+  overflow: visible;
+}
+
+.feedback-answer-toggle {
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-deep);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.feedback-answer-toggle:hover { text-decoration: underline; }
 
 .feedback-tag-unusable { background: var(--danger-soft, var(--accent-wash)); }
 

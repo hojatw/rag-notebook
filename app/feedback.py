@@ -60,8 +60,18 @@ def normalize_rating(raw: str | None) -> str | None:
     return value if value in RATINGS else None
 
 
-def normalize_reasons(raw: list[str] | None) -> list[str]:
-    """Keep known reasons, drop unknown ones, de-duplicate, preserve order."""
+def normalize_reasons(raw: list[str] | None, rating: str = "") -> list[str]:
+    """Keep known reasons, drop unknown ones, de-duplicate, preserve order.
+
+    A `usable` rating carries **no** reasons, whatever the form posted. The
+    rating buttons and the reason checkboxes share one form, so a user who
+    ticks reasons and then changes their mind to "可以直接採用" submits both —
+    and the row would record a problem the user just said did not exist. The
+    rule belongs here rather than in the template: it is what the vocabulary
+    means, not how one page happens to be laid out.
+    """
+    if rating == RATING_USABLE:
+        return []
     seen: list[str] = []
     for item in raw or []:
         value = (item or "").strip()

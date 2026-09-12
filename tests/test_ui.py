@@ -4724,7 +4724,9 @@ def test_answer_feedback_rejects_unknown_rating_and_drops_unknown_reasons(monkey
         assert bad.status_code == 400
         assert _feedback_rows(db) == []
 
-        client.post(url, data={"rating": "usable", "reasons": ["retrieval", "made_up", "retrieval"]})
+        # A rating that keeps reasons — `usable` deliberately clears them, which
+        # is a different rule with its own test.
+        client.post(url, data={"rating": "partial", "reasons": ["retrieval", "made_up", "retrieval"]})
         assert json.loads(_feedback_rows(db)[0]["reasons_json"]) == ["retrieval"]
 
 
@@ -4839,3 +4841,112 @@ def test_admin_feedback_page_is_admin_only(monkeypatch, tmp_path):
         assert response.status_code == 303
         denied = client.get("/admin/feedback")
         assert denied.status_code == 403
+
+
+def test_feedback_panel_state_is_server_rendered_not_alpine_only(monkeypatch, tmp_path):
+    """The reasons panel must be correct in the returned HTML, not after Alpine runs.
+
+    HTMX inserts the fragment and Alpine initialises a tick later, so a panel
+    whose initial visibility depends on `x-show` alone is painted first and
+    hidden afterwards — it flashed on every click. Anything that starts hidden
+    therefore carries an inline `display: none`, and anything that should not
+    exist at all (reasons for a usable answer) is simply not rendered.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+        _uid, nb, convo, msg = _seed_answer(main, db)
+        url = f"/notebooks/{nb}/chat/{convo}/messages/{msg}/feedback"
+
+        # Rating it usable ends the interaction: no reasons panel, no toggle.
+        usable = client.post(url, data={"rating": "usable"})
+        assert "feedback-reasons" not in usable.text
+        assert "feedback-toggle" not in usable.text
+
+        # A problem rating asks why, and the panel is open in the markup itself.
+        unusable = client.post(url, data={"rating": "unusable"})
+        assert "feedback-reasons" in unusable.text
+        panel = unusable.text.split('class="feedback-reasons"')[1][:120]
+        assert "display: none" not in panel
+
+        # With reasons recorded the panel starts collapsed — and is rendered
+        # collapsed, rather than being shown and then hidden by Alpine.
+        with_reasons = client.post(url, data={"rating": "unusable", "reasons": ["citation"]})
+        panel = with_reasons.text.split('class="feedback-reasons"')[1][:120]
+        assert "display: none" in panel
+
+
+def test_feedback_shows_what_was_recorded_after_submitting_reasons(monkeypatch, tmp_path):
+    """Submitting reasons collapses the panel; without a summary the swap would
+    look like nothing happened at all."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+        _uid, nb, convo, msg = _seed_answer(main, db)
+        response = client.post(
+            f"/notebooks/{nb}/chat/{convo}/messages/{msg}/feedback",
+            data={"rating": "partial", "reasons": ["generation", "other"], "other_reason": "少了劑量說明"},
+        )
+        assert "已記錄：" in response.text
+        assert "方向對但不完整" in response.text
+        assert "找到了但答錯或不完整" in response.text
+        assert "少了劑量說明" in response.text
+
+
+def test_switching_to_usable_clears_any_reasons_already_ticked(monkeypatch, tmp_path):
+    """The rating buttons and the reason checkboxes share one form, so a user
+    who ticks reasons and then picks 可以直接採用 posts both. Recording those
+    reasons would store a problem the user just said did not exist — and the
+    admin page counts reasons, so it would also inflate the failure tally.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+        _uid, nb, convo, msg = _seed_answer(main, db)
+        url = f"/notebooks/{nb}/chat/{convo}/messages/{msg}/feedback"
+
+        client.post(url, data={"rating": "unusable", "reasons": ["citation", "other"], "other_reason": "引用錯頁"})
+        assert json.loads(_feedback_rows(db)[0]["reasons_json"]) == ["citation", "other"]
+
+        # Change of mind: the answer was fine after all.
+        response = client.post(
+            url, data={"rating": "usable", "reasons": ["citation", "other"], "other_reason": "引用錯頁"}
+        )
+        row = _feedback_rows(db)[0]
+        assert row["rating"] == "usable"
+        assert json.loads(row["reasons_json"]) == []
+        assert row["other_reason"] == ""
+        # ...and the stale reasons are gone from the rendered fragment too.
+        assert "引用跟內容對不上" not in response.text
+        assert "引用錯頁" not in response.text
+
+
+def test_admin_feedback_page_sends_the_whole_answer_not_a_truncated_one(monkeypatch, tmp_path):
+    """The answer preview is clamped in CSS and expanded in place, so the full
+    text has to be in the HTML. Truncating server-side would make the expand
+    button reveal the same cut-off text."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    tail = "這句話只出現在回答的最後一段"
+    with TestClient(main.app) as client:
+        _login(client)
+        with db.connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+            notebook_id = conn.execute(
+                "INSERT INTO notebooks (user_id, title) VALUES (?, '長回答')", (user["id"],)
+            ).lastrowid
+            convo_id = conn.execute(
+                "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, 'T')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            message_id = conn.execute(
+                "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'assistant', ?)",
+                (convo_id, user["id"], "前面很長的內容。" * 40 + tail),
+            ).lastrowid
+
+        client.post(
+            f"/notebooks/{notebook_id}/chat/{convo_id}/messages/{message_id}/feedback",
+            data={"rating": "partial"},
+        )
+        page = client.get("/admin/feedback")
+        assert tail in page.text
+        assert "feedback-answer-toggle" in page.text

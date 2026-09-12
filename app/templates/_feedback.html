@@ -1,10 +1,24 @@
 {# E3a: per-answer feedback control. Rendered inline under an assistant message
    and returned on its own after a POST, so rating an answer never re-renders
    the conversation. Context: notebook, conversation, message, feedback (this
-   user's existing row or None), feedback_saved (True right after a submit). #}
+   user's existing row or None), feedback_saved (True right after a submit).
+
+   The visible state is decided **on the server**, not by Alpine. HTMX inserts
+   this fragment and Alpine initialises a tick later, so anything whose initial
+   visibility depends on `x-show` alone gets painted first and hidden after —
+   which read as the reasons panel flashing on every click. Alpine here only
+   handles what the user toggles *after* the fragment is in place; everything
+   that starts hidden also carries an inline `display: none`, so the very first
+   paint is already correct. #}
+
+{# Reasons diagnose a problem, so they are only asked for when the user says
+   there was one: rating an answer usable ends the interaction. #}
+{% set wants_reasons = feedback and feedback.rating != 'usable' %}
+{% set panel_open = wants_reasons and not feedback.reasons %}
+{% set has_summary = feedback and feedback.reasons %}
+
 <div class="answer-feedback" id="feedback-msg-{{ message.id }}"
-     x-data="{ open: {{ 'true' if feedback and feedback.reasons else 'false' }},
-               rating: '{{ (feedback.rating if feedback else '') }}',
+     x-data="{ open: {{ 'true' if panel_open else 'false' }},
                other: {{ 'true' if feedback and 'other' in feedback.reasons else 'false' }} }">
   <form hx-post="/notebooks/{{ notebook.id }}/chat/{{ conversation.id }}/messages/{{ message.id }}/feedback"
         hx-target="#feedback-msg-{{ message.id }}"
@@ -16,8 +30,6 @@
       {% for value in feedback_ratings %}
         <button type="submit" name="rating" value="{{ value }}"
                 class="ghost small feedback-rating{% if feedback and feedback.rating == value %} selected{% endif %}"
-                :class="{ 'selected': rating === '{{ value }}' }"
-                @click="rating = '{{ value }}'; open = true"
                 aria-pressed="{{ 'true' if feedback and feedback.rating == value else 'false' }}">
           {{ t(feedback_rating_label_keys[value]) }}
         </button>
@@ -25,38 +37,51 @@
       {% if feedback_saved %}
         <span class="feedback-saved small" role="status">{{ t('feedback.saved') }}</span>
       {% endif %}
-      <button type="button" class="ghost small feedback-toggle" x-show="rating" x-cloak
-              @click="open = !open"
-              x-text="open ? '{{ t('feedback.hide_reasons') }}' : '{{ t('feedback.add_reason') }}'">{{ t('feedback.add_reason') }}</button>
+      {% if wants_reasons %}
+        <button type="button" class="ghost small feedback-toggle" @click="open = !open"
+                x-text="open ? '{{ t('feedback.hide_reasons') }}' : '{{ t('feedback.add_reason') }}'">{{ t('feedback.hide_reasons') if panel_open else t('feedback.add_reason') }}</button>
+      {% endif %}
     </div>
 
-    {# Reasons stay optional: the whole point of E3a is that one click is
-       enough. They are what makes a rating diagnosable, so they are offered
-       immediately after rating rather than behind a second page. #}
-    <div class="feedback-reasons" x-show="open" x-cloak>
-      <fieldset>
-        <legend class="muted small">{{ t('feedback.reason_legend') }}</legend>
-        {% for value in feedback_reasons %}
-          <label class="feedback-reason">
-            <input type="checkbox" name="reasons" value="{{ value }}"
-                   aria-label="{{ t(feedback_reason_label_keys[value]) }}"
-                   {% if feedback and value in feedback.reasons %}checked{% endif %}
-                   {% if value == 'other' %}@change="other = $event.target.checked"{% endif %}>
-            <span>{{ t(feedback_reason_label_keys[value]) }}</span>
-          </label>
+    {# What was recorded, once reasons exist. Submitting the panel collapses it,
+       and without this line the swap would look like nothing had happened. #}
+    {% if has_summary %}
+      <p class="feedback-summary small" x-show="!open"{% if panel_open %} style="display: none;"{% endif %}>
+        <span class="muted">{{ t('feedback.recorded_as') }}</span>
+        <span class="tag">{{ t(feedback_rating_label_keys[feedback.rating]) }}</span>
+        {% for reason in feedback.reasons %}
+          <span class="tag">{{ t(feedback_reason_label_keys[reason]) }}</span>
         {% endfor %}
-      </fieldset>
-      <label class="feedback-other" x-show="other" x-cloak>
-        <span class="muted small">{{ t('feedback.other_label') }}</span>
-        <input type="text" name="other_reason" maxlength="{{ feedback_other_max_chars }}"
-               value="{{ feedback.other_reason if feedback else '' }}"
-               placeholder="{{ t('feedback.other_placeholder') }}">
-      </label>
-      <div class="feedback-submit-row">
-        <button type="submit" name="rating" class="small"
-                :value="rating" x-show="rating" x-cloak>{{ t('feedback.submit_reasons') }}</button>
-        <span class="muted small feedback-notice">{{ t('feedback.admin_notice') }}</span>
+        {% if feedback.other_reason %}<span class="muted">— {{ feedback.other_reason }}</span>{% endif %}
+      </p>
+    {% endif %}
+
+    {% if wants_reasons %}
+      <div class="feedback-reasons" x-show="open"{% if not panel_open %} style="display: none;"{% endif %}>
+        <fieldset>
+          <legend class="muted small">{{ t('feedback.reason_legend') }}</legend>
+          {% for value in feedback_reasons %}
+            <label class="feedback-reason">
+              <input type="checkbox" name="reasons" value="{{ value }}"
+                     aria-label="{{ t(feedback_reason_label_keys[value]) }}"
+                     {% if feedback and value in feedback.reasons %}checked{% endif %}
+                     {% if value == 'other' %}@change="other = $event.target.checked"{% endif %}>
+              <span>{{ t(feedback_reason_label_keys[value]) }}</span>
+            </label>
+          {% endfor %}
+        </fieldset>
+        <label class="feedback-other" x-show="other"{% if not (feedback and 'other' in feedback.reasons) %} style="display: none;"{% endif %}>
+          <span class="muted small">{{ t('feedback.other_label') }}</span>
+          <input type="text" name="other_reason" maxlength="{{ feedback_other_max_chars }}"
+                 value="{{ feedback.other_reason if feedback else '' }}"
+                 placeholder="{{ t('feedback.other_placeholder') }}">
+        </label>
+        <div class="feedback-submit-row">
+          <button type="submit" name="rating" value="{{ feedback.rating }}" class="small">{{ t('feedback.submit_reasons') }}</button>
+        </div>
       </div>
-    </div>
+    {% endif %}
+
+    <p class="muted small feedback-notice">{{ t('feedback.admin_notice') }}</p>
   </form>
 </div>

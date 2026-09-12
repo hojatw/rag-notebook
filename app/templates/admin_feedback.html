@@ -68,17 +68,17 @@
 
   <section class="settings-section">
     {% if entries %}
-      <div class="table-scroll">
+      <div class="table-wrap feedback-table-wrap">
         <table class="data-table feedback-table">
           <thead>
             <tr>
-              <th>{{ t('feedback_admin.col_created') }}</th>
-              <th>{{ t('feedback_admin.col_user') }}</th>
-              <th>{{ t('feedback_admin.col_notebook') }}</th>
-              <th>{{ t('feedback_admin.col_rating') }}</th>
-              <th>{{ t('feedback_admin.col_reasons') }}</th>
-              <th>{{ t('feedback_admin.col_other') }}</th>
-              <th>{{ t('feedback_admin.col_context') }}</th>
+              <th class="feedback-col-time">{{ t('feedback_admin.col_created') }}</th>
+              <th class="feedback-col-user">{{ t('feedback_admin.col_user') }}</th>
+              <th class="feedback-col-notebook">{{ t('feedback_admin.col_notebook') }}</th>
+              <th class="feedback-col-rating">{{ t('feedback_admin.col_rating') }}</th>
+              <th class="feedback-col-reasons">{{ t('feedback_admin.col_reasons') }}</th>
+              <th class="feedback-col-other">{{ t('feedback_admin.col_other') }}</th>
+              <th class="feedback-col-context">{{ t('feedback_admin.col_context') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -86,16 +86,25 @@
               <tr>
                 <td class="nowrap small">{{ entry.created_at }}</td>
                 <td class="small">{{ entry.username }}</td>
-                <td class="small">
+                <td class="small" x-data="{ expanded: false }">
                   <a href="/notebooks/{{ entry.notebook_id }}">{{ entry.notebook_title }}</a>
+                  {% if entry.answer_content %}
+                    <p class="feedback-answer-preview small" :class="{ 'is-expanded': expanded }">{{ entry.answer_content }}</p>
+                    {% if entry.answer_content|length > 60 %}
+                      <button type="button" class="feedback-answer-toggle" @click="expanded = !expanded"
+                              x-text="expanded ? '{{ t('feedback_admin.answer_collapse') }}' : '{{ t('feedback_admin.answer_expand') }}'">{{ t('feedback_admin.answer_expand') }}</button>
+                    {% endif %}
+                  {% endif %}
                 </td>
                 <td class="small">
                   <span class="tag feedback-tag-{{ entry.rating }}">{{ t(feedback_rating_label_keys[entry.rating]) }}</span>
                 </td>
                 <td class="small">
-                  {% for reason in entry.reasons %}
-                    <span class="tag">{{ t(feedback_reason_label_keys[reason]) }}</span>
-                  {% endfor %}
+                  <div class="feedback-reason-tags">
+                    {% for reason in entry.reasons %}
+                      <span class="tag">{{ t(feedback_reason_label_keys[reason]) }}</span>
+                    {% endfor %}
+                  </div>
                 </td>
                 <td class="small">{{ entry.other_reason }}</td>
                 <td class="small feedback-context">
