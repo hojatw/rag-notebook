@@ -1580,3 +1580,92 @@ def test_a_null_content_probe_is_not_recorded_as_a_working_model(monkeypatch):
     assert result["status"] == "failed"
     assert result["error_class"] == "EmptyChatContentError"
     assert "None" not in str(result.get("content", ""))
+
+
+# -------------------- P2: malformed JSON from the model --------------------
+#
+# Three occurrences in one production week (2026-09-10 x2, 2026-09-16 x1), all
+# `Expecting ',' delimiter`. That error class matters: a response cut off at
+# max_tokens raises `Unterminated string` or `Expecting property name` instead,
+# so these arrays were complete and only their punctuation was wrong. Raising
+# the output cap would not have helped; discarding the whole array did the harm.
+
+
+def test_truncation_and_malformed_output_are_different_failures():
+    """Pin the premise the salvage design rests on.
+
+    If this ever stops holding, salvaging is the wrong response -- a truncated
+    array is genuinely incomplete and recovering its prefix could silently drop
+    the best-scoring candidates, which a larger `[max_tokens]` would fix
+    properly.
+    """
+    import json as _json
+
+    def message(text):
+        with pytest.raises(_json.JSONDecodeError) as caught:
+            _json.loads(text)
+        return caught.value.msg
+
+    assert message('[{"id": 1, "score": 0.9}, {"id": 2, "sco') == "Unterminated string starting at"
+    assert message('["查詢一", "查詢二') == "Unterminated string starting at"
+    assert message('[{"id":1,"score":0.9}\n{"id":2,"score":0.8}]') == "Expecting ',' delimiter"
+    assert message('["合約中的 "驗收" 條件"]') == "Expecting ',' delimiter"
+
+
+def test_rerank_scores_survive_a_missing_comma_between_objects(caplog):
+    """One badly separated object must cost one score, not the whole reranking."""
+    malformed = '[{"id": 1, "score": 0.9}\n{"id": 2, "score": 0.8}\n{"id": 3, "score": 0.7}]'
+
+    with caplog.at_level("WARNING", logger="app.llm"):
+        scores = parse_rerank_scores(malformed)
+
+    assert scores == {1: 0.9, 2: 0.8, 3: 0.7}
+    assert any("rerank_scores_salvaged" in r.getMessage() for r in caplog.records)
+
+
+def test_rerank_salvage_keeps_the_good_objects_and_drops_only_the_broken_one():
+    """Partial recovery is the point: a wrecked object must not take the rest."""
+    scores = parse_rerank_scores(
+        '[{"id": 1, "score": 0.9}, {"id": 2, "score": zzz}, {"id": 3, "score": 0.7}]'
+    )
+
+    assert scores == {1: 0.9, 3: 0.7}
+
+
+def test_query_rewrite_survives_an_unescaped_quote_inside_a_string(caplog):
+    """The production shape: a quoted term inside a query the model forgot to escape."""
+    malformed = '[\n  "合約的驗收條件",\n  "所謂 "罰則" 的範圍",\n  "付款期限"\n]'
+
+    with caplog.at_level("WARNING", logger="app.llm"):
+        queries = parse_json_strings(malformed)
+
+    assert queries == ["合約的驗收條件", '所謂 "罰則" 的範圍', "付款期限"]
+    assert any("json_strings_salvaged" in r.getMessage() for r in caplog.records)
+
+
+def test_valid_json_is_parsed_strictly_and_never_salvaged(caplog):
+    """Salvage must be unreachable for well-formed output, or it masks real drift."""
+    with caplog.at_level("WARNING", logger="app.llm"):
+        assert parse_rerank_scores('[{"id": 1, "score": 0.92}, {"id": 2, "score": 0.5}]') == {
+            1: 0.92, 2: 0.5,
+        }
+        assert parse_json_strings('["alpha", "beta"]') == ["alpha", "beta"]
+        assert parse_json_strings('```json\n["fenced"]\n```') == ["fenced"]
+
+    assert not [r for r in caplog.records if "salvaged" in r.getMessage()]
+
+
+def test_a_brace_inside_a_string_does_not_split_an_object():
+    """The object scanner tracks string state, so JSON-ish prose stays intact."""
+    scores = parse_rerank_scores(
+        '[{"id": 1, "score": 0.9, "why": "matches {\\"a\\": 1} in the doc"}\n'
+        '{"id": 2, "score": 0.4}]'
+    )
+
+    assert scores == {1: 0.9, 2: 0.4}
+
+
+def test_unsalvageable_output_still_degrades_quietly():
+    """Prose instead of JSON has nothing to recover -- return empty, never raise."""
+    assert parse_rerank_scores("I cannot score these candidates.") == {}
+    assert parse_json_strings("Sorry, no queries.") == []

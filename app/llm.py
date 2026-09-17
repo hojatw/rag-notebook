@@ -2736,17 +2736,106 @@ def _record_usage_event(
     )
 
 
+def _iter_json_objects(payload: str):
+    """Yield each top-level ``{...}`` block, ignoring whatever separates them.
+
+    A brace-depth scan that tracks string state, so a brace inside a quoted
+    value never splits a block. What it deliberately does not care about is the
+    punctuation *between* blocks -- a missing comma is exactly the defect this
+    exists to survive.
+    """
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    for index, char in enumerate(payload):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                yield payload[start : index + 1]
+                start = -1
+            elif depth < 0:
+                depth = 0
+
+
+def _salvage_quoted_strings(payload: str) -> list[str]:
+    """Recover one string per line from a damaged JSON array of strings.
+
+    Takes each line's first quote to its last, which is what rescues the defect
+    seen in production -- an unquoted quote *inside* a value, e.g.
+    ``"the 「驗收」 clause says "within 30 days""`` -- where a strict parser
+    stops at the inner quote and discards the whole array.
+    """
+    recovered: list[str] = []
+    for line in payload.splitlines():
+        stripped = line.strip().rstrip(",").strip()
+        if len(stripped) < 2 or not stripped.startswith('"') or not stripped.endswith('"'):
+            continue
+        inner = stripped[1:-1].strip()
+        if inner:
+            recovered.append(inner)
+    return recovered
+
+
 def parse_json_strings(content: str) -> list[str]:
-    """Parse a JSON string array from model output, accepting fenced JSON."""
-    parsed = json.loads(extract_json(content))
+    """Parse a JSON string array from model output, accepting fenced JSON.
+
+    Falls back to a line-based salvage when the model emits malformed JSON.
+    Production saw ``Expecting ',' delimiter`` three times in one week from
+    query rewrite and rerank; the error class rules out truncation (a cut-off
+    response raises ``Unterminated string`` instead), so the array was complete
+    and only its punctuation was wrong. Throwing all of it away cost the caller
+    every query, not just the damaged one.
+    """
+    payload = extract_json(content)
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        salvaged = _salvage_quoted_strings(payload)
+        logger.warning(
+            "json_strings_salvaged error=%s recovered=%s", exc.msg, len(salvaged),
+        )
+        return unique_nonempty(salvaged)
     if not isinstance(parsed, list):
         return []
     return [item.strip() for item in parsed if isinstance(item, str) and item.strip()]
 
 
 def parse_rerank_scores(content: str) -> dict[int, float]:
-    """Parse reranker JSON output into candidate id to bounded score."""
-    parsed = json.loads(extract_json(content))
+    """Parse reranker JSON output into candidate id to bounded score.
+
+    Falls back to per-object parsing when the array as a whole is malformed, so
+    one badly separated object costs one candidate's score instead of the whole
+    reranking -- the difference between a slightly worse order and dropping back
+    to raw hybrid order for the entire question.
+    """
+    payload = extract_json(content)
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        parsed = []
+        for block in _iter_json_objects(payload):
+            try:
+                parsed.append(json.loads(block))
+            except json.JSONDecodeError:
+                continue
+        logger.warning(
+            "rerank_scores_salvaged error=%s recovered=%s", exc.msg, len(parsed),
+        )
     if not isinstance(parsed, list):
         return {}
     scores: dict[int, float] = {}

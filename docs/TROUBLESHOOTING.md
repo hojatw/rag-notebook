@@ -231,3 +231,51 @@ fallback 成原始問題，於是「長問題」原封不動變成「長 query�
 - grep `embedding_input_truncated`。出現 `role=query` 是正常的保護動作；出現
   `role=passage` 代表切塊器產出了超預算的 chunk，那是 bug（參見第 2 則）。
 - `query_rewrite_failed` 會放大這個問題，兩者一起看。
+
+---
+
+## 5. 答案品質下降：模型輸出的 JSON 不合法，rerank 與 query rewrite 整批被丟掉 [已修正，尚未發版]
+
+**發生**：2026-09-10（兩次）與 2026-09-16（一次），`0.7.0`，chat 模型 gpt-oss-120b。
+
+**症狀**
+
+- 服務正常、有答案，但引用挑得比較差、追問建議偶爾消失。
+- 使用者看不到任何錯誤。與第 1、3 則同一類：**只有 log 知道**。
+
+**log 字串**
+
+```text
+ERROR [app.llm] rerank_failed candidates=20
+ERROR [app.llm] query_rewrite_failed question_chars=...
+json.decoder.JSONDecodeError: Expecting ',' delimiter: line 7 column 24
+```
+
+**根因**：`parse_rerank_scores` / `parse_json_strings` 直接 `json.loads()`，模型輸出
+只要有一處格式瑕疵（物件之間漏逗號、字串內未跳脫的引號），**整批結果就被丟掉**——
+20 個候選的排序全部作廢，退回原始 hybrid 順序。
+
+**關鍵鑑別：這不是被 `max_tokens` 截斷。** 兩者的例外訊息不同，可以直接分辨：
+
+| JSONDecodeError 訊息 | 意思 | 處理 |
+|---|---|---|
+| `Unterminated string starting at` | 回應被切掉 | **調高 `[max_tokens]` 對應的 call_type** |
+| `Expecting property name enclosed in double quotes` | 回應被切掉 | 同上 |
+| `Expecting ',' delimiter` | 內容完整，只是格式壞 | 模型輸出品質問題，非設定問題 |
+| `Expecting value: line 1 column 1` | 根本不是 JSON（例如模型回了一段散文） | 檢查 prompt 與模型 |
+
+本次三筆都是第三種，所以調高輸出上限沒有用。
+
+**處理**
+
+- 升級到含本修正的版本（目前在 `CHANGELOG.md` 的 `[未發布]`）。嚴格解析失敗時會改走
+  逐物件／逐行的容錯復原，**部分成功遠好過全部丟掉**。
+- 復原時會記錄 `rerank_scores_salvaged` 或 `json_strings_salvaged`，帶上原始錯誤與
+  救回筆數。
+- 舊版沒有繞法，只能換 chat 模型。
+
+**預防**
+
+- grep `_salvaged`。偶爾出現是正常的（容錯生效）；**頻繁出現代表該模型的 JSON
+  遵循度不佳**，值得換模型，或等 structured output 探測做好（`ROADMAP.md` `O5`）。
+- 看到 `Unterminated string` 時不要套用本則，那是輸出上限太緊，見上表。
