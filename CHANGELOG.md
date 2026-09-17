@@ -11,6 +11,25 @@
 
 ### 修正
 
+- **問題太長會完全問不到答案**：embedding 請求先前只依「則數」分批，對單則文字長度
+  沒有任何上限。e5 對超過輸入視窗的內容是直接回 HTTP 400 而不是截斷，所以一個長問題
+  會讓整個請求失敗、**使用者拿不到任何回答**（實際案例中一天內發生三次，其中兩次是
+  query rewrite 失敗後把原始長問題直接送出）。現在送出前會先修剪到
+  `[diagnostics] embedding_token_budget`（預設 512，即 e5 的視窗），並記錄
+  `embedding_input_truncated`。索引路徑本來就由切塊器控制在同一個預算內，因此不受
+  影響；若看到 `role=passage` 的修剪紀錄，代表切塊器有問題，不是調參問題。
+  **使用較大視窗的 embedding 模型（如 OpenAI `text-embedding-3` 為 8191）請調高這個值**，
+  否則長問題會被截短，影響檢索品質（但不會失敗）。
+- **模型回傳空內容時會以 `AttributeError` 崩掉**：reasoning 模型（如 gpt-oss-120b）
+  在輸出額度全被 reasoning 用掉時會回 `"content": null`，程式直接對它呼叫 `.strip()`。
+  rerank、query rewrite 與追問建議三條路徑因此降級，而且 log 裡只看得到症狀、看不到
+  原因。現在改為丟出具名的 `EmptyChatContentError`，並在 WARNING 中帶上
+  `finish_reason` 與 `completion_tokens` / `reasoning_tokens`——`finish_reason=length`
+  代表 `[max_tokens]` 的上限對這個模型太緊，是可以調的。**呼叫端行為完全不變**，
+  原本就會降級的仍然降級。
+  另修正 `/settings` 的模型能力探測：它先前用 `str()` 包住內容，會把 `None` 變成字串
+  `"None"`，讓一個什麼都沒回的模型探測成「有回應」——而那個結果會存進
+  `llm_settings.diagnostics_json`，之後每一次呼叫的參數形狀都依它決定。
 - **向量檢索在 split-worker 部署下會全數降級**：`app` 與 `worker` 兩個容器各自開啟
   `data/chroma`，而 Chroma 把 HNSW 索引放在行程記憶體裡，一個行程寫入之後，另一個
   行程手上的索引就過期了——帶篩選條件的查詢會全數失敗，`retrieve()` 靜靜降級成上限
