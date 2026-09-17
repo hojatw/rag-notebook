@@ -584,10 +584,12 @@ def test_settings_chat_probe_detects_json_stream_and_usage(monkeypatch, tmp_path
         asyncio.run(client.aclose())
         llm.set_http_client(None)
 
-    # 4, not 3: LLM-2 added a sampling-parameter probe that runs before the rest
-    # (it decides how every later request is shaped). It is one extra request on
-    # an explicit admin "test connection" click, not on the request path.
-    assert calls["n"] == 4
+    # 6, not 4: O5b added the structured-output probe, which costs two requests
+    # here because this fake endpoint answers prose to both request shapes, so
+    # neither is accepted and both are tried. All of it is on an explicit admin
+    # "test connection" click, never on the request path. The count is asserted
+    # so a probe that quietly starts looping cannot slip through.
+    assert calls["n"] == 6
     assert result["status"] == "succeeded"
     assert result["capabilities"]["json_following"]["status"] == "succeeded"
     assert result["capabilities"]["streaming"]["status"] == "succeeded"
@@ -596,6 +598,12 @@ def test_settings_chat_probe_detects_json_stream_and_usage(monkeypatch, tmp_path
     assert result["capabilities"]["image_understanding"]["semantic_match"] is True
     # An endpoint that accepts temperature + max_tokens is the common case.
     assert result["capabilities"]["sampling_params"]["status"] == "succeeded"
+    # An endpoint that ignores the constraint and answers prose must NOT read as
+    # supported: accepting the request is not the same as honouring the schema,
+    # and a false positive here would have the runtime trust a guarantee it does
+    # not have.
+    assert result["capabilities"]["structured_output"]["status"] == "failed"
+    assert result["capabilities"]["structured_output"]["shape"] == ''
     assert result["capabilities"]["max_tokens_field"]["field"] == "max_tokens"
     with db.connect() as conn:
         rows = conn.execute("SELECT * FROM llm_usage_events ORDER BY id").fetchall()

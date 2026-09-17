@@ -291,6 +291,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "evalr.present": "有",
         "evalr.absent": "無",
         "evalr.domain_diff_heading": "Notebook domain 設定差異",
+        "evalr.llm_diff_heading": "LLM 設定差異",
+        # Runs created before this column existed have an empty snapshot. Saying
+        # so beats an empty table that reads as "nothing differed".
+        "evalr.llm_diff_missing": "這兩次執行沒有記錄 LLM 設定（在此功能加入前建立）。",
         "evalr.setting": "設定",
         "evalr.baseline": "Baseline",
         "evalr.candidate": "Candidate",
@@ -474,6 +478,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "error.unsupported_llm_provider": "不支援的 LLM provider。",
         "error.unsupported_embedding_provider": "不支援的 embedding provider。",
         "error.unsupported_reasoning_effort_mode": "不支援的 reasoning effort policy。",
+        "error.structured_output_not_verified": "尚未在這組設定上測得端點支援限定 JSON 輸出格式，因此不能開啟。請先按「測試對話模型」。",
         "error.unsupported_reasoning_effort": "不支援的 reasoning_effort 值。",
         "error.reasoning_effort_not_verified": "目前聊天模型設定尚未實測通過 reasoning_effort={value}。請保留這個 policy/value，先按「測試聊天模型」，成功後再儲存。",
         "error.embedding_endpoint_unreachable": "無法連線至 embedding endpoint。請先確認 base URL、embedding base URL、API key 與模型名稱。",
@@ -615,6 +620,11 @@ MESSAGES: dict[str, dict[str, str]] = {
         # O5a: the measured input window. Shown next to the dimension because both
         # are properties of the embedding model that only a probe can answer.
         "settings.embedding_window": "輸入視窗上限",
+        # O5b: schema-constrained output. The label says what it does, the hint
+        # says what it cannot promise — acceptance is not answer quality.
+        "settings.structured_output": "限定 JSON 輸出格式",
+        "settings.structured_output_hint": "開啟後，rerank 與查詢改寫等會解析 JSON 的呼叫會要求模型只能產生符合格式的輸出，從源頭避免格式錯誤。需要先「測試對話模型」確認端點支援才能開啟。注意：對 reasoning 模型而言，限制輸出格式有可能反而降低內容品質，建議用評測工作台開關各跑一次比較 Recall/MRR 再決定。",
+        "settings.cap_structured_output": "Structured output（限定輸出格式）",
         "settings.embedding_window_tokens": "{tokens} tokens",
         "settings.embedding_window_at_least": "至少 {tokens} tokens",
         "settings.embedding_window_unprobed": "尚未測得，沿用設定值 {tokens} tokens",

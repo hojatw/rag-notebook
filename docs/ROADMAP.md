@@ -340,17 +340,17 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 #### [x] O5a · Probe the embedding model's input window — **Done**
 Measured on *Test embedding model* and read back by `llm.embedding_window_budget`, replacing the fixed `[diagnostics].embedding_token_budget` guess that silently kept trimming queries at 512 after a model change (TROUBLESHOOTING §4). The probe overshoots the endpoint **once** and parses the limit out of its rejection rather than binary-searching for it: one request instead of a dozen, an exact figure, and no dependence on `estimate_embedding_tokens`, which rounds *up* by design and so would place a searched bound above the real limit — the wrong direction for a cap. Falls back to the config value whenever no probe matches the current connection's fingerprint. The config value still sizes spreadsheet chunks, so it keeps its re-index implication; the probed window does not, since it only caps what is sent.
 
-#### [ ] O5b · Probe and use the chat endpoint's structured-output support
+#### [x] O5b · Probe and use the chat endpoint's structured-output support — **Done, off by default**
 - **Issue:** whether the chat endpoint supports `response_format: {"type": "json_schema"}` is guessed. Constrained decoding would make malformed JSON impossible at the sampler rather than recovered after the fact (TROUBLESHOOTING §5, the salvage landed in #141).
 - **Target model:** the shape `O1b` and `O5a` both use — `/settings` probes once, stores it in `llm_settings.diagnostics_json`, runtime reads it back. Try `response_format` first and fall back to vLLM's older `extra_body: {"guided_json": ...}`, recording which shape was accepted. Never infer from the model name.
 - **Off by default.** A successful probe only *permits* the feature; an admin enables it, the same fail-closed rule `O1b` applies to fixed `reasoning_effort`.
-- **Open risk this cannot settle:** the deployment's chat model is a reasoning model, and constraining the whole output can drag reasoning quality down. No probe answers that — acceptance is not quality. It has to be A/B'd on the deployment's own corpus with the Eval Workbench, which needs **O5c** first or the two runs are indistinguishable in the record.
+- **Open risk this cannot settle, and deliberately does not:** the deployment's chat model is a reasoning model, and constraining the whole output can drag reasoning quality down. No probe answers that — acceptance is not quality, which is why the probe additionally requires the reply to *parse*, and why the feature ships off. **Whether to turn it on is an A/B on the deployment's own corpus**: run the same eval set with the toggle off and on, and compare. `O5c` makes that comparison attributable.
 - **Keep the salvage regardless:** a probe can be inconclusive, an endpoint can change, and a schema can be loosened. Constrained decoding raises the floor; it does not remove the need for a net.
 
-#### [ ] O5c · Record the LLM capability flags in the eval run snapshot
+#### [x] O5c · Record the LLM capability flags in the eval run snapshot — **Done**
 - **Issue:** `eval_runs` freezes `profile_snapshot_json` and `domain_config_snapshot_json` but **not the LLM connection or its capability flags**. Two runs that differ only by structured-output on/off are therefore identical in the record, so the comparison that `O5b` depends on cannot be attributed to anything. Same class of gap as the unheld JSON-blob fields `AGENTS.md` documents, one layer up.
 - **Smallest useful fix:** snapshot the non-secret capability flags in effect at run creation, alongside the existing profile snapshot, and show them on the compare view.
-- **Blocks:** `O5b`'s go/no-go decision.
+- **Unblocks:** `O5b`'s go/no-go decision, and every later "did this LLM-side change help?" question.
 
 #### [ ] O4 · Stop sharing one Chroma store between two processes
 - **Issue:** the `app` and `worker` containers both open `data/chroma` with their own `PersistentClient`, and chromadb keeps the in-memory HNSW index per process (cached by store path). A write in one process leaves the other's index stale, and filtered queries there fail with `Error executing plan: Internal error: Error finding id` until it reopens the client — the 2026-09-10 outage, [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) §3.

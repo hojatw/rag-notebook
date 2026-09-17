@@ -33,6 +33,7 @@ from .llm import (
     probe_chat_diagnostics,
     probe_embedding_diagnostics,
     probe_embedding_dimension,
+    structured_output_shape,
 )
 from .main import record_audit_event, render, require_admin
 from .vector_store import probe_index_dimension as vector_probe_index_dimension
@@ -145,6 +146,7 @@ def candidate_settings_from_form(
     embedding_provider: str,
     embedding_api_key: str,
     embedding_api_version: str,
+    structured_output_enabled: bool = False,
 ) -> dict[str, Any]:
     if provider not in {"openai_compatible", "azure_openai"}:
         raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_llm_provider"))
@@ -172,6 +174,7 @@ def candidate_settings_from_form(
         "embedding_provider": embedding_provider,
         "embedding_api_key": embedding_api_key.strip() or existing_decrypted.get("embedding_api_key", ""),
         "embedding_api_version": embedding_api_version.strip(),
+        "structured_output_enabled": bool(structured_output_enabled),
         # Saving fixed mode must evaluate the real probe result already stored
         # for this candidate. This metadata is never sent to a provider.
         "diagnostics": existing_decrypted.get("diagnostics") or {},
@@ -461,6 +464,8 @@ async def update_settings(
     embedding_provider: str = Form("openai_compatible"),
     embedding_api_key: str = Form(""),
     embedding_api_version: str = Form("2024-02-15-preview"),
+    # O5b: an unchecked checkbox sends nothing, so absent means off.
+    structured_output_enabled: bool = Form(False),
 ):
     """Validate and save global LLM provider settings.
 
@@ -520,7 +525,13 @@ async def update_settings(
         embedding_provider=embedding_provider,
         embedding_api_key=embedding_api_key,
         embedding_api_version=embedding_api_version,
+        structured_output_enabled=structured_output_enabled,
     )
+    # O5b, same fail-closed rule as fixed reasoning effort: a positive probe only
+    # permits the feature. Turning it on against an endpoint that never proved it
+    # would send a constraint the server ignores or rejects on every JSON call.
+    if structured_output_enabled and not structured_output_shape(candidate):
+        raise HTTPException(status_code=400, detail=i18n.t("error.structured_output_not_verified"))
     if reasoning_effort_mode == "fixed":
         supported = chat_sampling_support(candidate)["reasoning_efforts"]
         if reasoning_effort not in supported:
@@ -571,7 +582,8 @@ async def update_settings(
                 embedding_query_prefix = ?, embedding_passage_prefix = ?,
                 api_version = ?, temperature = ?, reasoning_effort_mode = ?,
                 reasoning_effort = ?, timeout_seconds = ?,
-                embedding_provider = ?, embedding_api_key = ?, embedding_api_version = ?
+                embedding_provider = ?, embedding_api_key = ?, embedding_api_version = ?,
+                structured_output_enabled = ?
             WHERE id = 1
             """,
             (
@@ -593,6 +605,7 @@ async def update_settings(
                 embedding_provider,
                 stored_embedding_key,
                 embedding_api_version.strip(),
+                1 if structured_output_enabled else 0,
             ),
         )
         settings = load_llm_settings_for_display(conn)

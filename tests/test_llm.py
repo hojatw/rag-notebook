@@ -1843,3 +1843,149 @@ def test_an_unprobed_deployment_keeps_the_configured_budget():
     settings["diagnostics"] = {"embedding": {"settings_fingerprint": fingerprint,
                                              "max_input_tokens": 0}}
     assert llm.embedding_window_budget(settings) == configured
+
+
+# -------------------- O5b: schema-constrained chat output --------------------
+
+def _structured_settings(shape="response_format", enabled=True, fingerprint_ok=True, status="succeeded"):
+    settings = {
+        "provider": "openai_compatible",
+        "base_url": "https://example.invalid/v1",
+        "chat_model": "openai/gpt-oss-120b",
+        "structured_output_enabled": enabled,
+    }
+    fingerprint = llm.llm_settings_fingerprint(settings) if fingerprint_ok else "measured-elsewhere"
+    settings["diagnostics"] = {
+        "chat": {
+            "settings_fingerprint": fingerprint,
+            "capabilities": {"structured_output": {"status": status, "shape": shape}},
+        }
+    }
+    return settings
+
+
+def test_a_json_call_type_carries_the_schema_once_probed_and_enabled():
+    """rerank's reply is parsed as JSON, so it is one of the call types that
+    may be constrained — and the schema has to match what the parser accepts."""
+    request = build_chat_request(_structured_settings(), "q", "sys", call_type="rerank")
+
+    schema = request["json"]["response_format"]["json_schema"]["schema"]
+    assert schema["items"]["required"] == ["id", "score"]
+    assert llm.parse_rerank_scores('[{"id": 1, "score": 0.9}]') == {1: 0.9}
+
+
+def test_the_older_guided_json_shape_is_sent_when_that_is_what_was_probed():
+    """A vLLM pinned to an older server has the capability under the old name."""
+    request = build_chat_request(_structured_settings(shape="guided_json"), "q", "sys",
+                                 call_type="query_rewrite")
+
+    assert "response_format" not in request["json"]
+    assert request["json"]["guided_json"] == {"type": "array", "items": {"type": "string"}}
+
+
+def test_a_prose_call_type_is_never_constrained():
+    """Constraining an answer or a briefing to a JSON schema would wreck it.
+    Only call types whose replies are parsed as JSON may carry one."""
+    for call_type in ("answer_stream", "briefing", "source_summary", "meeting_minutes"):
+        request = build_chat_request(_structured_settings(), "q", "sys", call_type=call_type)
+        assert "response_format" not in request["json"], call_type
+        assert "guided_json" not in request["json"], call_type
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "why"),
+    [
+        ({"enabled": False}, "admin has not turned it on"),
+        ({"status": "failed"}, "the endpoint refused it"),
+        ({"status": "not_tested"}, "the probe could not reach it"),
+        ({"fingerprint_ok": False}, "the probe belongs to different settings"),
+        ({"shape": "something_else"}, "the recorded shape is not one we send"),
+    ],
+)
+def test_structured_output_fails_closed(kwargs, why):
+    """Every uncertain case must send an unconstrained request, i.e. behave
+    exactly as today. This changes how every JSON call is sampled, so the
+    default has to be the one that cannot make things worse."""
+    settings = _structured_settings(**kwargs)
+
+    assert llm.structured_output_shape(settings) == "", why
+    request = build_chat_request(settings, "q", "sys", call_type="rerank")
+    assert "response_format" not in request["json"], why
+    assert "guided_json" not in request["json"], why
+
+
+def test_an_endpoint_that_ignores_the_constraint_is_not_recorded_as_supporting_it(monkeypatch):
+    """Accepting the request is not honouring the schema.
+
+    A server that takes `response_format` and answers prose anyway would pass an
+    acceptance-only check, and the runtime would then rely on a guarantee it does
+    not have -- worse than knowing it is unsupported.
+    """
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        return {"choices": [{"message": {"content": "Sure! Here you go: ok"}}]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    result = asyncio.run(llm._probe_structured_output(
+        {"provider": "openai_compatible", "base_url": "https://example.invalid/v1",
+         "chat_model": "m"},
+        max_tokens_field="max_tokens",
+    ))
+
+    assert result["status"] == "failed"
+    assert result["shape"] == ""
+
+
+def test_the_probe_falls_back_to_guided_json_when_response_format_is_refused(monkeypatch):
+    seen: list[str] = []
+
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        if "response_format" in payload:
+            seen.append("response_format")
+            raise httpx.HTTPStatusError(
+                "unknown field response_format",
+                request=httpx.Request("POST", url),
+                response=httpx.Response(400, text="unknown field response_format"),
+            )
+        seen.append("guided_json")
+        return {"choices": [{"message": {"content": '["ok"]'}}]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    result = asyncio.run(llm._probe_structured_output(
+        {"provider": "openai_compatible", "base_url": "https://example.invalid/v1",
+         "chat_model": "m"},
+        max_tokens_field="max_tokens",
+    ))
+
+    assert seen == ["response_format", "guided_json"]
+    assert result == {"status": "succeeded", "shape": "guided_json"}
+
+
+def test_an_unreachable_endpoint_is_not_tested_rather_than_unsupported(monkeypatch):
+    """"We could not reach it" is not "it does not support it", and the
+    difference decides whether an admin should retry or stop."""
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    result = asyncio.run(llm._probe_structured_output(
+        {"provider": "openai_compatible", "base_url": "https://example.invalid/v1",
+         "chat_model": "m"},
+        max_tokens_field="max_tokens",
+    ))
+
+    assert result["status"] == "not_tested"
+
+
+def test_the_capability_snapshot_carries_what_an_eval_comparison_needs():
+    """O5c: the flags that move an eval's numbers, and nothing secret."""
+    snapshot = llm.capability_snapshot(_structured_settings())
+
+    assert snapshot["chat_model"] == "openai/gpt-oss-120b"
+    assert snapshot["structured_output"] == "response_format"
+    assert snapshot["max_tokens_field"] in ("max_tokens", "max_completion_tokens")
+    assert "api_key" not in snapshot
+    assert "base_url" not in snapshot      # internal hostnames stay out of the record
+    assert all("prompt" not in key for key in snapshot)

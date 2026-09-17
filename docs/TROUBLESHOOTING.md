@@ -277,5 +277,10 @@ json.decoder.JSONDecodeError: Expecting ',' delimiter: line 7 column 24
 **預防**
 
 - grep `_salvaged`。偶爾出現是正常的（容錯生效）；**頻繁出現代表該模型的 JSON
-  遵循度不佳**，值得換模型，或等 structured output 探測做好（`ROADMAP.md` `O5`）。
+  遵循度不佳**。此時有兩條路：換 chat 模型，或到 `/settings` 按「測試對話模型」，
+  若端點支援就開啟「限定 JSON 輸出格式」（`ROADMAP.md` `O5b`），從取樣層面讓格式
+  錯誤不可能發生。
+- **開啟限定格式前請先 A/B**：對 reasoning 模型而言，限制輸出格式有可能反而降低內容
+  品質。用評測工作台跑同一組題目、開關各一次，比較頁的「LLM 設定差異」會顯示這次
+  差在哪裡。容錯解析在開啟後仍然保留，是互補而非取代。
 - 看到 `Unterminated string` 時不要套用本則，那是輸出上限太緊，見上表。

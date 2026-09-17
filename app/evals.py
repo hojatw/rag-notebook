@@ -29,7 +29,20 @@ from .domain_policy import (
 )
 from . import llm
 from .governance import record_ai_safety_events
-from .llm import generate_eval_candidates, judge_answer
+from .llm import capability_snapshot, generate_eval_candidates, judge_answer
+
+#: Display labels for `eval_runs.llm_snapshot_json`. Keys must match what
+#: `llm.capability_snapshot` writes — the compare view iterates this, so a key
+#: renamed on one side silently disappears from the diff rather than erroring.
+LLM_SNAPSHOT_LABELS = {
+    "chat_model": "對話模型",
+    "embedding_model": "Embedding 模型",
+    "structured_output": "限定 JSON 輸出格式",
+    "temperature_sent": "送出 temperature",
+    "max_tokens_field": "輸出上限欄位",
+    "reasoning_effort_mode": "Reasoning effort policy",
+    "embedding_window_tokens": "Embedding 輸入視窗",
+}
 from .main import _json_download, record_audit_event, render, require_admin, verify_multipart_csrf
 from .retrieval import (
     ACTIVE_RETRIEVAL_PARAMS,
@@ -841,6 +854,7 @@ def eval_run_context(run_id: int) -> dict[str, Any]:
     run_dict = dict(run)
     run_dict["metrics"] = loads(run_dict.get("metrics_json") or "{}")
     run_dict["profile_snapshot"] = loads(run_dict.get("profile_snapshot_json") or "{}")
+    run_dict["llm_snapshot"] = loads(run_dict.get("llm_snapshot_json") or "{}")
     run_dict["profile_params"] = profile_param_rows(run_dict["profile_snapshot"])
     domain_snapshot, domain_summary, domain_snapshot_status = _run_domain_context(run_dict)
     run_dict["domain_config_snapshot"] = domain_snapshot
@@ -1639,13 +1653,19 @@ def admin_start_eval_run(
             use_hints=True,
             use_answer_policy=True,
         )
+        # O5c: freeze the LLM-side facts too. The profile and domain snapshots
+        # already make a run reproducible on the retrieval side; without this a
+        # run that differs only by chat model or by structured output on/off is
+        # indistinguishable in the record, so a metric difference between two
+        # runs cannot be attributed to the thing that changed.
+        llm_snapshot = capability_snapshot(load_llm_settings(conn) or {})
         cursor = conn.execute(
             """
             INSERT INTO eval_runs
             (eval_set_id, profile_id, created_by, status, progress_total, profile_snapshot_json,
              judge_enabled, domain_config_snapshot_json, domain_hints_enabled,
-             answer_policy_enabled, current_step)
-            VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, '等待背景執行')
+             answer_policy_enabled, llm_snapshot_json, current_step)
+            VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '等待背景執行')
             """,
             (
                 eval_set_id,
@@ -1657,6 +1677,7 @@ def admin_start_eval_run(
                 dumps(domain_snapshot),
                 hints_flag,
                 policy_flag,
+                dumps(llm_snapshot),
             ),
         )
         run_id = cursor.lastrowid
@@ -1963,6 +1984,22 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
             "changed": bval != cval,
         })
 
+    # O5c: the LLM-side diff. Without it, two runs whose only difference is a
+    # chat-model swap or a structured-output flip look identical here and the
+    # metric difference below has nothing to attribute it to.
+    base_llm = base_run["llm_snapshot"]
+    cand_llm = candidate_run["llm_snapshot"]
+    llm_diff = [
+        {
+            "label": LLM_SNAPSHOT_LABELS.get(key, key),
+            "base": base_llm.get(key),
+            "candidate": cand_llm.get(key),
+            "changed": base_llm.get(key) != cand_llm.get(key),
+        }
+        for key in LLM_SNAPSHOT_LABELS
+        if key in base_llm or key in cand_llm
+    ]
+
     # E2d: compare only opaque/configuration summaries.  Full terms and policy
     # text remain confined to the explicitly confirmed internal export.
     base_domain = base_run["domain_config_summary"]
@@ -2077,6 +2114,7 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
         "base_run": base_run,
         "candidate_run": candidate_run,
         "param_diff": param_diff,
+        "llm_diff": llm_diff,
         "domain_config_diff": domain_config_diff,
         "metric_diff": metric_diff,
         "judge_compared": judge_compared,
