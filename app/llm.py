@@ -709,15 +709,19 @@ EMBEDDING_WINDOW_PROBE_TEXT = "檢索視窗探測用的輸入，內容不會被�
 
 # vLLM states the limit in the 400 it returns. Both phrasings below came from one
 # production deployment's logs; both carry the same token figure.
-EMBEDDING_WINDOW_LIMIT_PATTERNS = (
+CONTEXT_WINDOW_LIMIT_PATTERNS = (
     re.compile(r"maximum context length is (\d+) tokens"),
     re.compile(r"upper bound for (\d+) input tokens"),
     re.compile(r"maximum input length is (\d+) tokens"),
 )
 
 
-def parse_embedding_window_limit(message: str) -> int | None:
+def parse_context_window_limit(message: str) -> int | None:
     """Pull the input-window size out of an endpoint's rejection message.
+
+    Serves both connections: vLLM phrases a chat overflow with the same sentence
+    it uses for an embedding one, so the chat window is discoverable the same
+    way and neither side needs a guessed constant.
 
     Reading the number the endpoint already told us beats binary-searching for
     it: one request instead of a dozen, an exact figure instead of a bracket,
@@ -726,7 +730,7 @@ def parse_embedding_window_limit(message: str) -> int | None:
     (``DiagnosticsConfig``), so a searched bound would sit above the real limit
     by however much it over-counts, which is the wrong direction for a cap.
     """
-    for pattern in EMBEDDING_WINDOW_LIMIT_PATTERNS:
+    for pattern in CONTEXT_WINDOW_LIMIT_PATTERNS:
         found = pattern.search(message or "")
         if found:
             limit = int(found.group(1))
@@ -772,7 +776,7 @@ async def probe_embedding_window(
     try:
         await _post_json_with_retry(request["url"], request["headers"], request["json"], timeout)
     except httpx.HTTPStatusError as exc:
-        limit = parse_embedding_window_limit(str(exc))
+        limit = parse_context_window_limit(str(exc))
         if limit is None:
             result["status"] = DIAGNOSTIC_STATUS_INCONCLUSIVE
             result["error_class"] = exc.__class__.__name__
@@ -966,6 +970,10 @@ async def probe_chat_diagnostics(
     # O5b: asked right after sampling, because it needs the measured token-limit
     # field -- sending the wrong one would fail the probe for an unrelated reason
     # and record "no structured output" on an endpoint that has it.
+    result["capabilities"][CHAT_WINDOW_CAPABILITY] = await _probe_chat_window(
+        settings,
+        max_tokens_field=sampling[MAX_TOKENS_FIELD_CAPABILITY].get("field") or "max_tokens",
+    )
     result["capabilities"][STRUCTURED_OUTPUT_CAPABILITY] = await _probe_structured_output(
         settings,
         max_tokens_field=sampling[MAX_TOKENS_FIELD_CAPABILITY].get("field") or "max_tokens",
@@ -1009,6 +1017,102 @@ async def probe_chat_diagnostics(
         result["capabilities"]["image_understanding"] = image_probe
 
     return result
+
+
+#: One deliberately oversized chat probe. CJK for the same reason the embedding
+#: one is: it is the denser case, so a limit found with it is not optimistic.
+CHAT_WINDOW_PROBE_TEXT = "視窗探測用的輸入，內容不會被儲存。" * 400
+
+CHAT_WINDOW_CAPABILITY = "context_window"
+
+
+async def _probe_chat_window(
+    settings: dict[str, Any], *, max_tokens_field: str
+) -> dict[str, Any]:
+    """Discover the chat model's input window by overshooting it once.
+
+    Nothing bounds what reaches a chat prompt today: the question has no cap at
+    any layer, and `history[-6:]` limits how many past messages are included but
+    not how long each one is. An endpoint that refuses the result answers 400,
+    which every caller turns into a degrade -- for query rewrite that means the
+    raw question becomes the only query, which then fails the embedding call
+    too, and the user gets nothing.
+
+    Reads the limit out of the rejection rather than searching for it, the same
+    way `probe_embedding_window` does and for the same reason. A window this
+    probe cannot establish is left unknown (0), because a *guessed* window would
+    have every deployment truncating prompts against a number nobody measured --
+    strictly worse than today.
+    """
+    from .governance import count_cjk_chars as _cjk
+
+    resolved = chat_settings(settings)
+    timeout = float(settings.get("timeout_seconds") or 60)
+    probe = CHAT_WINDOW_PROBE_TEXT
+    payload: dict[str, Any] = {
+        # system + user, the shape every other probe and every real call uses.
+        # A probe that sends a different shape measures a different request.
+        "messages": [
+            {"role": "system", "content": DIAGNOSTIC_SYSTEM_PROMPT},
+            {"role": "user", "content": probe},
+        ],
+        max_tokens_field: 16,
+    }
+    provider = resolved.get("provider") or "openai_compatible"
+    if provider == "azure_openai":
+        request = _azure_request(resolved, resolved["chat_model"], "chat/completions", payload)
+    else:
+        payload["model"] = resolved["chat_model"]
+        request = {
+            "url": (resolved.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+            + "/chat/completions",
+            "headers": _bearer_headers(resolved.get("api_key") or ""),
+            "json": payload,
+        }
+
+    try:
+        await _post_json_with_retry(
+            request["url"], request["headers"], request["json"], timeout, retry_stats={}
+        )
+    except httpx.HTTPStatusError as exc:
+        limit = parse_context_window_limit(str(exc))
+        if limit is None:
+            return {"status": DIAGNOSTIC_STATUS_INCONCLUSIVE, "max_input_tokens": None, "bound": ""}
+        return {"status": DIAGNOSTIC_STATUS_SUCCEEDED, "max_input_tokens": limit, "bound": "exact"}
+    except Exception as exc:
+        return {"status": "not_tested", "max_input_tokens": None, "bound": "",
+                "error_class": exc.__class__.__name__}
+
+    # It took the probe whole, so the window is at least this wide. Unlike the
+    # embedding side, that floor is NOT good enough to bound prompts against --
+    # a chat prompt can legitimately be far larger than this probe -- so it is
+    # recorded for the admin and deliberately not used as a budget.
+    return {
+        "status": DIAGNOSTIC_STATUS_SUCCEEDED,
+        "max_input_tokens": estimate_tokens(len(probe), cjk_chars=_cjk(probe)),
+        "bound": "at_least",
+    }
+
+
+def chat_window_budget(settings: dict[str, Any]) -> int:
+    """Input tokens a chat prompt may use, as measured. 0 means "unknown".
+
+    Only an `exact` measurement becomes a budget. An `at_least` result says the
+    endpoint swallowed the probe, which bounds nothing useful, and an unprobed
+    deployment gets 0 so that every guard reading this stays off and behaves
+    exactly as it does today.
+    """
+    diagnostics = settings.get("diagnostics")
+    chat = diagnostics.get("chat") if isinstance(diagnostics, dict) else None
+    if not isinstance(chat, dict):
+        return 0
+    if chat.get("settings_fingerprint") != chat_settings_fingerprint(settings):
+        return 0
+    capability = (chat.get("capabilities") or {}).get(CHAT_WINDOW_CAPABILITY)
+    if not isinstance(capability, dict) or capability.get("bound") != "exact":
+        return 0
+    probed = capability.get("max_input_tokens")
+    return probed if isinstance(probed, int) and probed > 0 else 0
 
 
 async def _probe_structured_output(
@@ -1962,6 +2066,55 @@ def answer_prompt(
     return f"Source excerpts:\n{context}{guidance_block}\n\nQuestion: {question}"
 
 
+def fit_rewrite_inputs(
+    question: str, history: list[dict[str, str]], budget: int, *, reserve: int = 512
+) -> tuple[str, list[dict[str, str]], dict[str, int]]:
+    """Bound a rewrite prompt's two unbounded inputs against a measured window.
+
+    `budget` of 0 means the window was never measured, and then this returns the
+    inputs untouched: truncating against a number nobody measured would cost
+    every deployment retrieval quality to guard a tail risk.
+
+    Drops whole history messages oldest-first before touching the question,
+    because the question is the thing being rewritten and the history is only
+    there to resolve pronouns. When the question alone still does not fit, keeps
+    its **head and tail** rather than a prefix: Chinese business questions
+    routinely front-load context and put the actual ask in the last sentence, so
+    a prefix cut is the one shape guaranteed to drop what was being asked.
+    """
+    from .governance import count_cjk_chars as _cjk
+
+    def _tokens(text: str) -> int:
+        return estimate_tokens(len(text), cjk_chars=_cjk(text))
+
+    dropped = {"history_messages": 0, "question_chars": 0}
+    if budget <= 0:
+        return question, history, dropped
+
+    room = max(1, budget - reserve)
+    kept_history = list(history)
+    while kept_history and _tokens(question) + sum(
+        _tokens(m.get("content") or "") for m in kept_history
+    ) > room:
+        kept_history.pop(0)
+        dropped["history_messages"] += 1
+
+    if _tokens(question) > room:
+        # Binary-search the half-length that fits, then take that much from each
+        # end. Cheap, exact, and never grows the string.
+        low, high = 1, len(question) // 2
+        while low < high:
+            mid = (low + high + 1) // 2
+            if _tokens(question[:mid] + question[-mid:]) <= room:
+                low = mid
+            else:
+                high = mid - 1
+        dropped["question_chars"] = len(question) - 2 * low
+        question = question[:low] + "\n……\n" + question[-low:]
+
+    return question, kept_history, dropped
+
+
 async def rewrite_search_queries(
     question: str,
     history: list[dict[str, str]],
@@ -1983,7 +2136,15 @@ async def rewrite_search_queries(
         logger.info("query_rewrite_skipped reason=no_chat_settings")
         return deterministic
 
-    context = "\n".join(f"{item['role']}: {item['content']}" for item in history[-6:])
+    question, history, dropped = fit_rewrite_inputs(
+        question, list(history[-6:]), chat_window_budget(settings)
+    )
+    if dropped["history_messages"] or dropped["question_chars"]:
+        logger.warning(
+            "chat_input_trimmed call_type=query_rewrite dropped_history=%s dropped_question_chars=%s",
+            dropped["history_messages"], dropped["question_chars"],
+        )
+    context = "\n".join(f"{item['role']}: {item['content']}" for item in history)
     user_prompt = (
         f"Conversation context:\n{context or '(none)'}\n\n"
         f"User question:\n{question}\n\n"
@@ -3612,6 +3773,21 @@ def build_chat_request(
     # O5b: constrain the reply to a schema when this connection has been probed
     # for it, an admin turned it on, and this call type's reply is parsed as JSON.
     # Every other call type returns prose and must never carry a schema.
+    # Backstop for every call type, including the ones with no guard of their own.
+    # Deliberately a warning and not a truncation: this sees only the assembled
+    # messages, so it cannot tell the system prompt from the retrieved evidence,
+    # and a blind cut here could remove the instruction that shapes the reply.
+    # Today an over-window prompt is invisible until the endpoint refuses it.
+    window = chat_window_budget(settings)
+    if window:
+        chars = _message_chars(payload["messages"])
+        estimated = estimate_tokens(chars, cjk_chars=_message_cjk_chars(payload["messages"]))
+        if estimated > window:
+            logger.warning(
+                "chat_input_over_window call_type=%s estimated_tokens=%s window=%s chars=%s",
+                call_type or "", estimated, window, chars,
+            )
+
     schema = STRUCTURED_OUTPUT_SCHEMAS.get(call_type or "")
     if schema is not None:
         shape = structured_output_shape(settings)

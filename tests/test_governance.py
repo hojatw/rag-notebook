@@ -584,12 +584,13 @@ def test_settings_chat_probe_detects_json_stream_and_usage(monkeypatch, tmp_path
         asyncio.run(client.aclose())
         llm.set_http_client(None)
 
-    # 6, not 4: O5b added the structured-output probe, which costs two requests
-    # here because this fake endpoint answers prose to both request shapes, so
-    # neither is accepted and both are tried. All of it is on an explicit admin
-    # "test connection" click, never on the request path. The count is asserted
-    # so a probe that quietly starts looping cannot slip through.
-    assert calls["n"] == 6
+    # 7, not 6: the chat-window probe adds one deliberately oversized request.
+    # (Of the rest, two are structured output — this fake endpoint answers prose
+    # to both request shapes, so neither is accepted and both are tried.) All of
+    # it is on an explicit admin "test connection" click, never on the request
+    # path. The count is asserted so a probe that quietly starts looping cannot
+    # slip through.
+    assert calls["n"] == 7
     assert result["status"] == "succeeded"
     assert result["capabilities"]["json_following"]["status"] == "succeeded"
     assert result["capabilities"]["streaming"]["status"] == "succeeded"
@@ -604,6 +605,12 @@ def test_settings_chat_probe_detects_json_stream_and_usage(monkeypatch, tmp_path
     # not have.
     assert result["capabilities"]["structured_output"]["status"] == "failed"
     assert result["capabilities"]["structured_output"]["shape"] == ''
+    # An endpoint that accepts the oversized probe reports a floor, and a floor
+    # must NOT become a prompt budget: a real prompt can legitimately exceed this
+    # probe, so bounding against it would truncate healthy requests.
+    window = result["capabilities"]["context_window"]
+    assert window["status"] == "succeeded"
+    assert window["bound"] == "at_least"
     assert result["capabilities"]["max_tokens_field"]["field"] == "max_tokens"
     with db.connect() as conn:
         rows = conn.execute("SELECT * FROM llm_usage_events ORDER BY id").fetchall()
