@@ -329,6 +329,9 @@ embedding_api_completed     model, batch_text_count, elapsed_ms
 vector_query_completed      queries, candidates, elapsed_ms
 retrieve_completed          mode, rewritten_queries, vector_candidates, keyword_candidates, reranked, elapsed_ms
 retrieve_vector_failed      user_id, consecutive_failures   ← Chroma down, answers degraded
+rerank_scores_salvaged      error, recovered   ← model emitted malformed JSON; partial recovery
+json_strings_salvaged       error, recovered   ← same, for query rewrite / starter questions
+embedding_input_truncated   role, original_chars, kept_chars   ← input trimmed to the window
 rerank_completed            candidates, scored, returned
 chat_completion_completed   model, prompt_tokens_est, response_tokens_est, elapsed_ms
 chat_answer_generated       retrieved_chunks, shown_citations, answer_chars
