@@ -832,3 +832,97 @@ def test_extraction_does_not_block_the_event_loop(fresh_modules, local_embed, tm
     # A blocking extract starves the loop and leaves this at ~0; off-thread it
     # keeps ticking throughout the 0.5s sleep.
     assert ticks >= 3, f"event loop was starved during extraction (ticks={ticks})"
+
+
+# -------------------- degraded-retrieval visibility --------------------
+
+def _fallback_harness(monkeypatch, rows):
+    """Wire retrieve() so the Chroma path always raises and the fallback runs."""
+    import app.retrieval as retrieval
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Error executing plan: Internal error: Error finding id")
+
+    async def fake_rewrite(question, history, settings, **kwargs):
+        return [question]
+
+    async def fake_rerank(question, candidates, settings, limit=6, **kwargs):
+        return candidates
+
+    monkeypatch.setattr(retrieval, "query_vectors", boom)
+    monkeypatch.setattr(retrieval, "rewrite_search_queries", fake_rewrite)
+    monkeypatch.setattr(retrieval, "rerank_chunks", fake_rerank)
+    monkeypatch.setattr(retrieval, "fetch_candidate_rows", lambda user_id, source_ids: rows)
+    retrieval.reset_vector_health()
+    return retrieval
+
+
+def test_fallback_retrieval_is_named_in_the_log_line(local_embed, monkeypatch, caplog):
+    """The degraded path must be greppable, not inferable from a missing field.
+
+    Before this, both paths logged ``retrieve_completed`` and the only
+    difference was that the healthy one carried ``mode=chroma`` -- so a
+    deployment serving every answer from the fallback looked identical to a
+    healthy one unless somebody read the stack traces. It stayed unnoticed for
+    two days in production.
+    """
+    import app.main as main
+    from app.db import dumps
+
+    rows = [{"id": 1, "source_id": 1, "filename": "a.md", "location": "doc",
+             "text": "api_version controls the API version",
+             "embedding_json": dumps(local_embed and [0.0] * 384)}]
+    _fallback_harness(monkeypatch, rows)
+
+    with caplog.at_level("INFO", logger="app.retrieval"):
+        asyncio.run(main.retrieve("api_version", [], {}, user_id=1))
+
+    completed = [r.getMessage() for r in caplog.records if "retrieve_completed" in r.getMessage()]
+    assert completed and "mode=sqlite_fallback" in completed[0]
+    assert "mode=chroma" not in completed[0]
+
+
+def test_a_run_of_vector_failures_escalates_to_error(local_embed, monkeypatch, caplog):
+    """One fallback is a blip; a run of them is an outage an operator must see."""
+    import app.main as main
+    import logging
+    from app.db import dumps
+
+    rows = [{"id": 1, "source_id": 1, "filename": "a.md", "location": "doc",
+             "text": "api_version controls the API version", "embedding_json": dumps([0.0] * 384)}]
+    retrieval = _fallback_harness(monkeypatch, rows)
+
+    levels = []
+    for _ in range(retrieval.VECTOR_FAILURE_ALERT_THRESHOLD):
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="app.retrieval"):
+            asyncio.run(main.retrieve("api_version", [], {}, user_id=1))
+        levels.append(next(r.levelno for r in caplog.records
+                           if "retrieve_vector_failed" in r.getMessage()))
+
+    assert levels[0] == logging.WARNING
+    assert levels[-1] == logging.ERROR
+    assert retrieval.vector_health()["consecutive_failures"] == retrieval.VECTOR_FAILURE_ALERT_THRESHOLD
+    assert retrieval.vector_health()["last_failure_at"] is not None
+
+
+def test_a_healthy_vector_query_clears_the_failure_run(local_embed, monkeypatch):
+    """Recovery has to reset the counter, or one blip alerts forever."""
+    import app.main as main
+    import app.retrieval as retrieval
+    from app.db import dumps
+
+    rows = [{"id": 1, "source_id": 1, "filename": "a.md", "location": "doc",
+             "text": "api_version controls the API version", "embedding_json": dumps([0.0] * 384)}]
+    _fallback_harness(monkeypatch, rows)
+    asyncio.run(main.retrieve("api_version", [], {}, user_id=1))
+    assert retrieval.vector_health()["consecutive_failures"] == 1
+
+    monkeypatch.setattr(retrieval, "query_vectors", lambda *a, **k: [
+        {"id": 1, "source_id": 1, "filename": "a.md", "location": "doc",
+         "text": "api_version controls the API version", "vector_score": 0.9}])
+    monkeypatch.setattr(retrieval, "keyword_candidates_from_sqlite", lambda *a, **k: [])
+    asyncio.run(main.retrieve("api_version", [], {}, user_id=1))
+
+    assert retrieval.vector_health()["consecutive_failures"] == 0
+    assert retrieval.vector_health()["last_success_at"] is not None

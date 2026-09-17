@@ -325,12 +325,23 @@ chat_question_received      user_id, notebook_id, selected_sources, question_cha
 query_rewrite_completed     input_chars, output_queries
 embedding_api_completed     model, batch_text_count, elapsed_ms
 vector_query_completed      queries, candidates, elapsed_ms
-retrieve_completed          rewritten_queries, vector_candidates, keyword_candidates, reranked, elapsed_ms
+retrieve_completed          mode, rewritten_queries, vector_candidates, keyword_candidates, reranked, elapsed_ms
+retrieve_vector_failed      user_id, consecutive_failures   ← Chroma down, answers degraded
 rerank_completed            candidates, scored, returned
 chat_completion_completed   model, prompt_tokens_est, response_tokens_est, elapsed_ms
 chat_answer_generated       retrieved_chunks, shown_citations, answer_chars
 chat_no_retrieval_results   top_score, threshold      ← abstain path
 ```
+
+**`retrieve_completed` always carries `mode=`**, and it is the first thing to check when answer quality drops:
+
+| `mode` | Meaning |
+|---|---|
+| `chroma` | healthy — hybrid vector + keyword |
+| `sqlite_fallback` | **degraded** — Chroma raised, this answer came from a capped brute-force SQLite scan (`fallback_max_chunks`, default 2000) with no vector index |
+| `preloaded_rows` | the caller supplied rows (eval harness); no vector path was involved |
+
+`sqlite_fallback` still returns an answer, which is exactly what makes it dangerous: in 2026-09 a deployment served every question this way for two days and the only trace was one WARNING per question. `retrieve_vector_failed` now carries a `consecutive_failures` count and escalates from WARNING to ERROR at `VECTOR_FAILURE_ALERT_THRESHOLD` (3) in a row; `retrieval.vector_health()` exposes the same counters plus last success/failure timestamps for admin surfaces. Counters are per-process and reset on restart.
 
 In the UI: the "📊 N chunks · retrieved Xms · generated Yms · top score Z" badge under each assistant message opens a per-citation score table — the per-message `metadata_json` + `citations_json` columns drive it.
 

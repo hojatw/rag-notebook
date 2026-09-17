@@ -280,7 +280,8 @@ def init_db() -> None:
             -- row; the CHECK keeps it that way.
             CREATE TABLE IF NOT EXISTS vector_index_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                generation INTEGER NOT NULL DEFAULT 0
+                generation INTEGER NOT NULL DEFAULT 0,
+                write_seq INTEGER NOT NULL DEFAULT 0
             );
 
             INSERT OR IGNORE INTO vector_index_state (id, generation) VALUES (1, 0);
@@ -597,6 +598,14 @@ def init_db() -> None:
         # is treated as stale and reclaimed, the same contract as briefing_locks.
         _ensure_column(conn, "vector_index_state", "locked_at", "REAL")
         _ensure_column(conn, "vector_index_state", "locked_by", "TEXT NOT NULL DEFAULT ''")
+        # Every Chroma *data* mutation bumps this, so a process holding a cached
+        # client notices that another one wrote and reopens before its next read.
+        # `generation` cannot do that job: it means "the collection object was
+        # replaced" and only the O0 migration bumps it, which left ordinary
+        # upserts and deletes invisible across processes -- the split-worker
+        # deployment then served queries from a stale in-memory HNSW index and
+        # Chroma failed them with "Error finding id".
+        _ensure_column(conn, "vector_index_state", "write_seq", "INTEGER NOT NULL DEFAULT 0")
         # U16 Phase 2: what produced an outputs-shelf entry ('pinned', 'note', or
         # a Studio tool kind — allowlist NOTE_KINDS in app/main.py). Drives the
         # type badge and the shelf filter. '' means "not yet classified" and is

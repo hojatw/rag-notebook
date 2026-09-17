@@ -41,6 +41,31 @@ LOW_CONFIDENCE_THRESHOLD = config.retrieval.low_confidence_threshold
 # real vector index, so it is a best-effort safety net, not the primary path.
 FALLBACK_MAX_CHUNKS = config.retrieval.fallback_max_chunks
 
+# Vector-path health, so a Chroma outage is visible instead of merely survivable.
+# The fallback is good enough that nobody notices it: in the incident this state
+# was added for, every query for one user fell back for two days and the only
+# trace was a WARNING per question in a log nobody was tailing. Counts are
+# per-process and reset on restart -- a health signal, not an audit record.
+_VECTOR_HEALTH: dict[str, Any] = {
+    "consecutive_failures": 0,
+    "last_success_at": None,
+    "last_failure_at": None,
+}
+
+# Consecutive fallbacks before the log line escalates from WARNING to ERROR.
+# One is a blip; this many in a row is an outage that needs an operator.
+VECTOR_FAILURE_ALERT_THRESHOLD = 3
+
+
+def vector_health() -> dict[str, Any]:
+    """Snapshot of the vector path's recent health, for admin surfaces."""
+    return dict(_VECTOR_HEALTH)
+
+
+def reset_vector_health() -> None:
+    """Clear the counters. For tests, and for an admin-triggered rebuild."""
+    _VECTOR_HEALTH.update(consecutive_failures=0, last_success_at=None, last_failure_at=None)
+
 # Hybrid blend weights + candidate-pool / final-chunk sizes (config-driven).
 VECTOR_WEIGHT = config.retrieval.vector_weight
 KEYWORD_WEIGHT = config.retrieval.keyword_weight
@@ -102,6 +127,8 @@ async def retrieve(
                 rerank_weight=rerank_weight, rerank_base_weight=rerank_base_weight,
                 usage_context=usage_context,
             )
+            _VECTOR_HEALTH["consecutive_failures"] = 0
+            _VECTOR_HEALTH["last_success_at"] = time.time()
             elapsed_ms = (time.perf_counter() - started) * 1000
             logger.info(
                 "retrieve_completed mode=chroma rewritten_queries=%s vector_candidates=%s keyword_candidates=%s candidates=%s reranked=%s elapsed_ms=%.1f",
@@ -114,10 +141,19 @@ async def retrieve(
             )
             return retrieved
         except Exception:
-            logger.warning(
-                "retrieve_vector_failed user_id=%s — falling back to capped SQLite scan (max=%s chunks); "
-                "results are degraded until Chroma recovers (try /admin/index Rebuild)",
-                user_id, FALLBACK_MAX_CHUNKS, exc_info=True,
+            _VECTOR_HEALTH["consecutive_failures"] += 1
+            _VECTOR_HEALTH["last_failure_at"] = time.time()
+            failures = _VECTOR_HEALTH["consecutive_failures"]
+            # A one-off is a warning; a run of them means the vector index has
+            # been out of service for every question since it started, which is
+            # an outage even though each individual answer still came back.
+            level = logging.ERROR if failures >= VECTOR_FAILURE_ALERT_THRESHOLD else logging.WARNING
+            logger.log(
+                level,
+                "retrieve_vector_failed user_id=%s consecutive_failures=%s — falling back to capped "
+                "SQLite scan (max=%s chunks); results are degraded until Chroma recovers "
+                "(try /admin/index Rebuild)",
+                user_id, failures, FALLBACK_MAX_CHUNKS, exc_info=True,
             )
             rows = fetch_candidate_rows(user_id, source_ids or [])
     if not rows:
@@ -152,7 +188,14 @@ async def retrieve(
     )
     elapsed_ms = (time.perf_counter() - started) * 1000
     logger.info(
-        "retrieve_completed source_rows=%s rewritten_queries=%s candidates=%s reranked=%s elapsed_ms=%.1f",
+        "retrieve_completed mode=%s source_rows=%s rewritten_queries=%s candidates=%s reranked=%s elapsed_ms=%.1f",
+        # Without this the degraded path was indistinguishable from the healthy
+        # one in the logs: same event name, and the only tell was a *missing*
+        # mode= field, which no dashboard or grep can alert on.
+        # user_id set means we got here from the except branch above; without one
+        # there was never a vector path to fall back from -- `rows` came from the
+        # caller (the eval harness preloads them).
+        "sqlite_fallback" if user_id is not None else "preloaded_rows",
         len(rows),
         len(queries),
         len(ranked),
