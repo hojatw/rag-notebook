@@ -2,7 +2,7 @@
 
 Prioritised list of known performance / scalability issues, kept so they can be worked through one at a time. Each item lists **Issue → Impact → Fix**, a **priority**, and a **status** box to tick when done.
 
-**Deployment context:** ~200 users (not all concurrent) on a **borrowed, shared** Gemma 4 31B (chat) + multilingual-e5-large (embedding) endpoint — **the serving side is fixed, so every adaptation must happen app-side** — with hundreds-of-page research-report PDFs. Those facts, and the trade-offs they force, are written up in [`DEPLOYMENT_CONTEXT.md`](DEPLOYMENT_CONTEXT.md); the retrieval pipeline is in [`RETRIEVAL.md`](RETRIEVAL.md).
+**Deployment context:** ~200 users (not all concurrent) on a **borrowed, shared** Gemma 4 31B (chat) + multilingual-e5-large (embedding) endpoint — **the serving side cannot be changed, so every adaptation must happen app-side**, though it is not a single fixed host: chat runs on two switchable machines (2026-09-17 addendum in [`DEPLOYMENT_CONTEXT.md`](DEPLOYMENT_CONTEXT.md)) — with hundreds-of-page research-report PDFs. Those facts, and the trade-offs they force, are written up in [`DEPLOYMENT_CONTEXT.md`](DEPLOYMENT_CONTEXT.md); the retrieval pipeline is in [`RETRIEVAL.md`](RETRIEVAL.md).
 
 Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deliberately not doing (reason + restart condition recorded)
 
