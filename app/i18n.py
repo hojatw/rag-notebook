@@ -625,6 +625,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "settings.structured_output": "限定 JSON 輸出格式",
         "settings.structured_output_hint": "開啟後，rerank 與查詢改寫等會解析 JSON 的呼叫會要求模型只能產生符合格式的輸出，從源頭避免格式錯誤。需要先「測試對話模型」確認端點支援才能開啟。注意：對 reasoning 模型而言，限制輸出格式有可能反而降低內容品質，建議用評測工作台開關各跑一次比較 Recall/MRR 再決定。",
         "settings.cap_structured_output": "Structured output（限定輸出格式）",
+        "settings.cap_context_window": "輸入視窗上限（對話）",
         "settings.embedding_window_tokens": "{tokens} tokens",
         "settings.embedding_window_at_least": "至少 {tokens} tokens",
         "settings.embedding_window_unprobed": "尚未測得，沿用設定值 {tokens} tokens",

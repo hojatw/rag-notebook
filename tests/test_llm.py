@@ -1692,10 +1692,10 @@ def test_the_window_limit_is_read_out_of_the_endpoints_own_rejection():
         "bound for 512 input tokens). (parameter=input_text, value=11011)"
     )
 
-    assert llm.parse_embedding_window_limit(token_form) == 512
-    assert llm.parse_embedding_window_limit(char_form) == 512
-    assert llm.parse_embedding_window_limit("Bad Request") is None
-    assert llm.parse_embedding_window_limit("") is None
+    assert llm.parse_context_window_limit(token_form) == 512
+    assert llm.parse_context_window_limit(char_form) == 512
+    assert llm.parse_context_window_limit("Bad Request") is None
+    assert llm.parse_context_window_limit("") is None
 
 
 def _window_settings(**extra):
@@ -2090,3 +2090,119 @@ def test_the_embedding_fingerprint_follows_the_resolved_connection():
     split = {**shared, "embedding_base_url": "http://e.invalid/v1"}
     assert llm.embedding_settings_fingerprint({**split, "base_url": "http://two.invalid/v1"}) == \
         llm.embedding_settings_fingerprint(split)
+
+
+# -------------------- bounding what reaches a chat prompt --------------------
+
+def _long(chars: int) -> str:
+    return "契約條款內容。" * (chars // 7 + 1)
+
+
+def test_an_unmeasured_window_leaves_the_prompt_exactly_as_it_is():
+    """No probe means no bound. Truncating against a guessed window would cost
+    every deployment retrieval quality to guard a tail risk — strictly worse
+    than today, where the prompt simply goes out whole."""
+    question = _long(200_000)
+    history = [{"role": "user", "content": _long(5_000)} for _ in range(6)]
+
+    fitted_q, fitted_h, dropped = llm.fit_rewrite_inputs(question, history, budget=0)
+
+    assert fitted_q == question
+    assert fitted_h == history
+    assert dropped == {"history_messages": 0, "question_chars": 0}
+
+
+def test_history_is_dropped_before_the_question_is_touched():
+    """The question is the thing being rewritten; history only resolves pronouns.
+    Cutting the question first would damage the input to save the context."""
+    question = _long(2_000)
+    history = [{"role": "user", "content": _long(5_000)} for _ in range(6)]
+
+    fitted_q, fitted_h, dropped = llm.fit_rewrite_inputs(question, history, budget=4_000)
+
+    assert fitted_q == question, "the question must survive while history can still go"
+    assert dropped["history_messages"] > 0
+    assert len(fitted_h) == len(history) - dropped["history_messages"]
+
+
+def test_the_oldest_history_goes_first():
+    history = [{"role": "user", "content": f"訊息{i}" + _long(3_000)} for i in range(4)]
+
+    _q, fitted_h, dropped = llm.fit_rewrite_inputs("短問題", history, budget=2_000)
+
+    assert dropped["history_messages"] > 0
+    assert fitted_h == history[dropped["history_messages"]:]
+
+
+def test_an_over_window_question_keeps_its_head_and_its_tail():
+    """The measured failure shape: Chinese business questions front-load context
+    and put the ask in the last sentence, so a prefix cut is the one shape
+    guaranteed to drop what was being asked."""
+    head = "以下是契約全文供參。"
+    tail = "請問第十二條的驗收罰則是什麼？"
+    question = head + _long(40_000) + tail
+
+    fitted_q, _h, dropped = llm.fit_rewrite_inputs(question, [], budget=4_000)
+
+    assert fitted_q.startswith(head)
+    assert fitted_q.endswith(tail)
+    assert dropped["question_chars"] > 0
+    assert len(fitted_q) < len(question)
+
+
+def test_a_question_that_already_fits_is_returned_untouched():
+    question = "第十二條的驗收罰則是什麼？"
+
+    fitted_q, fitted_h, dropped = llm.fit_rewrite_inputs(question, [], budget=8_000)
+
+    assert fitted_q == question
+    assert dropped["question_chars"] == 0
+
+
+def test_only_an_exact_measurement_becomes_a_budget():
+    """`at_least` says the endpoint swallowed the probe. A real prompt can be far
+    larger than that probe, so treating the floor as a ceiling would truncate
+    healthy requests."""
+    settings = {"provider": "openai_compatible", "base_url": "http://x/v1", "chat_model": "m"}
+    fingerprint = llm.chat_settings_fingerprint(settings)
+
+    def _with(capability):
+        return {**settings, "diagnostics": {"chat": {
+            "settings_fingerprint": fingerprint,
+            "capabilities": {"context_window": capability},
+        }}}
+
+    assert llm.chat_window_budget(_with({"bound": "exact", "max_input_tokens": 8192})) == 8192
+    assert llm.chat_window_budget(_with({"bound": "at_least", "max_input_tokens": 3000})) == 0
+    assert llm.chat_window_budget(_with({"bound": "exact", "max_input_tokens": 0})) == 0
+    assert llm.chat_window_budget(settings) == 0
+
+
+def test_an_over_window_prompt_is_reported_for_every_call_type(caplog):
+    """The backstop. Call types with no guard of their own still get a signal —
+    today an over-window prompt is invisible until the endpoint refuses it."""
+    settings = {"provider": "openai_compatible", "base_url": "http://x/v1", "chat_model": "m"}
+    settings["diagnostics"] = {"chat": {
+        "settings_fingerprint": llm.chat_settings_fingerprint(settings),
+        "capabilities": {"context_window": {"bound": "exact", "max_input_tokens": 100}},
+    }}
+
+    with caplog.at_level("WARNING", logger="app.llm"):
+        build_chat_request(settings, _long(5_000), "sys", call_type="briefing")
+
+    logged = [r.getMessage() for r in caplog.records if "chat_input_over_window" in r.getMessage()]
+    assert logged and "call_type=briefing" in logged[0] and "window=100" in logged[0]
+
+
+def test_a_prompt_within_the_window_is_not_reported(caplog):
+    """A warning that fires on healthy traffic is a warning people learn to ignore."""
+    settings = {"provider": "openai_compatible", "base_url": "http://x/v1", "chat_model": "m"}
+    settings["diagnostics"] = {"chat": {
+        "settings_fingerprint": llm.chat_settings_fingerprint(settings),
+        "capabilities": {"context_window": {"bound": "exact", "max_input_tokens": 100_000}},
+    }}
+
+    with caplog.at_level("WARNING", logger="app.llm"):
+        build_chat_request(settings, "短問題", "sys", call_type="briefing")
+
+    assert not [r for r in caplog.records if "chat_input_over_window" in r.getMessage()]

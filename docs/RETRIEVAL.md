@@ -335,6 +335,8 @@ retrieve_vector_failed      user_id, consecutive_failures   ← Chroma down, ans
 rerank_scores_salvaged      error, recovered   ← model emitted malformed JSON; partial recovery
 json_strings_salvaged       error, recovered   ← same, for query rewrite / starter questions
 embedding_input_truncated   role, original_chars, kept_chars   ← input trimmed to the window
+chat_input_trimmed          call_type, dropped_history, dropped_question_chars
+chat_input_over_window      call_type, estimated_tokens, window   ← prompt exceeds the measured window
 rerank_completed            candidates, scored, returned
 chat_completion_completed   model, prompt_tokens_est, response_tokens_est, elapsed_ms
 chat_answer_generated       retrieved_chunks, shown_citations, answer_chars
