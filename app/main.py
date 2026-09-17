@@ -316,6 +316,10 @@ templates.env.globals["feedback_ratings"] = feedback_lib.RATINGS
 templates.env.globals["feedback_reasons"] = feedback_lib.REASONS
 templates.env.globals["feedback_rating_label_keys"] = feedback_lib.RATING_LABEL_KEYS
 templates.env.globals["feedback_reason_label_keys"] = feedback_lib.REASON_LABEL_KEYS
+# O5a: the fallback the embedding diagnostics card names when no probe has run
+# for the current connection. A global because both render sites of
+# _settings_diag_embedding.html need it and neither should have to thread it.
+templates.env.globals["embedding_token_budget"] = config.diagnostics.embedding_token_budget
 templates.env.globals["feedback_other_max_chars"] = config.feedback.other_reason_max_chars
 
 

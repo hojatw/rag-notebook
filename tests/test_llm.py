@@ -1669,3 +1669,177 @@ def test_unsalvageable_output_still_degrades_quietly():
     """Prose instead of JSON has nothing to recover -- return empty, never raise."""
     assert parse_rerank_scores("I cannot score these candidates.") == {}
     assert parse_json_strings("Sorry, no queries.") == []
+
+
+# -------------------- O5a: measuring the embedding input window --------------------
+
+def test_the_window_limit_is_read_out_of_the_endpoints_own_rejection():
+    """Both phrasings seen in one production deployment carry the same figure.
+
+    Parsing beats binary-searching for it: one request instead of a dozen, an
+    exact number instead of a bracket, and no dependence on
+    `estimate_embedding_tokens` -- which rounds *up* by design, so a searched
+    bound would sit above the real limit, the wrong direction for a cap.
+    """
+    token_form = (
+        "This model's maximum context length is 512 tokens. However, you requested "
+        "0 output tokens and your prompt contains at least 513 input tokens, for a "
+        "total of at least 513 tokens. (parameter=input_tokens, value=513)"
+    )
+    char_form = (
+        "This model's maximum context length is 512 tokens. However, your prompt "
+        "contains 11011 characters (more than 8192 characters, which is the upper "
+        "bound for 512 input tokens). (parameter=input_text, value=11011)"
+    )
+
+    assert llm.parse_embedding_window_limit(token_form) == 512
+    assert llm.parse_embedding_window_limit(char_form) == 512
+    assert llm.parse_embedding_window_limit("Bad Request") is None
+    assert llm.parse_embedding_window_limit("") is None
+
+
+def _window_settings(**extra):
+    settings = {
+        "provider": "openai_compatible",
+        "embedding_base_url": "http://e5.test/v1",
+        "embedding_model": "intfloat/multilingual-e5-large",
+    }
+    settings.update(extra)
+    return settings
+
+
+def _reject_over(limit_tokens):
+    """A fake endpoint that refuses over-window input the way vLLM does."""
+    from app.ingest import estimate_embedding_tokens
+
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        longest = max((estimate_embedding_tokens(t) for t in payload["input"]), default=0)
+        if longest > limit_tokens:
+            message = (
+                f"This model's maximum context length is {limit_tokens} tokens. However, "
+                f"you requested 0 output tokens and your prompt contains at least "
+                f"{longest} input tokens."
+            )
+            raise httpx.HTTPStatusError(
+                message,
+                request=httpx.Request("POST", url),
+                response=httpx.Response(400, text=message),
+            )
+        return {"data": [{"embedding": [0.1, 0.2]} for _ in payload["input"]]}
+
+    return fake_post
+
+
+def test_probing_a_narrow_window_reports_the_exact_limit(monkeypatch):
+    monkeypatch.setattr(llm, "_post_json_with_retry", _reject_over(512))
+
+    result = asyncio.run(llm.probe_embedding_window(_window_settings()))
+
+    assert result["status"] == "succeeded"
+    assert result["max_input_tokens"] == 512
+    assert result["bound"] == "exact"
+
+
+def test_an_endpoint_that_accepts_the_oversized_probe_reports_a_floor(monkeypatch):
+    """A wide model (text-embedding-3 is 8191) takes the probe whole.
+
+    The floor is all a query path needs: nothing it sends will exceed it, so
+    narrowing it with a search would buy nothing.
+    """
+    monkeypatch.setattr(llm, "_post_json_with_retry", _reject_over(1_000_000))
+
+    result = asyncio.run(llm.probe_embedding_window(_window_settings()))
+
+    assert result["status"] == "succeeded"
+    assert result["bound"] == "at_least"
+    assert result["max_input_tokens"] > llm.config.diagnostics.embedding_token_budget
+
+
+def test_an_unparseable_rejection_is_inconclusive_not_a_limit(monkeypatch):
+    """Guessing a number from a message we did not understand would be worse
+    than not having one: it silently caps every query at the wrong length."""
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        raise httpx.HTTPStatusError(
+            "Bad Request",
+            request=httpx.Request("POST", url),
+            response=httpx.Response(400, text="Bad Request"),
+        )
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    result = asyncio.run(llm.probe_embedding_window(_window_settings()))
+
+    assert result["status"] == "inconclusive"
+    assert result["max_input_tokens"] is None
+
+
+def test_a_wider_probed_window_actually_widens_what_gets_sent(monkeypatch):
+    """The point of the probe: a query that 512 would have trimmed goes whole.
+
+    Asserted on what reaches the endpoint, not on the resolver's return value --
+    a correct resolver wired to nothing would still pass that.
+    """
+    from app.ingest import estimate_embedding_tokens
+
+    sent: list[list[str]] = []
+
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        sent.append(payload["input"])
+        return {"data": [{"embedding": [0.1]} for _ in payload["input"]]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    question = "這份契約的驗收條件與罰則是什麼？" * 120
+    settings = _window_settings()
+    fingerprint = llm.llm_settings_fingerprint(settings)
+    settings["diagnostics"] = {
+        "embedding": {"settings_fingerprint": fingerprint, "max_input_tokens": 8191},
+    }
+
+    asyncio.run(llm.embed_texts([question], settings, role="query"))
+
+    assert sent[0][0] == question       # nothing trimmed at the wider window
+    assert estimate_embedding_tokens(question) > llm.config.diagnostics.embedding_token_budget
+
+
+def test_a_probe_from_different_settings_is_never_applied(monkeypatch):
+    """A window measured against another model must not size this one's input.
+
+    The fingerprint is the guard; without it, switching e5 -> a wider model and
+    back would leave the wide figure in place and every query would 400.
+    """
+    sent: list[list[str]] = []
+
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        sent.append(payload["input"])
+        return {"data": [{"embedding": [0.1]} for _ in payload["input"]]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    settings = _window_settings()
+    settings["diagnostics"] = {
+        "embedding": {"settings_fingerprint": "measured-against-another-model",
+                      "max_input_tokens": 8191},
+    }
+    question = "這份契約的驗收條件與罰則是什麼？" * 120
+
+    assert llm.embedding_window_budget(settings) == llm.config.diagnostics.embedding_token_budget
+    asyncio.run(llm.embed_texts([question], settings, role="query"))
+    assert sent[0][0] != question       # fell back to the configured budget, so it trimmed
+
+
+def test_an_unprobed_deployment_keeps_the_configured_budget():
+    """No probe, a failed probe, and a junk value all mean "use the config"."""
+    configured = llm.config.diagnostics.embedding_token_budget
+    settings = _window_settings()
+    fingerprint = llm.llm_settings_fingerprint(settings)
+
+    assert llm.embedding_window_budget(settings) == configured
+    settings["diagnostics"] = {}
+    assert llm.embedding_window_budget(settings) == configured
+    settings["diagnostics"] = {"embedding": {"settings_fingerprint": fingerprint,
+                                             "max_input_tokens": None}}
+    assert llm.embedding_window_budget(settings) == configured
+    settings["diagnostics"] = {"embedding": {"settings_fingerprint": fingerprint,
+                                             "max_input_tokens": 0}}
+    assert llm.embedding_window_budget(settings) == configured

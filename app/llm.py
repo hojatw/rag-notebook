@@ -585,7 +585,9 @@ def _message_content(data: dict[str, Any], *, call_type: str, model: str) -> str
     )
 
 
-def _fit_to_embedding_window(texts: list[str], *, role: str | None = None) -> list[str]:
+def _fit_to_embedding_window(
+    texts: list[str], settings: dict[str, Any], *, role: str | None = None
+) -> list[str]:
     """Trim each text to the embedding model's input window before sending it.
 
     ``embed_texts`` used to split only by *count*, never by length, so one
@@ -608,7 +610,7 @@ def _fit_to_embedding_window(texts: list[str], *, role: str | None = None) -> li
     # exactly this budget, and two definitions of "does this fit" would drift.
     from .ingest import _cut_to_budget, estimate_embedding_tokens
 
-    budget = config.diagnostics.embedding_token_budget
+    budget = embedding_window_budget(settings)
     fitted: list[str] = []
     for text in texts:
         if estimate_embedding_tokens(text) <= budget:
@@ -651,7 +653,7 @@ async def embed_texts(
     prefix = _embedding_prefix(settings, role)
     if prefix:
         texts = [prefix + text for text in texts]
-    texts = _fit_to_embedding_window(texts, role=role)
+    texts = _fit_to_embedding_window(texts, settings, role=role)
 
     batch_size = int(settings.get("embedding_batch_size") or EMBEDDING_BATCH_SIZE)
     batches = [texts[start : start + batch_size] for start in range(0, len(texts), batch_size)]
@@ -697,6 +699,128 @@ DIAGNOSTIC_IMAGE_DATA_URL = (
     "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAATElEQVR42u3PQQ0AAAgEoNP+nTWCbzdoQE1+6wgICA"
     "gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHBZShQF/CY4YrwAAAABJRU5ErkJggg=="
 )
+
+
+# One deliberately oversized probe input. Big enough to overshoot a wide window
+# (OpenAI's text-embedding-3 is 8191 tokens) without being a large request: CJK,
+# because this deployment's corpus is Traditional Chinese and CJK is the denser
+# case, so a limit found with it is not optimistic for Latin text.
+EMBEDDING_WINDOW_PROBE_TEXT = "檢索視窗探測用的輸入，內容不會被儲存。" * 800
+
+# vLLM states the limit in the 400 it returns. Both phrasings below came from one
+# production deployment's logs; both carry the same token figure.
+EMBEDDING_WINDOW_LIMIT_PATTERNS = (
+    re.compile(r"maximum context length is (\d+) tokens"),
+    re.compile(r"upper bound for (\d+) input tokens"),
+    re.compile(r"maximum input length is (\d+) tokens"),
+)
+
+
+def parse_embedding_window_limit(message: str) -> int | None:
+    """Pull the input-window size out of an endpoint's rejection message.
+
+    Reading the number the endpoint already told us beats binary-searching for
+    it: one request instead of a dozen, an exact figure instead of a bracket,
+    and no dependence on ``estimate_embedding_tokens`` being accurate. That last
+    point is what rules the search out — the estimator deliberately rounds *up*
+    (``DiagnosticsConfig``), so a searched bound would sit above the real limit
+    by however much it over-counts, which is the wrong direction for a cap.
+    """
+    for pattern in EMBEDDING_WINDOW_LIMIT_PATTERNS:
+        found = pattern.search(message or "")
+        if found:
+            limit = int(found.group(1))
+            if 0 < limit <= 1_000_000:
+                return limit
+    return None
+
+
+async def probe_embedding_window(
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Discover the embedding model's input window by overshooting it once.
+
+    Exists because the window is otherwise a guess that only bites after a model
+    change: `[diagnostics].embedding_token_budget` defaults to 512 (e5's), and a
+    deployment moving to a wider model keeps trimming queries at 512 unless an
+    operator remembers to raise it. Nothing fails, so nothing says so.
+
+    Three outcomes, mirroring the chat capability probe:
+    ``succeeded`` with a limit read from the rejection, ``succeeded`` with a
+    lower bound when the endpoint accepted the oversized input (its window is at
+    least this, which is all a query path needs to know), and ``inconclusive``
+    when it refused for a reason we could not parse. Probe text is never stored.
+    """
+    model = settings.get("embedding_model") or ""
+    result: dict[str, Any] = {
+        "status": DIAGNOSTIC_STATUS_FAILED,
+        "max_input_tokens": None,
+        "bound": "",
+        "error_class": "",
+    }
+    if not model:
+        result["error_class"] = "MissingSettings"
+        return result
+
+    from .ingest import estimate_embedding_tokens  # deferred: ingest imports us
+
+    probe_tokens = estimate_embedding_tokens(EMBEDDING_WINDOW_PROBE_TEXT)
+    request = build_embedding_request(settings, [EMBEDDING_WINDOW_PROBE_TEXT])
+    timeout = float(settings.get("timeout_seconds") or 60)
+    try:
+        await _post_json_with_retry(request["url"], request["headers"], request["json"], timeout)
+    except httpx.HTTPStatusError as exc:
+        limit = parse_embedding_window_limit(str(exc))
+        if limit is None:
+            result["status"] = DIAGNOSTIC_STATUS_INCONCLUSIVE
+            result["error_class"] = exc.__class__.__name__
+            logger.info("embedding_window_probe_inconclusive model=%s status=%s", model, exc.response.status_code)
+            return result
+        result.update({
+            "status": DIAGNOSTIC_STATUS_SUCCEEDED,
+            "max_input_tokens": limit,
+            "bound": "exact",
+        })
+        logger.info("embedding_window_probed model=%s max_input_tokens=%s bound=exact", model, limit)
+        return result
+    except Exception as exc:
+        result["error_class"] = exc.__class__.__name__
+        logger.warning("embedding_window_probe_failed model=%s", model, exc_info=True)
+        return result
+
+    # It took the whole oversized input, so the window is at least this wide.
+    # A query never needs more than this, so the floor is as good as the ceiling
+    # here and is not worth a search to narrow.
+    result.update({
+        "status": DIAGNOSTIC_STATUS_SUCCEEDED,
+        "max_input_tokens": probe_tokens,
+        "bound": "at_least",
+    })
+    logger.info("embedding_window_probed model=%s max_input_tokens=%s bound=at_least", model, probe_tokens)
+    return result
+
+
+def embedding_window_budget(settings: dict[str, Any]) -> int:
+    """Tokens `embed_texts` may send in one text, as measured by the last probe.
+
+    Falls back to `[diagnostics].embedding_token_budget` whenever there is no
+    probe for *these* settings — an unprobed deployment, a probe that could not
+    conclude, or a connection changed since. The fingerprint check is what makes
+    a stale answer impossible to apply to a different model.
+    """
+    configured = config.diagnostics.embedding_token_budget
+    diagnostics = settings.get("diagnostics")
+    embedding = diagnostics.get("embedding") if isinstance(diagnostics, dict) else None
+    if not isinstance(embedding, dict):
+        return configured
+    if embedding.get("settings_fingerprint") != llm_settings_fingerprint(settings):
+        return configured
+    probed = embedding.get("max_input_tokens")
+    if not isinstance(probed, int) or probed <= 0:
+        return configured
+    return probed
 
 
 async def probe_embedding_diagnostics(
@@ -784,6 +908,12 @@ async def probe_embedding_diagnostics(
         "latency_ms": round(elapsed_ms, 1),
         "embedding_dimension": dimension,
     })
+    # Same click, second question: how much input will this model take? Kept
+    # after the dimension probe so a broken connection fails on the cheap call.
+    window = await probe_embedding_window(settings, usage_context=usage_context)
+    result["window_status"] = window["status"]
+    result["max_input_tokens"] = window["max_input_tokens"]
+    result["window_bound"] = window["bound"]
     return result
 
 

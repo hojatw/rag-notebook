@@ -71,7 +71,7 @@ git diff --check
 ```
 
 `pytest.ini` 讓測試預設並行執行（`-n auto --maxprocesses=8`，pytest-xdist），
-全套 493 個測試約 30 秒。除錯單一測試時加 `-n0` 關掉並行，否則 `-s` 的輸出與
+全套 501 個測試約 30 秒。除錯單一測試時加 `-n0` 關掉並行，否則 `-s` 的輸出與
 pdb 都會被 worker 吃掉。**新增測試必須用 `tmp_path` 取得自己的
 `NOTEBOOKLM_DATA_DIR`**——寫入固定的 `data/` 路徑會在平行下互相污染，而且失敗
 會是隨機的。

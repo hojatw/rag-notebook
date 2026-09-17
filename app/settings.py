@@ -206,6 +206,13 @@ def compact_diagnostic_result(
         current_dimension = index_dim["dimension"]
         compact["current_index_dimension"] = int(current_dimension) if current_dimension is not None else None
         compact["index_readable"] = bool(index_dim["readable"])
+        # O5a: the measured input window. `llm.embedding_window_budget` reads
+        # these back by exactly these key names, so they are a writer/reader
+        # contract across modules -- see docs/SCHEMA.md and the round-trip test.
+        window_tokens = result.get("max_input_tokens")
+        compact["max_input_tokens"] = int(window_tokens) if window_tokens is not None else None
+        compact["window_status"] = str(result.get("window_status") or "")[:40]
+        compact["window_bound"] = str(result.get("window_bound") or "")[:16]
     if kind == "chat":
         compact["include_image_understanding"] = bool(include_image)
         compact["capabilities"] = compact_diagnostic_capabilities(result.get("capabilities") or {})
