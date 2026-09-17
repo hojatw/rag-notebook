@@ -49,6 +49,16 @@ DIAGNOSTIC_STATUS_FAILED = "failed"
 DIAGNOSTIC_STATUS_INCONCLUSIVE = "inconclusive"
 
 
+class EmptyChatContentError(RuntimeError):
+    """A chat response parsed fine but carried no usable ``message.content``.
+
+    Distinct from a transport or HTTP error: the call succeeded, the model just
+    produced nothing (see ``_message_content``). Callers already treat any
+    exception here as "degrade", so this exists to name the cause in logs and in
+    ``llm_usage_events.error_class`` rather than to be caught specially.
+    """
+
+
 class ChatIntent(StrEnum):
     """Task-level generation semantics, independent of provider parameters."""
 
@@ -535,6 +545,84 @@ def _embedding_prefix(settings: dict[str, Any], role: str | None) -> str:
     return prefix
 
 
+def _message_content(data: dict[str, Any], *, call_type: str, model: str) -> str:
+    """Read ``choices[0].message.content``, tolerating a null from the provider.
+
+    Reasoning models return ``"content": null`` when the whole output budget went
+    to reasoning tokens -- gpt-oss-120b did it three times in one production
+    window, on prompts as short as 1.9k characters. ``.strip()`` on that raises
+    ``AttributeError`` inside the caller's try/except, so rerank, query rewrite
+    and follow-ups each degraded with a traceback that named the symptom and not
+    the cause.
+
+    Raising keeps every caller's behaviour exactly as it was -- six of them use
+    the return value as prose (briefing, source summary, meeting minutes,
+    compare, artifacts, translation) and would otherwise store an empty string
+    as a successful result. What changes is that the failure now names itself
+    instead of surfacing as ``AttributeError`` from inside ``.strip()``, and
+    that it is recorded under its own ``error_class`` in ``llm_usage_events``.
+
+    The WARNING carries ``finish_reason`` and the completion-token counts:
+    ``length`` there means the cap in ``[max_tokens]`` is too tight for this
+    model and is fixable, while ``stop`` means the model produced nothing.
+    """
+    choice = (data.get("choices") or [{}])[0] or {}
+    content = (choice.get("message") or {}).get("content")
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    logger.warning(
+        "chat_completion_empty_content call_type=%s model=%s finish_reason=%s "
+        "completion_tokens=%s reasoning_tokens=%s",
+        call_type,
+        model,
+        choice.get("finish_reason"),
+        usage.get("completion_tokens"),
+        (usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),
+    )
+    raise EmptyChatContentError(
+        f"chat model returned no content (finish_reason={choice.get('finish_reason')!r})"
+    )
+
+
+def _fit_to_embedding_window(texts: list[str], *, role: str | None = None) -> list[str]:
+    """Trim each text to the embedding model's input window before sending it.
+
+    ``embed_texts`` used to split only by *count*, never by length, so one
+    over-long text failed the whole request: the endpoint answers HTTP 400
+    ("maximum context length is 512 tokens"), not a truncated vector. Ingest was
+    safe because ``chunk_sections`` already packs chunks to this same budget --
+    but the **query** path had no such limit anywhere, so a user pasting a long
+    question got no answer at all. It happened four times in one production
+    window, and three of them were a rewrite failure feeding the raw question
+    straight through.
+
+    Trimming beats raising here: the leading part of a query carries most of its
+    retrieval signal, while an error means the user simply cannot ask. Each trim
+    is logged, because a *passage* arriving over budget means the chunker has a
+    bug that this net would otherwise hide.
+    """
+    # Deferred import: ingest imports this module, so a module-level import here
+    # would be circular. Sharing ingest's estimator and cutter rather than
+    # writing a second pair is the point -- the chunker packs chunks against
+    # exactly this budget, and two definitions of "does this fit" would drift.
+    from .ingest import _cut_to_budget, estimate_embedding_tokens
+
+    budget = config.diagnostics.embedding_token_budget
+    fitted: list[str] = []
+    for text in texts:
+        if estimate_embedding_tokens(text) <= budget:
+            fitted.append(text)
+            continue
+        kept = _cut_to_budget(text, budget)[0]
+        logger.warning(
+            "embedding_input_truncated role=%s original_chars=%s kept_chars=%s budget_tokens=%s",
+            role or "", len(text), len(kept), budget,
+        )
+        fitted.append(kept)
+    return fitted
+
+
 async def embed_texts(
     texts: list[str],
     settings: dict[str, Any],
@@ -563,6 +651,7 @@ async def embed_texts(
     prefix = _embedding_prefix(settings, role)
     if prefix:
         texts = [prefix + text for text in texts]
+    texts = _fit_to_embedding_window(texts, role=role)
 
     batch_size = int(settings.get("embedding_batch_size") or EMBEDDING_BATCH_SIZE)
     batches = [texts[start : start + batch_size] for start in range(0, len(texts), batch_size)]
@@ -814,7 +903,14 @@ async def _probe_chat_once(
             timeout,
             retry_stats=retry_stats,
         )
-        content = str(data["choices"][0]["message"]["content"]).strip()
+        # str() here used to turn a null content into the literal "None", so a
+        # model that returned nothing probed as if it had answered -- and the
+        # stored capability, which every later call is shaped by, was wrong.
+        content = _message_content(
+            data,
+            call_type=call_type,
+            model=str(settings.get("chat_model") or ""),
+        )
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - started) * 1000
         _record_usage_event(
@@ -2275,7 +2371,11 @@ async def chat_completion(
             timeout,
             retry_stats=retry_stats,
         )
-        content = data["choices"][0]["message"]["content"].strip()
+        content = _message_content(
+            data,
+            call_type=call_type,
+            model=str(settings.get("chat_model") or ""),
+        )
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - started) * 1000
         _record_usage_event(

@@ -65,7 +65,7 @@ max_rewrite_queries = 5
 [diagnostics]
 low_text_chars = 200          # extracted total below this -> "almost no text" warning
 preview_chars = 500           # stored extracted-text preview length
-embedding_token_budget = 512  # model input window used for the over-budget warning
+embedding_token_budget = 512  # embedding model input window: warns at ingest, caps what is sent
 cjk_chars_per_token = 1.0     # chat-usage estimate from a char count only
 latin_chars_per_token = 4.0   # (governance.estimate_tokens; never sees the text)
 tokens_per_ascii_letter = 0.22 # per-char token cost estimates, rounded up from

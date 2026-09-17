@@ -1400,3 +1400,183 @@ def test_capability_probe_output_actually_reaches_build_chat_request(monkeypatch
     assert "temperature" not in request["json"], "a model that rejects it must not be sent it"
     assert "max_completion_tokens" in request["json"]
     assert "max_tokens" not in request["json"]
+
+
+# -------------------- P1: over-long embedding input --------------------
+
+def _embedding_settings(**extra):
+    settings = {
+        "provider": "openai_compatible",
+        "embedding_base_url": "http://e5.test/v1",
+        "embedding_model": "intfloat/multilingual-e5-large",
+    }
+    settings.update(extra)
+    return settings
+
+
+def test_a_long_query_is_trimmed_instead_of_failing_the_whole_request(monkeypatch):
+    """The 2026-09-16 failure: a long question got no answer at all.
+
+    e5 refuses an over-window input with HTTP 400 rather than truncating, and
+    `embed_texts` batched only by count, so one long query took the request --
+    and with it the user's whole question -- down. Asserting on what reaches the
+    endpoint, not on the helper: the helper could be perfect and still not be
+    wired into the path that broke.
+    """
+    from app.ingest import estimate_embedding_tokens
+
+    sent: list[list[str]] = []
+
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        sent.append(payload["input"])
+        return {"data": [{"embedding": [0.1, 0.2]} for _ in payload["input"]]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    question = "這份契約的驗收條件與罰則是什麼？" * 120
+    budget = llm.config.diagnostics.embedding_token_budget
+    assert estimate_embedding_tokens(question) > budget   # the test is testing something
+
+    asyncio.run(llm.embed_texts([question], _embedding_settings(), role="query"))
+
+    assert len(sent) == 1
+    assert estimate_embedding_tokens(sent[0][0]) <= budget
+    assert sent[0][0] and question.startswith(sent[0][0])  # a prefix, not a rewrite
+
+
+def test_trimming_keeps_the_query_prefix_inside_the_window(monkeypatch):
+    """e5 needs its `query: ` prefix, so the prefix has to be charged too."""
+    from app.ingest import estimate_embedding_tokens
+
+    sent: list[list[str]] = []
+
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        sent.append(payload["input"])
+        return {"data": [{"embedding": [0.1]} for _ in payload["input"]]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    budget = llm.config.diagnostics.embedding_token_budget
+    asyncio.run(llm.embed_texts(
+        ["每股盈餘與毛利率的趨勢如何？" * 120],
+        _embedding_settings(embedding_query_prefix="query: "),
+        role="query",
+    ))
+
+    assert sent[0][0].startswith("query: ")
+    assert estimate_embedding_tokens(sent[0][0]) <= budget
+
+
+def test_short_texts_are_passed_through_untouched(monkeypatch):
+    """Trimming must not rewrite anything that already fits."""
+    sent: list[list[str]] = []
+
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        sent.append(payload["input"])
+        return {"data": [{"embedding": [0.1]} for _ in payload["input"]]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+    asyncio.run(llm.embed_texts(["短問題", "another short one"], _embedding_settings(), role="query"))
+
+    assert sent[0] == ["短問題", "another short one"]
+
+
+def test_an_over_budget_passage_is_trimmed_but_logged(monkeypatch, caplog):
+    """The net must not hide a chunker bug it is covering for.
+
+    Ingest already packs chunks to this budget, so a passage arriving over it
+    means the chunker (or the token estimate feeding it) is wrong -- the exact
+    failure of TROUBLESHOOTING §2. Trim so the source still indexes, but say so.
+    """
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        return {"data": [{"embedding": [0.1]} for _ in payload["input"]]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    with caplog.at_level("WARNING", logger="app.llm"):
+        asyncio.run(llm.embed_texts(["表格內容 " * 600], _embedding_settings(), role="passage"))
+
+    warnings = [r.getMessage() for r in caplog.records if "embedding_input_truncated" in r.getMessage()]
+    assert warnings and "role=passage" in warnings[0]
+
+
+# -------------------- P1: a chat response with no content --------------------
+
+def _chat_settings():
+    return {
+        "provider": "openai_compatible",
+        "base_url": "https://example.invalid/v1",
+        "chat_model": "openai/gpt-oss-120b",
+    }
+
+
+def test_a_null_content_response_raises_a_named_error(monkeypatch, caplog):
+    """Reasoning models return `"content": null` when reasoning ate the budget.
+
+    `.strip()` on that raised AttributeError from inside the provider layer, so
+    every degrade path logged a traceback naming the symptom and not the cause.
+    The diagnosis has to survive to the log line, because the fix -- raising the
+    cap in [max_tokens] -- is only visible from finish_reason.
+    """
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        return {
+            "choices": [{"message": {"content": None}, "finish_reason": "length"}],
+            "usage": {"completion_tokens": 768,
+                      "completion_tokens_details": {"reasoning_tokens": 768}},
+        }
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    with caplog.at_level("WARNING", logger="app.llm"):
+        with pytest.raises(llm.EmptyChatContentError):
+            asyncio.run(llm.chat_completion(_chat_settings(), "q", "sys", call_type="rerank"))
+
+    logged = [r.getMessage() for r in caplog.records if "chat_completion_empty_content" in r.getMessage()]
+    assert logged
+    assert "finish_reason='length'" in logged[0] or "finish_reason=length" in logged[0]
+    assert "completion_tokens=768" in logged[0]
+    assert "reasoning_tokens=768" in logged[0]
+    assert "call_type=rerank" in logged[0]
+
+
+def test_rerank_degrades_to_hybrid_order_when_content_is_null(monkeypatch):
+    """The caller-visible behaviour must not change: degrade, never crash."""
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        return {"choices": [{"message": {"content": None}, "finish_reason": "stop"}]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    candidates = [
+        {"id": 1, "source_id": 1, "filename": "a.md", "location": "doc", "text": "alpha", "score": 0.9},
+        {"id": 2, "source_id": 2, "filename": "b.md", "location": "doc", "text": "beta", "score": 0.5},
+    ]
+    result = asyncio.run(llm.rerank_chunks("q", candidates, _chat_settings(), limit=2))
+
+    assert [c["id"] for c in result] == [1, 2]
+
+
+def test_a_null_content_probe_is_not_recorded_as_a_working_model(monkeypatch):
+    """`str(None)` made an empty probe look like the model answered "None".
+
+    The probe's verdict is stored in llm_settings.diagnostics_json and shapes
+    every later request (temperature, max_tokens vs max_completion_tokens), so a
+    false "it works" here is worse than a failed probe: it is wrong in a way the
+    app then acts on.
+    """
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        return {"choices": [{"message": {"content": None}, "finish_reason": "length"}]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+
+    result = asyncio.run(llm._probe_chat_once(
+        _chat_settings(),
+        user_prompt="probe",
+        system_prompt="sys",
+        call_type="settings_chat_probe",
+        probe_name="sampling",
+        usage_context=None,
+    ))
+
+    assert result["status"] == "failed"
+    assert result["error_class"] == "EmptyChatContentError"
+    assert "None" not in str(result.get("content", ""))

@@ -188,3 +188,46 @@ Failed to apply logs to the hnsw segment writer
 
 **尚未做到的**：與第 1 則相同——管理員在畫面上仍看不到「向量檢索正在失敗」，
 目前只有 log 與 `retrieval.vector_health()`。追蹤於 [`ROADMAP.md`](ROADMAP.md) `O3`。
+
+---
+
+## 4. 提問得不到任何回答：問題太長，超過 embedding 模型的輸入視窗 [已修正，尚未發版]
+
+**發生**：2026-09-11 與 2026-09-16，`0.7.0`。
+
+**症狀**
+
+- 使用者送出一個**很長**的問題（貼整段條文、整封信），畫面上完全沒有回答。
+- 短問題在同一個 notebook 正常。與第 1、3 則不同：**這次使用者是真的看得到失敗的**。
+
+**log 字串**
+
+```text
+ERROR [app.llm] llm_http_error status=400 url=.../v1/embeddings
+  "maximum context length is 512 tokens ... value=513"
+  "your prompt contains 11011 characters (more than 8192 characters ...)"
+ERROR [app.llm] embedding_api_failed ... model=intfloat/multilingual-e5-large
+ERROR [app.main] chat_stream_failed user_id=... notebook_id=...
+```
+
+**根因**：`embed_texts()` 只用 `batch_size` 依「則數」切批，對單則文字長度沒有任何
+檢查。索引路徑安全，是因為切塊器已經把 chunk 控制在 512 token 內；**查詢路徑完全
+沒有經過這套機制**，使用者貼多長就送多長。vLLM 對超長輸入是回 HTTP 400 而不是截斷。
+
+三次裡有兩次是**兩個問題疊加**：query rewrite 先失敗（模型輸出的 JSON 不合法），
+fallback 成原始問題，於是「長問題」原封不動變成「長 query」。
+
+**處理**
+
+- 升級到含本修正的版本（目前在 `CHANGELOG.md` 的 `[未發布]`）。送出前會先修剪到
+  `[diagnostics] embedding_token_budget`。
+- 舊版的暫時做法：請使用者把長問題拆短。沒有設定可以繞過。
+- **使用較大視窗的 embedding 模型時記得調高 `embedding_token_budget`**
+  （e5 是 512；OpenAI `text-embedding-3` 是 8191）。留在 512 不會失敗，但長問題會被
+  截短，影響檢索品質。
+
+**預防**
+
+- grep `embedding_input_truncated`。出現 `role=query` 是正常的保護動作；出現
+  `role=passage` 代表切塊器產出了超預算的 chunk，那是 bug（參見第 2 則）。
+- `query_rewrite_failed` 會放大這個問題，兩者一起看。

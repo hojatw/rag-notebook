@@ -109,7 +109,13 @@ class DiagnosticsConfig:
     """
     low_text_chars: int = 200           # below this extracted total -> "almost no text" warning
     preview_chars: int = 500            # stored extracted-text preview length
-    embedding_token_budget: int = 512   # model input window used for the over-budget warning
+    # The embedding model's input window. Three things read it, so it is not a
+    # display-only threshold: the ingest over-budget warning, the spreadsheet row
+    # packer, and `llm._fit_to_embedding_window`, which trims anything longer
+    # before it reaches the endpoint. Raise it for a model with a larger window
+    # (e5 is 512; OpenAI's text-embedding-3 is 8191) -- leaving it low there
+    # costs retrieval quality on long queries rather than failing anything.
+    embedding_token_budget: int = 512
     # Coarse char-count ratios used by `governance.estimate_tokens` when a
     # provider returns no usage numbers. Deliberately kept separate from the
     # embedding-window costs below: this one estimates *chat* usage from a

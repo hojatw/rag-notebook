@@ -91,6 +91,8 @@ No-embedding-fallback policy: `embed_texts` raises when the embedding model isn'
 > whose width disagrees with the collection, so a stray old-dimension row can no
 > longer re-lock it. See [`DEVELOPMENT.md`](DEVELOPMENT.md#changing-the-embedding-dimension).
 
+**Input window:** `embed_texts` trims any text estimated over `[diagnostics].embedding_token_budget` (default 512, e5's window) before sending, and logs `embedding_input_truncated` when it does. This matters most on the **query** side: chunks are already packed to this budget by the chunker, but a pasted question had no limit anywhere, and e5 answers an over-window input with HTTP 400 rather than truncating — so one long question failed the whole request and the user got no answer. Trimming keeps the leading part, which carries most of the retrieval signal. Raise the budget for a model with a larger window (OpenAI's `text-embedding-3` is 8191); leaving it at 512 there costs recall on long queries rather than failing anything. A trim logged with `role=passage` means the chunker produced an over-budget chunk — that is a bug in the chunker, not a tuning issue.
+
 Model-specific prefixes: `embed_texts(..., role="query"|"passage")` prepends an optional, settings-driven prefix (`/settings` → *Embedding query/passage prefix*). Retrieve embeds queries with `role="query"`, ingest embeds chunks with `role="passage"`. The e5 family needs `query: ` / `passage: `; OpenAI and others leave them blank (default), so the prefix is opt-in and only changes the text sent to the endpoint, never the stored chunk. **Changing a prefix changes the vectors → re-index** (`/admin/index` Rebuild).
 
 ### 3b. Keyword search
