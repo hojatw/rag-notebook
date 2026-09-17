@@ -13,6 +13,9 @@ _collection = None
 # The generation this process's cached ``_collection`` handle was built at.
 # ``None`` means "no cached handle". See ``index_generation``.
 _collection_generation: int | None = None
+# The write sequence this process's cached client was opened at. See
+# ``index_write_seq`` for why a second counter is needed.
+_collection_write_seq: int | None = None
 
 
 def chroma_available() -> bool:
@@ -26,10 +29,33 @@ def chroma_available() -> bool:
 
 def reset_client() -> None:
     """Clear cached Chroma client objects for tests or data-dir changes."""
-    global _client, _collection, _collection_generation
+    global _client, _collection, _collection_generation, _collection_write_seq
+    _drop_chroma_system_cache()
     _client = None
     _collection = None
     _collection_generation = None
+    _collection_write_seq = None
+
+
+def _drop_chroma_system_cache() -> None:
+    """Forget Chroma's per-path cached ``System``, so the next client reopens it.
+
+    Chroma keys an in-process ``System`` (which owns the in-memory HNSW index)
+    by store path and hands the same one to every ``PersistentClient`` built for
+    that path. Dropping our own ``_client`` reference therefore reopens nothing:
+    measured against chromadb 1.5.9, a stale index survives both re-fetching the
+    collection from the same client and constructing a brand-new client, and
+    only clearing this cache first actually reloads it from disk.
+
+    It is process-global rather than per-path, which is safe here because the
+    app opens exactly one store.
+    """
+    try:
+        from chromadb.api.shared_system_client import SharedSystemClient
+
+        SharedSystemClient.clear_system_cache()
+    except Exception:  # pragma: no cover - chromadb absent or API moved
+        logger.warning("vector_system_cache_clear_failed", exc_info=True)
 
 
 def index_generation() -> int:
@@ -44,32 +70,103 @@ def index_generation() -> int:
     Returns 0 when the table doesn't exist yet (``collection()`` can be reached
     before ``init_db()`` in tests), which is the same as "never reset".
     """
+    return _index_state()["generation"]
+
+
+def index_write_seq() -> int:
+    """Read the shared Chroma *data* write counter.
+
+    Bumped by :func:`bump_write_seq` after every upsert, delete, or clear.
+    ``generation`` cannot serve this purpose: it means "the collection object
+    was replaced" and only the O0 dimension migration bumps it, so ordinary
+    writes stayed invisible to the other process.
+
+    That gap is what took retrieval down in production: the web container
+    queried a store the standalone ingest worker had just written to, its cached
+    in-memory HNSW index no longer matched the metadata on disk, and Chroma
+    rejected every filtered query with ``Error executing plan: Internal error:
+    Error finding id`` until the process was restarted. Both processes compare
+    this counter and reopen their client when it moved.
+
+    Returns 0 when the table or column doesn't exist yet, the same "nothing has
+    happened" answer :func:`index_generation` gives.
+    """
+    return _index_state()["write_seq"]
+
+
+def _index_state() -> dict[str, int]:
+    """Read both cross-process counters in one SQLite round-trip."""
     try:
         with db.connect() as conn:
-            row = conn.execute("SELECT generation FROM vector_index_state WHERE id = 1").fetchone()
+            row = conn.execute(
+                "SELECT generation, write_seq FROM vector_index_state WHERE id = 1"
+            ).fetchone()
     except sqlite3.OperationalError:
+        return {"generation": 0, "write_seq": 0}
+    if not row:
+        return {"generation": 0, "write_seq": 0}
+    return {"generation": int(row["generation"]), "write_seq": int(row["write_seq"])}
+
+
+def bump_write_seq() -> int:
+    """Record that this process mutated Chroma, and return the new counter.
+
+    The caller's own client already sees its own write, so we advance this
+    process's cached marker at the same time — otherwise every writer would
+    pointlessly reopen its own client on its next read.
+    """
+    global _collection_write_seq
+    try:
+        with db.connect() as conn:
+            # SQLite 3.35+ RETURNING keeps the increment and the read-back in one
+            # statement. A separate SELECT could observe a *later* writer's bump
+            # and cache it as ours, which would make this process skip the reopen
+            # that writer's records require.
+            row = conn.execute(
+                "UPDATE vector_index_state SET write_seq = write_seq + 1 "
+                "WHERE id = 1 RETURNING write_seq"
+            ).fetchone()
+            conn.commit()
+    except sqlite3.OperationalError:
+        # Same degradation as the readers: no table yet means no coordination.
         return 0
-    return int(row["generation"]) if row else 0
+    write_seq = int(row["write_seq"]) if row else 0
+    if _collection is not None:
+        _collection_write_seq = write_seq
+    return write_seq
 
 
 def collection():
     """Return the persistent Chroma collection for source chunks.
 
-    Re-fetches the handle when another process has bumped the generation, so a
-    collection replaced elsewhere is never written through a stale handle.
+    Re-fetches the handle when another process has bumped ``generation`` (the
+    collection object was replaced), and fully reopens the client when another
+    process has bumped ``write_seq`` (records were written) — re-fetching alone
+    does not reload a stale in-memory index, see ``_drop_chroma_system_cache``.
     """
-    global _client, _collection, _collection_generation
-    generation = index_generation()
-    if _collection is not None and _collection_generation == generation:
+    global _client, _collection, _collection_generation, _collection_write_seq
+    state = _index_state()
+    generation, write_seq = state["generation"], state["write_seq"]
+    if (
+        _collection is not None
+        and _collection_generation == generation
+        and _collection_write_seq == write_seq
+    ):
         return _collection
     import chromadb
     from chromadb.config import Settings
 
     if _collection is not None:
         logger.info(
-            "vector_collection_handle_refreshed cached_generation=%s current_generation=%s",
-            _collection_generation, generation,
+            "vector_collection_handle_refreshed cached_generation=%s current_generation=%s "
+            "cached_write_seq=%s current_write_seq=%s",
+            _collection_generation, generation, _collection_write_seq, write_seq,
         )
+        # Another process wrote or replaced the collection underneath us. Our
+        # client is holding an index that no longer matches what is on disk, and
+        # nothing short of reopening it recovers.
+        _drop_chroma_system_cache()
+        _client = None
     vector_dir = db.DATA_DIR / "chroma"
     vector_dir.mkdir(parents=True, exist_ok=True)
     if _client is None:
@@ -79,6 +176,7 @@ def collection():
         metadata={"hnsw:space": "cosine"},
     )
     _collection_generation = generation
+    _collection_write_seq = write_seq
     return _collection
 
 
@@ -97,7 +195,7 @@ def reset_collection() -> int:
     that calls this must block the queue first (ROADMAP O0 criterion 2); this
     primitive deliberately does not, so it stays usable from recovery paths.
     """
-    global _client, _collection, _collection_generation
+    global _client, _collection, _collection_generation, _collection_write_seq
     if not chroma_available():
         return 0
     col = collection()
@@ -105,6 +203,7 @@ def reset_collection() -> int:
     _client.delete_collection(name=COLLECTION_NAME)
     _collection = None
     _collection_generation = None
+    _collection_write_seq = None
     with db.connect() as conn:
         conn.execute("UPDATE vector_index_state SET generation = generation + 1 WHERE id = 1")
         conn.commit()
@@ -140,6 +239,7 @@ def upsert_chunks(chunks: list[dict[str, Any]]) -> None:
             for chunk in chunks
         ],
     )
+    bump_write_seq()
     elapsed_ms = (time.perf_counter() - started) * 1000
     logger.info("vector_upsert_completed chunks=%s elapsed_ms=%.1f", len(chunks), elapsed_ms)
 
@@ -151,6 +251,7 @@ def delete_source(source_id: int, user_id: int | None = None) -> None:
     if user_id is not None:
         where = {"$and": [{"source_id": int(source_id)}, {"user_id": int(user_id)}]}
     col.delete(where=where)
+    bump_write_seq()
     logger.info("vector_source_deleted source_id=%s user_id=%s", source_id, user_id)
 
 
@@ -345,6 +446,7 @@ def clear_all_vectors() -> int:
     ids = list(col.get(include=[])["ids"])
     if ids:
         col.delete(ids=ids)
+        bump_write_seq()
     logger.info("vector_clear_all_completed count=%s", len(ids))
     return len(ids)
 

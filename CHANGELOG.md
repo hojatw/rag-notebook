@@ -9,6 +9,28 @@
 
 ## [未發布]
 
+### 修正
+
+- **向量檢索在 split-worker 部署下會全數降級**：`app` 與 `worker` 兩個容器各自開啟
+  `data/chroma`，而 Chroma 把 HNSW 索引放在行程記憶體裡，一個行程寫入之後，另一個
+  行程手上的索引就過期了——帶篩選條件的查詢會全數失敗，`retrieve()` 靜靜降級成上限
+  2000 筆的 SQLite 掃描，服務照常有答案但品質下降。**使用者看不到任何錯誤**。實際
+  案例中一名使用者連續 7 次提問、一次都沒吃到向量檢索，橫跨兩天無人察覺。
+  現在每次寫入向量都會遞增 `vector_index_state.write_seq`，其他行程在下一次讀取前
+  會重開 Chroma client（實測確認：只重取 collection handle 或只重建 client 都**無效**，
+  必須先清掉 Chroma 以路徑為 key 的 `System` 快取）。**直接升級即可，不需要重建索引，
+  也不需要刪除任何資料**；欄位會在啟動時自動補上。舊版的緊急處置是重啟 `app` 容器，
+  同樣不需要刪 `data/chroma`——細節見 `docs/TROUBLESHOOTING.md` 第 3 則。
+
+### 變更
+
+- **降級中的檢索現在看得出來**：`retrieve_completed` 一律帶 `mode=`
+  （`chroma` 正常／`sqlite_fallback` 降級中／`preloaded_rows` 評測用），
+  `retrieve_vector_failed` 加上 `consecutive_failures=` 並在連續 3 次後由 WARNING
+  升級為 ERROR，可直接拿來設告警。先前兩種路徑的 log 事件名稱相同，唯一差別是正常
+  路徑多一個 `mode=chroma` 欄位——「少一個欄位」無法用來告警，這正是上面那次降級
+  兩天沒被發現的原因。管理頁上的顯示仍未完成，追蹤於 `docs/ROADMAP.md` `O3`。
+
 ### 效能
 
 - **API 金鑰的解密不再每次重推導金鑰**：加密用的 Fernet 金鑰由 `NOTEBOOKLM_SECRET`
@@ -21,7 +43,7 @@
 ### 變更
 
 - **測試改為預設並行執行**：新增 `pytest.ini`（`-n auto --maxprocesses=8`）與
-  `pytest-xdist` 開發依賴，全套 471 個測試由單核約 132 秒降到約 27 秒，CI 同步受惠。
+  `pytest-xdist` 開發依賴，全套測試由單核約 132 秒降到約 27 秒，CI 同步受惠。
   測試內容與覆蓋率完全未動。除錯單一測試時用 `pytest -n0` 關掉並行。
 
 ## [0.8.0] - 2026-09-12

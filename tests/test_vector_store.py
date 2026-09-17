@@ -5,6 +5,7 @@ dir per test (via the fresh_modules fixture), so they exercise the
 integration end-to-end.
 """
 import asyncio
+import pathlib
 
 import pytest
 
@@ -298,3 +299,140 @@ def test_init_db_adds_the_state_table_and_preserves_the_generation(fresh_modules
 
     db.init_db()  # a later restart must not reseed
     assert vs.index_generation() == advanced
+
+
+# -------------------- cross-process index coherence (the 2026-09-10 outage) --------------------
+
+_WORKER_UPSERT = """
+import os, sys
+sys.path.insert(0, {repo!r})
+os.environ["NOTEBOOKLM_DATA_DIR"] = {data_dir!r}
+import app.db, app.vector_store as vs
+app.db.init_db()
+vs.upsert_chunks([
+    {{"id": 900 + i, "user_id": 1, "source_id": 96, "chunk_index": i,
+      "filename": "worker.txt", "location": "p1", "text": "worker chunk %d" % i,
+      "embedding": [0.01 * (i % 7), 0.02, 0.03] + [0.0] * 381}}
+    for i in range(5)
+])
+print("worker-upserted", vs.collection().count())
+"""
+
+
+def _run_worker_process(tmp_path, data_dir):
+    """Upsert from a genuinely separate OS process.
+
+    Reloading the module in-process (what test_index_migration does) gives
+    separate Python globals but the SAME cached chromadb ``System`` for the
+    store path -- and that System owns the in-memory HNSW index. So an
+    in-process stand-in shares the very state whose staleness is the bug, and
+    cannot observe it. Only a real subprocess can.
+    """
+    import subprocess
+    import sys
+
+    script = _WORKER_UPSERT.format(repo=str(pathlib.Path(__file__).resolve().parents[1]),
+                                   data_dir=str(data_dir))
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                            cwd=str(tmp_path), timeout=180)
+    assert result.returncode == 0, f"worker process failed:\n{result.stdout}\n{result.stderr}"
+    return result.stdout
+
+
+def test_query_sees_records_written_by_another_process(fresh_modules, tmp_path):
+    """The 2026-09-10 production failure, reproduced end-to-end.
+
+    Timeline from logs/app.log: the web container deleted a source's vectors,
+    the standalone ingest worker then upserted a newly uploaded source, and
+    every subsequent query in the web container died with
+    ``InternalError: Error executing plan: Internal error: Error finding id``
+    -- for two days, because nothing invalidated the web process's cached
+    client. Six of the window's thirteen questions were served from the
+    degraded SQLite fallback and three users never got a vector-backed answer.
+
+    Asserting on the query result rather than on the counter is deliberate: an
+    earlier version of this mechanism re-fetched the collection handle from the
+    same client, which advances every counter you could assert on and still
+    leaves the stale index in place.
+    """
+    db, vs = fresh_modules.db, fresh_modules.vector_store
+    data_dir = db.DATA_DIR
+
+    vs.upsert_chunks([
+        {"id": i, "user_id": 1, "source_id": 95, "chunk_index": i,
+         "filename": "web.txt", "location": "p1", "text": f"web chunk {i}",
+         "embedding": [0.01 * i, 0.02, 0.03] + [0.0] * 381}
+        for i in range(1, 6)
+    ])
+    # Warm this process's client, then delete -- exactly the production order.
+    assert vs.query([[0.03, 0.02, 0.03] + [0.0] * 381], user_id=1)
+    vs.delete_source(95, user_id=1)
+
+    _run_worker_process(tmp_path, data_dir)
+
+    # The web process must serve the worker's records, not raise on a stale index.
+    hits = vs.query([[0.03, 0.02, 0.03] + [0.0] * 381], user_id=1, n_results=10)
+    assert [hit["source_id"] for hit in hits] == [96] * len(hits)
+    assert len(hits) == 5
+
+
+def test_a_process_does_not_reopen_its_client_for_its_own_writes(fresh_modules):
+    """Own writes must not churn the client, or every upsert pays a reopen.
+
+    ``bump_write_seq`` advances this process's marker with the counter, so the
+    handle stays valid. Without that, the reopen that fixes the cross-process
+    bug would fire on the single-process path too -- on every single query.
+    """
+    vs = fresh_modules.vector_store
+
+    handle = vs.collection()
+    vs.upsert_chunks([{
+        "id": 1, "user_id": 1, "source_id": 1, "chunk_index": 0,
+        "filename": "a.txt", "location": "p1", "text": "a", "embedding": [0.1] * 384,
+    }])
+    assert vs.index_write_seq() == 1
+    assert vs.collection() is handle
+
+    vs.delete_source(1, user_id=1)
+    assert vs.index_write_seq() == 2
+    assert vs.collection() is handle
+
+
+def test_every_chroma_mutation_advances_the_write_counter(fresh_modules):
+    """A mutation the counter misses is a mutation other processes never see."""
+    vs = fresh_modules.vector_store
+
+    def _chunk(chunk_id):
+        return {"id": chunk_id, "user_id": 1, "source_id": 1, "chunk_index": 0,
+                "filename": "a.txt", "location": "p1", "text": "a", "embedding": [0.1] * 384}
+
+    assert vs.index_write_seq() == 0
+    vs.upsert_chunks([_chunk(1)])
+    assert vs.index_write_seq() == 1
+    vs.upsert_chunks([])                 # no-op writes nothing, so it must not bump
+    assert vs.index_write_seq() == 1
+    vs.delete_source(1, user_id=1)
+    assert vs.index_write_seq() == 2
+    vs.upsert_chunks([_chunk(2)])
+    assert vs.index_write_seq() == 3
+    vs.clear_all_vectors()
+    assert vs.index_write_seq() == 4
+    vs.clear_all_vectors()               # nothing left to delete, so no bump
+    assert vs.index_write_seq() == 4
+
+
+def test_init_db_adds_the_write_counter_to_an_older_database(fresh_modules):
+    """Upgrade path: the column arrives on a database that predates it."""
+    db, vs = fresh_modules.db, fresh_modules.vector_store
+
+    with db.connect() as conn:
+        conn.execute("DROP TABLE vector_index_state")
+        conn.execute("CREATE TABLE vector_index_state ("
+                     "id INTEGER PRIMARY KEY CHECK (id = 1), generation INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("INSERT INTO vector_index_state (id, generation) VALUES (1, 4)")
+        conn.commit()
+    assert vs.index_write_seq() == 0     # missing column degrades to "no writes yet"
+
+    db.init_db()
+    assert vs.index_write_seq() == 0
+    assert vs.index_generation() == 4    # the migration must not disturb O0's counter

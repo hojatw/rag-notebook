@@ -411,10 +411,13 @@ Chroma locks a collection's embedding dimension on the first upsert, and deletin
 |---|---|---|
 | `id` | INTEGER **PK** CHECK(id = 1) | single row, seeded by `init_db()` |
 | `generation` | INTEGER NOT NULL DEFAULT 0 | incremented by `reset_collection()`; compared against each process's cached handle |
+| `write_seq` | INTEGER NOT NULL DEFAULT 0 | incremented by `bump_write_seq()` after **every** upsert / delete / clear; compared against each process's cached *client*. `generation` cannot do this job — it means "the collection object was replaced" and only the O0 migration bumps it, so ordinary writes were invisible across processes |
 | `locked_at` | REAL | Phase C write barrier: unix timestamp a migration took the lock; NULL when free. While set, `claim_next_job()` refuses to claim, so nothing upserts between the collection's delete and its recreate. Older than `[runtime].index_migration_lock_timeout_s` = stale and reclaimable, so a dead process cannot wedge ingest |
 | `locked_by` | TEXT NOT NULL DEFAULT `''` | `host/pid` of the lock holder — diagnostics only, never an authorization check |
 
 The lock rule has one definition, `index_migration.migration_lock_is_live()`, used by the admin route, the page preview, and the worker's claim alike — so the barrier cannot mean one thing to the migration and another to the queue it pauses.
+
+**Why there are two counters.** A `generation` mismatch means the collection object was replaced, and re-fetching the handle is enough. A `write_seq` mismatch means another process wrote records, and re-fetching is **not** enough: chromadb caches one `System` per store path and hands it to every `PersistentClient` built for that path, so the stale in-memory HNSW index survives both a new handle and a new client. `collection()` therefore calls `SharedSystemClient.clear_system_cache()` and drops `_client` on a `write_seq` mismatch. Measured against chromadb 1.5.9; `tests/test_vector_store.py::test_query_sees_records_written_by_another_process` pins it with a real subprocess (an in-process module reload shares the cached `System`, so it cannot observe this). See `docs/TROUBLESHOOTING.md`.
 
 ## `retrieval_profiles`
 Admin-created retrieval parameter snapshots for the in-deployment eval workbench (E1). Profiles are audit/history records **and** applyable: the `is_active` row seeds the live `ACTIVE_RETRIEVAL_PARAMS` in `app/retrieval.py` at startup (E1c apply/rollback).

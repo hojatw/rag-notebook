@@ -40,6 +40,11 @@ chromadb.errors.InternalError: Error executing plan: Error sending backfill requ
 回答。實際案例中這個降級狀態**持續了約兩小時無人察覺**，因為除了 log 之外沒有任何
 地方會說。
 
+> **先確認是哪一種。** `Error finding id` 這一行，第 3 則也會出現。差別在於
+> **本則一定伴隨** `vector_index_dimension_unreadable` 或
+> `Failed to apply logs to the hnsw segment writer`；只有 `Error finding id`
+> 而沒有這兩行的，是第 3 則（行程內索引過期），**重啟即可，不要刪 `data/chroma`**。
+
 **根因**：`data/chroma` 裡持久化的 HNSW segment 損毀。**不是** SQLite schema
 migration 的問題，也**不是** ChromaDB 版本升級造成的——本專案自始至終釘在
 `chromadb==1.5.9`。最可能的觸發是升級切換時新舊行程同時寫入同一個 `data/chroma`，
@@ -115,3 +120,71 @@ PYTHONPATH=. .venv/bin/python -m tests.inspect_file_tokens /path/to/file.pdf
 
 **預防**：交付或試用前，先用上面的指令跑過客戶的代表性樣本，特別是含大量表格的 PDF、
 掃描轉檔的文件與長問答試算表。
+
+---
+
+## 3. 向量檢索全數降級：另一個行程寫入後，查詢端的索引沒跟著更新 [已修正，尚未發版]
+
+**發生**：2026-09-10 至 2026-09-11，`0.7.0`，split-worker 部署（`app` 與 `worker`
+兩個容器共用 bind-mount 的 `./data`）。
+
+**症狀**
+
+- 與第 1 則**完全相同**：服務正常、照常有答案，品質悄悄變差，使用者看不到任何錯誤。
+- 差別在於索引本身沒有損毀——`/admin/index` 讀得出維度與向量數，Rebuild 也能跑完。
+- 影響範圍比想像大：該期間 13 次提問只有 3 次走到向量檢索，其中一名使用者連續
+  7 次提問、**一次都沒吃到向量檢索**，跨兩天無人察覺。
+
+**log 字串**
+
+```text
+WARNING [app.retrieval] retrieve_vector_failed ... falling back to capped SQLite scan
+chromadb.errors.InternalError: Error executing plan: Internal error: Error finding id
+```
+
+**而且沒有**（有的話請看第 1 則）：
+
+```text
+vector_index_dimension_unreadable
+Failed to apply logs to the hnsw segment writer
+```
+
+**根因**：不是損毀，是**行程內的索引過期**。Chroma 的 `PersistentClient`
+把 HNSW 索引放在行程記憶體裡，並以 store 路徑為 key 快取一份 `System`；
+另一個行程的寫入不會使它失效。`worker` 容器寫進新來源的 chunk 之後，`app` 容器
+仍拿舊的記憶體索引去比對磁碟上已經更新的 metadata，帶 `where` 的查詢就全數失敗。
+
+專案本來就有跨行程失效機制（`vector_index_state.generation`），但它只被
+`reset_collection()`（O0 維度遷移）遞增，一般的 upsert / delete 完全不動它——
+三條寫入路徑只有一條被保護。
+
+實測（chromadb 1.5.9）確認過三件事，前兩件都**無效**：
+
+| 做法 | 結果 |
+|---|---|
+| 對同一個 client 重新 `get_or_create_collection()` | ❌ 仍然失敗 |
+| 建一個新的 `PersistentClient` | ❌ 仍然失敗（System 以路徑為 key 被快取） |
+| `SharedSystemClient.clear_system_cache()` 後再開 client | ✅ 恢復 |
+
+**處理**
+
+- **升級到含本修正的版本**（目前在 `CHANGELOG.md` 的 `[未發布]`，發版後請把這裡
+  改成實際版號）。修正後每次 upsert / delete / clear 都會遞增
+  `vector_index_state.write_seq`，其他行程在下一次讀取前會清掉 System 快取並重開
+  client。
+- **舊版部署的立即處置：重啟 `app` 容器即可**（`docker compose restart app`）。
+  **不需要**刪 `data/chroma`，也不需要 Rebuild——資料本身是好的。誤用第 1 則的
+  流程雖然也會恢復，但多停機、多一次全量重建。
+- 重啟只能撐到下一次 worker 寫入，所以這是止血、不是修好。
+
+**預防**
+
+- 升級後確認 log 出現 `retrieve_completed mode=chroma`。看到
+  `mode=sqlite_fallback` 就代表正在降級。
+- `retrieve_vector_failed` 現在帶 `consecutive_failures=`，連續 3 次會從 WARNING
+  升級成 ERROR，可直接拿來做告警條件。
+- 長期解：讓兩個容器改用 Chroma server 模式（`HttpClient`），由 server 端序列化
+  寫入，從根本消除多行程共享記憶體索引的問題。追蹤於 [`ROADMAP.md`](ROADMAP.md)。
+
+**尚未做到的**：與第 1 則相同——管理員在畫面上仍看不到「向量檢索正在失敗」，
+目前只有 log 與 `retrieval.vector_health()`。追蹤於 [`ROADMAP.md`](ROADMAP.md) `O3`。
