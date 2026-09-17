@@ -123,7 +123,7 @@ PYTHONPATH=. .venv/bin/python -m tests.inspect_file_tokens /path/to/file.pdf
 
 ---
 
-## 3. 向量檢索全數降級：另一個行程寫入後，查詢端的索引沒跟著更新 [已於 v0.8.1 修正]
+## 3. 向量檢索全數降級：另一個行程寫入後，查詢端的索引沒跟著更新 [已修正，尚未發版]
 
 **發生**：2026-09-10 至 2026-09-11，`0.7.0`，split-worker 部署（`app` 與 `worker`
 兩個容器共用 bind-mount 的 `./data`）。
@@ -168,7 +168,8 @@ Failed to apply logs to the hnsw segment writer
 
 **處理**
 
-- **升級到 `0.8.1` 以上**。修正後每次 upsert / delete / clear 都會遞增
+- **升級到含本修正的版本**（目前在 `CHANGELOG.md` 的 `[未發布]`，發版後請把這裡
+  改成實際版號）。修正後每次 upsert / delete / clear 都會遞增
   `vector_index_state.write_seq`，其他行程在下一次讀取前會清掉 System 快取並重開
   client。
 - **舊版部署的立即處置：重啟 `app` 容器即可**（`docker compose restart app`）。
