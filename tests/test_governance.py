@@ -720,7 +720,7 @@ def test_effort_probe_persists_through_runtime_request_builder(monkeypatch, tmp_
             "UPDATE llm_settings SET diagnostics_json = ? WHERE id = 1",
             (db.dumps({
                 "chat": {
-                    "settings_fingerprint": llm.llm_settings_fingerprint(candidate),
+                    "settings_fingerprint": llm.chat_settings_fingerprint(candidate),
                     "capabilities": capabilities,
                 }
             }),),

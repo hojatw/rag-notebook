@@ -942,7 +942,7 @@ def _settings_with_capabilities(capabilities, **overrides):
     settings = _settings(**overrides)
     settings["diagnostics"] = {
         "chat": {
-            "settings_fingerprint": llm.llm_settings_fingerprint(settings),
+            "settings_fingerprint": llm.chat_settings_fingerprint(settings),
             "capabilities": capabilities,
         }
     }
@@ -1180,7 +1180,7 @@ def test_stale_probe_fingerprint_cannot_enable_effort_for_a_different_model():
         chat_model="new-model",
         diagnostics={
             "chat": {
-                "settings_fingerprint": llm.llm_settings_fingerprint(old_settings),
+                "settings_fingerprint": llm.chat_settings_fingerprint(old_settings),
                 "capabilities": {
                     llm.SAMPLING_PARAMS_CAPABILITY: {
                         "status": "failed",
@@ -1387,7 +1387,7 @@ def test_capability_probe_output_actually_reaches_build_chat_request(monkeypatch
         **settings,
         "diagnostics": {
             "chat": {
-                "settings_fingerprint": llm_module.llm_settings_fingerprint(settings),
+                "settings_fingerprint": llm_module.chat_settings_fingerprint(settings),
                 "capabilities": capabilities,
             }
         },
@@ -1791,7 +1791,7 @@ def test_a_wider_probed_window_actually_widens_what_gets_sent(monkeypatch):
 
     question = "這份契約的驗收條件與罰則是什麼？" * 120
     settings = _window_settings()
-    fingerprint = llm.llm_settings_fingerprint(settings)
+    fingerprint = llm.embedding_settings_fingerprint(settings)
     settings["diagnostics"] = {
         "embedding": {"settings_fingerprint": fingerprint, "max_input_tokens": 8191},
     }
@@ -1832,7 +1832,10 @@ def test_an_unprobed_deployment_keeps_the_configured_budget():
     """No probe, a failed probe, and a junk value all mean "use the config"."""
     configured = llm.config.diagnostics.embedding_token_budget
     settings = _window_settings()
-    fingerprint = llm.llm_settings_fingerprint(settings)
+    # The EMBEDDING fingerprint, so the last two cases reach the value check at
+    # all. With a chat fingerprint here they would pass on the mismatch instead,
+    # and "a junk value falls back" would never actually be exercised.
+    fingerprint = llm.embedding_settings_fingerprint(settings)
 
     assert llm.embedding_window_budget(settings) == configured
     settings["diagnostics"] = {}
@@ -1854,7 +1857,7 @@ def _structured_settings(shape="response_format", enabled=True, fingerprint_ok=T
         "chat_model": "openai/gpt-oss-120b",
         "structured_output_enabled": enabled,
     }
-    fingerprint = llm.llm_settings_fingerprint(settings) if fingerprint_ok else "measured-elsewhere"
+    fingerprint = llm.chat_settings_fingerprint(settings) if fingerprint_ok else "measured-elsewhere"
     settings["diagnostics"] = {
         "chat": {
             "settings_fingerprint": fingerprint,
@@ -1989,3 +1992,101 @@ def test_the_capability_snapshot_carries_what_an_eval_comparison_needs():
     assert "api_key" not in snapshot
     assert "base_url" not in snapshot      # internal hostnames stay out of the record
     assert all("prompt" not in key for key in snapshot)
+
+
+# -------------------- one fingerprint per connection --------------------
+
+def _both_connections():
+    return {
+        "provider": "openai_compatible",
+        "base_url": "http://192.168.11.138:8000/v1",
+        "chat_model": "openai/gpt-oss-120b",
+        "embedding_base_url": "http://192.168.11.147:8001/v1",
+        "embedding_provider": "openai_compatible",
+        "embedding_model": "intfloat/multilingual-e5-large",
+        "embedding_api_key": "",
+    }
+
+
+def test_swapping_the_chat_model_keeps_the_embedding_window_measurement():
+    """The deployment this was found in fails over between two chat hosts.
+
+    One fingerprint covering both connections meant an afternoon on the standby
+    chat model silently discarded the embedding window measured minutes earlier,
+    and the query trim went back to the configured default with no error and no
+    log line. The embedding endpoint was never touched.
+    """
+    settings = _both_connections()
+    settings["diagnostics"] = {
+        "embedding": {
+            "settings_fingerprint": llm.embedding_settings_fingerprint(settings),
+            "max_input_tokens": 8191,
+        }
+    }
+    assert llm.embedding_window_budget(settings) == 8191
+
+    failed_over = {**settings, "chat_model": "google/gemma-4-31b",
+                   "base_url": "http://192.168.11.200:8000/v1"}
+
+    assert llm.embedding_window_budget(failed_over) == 8191
+
+
+def test_swapping_the_embedding_model_does_discard_its_window():
+    """The guard still has to fire for its own connection, or it guards nothing."""
+    settings = _both_connections()
+    settings["diagnostics"] = {
+        "embedding": {
+            "settings_fingerprint": llm.embedding_settings_fingerprint(settings),
+            "max_input_tokens": 8191,
+        }
+    }
+
+    for change in ({"embedding_model": "BAAI/bge-m3"},
+                   {"embedding_base_url": "http://192.168.11.9:8001/v1"},
+                   {"embedding_query_prefix": "query: "}):
+        moved = {**settings, **change}
+        assert llm.embedding_window_budget(moved) == llm.config.diagnostics.embedding_token_budget, change
+
+
+def test_swapping_the_embedding_model_keeps_the_chat_capabilities():
+    """The symmetric case: an embedding-side edit must not re-open the chat probe.
+
+    Pre-existing before the split, and just as invisible — it only ever cost an
+    operator a second click, which is why nobody noticed.
+    """
+    settings = _both_connections()
+    settings["diagnostics"] = {
+        "chat": {
+            "settings_fingerprint": llm.chat_settings_fingerprint(settings),
+            "capabilities": {
+                "sampling_params": {"status": "failed", "temperature_accepted": False},
+                "max_tokens_field": {"status": "succeeded", "field": "max_completion_tokens"},
+            },
+        }
+    }
+    assert llm.chat_sampling_support(settings)["max_tokens_field"] == "max_completion_tokens"
+
+    moved = {**settings, "embedding_model": "BAAI/bge-m3"}
+
+    assert llm.chat_sampling_support(moved)["max_tokens_field"] == "max_completion_tokens"
+    assert llm.chat_sampling_support(moved)["temperature"] is False
+
+
+def test_the_embedding_fingerprint_follows_the_resolved_connection():
+    """`embedding_settings` falls back to the shared chat columns when the split
+    ones are absent, so a chat-side edit really does move the embedding endpoint
+    there. Fingerprinting raw columns would miss exactly that case."""
+    shared = {
+        "provider": "openai_compatible",
+        "base_url": "http://one.invalid/v1",
+        "chat_model": "chat",
+        "embedding_model": "embed",
+    }
+    before = llm.embedding_settings_fingerprint(shared)
+
+    # No embedding_base_url, so embeddings go to base_url — moving it moves them.
+    assert llm.embedding_settings_fingerprint({**shared, "base_url": "http://two.invalid/v1"}) != before
+    # With a split URL set, the chat URL no longer decides where embeddings go.
+    split = {**shared, "embedding_base_url": "http://e.invalid/v1"}
+    assert llm.embedding_settings_fingerprint({**split, "base_url": "http://two.invalid/v1"}) == \
+        llm.embedding_settings_fingerprint(split)

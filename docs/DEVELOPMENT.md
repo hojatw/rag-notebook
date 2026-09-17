@@ -353,7 +353,7 @@ git diff --check
 ### 測試為什麼是並行的
 
 `pytest.ini` 設了 `addopts = -n auto --maxprocesses=8`（pytest-xdist），本機
-16 核上全套 515 個測試從單核約 132 秒降到約 30 秒，CI 上 `pytest -q` 會自動沿用
+16 核上全套 519 個測試從單核約 132 秒降到約 30 秒，CI 上 `pytest -q` 會自動沿用
 同一組設定。
 
 耗時幾乎不是來自測試數量，而是每個測試的固定重建成本：`tests/test_ui_*.py` 的

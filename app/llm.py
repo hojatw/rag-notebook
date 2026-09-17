@@ -815,7 +815,7 @@ def embedding_window_budget(settings: dict[str, Any]) -> int:
     embedding = diagnostics.get("embedding") if isinstance(diagnostics, dict) else None
     if not isinstance(embedding, dict):
         return configured
-    if embedding.get("settings_fingerprint") != llm_settings_fingerprint(settings):
+    if embedding.get("settings_fingerprint") != embedding_settings_fingerprint(settings):
         return configured
     probed = embedding.get("max_input_tokens")
     if not isinstance(probed, int) or probed <= 0:
@@ -957,7 +957,7 @@ async def probe_chat_diagnostics(
             "diagnostics": {
                 **(settings.get("diagnostics") or {}),
                 "chat": {
-                    "settings_fingerprint": llm_settings_fingerprint(settings),
+                    "settings_fingerprint": chat_settings_fingerprint(settings),
                     "capabilities": sampling,
                 },
             },
@@ -3259,28 +3259,57 @@ def chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def llm_settings_fingerprint(settings: dict[str, Any]) -> str:
-    """Hash non-secret settings so a capability applies only to what was probed."""
-    summary = {
-        "provider": settings.get("provider") or "openai_compatible",
-        "base_url": settings.get("base_url") or "",
-        "embedding_base_url": settings.get("embedding_base_url") or "",
-        "api_key_set": bool(settings.get("api_key")),
-        "chat_model": settings.get("chat_model") or "",
-        "embedding_model": settings.get("embedding_model") or "",
-        "embedding_query_prefix": settings.get("embedding_query_prefix") or "",
-        "embedding_passage_prefix": settings.get("embedding_passage_prefix") or "",
-        "api_version": settings.get("api_version") or "",
-        "temperature": float(settings.get("temperature") or 0),
-        "reasoning_effort_mode": settings.get("reasoning_effort_mode") or "auto",
-        "reasoning_effort": settings.get("reasoning_effort") or "medium",
-        "timeout_seconds": float(settings.get("timeout_seconds") or 0),
-        "embedding_provider": settings.get("embedding_provider") or "openai_compatible",
-        "embedding_api_key_set": bool(settings.get("embedding_api_key")),
-        "embedding_api_version": settings.get("embedding_api_version") or "",
-    }
-    encoded = json.dumps(summary, ensure_ascii=False).encode("utf-8")
+def _fingerprint(summary: dict[str, Any]) -> str:
+    encoded = json.dumps(summary, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def chat_settings_fingerprint(settings: dict[str, Any]) -> str:
+    """Hash the **chat** connection, so a chat capability applies only to it.
+
+    One fingerprint covering both connections was wrong in a way that showed up
+    the moment a deployment swapped chat models for an afternoon: the embedding
+    window measured minutes earlier was discarded too, and the query trim went
+    silently back to the configured default. Nothing failed, nothing said so.
+
+    Hashes the *resolved* connection rather than the raw columns, because
+    `chat_settings` is what decides which endpoint is actually called.
+    """
+    resolved = chat_settings(settings)
+    return _fingerprint({
+        "provider": resolved["provider"],
+        "base_url": resolved["base_url"],
+        "api_key_set": bool(resolved["api_key"]),
+        "api_version": resolved["api_version"],
+        "chat_model": resolved["chat_model"],
+        # Sampling knobs belong here: the reasoning-effort probe only verifies the
+        # values the current mode selects, so changing them changes what was proven.
+        "temperature": float(resolved.get("temperature") or 0),
+        "reasoning_effort_mode": resolved["reasoning_effort_mode"],
+        "reasoning_effort": resolved["reasoning_effort"],
+        "timeout_seconds": float(resolved.get("timeout_seconds") or 0),
+    })
+
+
+def embedding_settings_fingerprint(settings: dict[str, Any]) -> str:
+    """Hash the **embedding** connection, so an embedding measurement applies only to it.
+
+    Resolved, not raw: `embedding_settings` falls back to the shared chat columns
+    when the split ones are absent, so a fingerprint over raw columns would miss
+    that a chat-side edit had changed which endpoint embeddings go to.
+    """
+    resolved = embedding_settings(settings)
+    return _fingerprint({
+        "provider": resolved["provider"],
+        "base_url": resolved["base_url"],
+        "api_key_set": bool(resolved["api_key"]),
+        "api_version": resolved["api_version"],
+        "embedding_model": resolved["embedding_model"],
+        # Prefixes change the text sent, so they change the measured window.
+        "embedding_query_prefix": resolved["embedding_query_prefix"],
+        "embedding_passage_prefix": resolved["embedding_passage_prefix"],
+        "timeout_seconds": float(resolved.get("timeout_seconds") or 0),
+    })
 
 
 def embedding_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -3394,7 +3423,7 @@ def structured_output_shape(settings: dict[str, Any]) -> str:
     chat = diagnostics.get("chat") if isinstance(diagnostics, dict) else None
     if not isinstance(chat, dict):
         return ""
-    if chat.get("settings_fingerprint") != llm_settings_fingerprint(settings):
+    if chat.get("settings_fingerprint") != chat_settings_fingerprint(settings):
         return ""
     capability = (chat.get("capabilities") or {}).get(STRUCTURED_OUTPUT_CAPABILITY)
     if not isinstance(capability, dict) or capability.get("status") != DIAGNOSTIC_STATUS_SUCCEEDED:
@@ -3468,7 +3497,7 @@ def chat_sampling_support(settings: dict[str, Any]) -> dict[str, Any]:
     chat = diagnostics.get("chat") if isinstance(diagnostics, dict) else None
     if not isinstance(chat, dict):
         return default_support
-    if chat.get("settings_fingerprint") != llm_settings_fingerprint(settings):
+    if chat.get("settings_fingerprint") != chat_settings_fingerprint(settings):
         return default_support
     capabilities = chat.get("capabilities") if isinstance(chat, dict) else None
     if not isinstance(capabilities, dict):

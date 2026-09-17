@@ -28,8 +28,9 @@ from .llm import (
     REASONING_EFFORT_VALUES,
     chat_sampling_support,
     chat_settings,
+    chat_settings_fingerprint,
     embedding_settings,
-    llm_settings_fingerprint,
+    embedding_settings_fingerprint,
     probe_chat_diagnostics,
     probe_embedding_diagnostics,
     probe_embedding_dimension,
@@ -343,7 +344,7 @@ async def test_chat_settings(
     compact = compact_diagnostic_result(
         "chat",
         raw_result,
-        settings_fingerprint=llm_settings_fingerprint(candidate),
+        settings_fingerprint=chat_settings_fingerprint(candidate),
         include_image=include_image,
     )
     settings = store_llm_diagnostic("chat", compact)
@@ -417,7 +418,7 @@ async def test_embedding_settings(
     compact = compact_diagnostic_result(
         "embedding",
         raw_result,
-        settings_fingerprint=llm_settings_fingerprint(candidate),
+        settings_fingerprint=embedding_settings_fingerprint(candidate),
     )
     settings = store_llm_diagnostic("embedding", compact)
     record_audit_event(
