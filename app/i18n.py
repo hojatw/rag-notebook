@@ -612,6 +612,13 @@ MESSAGES: dict[str, dict[str, str]] = {
         "settings.error_class": "錯誤類別",
         "settings.embedding_dimension": "Embedding dimension",
         "settings.current_index_dimension": "目前索引 dimension",
+        # O5a: the measured input window. Shown next to the dimension because both
+        # are properties of the embedding model that only a probe can answer.
+        "settings.embedding_window": "輸入視窗上限",
+        "settings.embedding_window_tokens": "{tokens} tokens",
+        "settings.embedding_window_at_least": "至少 {tokens} tokens",
+        "settings.embedding_window_unprobed": "尚未測得，沿用設定值 {tokens} tokens",
+        "settings.embedding_window_note": "超過這個長度的問題會在送出前被修剪，只取前段進行檢索（記錄為 embedding_input_truncated）。換用視窗更大的 embedding 模型後，請重新測試以更新這個值。",
         "settings.capabilities": "Capability probes",
         "settings.cap_streaming": "Streaming",
         "settings.cap_usage": "Provider usage reporting",

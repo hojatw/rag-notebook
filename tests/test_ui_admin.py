@@ -10,6 +10,8 @@ E1e-2 答案品質評分層、/admin/index 的向量索引與 O0 維度遷移閘
 
 import json
 
+import httpx
+
 from tests.ui_helpers import TestClient, _fresh_app, _login, _seed_indexed_source, _seed_notebook
 
 
@@ -1398,3 +1400,77 @@ def _single_hit_metrics(main=None):
     return run_metrics_from_results(
         [{"status": "hit", "hit_rank": 1, "latency_ms": 12.5, "top_score": 0.91}]
     )
+
+
+def test_the_probed_embedding_window_survives_storage_and_reaches_the_runtime(monkeypatch, tmp_path):
+    """O5a round-trip: real probe → stored diagnostics → the cap `embed_texts` uses.
+
+    AGENTS.md requires exactly this for a `diagnostics_json` field, and names the
+    bug it prevents: every test wrote `{"status": "ok"}` by hand while the writer
+    stored `"succeeded"`, so the gate reading it was never once exercised against
+    real output. Here the producer is the real `/settings/test-embedding` route
+    and the reader is the real `embedding_window_budget`, with nothing in between
+    spelling a key name twice. Rename `max_input_tokens` on either side and this
+    goes red.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.llm as llm
+
+    # The endpoint refuses the oversized probe the way vLLM does, naming 8191.
+    async def fake_post(url, headers, payload, timeout, retry_stats=None):
+        if len(payload["input"][0]) > 2000:
+            message = "This model's maximum context length is 8191 tokens."
+            raise httpx.HTTPStatusError(
+                message,
+                request=httpx.Request("POST", url),
+                response=httpx.Response(400, text=message),
+            )
+        return {"data": [{"embedding": [0.1] * 1024}]}
+
+    monkeypatch.setattr(llm, "_post_json_with_retry", fake_post)
+    import app.settings as app_settings
+    monkeypatch.setattr(
+        app_settings, "vector_probe_index_dimension", lambda: {"dimension": 1024, "readable": True}
+    )
+
+    form = {
+        "provider": "openai_compatible",
+        "base_url": "http://model/v1",
+        "embedding_base_url": "",
+        "api_key": "",
+        "chat_model": "chat-candidate",
+        "embedding_model": "wide-embedder",
+        "embedding_query_prefix": "",
+        "embedding_passage_prefix": "",
+        "api_version": "2024-02-15-preview",
+        "temperature": "0.2",
+        "reasoning_effort_mode": "auto",
+        "reasoning_effort": "medium",
+        "timeout_seconds": "60",
+        "embedding_provider": "openai_compatible",
+        "embedding_api_key": "",
+        "embedding_api_version": "2024-02-15-preview",
+    }
+
+    with TestClient(main.app) as client:
+        _login(client)
+        response = client.post("/settings/test-embedding", data=form)
+        assert response.status_code == 200
+        assert "8191" in response.text          # the admin can see what was measured
+        # Testing probes the *candidate* form values without saving them, so the
+        # admin's next step is to save. Until they do, the stored fingerprint
+        # belongs to settings that are not in effect and the probe must not
+        # apply (tests/test_llm.py pins that guard directly).
+        saved = client.post("/settings", data=form, follow_redirects=False)
+        assert saved.status_code in (200, 303)
+
+    # The reader picks it up from what the writer actually stored. Pass the whole
+    # settings row, not `embedding_settings(...)`: `embed_texts` takes the row and
+    # projects the connection internally, exactly as `build_chat_request` does,
+    # and the stored fingerprint covers the row. Handing it the projection makes
+    # the fingerprint miss and silently falls back to the configured budget --
+    # safe, but not what the runtime does.
+    with db.connect() as conn:
+        stored = db.load_llm_settings(conn)
+    assert llm.embedding_window_budget(stored) == 8191
+    assert llm.config.diagnostics.embedding_token_budget != 8191   # not the fallback

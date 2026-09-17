@@ -18,6 +18,17 @@
         <div><dt>{{ t('settings.latency') }}</dt><dd>{{ embedding_diag.latency_ms }} ms</dd></div>
         <div><dt>{{ t('settings.embedding_dimension') }}</dt><dd>{{ embedding_diag.embedding_dimension if embedding_diag.embedding_dimension is not none else '—' }}</dd></div>
         <div><dt>{{ t('settings.current_index_dimension') }}</dt><dd>{{ embedding_diag.current_index_dimension if embedding_diag.current_index_dimension is not none else '—' }}</dd></div>
+        <div><dt>{{ t('settings.embedding_window') }}</dt><dd>
+          {%- if embedding_diag.max_input_tokens -%}
+            {%- if embedding_diag.window_bound == 'at_least' -%}
+              {{ t('settings.embedding_window_at_least', tokens=embedding_diag.max_input_tokens) }}
+            {%- else -%}
+              {{ t('settings.embedding_window_tokens', tokens=embedding_diag.max_input_tokens) }}
+            {%- endif -%}
+          {%- else -%}
+            {{ t('settings.embedding_window_unprobed', tokens=embedding_token_budget) }}
+          {%- endif -%}
+        </dd></div>
         <div><dt>{{ t('settings.tested_at') }}</dt><dd>{{ embedding_diag.tested_at or '—' }}</dd></div>
         {% if embedding_diag.error_class %}<div><dt>{{ t('settings.error_class') }}</dt><dd>{{ embedding_diag.error_class }}</dd></div>{% endif %}
       </dl>
@@ -26,6 +37,7 @@
       {% elif embedding_diag.embedding_dimension is not none and embedding_diag.current_index_dimension is not none and embedding_diag.embedding_dimension != embedding_diag.current_index_dimension %}
         <p class="notice failed">{{ t('settings.dim_mismatch_warn') }}</p>
       {% endif %}
+      <p class="muted">{{ t('settings.embedding_window_note') }}</p>
     {% else %}
       <p class="muted">{{ t('settings.no_diag') }}</p>
     {% endif %}
