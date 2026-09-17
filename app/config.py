@@ -172,6 +172,7 @@ class MaxTokensConfig:
     settings_chat_probe: int = 128       # diagnostics: replies "ok"
     settings_stream_probe: int = 128
     settings_image_probe: int = 128
+    settings_structured_probe: int = 128   # replies with a tiny JSON array
     query_rewrite: int = 512             # JSON array, 1-4 short queries
     followups: int = 512                 # JSON, 3 short questions
     source_summary: int = 512            # 2-4 sentence per-source summary

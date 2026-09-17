@@ -31,6 +31,28 @@
   </section>
 
   <section class="settings-section">
+    <h2>{{ t('evalr.llm_diff_heading') }}</h2>
+    <div class="table-wrap">
+      <table class="diff-table">
+        <thead>
+          <tr><th>{{ t('evalr.setting') }}</th><th>{{ t('evalr.baseline') }} #{{ base_run.id }}</th><th>{{ t('evalr.candidate') }} #{{ candidate_run.id }}</th></tr>
+        </thead>
+        <tbody>
+          {% for row in llm_diff %}
+            <tr class="{{ 'diff-changed' if row.changed else '' }}">
+              <td data-label="{{ t('evalr.setting') }}">{{ row.label }}</td>
+              <td data-label="{{ t('evalr.baseline') }}">{{ row.base if row.base not in (none, '') else '—' }}</td>
+              <td data-label="{{ t('evalr.candidate') }}">{{ row.candidate if row.candidate not in (none, '') else '—' }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="3" class="muted">{{ t('evalr.llm_diff_missing') }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="settings-section">
     <h2>{{ t('evalr.domain_diff_heading') }}</h2>
     <div class="table-wrap">
       <table class="diff-table">

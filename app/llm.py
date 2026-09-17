@@ -963,6 +963,14 @@ async def probe_chat_diagnostics(
             },
         }
 
+    # O5b: asked right after sampling, because it needs the measured token-limit
+    # field -- sending the wrong one would fail the probe for an unrelated reason
+    # and record "no structured output" on an endpoint that has it.
+    result["capabilities"][STRUCTURED_OUTPUT_CAPABILITY] = await _probe_structured_output(
+        settings,
+        max_tokens_field=sampling[MAX_TOKENS_FIELD_CAPABILITY].get("field") or "max_tokens",
+    )
+
     json_probe = await _probe_chat_once(
         settings,
         user_prompt='Return exactly this JSON object: {"ok": true, "label": "pong"}',
@@ -1001,6 +1009,86 @@ async def probe_chat_diagnostics(
         result["capabilities"]["image_understanding"] = image_probe
 
     return result
+
+
+async def _probe_structured_output(
+    settings: dict[str, Any], *, max_tokens_field: str
+) -> dict[str, Any]:
+    """Find out, by asking, whether this endpoint will constrain output to a schema.
+
+    Tries the current `response_format: {"type": "json_schema"}` spelling first
+    and falls back to vLLM's older `extra_body: {"guided_json": ...}`, recording
+    which one was accepted so the runtime sends that same shape. As everywhere
+    else here, no model name is treated as evidence (`AGENTS.md`).
+
+    A 4xx means this endpoint does not offer it; anything else (a timeout, a
+    connection error) is `not_tested` rather than `failed`, because "we could not
+    reach it" is not "it does not support it" and the difference decides whether
+    an admin should retry.
+
+    Acceptance is all this can establish. Whether constraining *helps* is a
+    separate question -- on a reasoning model the grammar can drag output quality
+    down -- and only an A/B on the deployment's own corpus answers it. That is
+    what the eval run's LLM snapshot (O5c) exists to make attributable.
+    """
+    resolved = chat_settings(settings)
+    timeout = float(settings.get("timeout_seconds") or 60)
+    schema = {"type": "array", "items": {"type": "string"}}
+
+    async def attempt(shape: str) -> tuple[bool, str]:
+        payload: dict[str, Any] = {
+            "messages": [
+                {"role": "system", "content": DIAGNOSTIC_SYSTEM_PROMPT},
+                {"role": "user", "content": "Reply with a JSON array holding exactly: ok"},
+            ],
+            max_tokens_field: 64,
+        }
+        apply_structured_output(payload, shape, schema)
+        provider = resolved.get("provider") or "openai_compatible"
+        if provider == "azure_openai":
+            request = _azure_request(resolved, resolved["chat_model"], "chat/completions", payload)
+        else:
+            payload["model"] = resolved["chat_model"]
+            request = {
+                "url": (resolved.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+                + "/chat/completions",
+                "headers": _bearer_headers(resolved.get("api_key") or ""),
+                "json": payload,
+            }
+        try:
+            data = await _post_json_with_retry(
+                request["url"], request["headers"], request["json"], timeout, retry_stats={}
+            )
+        except httpx.HTTPStatusError as exc:
+            return False, f"http_{exc.response.status_code}"
+        except Exception as exc:
+            return False, exc.__class__.__name__
+        # Accepting the request is not enough: an endpoint that ignores the
+        # constraint would answer prose and look like a pass, which is the one
+        # outcome that would make the runtime trust a guarantee it does not have.
+        try:
+            content = _message_content(data, call_type="settings_structured_probe",
+                                       model=str(resolved.get("chat_model") or ""))
+            parsed = json.loads(extract_json(content))
+        except Exception:
+            return False, "UnconstrainedOutput"
+        return (True, "") if isinstance(parsed, list) else (False, "UnconstrainedOutput")
+
+    failures: list[str] = []
+    for shape in (STRUCTURED_OUTPUT_SHAPE_RESPONSE_FORMAT, STRUCTURED_OUTPUT_SHAPE_GUIDED_JSON):
+        accepted, detail = await attempt(shape)
+        if accepted:
+            return {"status": DIAGNOSTIC_STATUS_SUCCEEDED, "shape": shape}
+        failures.append(detail)
+
+    # A 4xx from both shapes is a real "no". A transport failure is not.
+    conclusive = all(detail.startswith("http_") or detail == "UnconstrainedOutput"
+                     for detail in failures)
+    return {
+        "status": DIAGNOSTIC_STATUS_FAILED if conclusive else "not_tested",
+        "shape": "",
+        "error_class": failures[0] if failures else "",
+    }
 
 
 async def _probe_chat_once(
@@ -3258,6 +3346,101 @@ def build_embedding_request(settings: dict[str, Any], texts: list[str]) -> dict[
 SAMPLING_PARAMS_CAPABILITY = "sampling_params"
 MAX_TOKENS_FIELD_CAPABILITY = "max_tokens_field"
 REASONING_EFFORT_CAPABILITY = "reasoning_effort"
+STRUCTURED_OUTPUT_CAPABILITY = "structured_output"
+
+#: The two request shapes that ask an OpenAI-compatible endpoint to constrain
+#: output to a JSON schema. `response_format` is the current spelling; vLLM's
+#: older `extra_body: {"guided_json": ...}` is kept because a deployment pinned
+#: to an older server still has the capability under the previous name.
+STRUCTURED_OUTPUT_SHAPE_RESPONSE_FORMAT = "response_format"
+STRUCTURED_OUTPUT_SHAPE_GUIDED_JSON = "guided_json"
+
+#: Output schemas by `call_type`, for the call types whose replies are parsed as
+#: JSON. Only these can be constrained; every other call type returns prose and
+#: must never carry a schema. The shapes mirror what `parse_rerank_scores` and
+#: `parse_json_strings` accept -- keep the two in step, since a schema that
+#: disagrees with the parser produces valid JSON the caller then throws away.
+STRUCTURED_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "rerank": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}, "score": {"type": "number"}},
+            "required": ["id", "score"],
+            "additionalProperties": False,
+        },
+    },
+    "query_rewrite": {"type": "array", "items": {"type": "string"}},
+    "followups": {"type": "array", "items": {"type": "string"}},
+    "starter_questions": {"type": "array", "items": {"type": "string"}},
+}
+
+
+def structured_output_shape(settings: dict[str, Any]) -> str:
+    """Which structured-output request shape this connection may use, if any.
+
+    Empty string means "do not constrain output" and is the answer for every
+    deployment that has not probed, could not conclude, has the toggle off, or
+    has changed its connection since the probe. That default is the point: this
+    changes how every JSON-returning call is sampled, and the salvage path in
+    `parse_rerank_scores` / `parse_json_strings` stays either way.
+
+    Fail-closed in the same shape as fixed `reasoning_effort` (ROADMAP O1b): a
+    positive probe only *permits* the feature, an admin still enables it.
+    """
+    if not settings.get("structured_output_enabled"):
+        return ""
+    diagnostics = settings.get("diagnostics")
+    chat = diagnostics.get("chat") if isinstance(diagnostics, dict) else None
+    if not isinstance(chat, dict):
+        return ""
+    if chat.get("settings_fingerprint") != llm_settings_fingerprint(settings):
+        return ""
+    capability = (chat.get("capabilities") or {}).get(STRUCTURED_OUTPUT_CAPABILITY)
+    if not isinstance(capability, dict) or capability.get("status") != DIAGNOSTIC_STATUS_SUCCEEDED:
+        return ""
+    shape = str(capability.get("shape") or "")
+    if shape not in (STRUCTURED_OUTPUT_SHAPE_RESPONSE_FORMAT, STRUCTURED_OUTPUT_SHAPE_GUIDED_JSON):
+        return ""
+    return shape
+
+
+def apply_structured_output(payload: dict[str, Any], shape: str, schema: dict[str, Any]) -> None:
+    """Attach the JSON-schema constraint to an outgoing chat payload, in place."""
+    if shape == STRUCTURED_OUTPUT_SHAPE_RESPONSE_FORMAT:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "reply", "schema": schema, "strict": True},
+        }
+    elif shape == STRUCTURED_OUTPUT_SHAPE_GUIDED_JSON:
+        payload["guided_json"] = schema
+
+
+def capability_snapshot(settings: dict[str, Any]) -> dict[str, Any]:
+    """The LLM-side facts an eval run's numbers depend on, frozen at run creation.
+
+    `eval_runs` already freezes the retrieval profile and the E2 domain config,
+    so two runs are comparable on those. Nothing froze the **LLM** side, and an
+    eval's Recall/MRR moves when the chat model changes or when a request-shaping
+    capability is switched -- so two runs that differ only there looked identical
+    in the record and a difference between them could not be attributed. That is
+    the same unheld-contract shape `AGENTS.md` documents for JSON blobs, one
+    layer up.
+
+    Deliberately compact and non-secret: model names and capability verdicts
+    only. No base URLs (internal hostnames), no keys, no prompts -- the same bar
+    `app/governance.py` holds its metadata to.
+    """
+    sampling = chat_sampling_support(settings)
+    return {
+        "chat_model": str(settings.get("chat_model") or "")[:160],
+        "embedding_model": str(settings.get("embedding_model") or "")[:160],
+        "temperature_sent": bool(sampling["temperature"]),
+        "max_tokens_field": sampling["max_tokens_field"],
+        "reasoning_effort_mode": str(settings.get("reasoning_effort_mode") or "auto")[:16],
+        "structured_output": structured_output_shape(settings) or "",
+        "embedding_window_tokens": embedding_window_budget(settings),
+    }
 
 
 def chat_sampling_support(settings: dict[str, Any]) -> dict[str, Any]:
@@ -3397,6 +3580,14 @@ def build_chat_request(
         ):
             payload["reasoning_effort"] = intent_parameters.reasoning_effort
     payload[support["max_tokens_field"]] = resolve_max_tokens(call_type)
+    # O5b: constrain the reply to a schema when this connection has been probed
+    # for it, an admin turned it on, and this call type's reply is parsed as JSON.
+    # Every other call type returns prose and must never carry a schema.
+    schema = STRUCTURED_OUTPUT_SCHEMAS.get(call_type or "")
+    if schema is not None:
+        shape = structured_output_shape(settings)
+        if shape:
+            apply_structured_output(payload, shape, schema)
     provider = resolved.get("provider") or "openai_compatible"
     if provider == "azure_openai":
         return _azure_request(resolved, resolved["chat_model"], "chat/completions", payload)

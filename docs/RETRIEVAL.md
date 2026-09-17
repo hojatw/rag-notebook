@@ -135,6 +135,9 @@ The active `final_chunk_count` (default 6) by `combined` is returned. Graceful f
 
 Full chunk text is sent (no `text[:900]` truncation) because chunks are already bounded by `chunk_text()` and tail-of-chunk truncation previously dropped answer evidence. Cost stays controlled by the configured chunk-size targets (defaults: ~400 CJK / ~800 Latin chars).
 
+
+**Optional schema-constrained output (O5b, off by default).** When `/settings` has probed the chat endpoint for `response_format: {"type": "json_schema"}` (or vLLM's older `guided_json`) *and* an admin has enabled it, rerank and query rewrite send their reply schema with the request, so malformed JSON cannot be sampled in the first place. `parse_rerank_scores`' salvage path stays either way — a probe can be inconclusive and an endpoint can change. **Whether to enable it is an A/B, not a default:** on a reasoning model, constraining output can cost answer quality, so run the same eval set with it off and on and compare. `eval_runs.llm_snapshot_json` records which run had it on.
+
 ### 6. Low-confidence abstain
 
 [`ask`](../app/main.py) reads the active low-confidence threshold live through `active_low_confidence_threshold()` ([app/retrieval.py](../app/retrieval.py)); the config default is `0.25`, while an applied retrieval profile can override it. When `not retrieved` or `top.score < threshold` we skip `generate_answer` entirely and return the localized app-side abstention. This avoids paying for a generation call that would either hallucinate or echo the same refusal back; generation-stage abstention uses the structural marker described below.

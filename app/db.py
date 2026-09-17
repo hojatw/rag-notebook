@@ -110,7 +110,8 @@ def init_db() -> None:
                 reasoning_effort_mode TEXT NOT NULL DEFAULT 'auto',
                 reasoning_effort TEXT NOT NULL DEFAULT 'medium',
                 timeout_seconds REAL NOT NULL DEFAULT 60,
-                diagnostics_json TEXT NOT NULL DEFAULT '{}'
+                diagnostics_json TEXT NOT NULL DEFAULT '{}',
+                structured_output_enabled INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS external_identities (
@@ -341,6 +342,7 @@ def init_db() -> None:
                 current_step TEXT NOT NULL DEFAULT '',
                 profile_snapshot_json TEXT NOT NULL DEFAULT '{}',
                 domain_config_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                llm_snapshot_json TEXT NOT NULL DEFAULT '{}',
                 domain_hints_enabled INTEGER NOT NULL DEFAULT 0,
                 answer_policy_enabled INTEGER NOT NULL DEFAULT 0,
                 metrics_json TEXT NOT NULL DEFAULT '{}',
@@ -606,6 +608,17 @@ def init_db() -> None:
         # deployment then served queries from a stale in-memory HNSW index and
         # Chroma failed them with "Error finding id".
         _ensure_column(conn, "vector_index_state", "write_seq", "INTEGER NOT NULL DEFAULT 0")
+        # O5c: the LLM capability flags in effect when an eval run was created.
+        # Without it, two runs that differ only by an LLM-side setting (structured
+        # output on/off, a changed chat model) are indistinguishable in the
+        # record, so a metric difference between them cannot be attributed to
+        # anything -- which makes the comparison useless as evidence.
+        _ensure_column(conn, "eval_runs", "llm_snapshot_json", "TEXT NOT NULL DEFAULT '{}'")
+        # O5b: admin opt-in for schema-constrained chat output. Off by default and
+        # deliberately NOT part of `llm_settings_fingerprint` -- the fingerprint
+        # identifies what the probe measured, and flipping a toggle does not
+        # change that, so including it would discard a valid probe on every flip.
+        _ensure_column(conn, "llm_settings", "structured_output_enabled", "INTEGER NOT NULL DEFAULT 0")
         # U16 Phase 2: what produced an outputs-shelf entry ('pinned', 'note', or
         # a Studio tool kind — allowlist NOTE_KINDS in app/main.py). Drives the
         # type badge and the shelf filter. '' means "not yet classified" and is

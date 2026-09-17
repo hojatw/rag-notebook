@@ -175,6 +175,7 @@ admin_page_limit_max = 300        # 管理頁每頁筆數上限
 settings_chat_probe = 128
 settings_stream_probe = 128
 settings_image_probe = 128
+settings_structured_probe = 128  # replies with a tiny JSON array
 query_rewrite = 512
 followups = 512
 source_summary = 512

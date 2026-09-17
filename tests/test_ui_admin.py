@@ -1474,3 +1474,123 @@ def test_the_probed_embedding_window_survives_storage_and_reaches_the_runtime(mo
         stored = db.load_llm_settings(conn)
     assert llm.embedding_window_budget(stored) == 8191
     assert llm.config.diagnostics.embedding_token_budget != 8191   # not the fallback
+
+
+def test_an_eval_run_records_the_llm_settings_it_ran_under(monkeypatch, tmp_path):
+    """O5c round-trip: real run creation → stored snapshot → the compare view.
+
+    `eval_runs` already froze the retrieval profile and the E2 domain config, so
+    runs were comparable on those. The LLM side was not frozen at all, which made
+    the one comparison O5b depends on — structured output on vs off — impossible
+    to attribute: the two runs looked identical in the record.
+
+    Drives the real `/admin/evals/.../run` route so the snapshot under test is
+    what the producer writes, not a hand-written fixture. Rename a key in
+    `llm.capability_snapshot` or in `evals.LLM_SNAPSHOT_LABELS` and the row
+    disappears from the compare view, which this asserts.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.evals as evals
+    import app.llm as llm
+
+    async def fake_retrieve(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(evals, "retrieve", fake_retrieve)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, notebook_id = _seed_notebook(db)
+        source_id = _seed_indexed_source(db, admin_user["id"], notebook_id, "a.pdf", summary="alpha")
+        with db.connect() as conn:
+            chunk_id = conn.execute(
+                "SELECT id FROM chunks WHERE source_id = ?", (source_id,)
+            ).fetchone()["id"]
+            set_id = conn.execute(
+                "INSERT INTO eval_sets (name, target_user_id, notebook_id, created_by)"
+                " VALUES ('Snap', ?, ?, ?)",
+                (admin_user["id"], notebook_id, admin_user["id"]),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO eval_items (eval_set_id, question, expected_chunk_id, approved)"
+                " VALUES (?, 'alpha?', ?, 1)",
+                (set_id, chunk_id),
+            )
+            conn.execute(
+                "UPDATE llm_settings SET chat_model = 'model-under-test', "
+                "embedding_model = 'embed-under-test' WHERE id = 1"
+            )
+            conn.commit()
+
+        started = client.post(f"/admin/evals/sets/{set_id}/run", follow_redirects=False)
+        assert started.status_code in (200, 303)
+
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT llm_snapshot_json FROM eval_runs WHERE eval_set_id = ?", (set_id,)
+            ).fetchone()
+        snapshot = db.loads(row["llm_snapshot_json"])
+
+    # Written by the real producer, keyed exactly as the reader expects.
+    assert snapshot["chat_model"] == "model-under-test"
+    assert snapshot["embedding_model"] == "embed-under-test"
+    assert snapshot["structured_output"] == ""      # off by default
+    assert set(snapshot) >= set(evals.LLM_SNAPSHOT_LABELS)
+    assert llm.capability_snapshot({"chat_model": "x"})["chat_model"] == "x"
+
+
+def test_the_compare_view_shows_which_llm_settings_differed(monkeypatch, tmp_path):
+    """The reader half: a structured-output flip has to be visible and flagged.
+
+    Two runs whose metrics differ are only evidence if the record says what was
+    different. These two snapshots are hand-written, which is safe because the
+    test above pins the producer's key names against the same labels.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, notebook_id = _seed_notebook(db)
+        source_id = _seed_indexed_source(db, admin_user["id"], notebook_id, "a.pdf", summary="alpha")
+        with db.connect() as conn:
+            chunk_id = conn.execute(
+                "SELECT id FROM chunks WHERE source_id = ?", (source_id,)
+            ).fetchone()["id"]
+            set_id = conn.execute(
+                "INSERT INTO eval_sets (name, target_user_id, notebook_id, created_by)"
+                " VALUES ('Cmp', ?, ?, ?)",
+                (admin_user["id"], notebook_id, admin_user["id"]),
+            ).lastrowid
+            item_id = conn.execute(
+                "INSERT INTO eval_items (eval_set_id, question, expected_chunk_id, approved)"
+                " VALUES (?, 'alpha?', ?, 1)",
+                (set_id, chunk_id),
+            ).lastrowid
+            params = main.current_retrieval_profile_params()
+            metrics = {"recall_at_k": 0.5, "mrr": 0.5, "hits": 1, "avg_latency_ms": 10,
+                       "avg_top_score": 0.4, "low_confidence_rate": 0.2}
+
+            def mk_run(llm_snapshot):
+                return conn.execute(
+                    "INSERT INTO eval_runs (eval_set_id, created_by, status, progress_total,"
+                    " progress_current, profile_snapshot_json, metrics_json, llm_snapshot_json)"
+                    " VALUES (?, ?, 'succeeded', 1, 1, ?, ?, ?)",
+                    (set_id, admin_user["id"], db.dumps(params), db.dumps(metrics),
+                     db.dumps(llm_snapshot)),
+                ).lastrowid
+
+            # Identical everywhere except the one flag under evaluation.
+            base_id = mk_run({"chat_model": "same-model", "structured_output": ""})
+            cand_id = mk_run({"chat_model": "same-model", "structured_output": "response_format"})
+            conn.execute("INSERT INTO eval_results (run_id, eval_item_id, status, hit_rank, top_score)"
+                         " VALUES (?, ?, 'miss', NULL, 0.4)", (base_id, item_id))
+            conn.execute("INSERT INTO eval_results (run_id, eval_item_id, status, hit_rank, top_score)"
+                         " VALUES (?, ?, 'hit', 1, 0.6)", (cand_id, item_id))
+
+        page = client.get(f"/admin/evals/compare?base={base_id}&candidate={cand_id}")
+
+    assert page.status_code == 200
+    assert "LLM 設定差異" in page.text
+    assert "response_format" in page.text
+    # The changed row is flagged; the unchanged model is not what stands out.
+    assert 'class="diff-changed"' in page.text

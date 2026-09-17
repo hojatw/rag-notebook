@@ -70,6 +70,12 @@
         </select>
         <small>{{ t('settings.reasoning_effort_fixed_hint') }}</small>
       </label>
+      <label>
+        <input type="checkbox" name="structured_output_enabled" value="1"
+               {% if settings.structured_output_enabled %}checked{% endif %}>
+        {{ t('settings.structured_output') }}
+        <small>{{ t('settings.structured_output_hint') }}</small>
+      </label>
 
       <div class="diagnostic-action-head">
         <div>
