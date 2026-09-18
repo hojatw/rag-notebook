@@ -123,7 +123,7 @@ PYTHONPATH=. .venv/bin/python -m tests.inspect_file_tokens /path/to/file.pdf
 
 ---
 
-## 3. 向量檢索全數降級：另一個行程寫入後，查詢端的索引沒跟著更新 [已修正，尚未發版]
+## 3. 向量檢索全數降級：另一個行程寫入後，查詢端的索引沒跟著更新 [已於 v0.9.0 修正]
 
 **發生**：2026-09-10 至 2026-09-11，`0.7.0`，split-worker 部署（`app` 與 `worker`
 兩個容器共用 bind-mount 的 `./data`）。
@@ -168,8 +168,7 @@ Failed to apply logs to the hnsw segment writer
 
 **處理**
 
-- **升級到含本修正的版本**（目前在 `CHANGELOG.md` 的 `[未發布]`，發版後請把這裡
-  改成實際版號）。修正後每次 upsert / delete / clear 都會遞增
+- **升級到 `v0.9.0` 以上**。修正後每次 upsert / delete / clear 都會遞增
   `vector_index_state.write_seq`，其他行程在下一次讀取前會清掉 System 快取並重開
   client。
 - **舊版部署的立即處置：重啟 `app` 容器即可**（`docker compose restart app`）。
@@ -191,7 +190,7 @@ Failed to apply logs to the hnsw segment writer
 
 ---
 
-## 4. 提問得不到任何回答：問題太長，超過 embedding 模型的輸入視窗 [已修正，尚未發版]
+## 4. 提問得不到任何回答：問題太長，超過 embedding 模型的輸入視窗 [已於 v0.9.0 修正]
 
 **發生**：2026-09-11 與 2026-09-16，`0.7.0`。
 
@@ -219,12 +218,16 @@ fallback 成原始問題，於是「長問題」原封不動變成「長 query�
 
 **處理**
 
-- 升級到含本修正的版本（目前在 `CHANGELOG.md` 的 `[未發布]`）。送出前會先修剪到
-  `[diagnostics] embedding_token_budget`。
+- 升級到 `v0.9.0` 以上。送出前會先修剪到 embedding 模型的輸入視窗。
 - 舊版的暫時做法：請使用者把長問題拆短。沒有設定可以繞過。
-- **使用較大視窗的 embedding 模型時記得調高 `embedding_token_budget`**
-  （e5 是 512；OpenAI `text-embedding-3` 是 8191）。留在 512 不會失敗，但長問題會被
-  截短，影響檢索品質。
+- **升級後要按一次 `/settings` 的「測試 embedding 模型」。** `v0.9.0` 起這個視窗是
+  **測出來的**，不再是靠人記得調 `[diagnostics] embedding_token_budget`；沒測過才會
+  退回那個設定值（預設 512，對 e5 正確，對 OpenAI `text-embedding-3` 的 8191 就會
+  把長問題截得過短——不會失敗，但影響檢索品質）。
+- **`v0.10.0` 之前，換過對話模型也會讓這個測量值失效。** 探測的有效範圍先前涵蓋
+  兩條連線，切換 chat 主機就會連帶作廢 embedding 那一邊剛測得的視窗，悄悄退回設定值。
+  `v0.10.0` 改為每條連線各自一個識別碼；在那之前，每次改完任何連線設定都要重測兩顆
+  按鈕。
 
 **預防**
 
@@ -234,7 +237,7 @@ fallback 成原始問題，於是「長問題」原封不動變成「長 query�
 
 ---
 
-## 5. 答案品質下降：模型輸出的 JSON 不合法，rerank 與 query rewrite 整批被丟掉 [已修正，尚未發版]
+## 5. 答案品質下降：模型輸出的 JSON 不合法，rerank 與 query rewrite 整批被丟掉 [已於 v0.9.0 修正]
 
 **發生**：2026-09-10（兩次）與 2026-09-16（一次），`0.7.0`，chat 模型 gpt-oss-120b。
 
@@ -268,7 +271,7 @@ json.decoder.JSONDecodeError: Expecting ',' delimiter: line 7 column 24
 
 **處理**
 
-- 升級到含本修正的版本（目前在 `CHANGELOG.md` 的 `[未發布]`）。嚴格解析失敗時會改走
+- 升級到 `v0.9.0` 以上。嚴格解析失敗時會改走
   逐物件／逐行的容錯復原，**部分成功遠好過全部丟掉**。
 - 復原時會記錄 `rerank_scores_salvaged` 或 `json_strings_salvaged`，帶上原始錯誤與
   救回筆數。
