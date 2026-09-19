@@ -34,6 +34,12 @@ from .llm import capability_snapshot, generate_eval_candidates, judge_answer
 #: Display labels for `eval_runs.llm_snapshot_json`. Keys must match what
 #: `llm.capability_snapshot` writes — the compare view iterates this, so a key
 #: renamed on one side silently disappears from the diff rather than erroring.
+#: E1g: the `llm_snapshot` keys whose change makes a metric diff unattributable.
+#: Everything else in the snapshot (sampling shape, output-cap field, structured
+#: output) changes *how* a model is called; these two change *which model
+#: answered*, which no profile diff can account for.
+COMPARABILITY_CRITICAL_KEYS = ("chat_model", "embedding_model")
+
 LLM_SNAPSHOT_LABELS = {
     "chat_model": "對話模型",
     "embedding_model": "Embedding 模型",
@@ -1991,6 +1997,7 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
     cand_llm = candidate_run["llm_snapshot"]
     llm_diff = [
         {
+            "key": key,
             "label": LLM_SNAPSHOT_LABELS.get(key, key),
             "base": base_llm.get(key),
             "candidate": cand_llm.get(key),
@@ -1998,6 +2005,17 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
         }
         for key in LLM_SNAPSHOT_LABELS
         if key in base_llm or key in cand_llm
+    ]
+    # E1g: a changed model is not the same kind of difference as a changed
+    # parameter, but the table renders them identically -- and in the parameter
+    # table directly above, a change is the whole point of the comparison. Chat
+    # runs on two switchable machines (DEPLOYMENT_CONTEXT.md, 2026-09-17), so two
+    # runs straddling a switch is routine, not exotic, and every metric below
+    # then has two candidate explanations. Surface it in the header instead of
+    # trusting someone to notice one highlighted row among five sections.
+    serving_changed = [
+        row["label"] for row in llm_diff
+        if row["changed"] and row["key"] in COMPARABILITY_CRITICAL_KEYS
     ]
 
     # E2d: compare only opaque/configuration summaries.  Full terms and policy
@@ -2117,6 +2135,7 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
         "llm_diff": llm_diff,
         "domain_config_diff": domain_config_diff,
         "metric_diff": metric_diff,
+        "serving_changed": serving_changed,
         "judge_compared": judge_compared,
         "judge_metric_diff": judge_metric_diff,
         "question_diff": question_diff,

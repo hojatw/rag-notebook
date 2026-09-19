@@ -2466,6 +2466,25 @@ def detect_dominant_language(text: str) -> str:
 MEETING_MINUTES_CONTEXT_CHARS = 16000
 
 
+def select_minutes_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The leading chunks that fit `MEETING_MINUTES_CONTEXT_CHARS`.
+
+    Extracted so the route can report **what was actually sent** (T1a) instead of
+    computing its own estimate of it. A second copy of this loop would be a
+    silent-drift bug the first time the budget or the packing changes, and the
+    whole point of the coverage notice is that the number is trustworthy.
+    """
+    selected: list[dict[str, Any]] = []
+    used = 0
+    for chunk in chunks:
+        text = chunk["text"]
+        if used + len(text) > MEETING_MINUTES_CONTEXT_CHARS:
+            break
+        selected.append(chunk)
+        used += len(text)
+    return selected
+
+
 async def generate_meeting_minutes(
     chunks: list[dict[str, Any]],
     settings: dict[str, Any],
@@ -2482,14 +2501,7 @@ async def generate_meeting_minutes(
     if not settings.get("chat_model"):
         logger.info("meeting_minutes_skipped reason=no_chat_settings")
         return ""
-    parts: list[str] = []
-    used = 0
-    for chunk in chunks:
-        text = chunk["text"]
-        if used + len(text) > MEETING_MINUTES_CONTEXT_CHARS:
-            break
-        parts.append(text)
-        used += len(text)
+    parts = [chunk["text"] for chunk in select_minutes_chunks(chunks)]
     user_prompt = f"Transcript:\n{'\n\n'.join(parts)}\n\nWrite the minutes now."
     try:
         minutes = await chat_completion(

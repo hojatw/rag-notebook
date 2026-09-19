@@ -54,7 +54,7 @@ from .worker import run_worker_loop
 from . import i18n
 import httpx
 
-from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, comparison_source_items, generate_answer_result, generate_answer_stream, generate_artifact, generate_briefing, generate_meeting_minutes, generate_starter_questions, set_http_client, suggest_followup_questions, translate_summary
+from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, comparison_source_items, generate_answer_result, generate_answer_stream, generate_artifact, generate_briefing, generate_meeting_minutes, generate_starter_questions, select_minutes_chunks, set_http_client, suggest_followup_questions, translate_summary
 # Used by main itself (chat/ask flow, lifespan, message rendering):
 from .retrieval import (
     active_low_confidence_threshold,
@@ -4621,7 +4621,7 @@ def _minutes_context(notebook_id: int, user_id: int, source_id: int):
             (source_id, notebook_id, user_id),
         ).fetchone()
         if source is None:
-            return None, [], {}
+            return None, [], 0, {}
         # Cap the fetch: generate_meeting_minutes uses ~16k chars and chunks are
         # ~300-800 chars each, so 100 rows is ample — don't read a 1000-chunk
         # transcript just to throw 95% of it away.
@@ -4629,8 +4629,15 @@ def _minutes_context(notebook_id: int, user_id: int, source_id: int):
             "SELECT location, text FROM chunks WHERE source_id = ? AND user_id = ? ORDER BY chunk_index LIMIT 100",
             (source_id, user_id),
         ).fetchall()]
+        # T1a: the *true* total, not the capped slice. Both truncation points —
+        # this LIMIT and the char budget inside generate_meeting_minutes — have
+        # to be visible to the user, and only this count sees the first one.
+        total_chunks = conn.execute(
+            "SELECT COUNT(*) AS n FROM chunks WHERE source_id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()["n"]
         settings = load_llm_settings(conn) or {}
-    return dict(source), chunks, settings
+    return dict(source), chunks, total_chunks, settings
 
 
 @app.post("/notebooks/{notebook_id}/minutes", response_class=HTMLResponse)
@@ -4646,7 +4653,7 @@ async def source_minutes(
     The result is rendered in the Studio card and saved as a note; an
     HX-Trigger refreshes the notes section.
     """
-    source, chunks, settings = await asyncio.to_thread(
+    source, chunks, total_chunks, settings = await asyncio.to_thread(
         _minutes_context, notebook_id, user["id"], source_id
     )
     if source is None:
@@ -4683,6 +4690,23 @@ async def source_minutes(
             status_code=400,
         )
 
+    # T1a step 1 — disclose the coverage. The minutes are built from a prefix of
+    # the transcript (a LIMIT here, a character budget in the generator), and at
+    # ~10-15k characters per hour of Chinese speech a long meeting loses a large
+    # share of its content. Before this, the only trace was `chunks_used` in the
+    # server log, so on screen a half-read meeting looked exactly like a fully
+    # read one. Step 2 (window the whole transcript) is the actual fix; until it
+    # lands, the user is at least told.
+    used_chunks = select_minutes_chunks(chunks)
+    coverage_note = ""
+    if total_chunks and len(used_chunks) < total_chunks:
+        coverage_note = i18n.t(
+            "flow.minutes_partial_coverage",
+            used=len(used_chunks),
+            total=total_chunks,
+            location=used_chunks[-1]["location"] if used_chunks else "—",
+        )
+
     minutes = await generate_meeting_minutes(
         chunks,
         settings,
@@ -4710,15 +4734,17 @@ async def source_minutes(
         )
 
     logger.info(
-        "meeting_minutes_completed user_id=%s notebook_id=%s source_id=%s chars=%s",
-        user["id"], notebook_id, source_id, len(minutes),
+        "meeting_minutes_completed user_id=%s notebook_id=%s source_id=%s chars=%s"
+        " chunks_used=%s chunks_total=%s",
+        user["id"], notebook_id, source_id, len(minutes), len(used_chunks), total_chunks,
     )
     # Manual save: show the minutes with a save-to-notes button; do not persist
     # automatically (no notes-changed fired — the shelf refreshes on save).
     return render(
         request, "_minutes_result.html",
         {"minutes": minutes, "error": "", "filename": source["filename"],
-         "declined": False, "warning": "", "notebook_id": notebook_id},
+         "declined": False, "warning": "", "notebook_id": notebook_id,
+         "coverage_note": coverage_note},
     )
 
 

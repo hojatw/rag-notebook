@@ -903,6 +903,42 @@ def test_high_risk_admin_actions_are_audited(monkeypatch, tmp_path):
         assert "audited-profile" in audit.text
 
 
+def test_admin_index_shows_the_vector_path_degrading(monkeypatch, tmp_path):
+    """O3: a Chroma outage must be readable on a page, not only in the log.
+
+    The two incidents this guards against produced no error anywhere a person
+    would look -- the SQLite fallback answered every question, worse. So the
+    assertion is that the degraded state reaches the admin page, and that a
+    healthy process does not cry wolf.
+    """
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+    from app import retrieval
+
+    with TestClient(main.app) as client:
+        _login(client)
+
+        # Healthy: a process that has served successful retrievals says so.
+        retrieval.reset_vector_health()
+        retrieval._VECTOR_HEALTH["last_success_at"] = 1_700_000_000.0
+        healthy = client.get("/admin/index")
+
+        # Degraded: every query since the last success fell back to SQLite.
+        retrieval._VECTOR_HEALTH["consecutive_failures"] = retrieval.VECTOR_FAILURE_ALERT_THRESHOLD
+        retrieval._VECTOR_HEALTH["last_failure_at"] = 1_700_000_900.0
+        degraded = client.get("/admin/index")
+        retrieval.reset_vector_health()
+
+    assert healthy.status_code == 200 and degraded.status_code == 200
+    assert "向量檢索正在退化" not in healthy.text
+    assert "向量檢索正常" in healthy.text
+
+    assert "向量檢索正在退化" in degraded.text
+    # The count is what distinguishes a blip from an outage, so it must be shown.
+    assert f"已連續 {retrieval.VECTOR_FAILURE_ALERT_THRESHOLD} 次" in degraded.text
+    # At the alert threshold this is an outage, not a nit.
+    assert 'class="alert"' in degraded.text
+
+
 def test_admin_index_page_warns_clear_does_not_reset_dimension(monkeypatch, tmp_path):
     """O0: the index page must not sell Clear/Rebuild as a dimension migration.
 
@@ -1594,3 +1630,65 @@ def test_the_compare_view_shows_which_llm_settings_differed(monkeypatch, tmp_pat
     assert "response_format" in page.text
     # The changed row is flagged; the unchanged model is not what stands out.
     assert 'class="diff-changed"' in page.text
+
+
+def test_compare_warns_only_when_the_serving_model_changed(monkeypatch, tmp_path):
+    """E1g: a model swap invalidates the metric diff; a sampling flip does not.
+
+    Both halves matter. A warning that fires on any LLM-side difference would go
+    off on every structured-output experiment -- which is a thing the workbench
+    exists to run -- and would be tuned out within a week.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, notebook_id = _seed_notebook(db)
+        source_id = _seed_indexed_source(db, admin_user["id"], notebook_id, "a.pdf", summary="alpha")
+        with db.connect() as conn:
+            chunk_id = conn.execute(
+                "SELECT id FROM chunks WHERE source_id = ?", (source_id,)
+            ).fetchone()["id"]
+            set_id = conn.execute(
+                "INSERT INTO eval_sets (name, target_user_id, notebook_id, created_by)"
+                " VALUES ('Cmp', ?, ?, ?)",
+                (admin_user["id"], notebook_id, admin_user["id"]),
+            ).lastrowid
+            item_id = conn.execute(
+                "INSERT INTO eval_items (eval_set_id, question, expected_chunk_id, approved)"
+                " VALUES (?, 'alpha?', ?, 1)",
+                (set_id, chunk_id),
+            ).lastrowid
+            params = main.current_retrieval_profile_params()
+            metrics = {"recall_at_k": 0.5, "mrr": 0.5, "hits": 1, "avg_latency_ms": 10,
+                       "avg_top_score": 0.4, "low_confidence_rate": 0.2}
+
+            def mk_run(llm_snapshot):
+                run_id = conn.execute(
+                    "INSERT INTO eval_runs (eval_set_id, created_by, status, progress_total,"
+                    " progress_current, profile_snapshot_json, metrics_json, llm_snapshot_json)"
+                    " VALUES (?, ?, 'succeeded', 1, 1, ?, ?, ?)",
+                    (set_id, admin_user["id"], db.dumps(params), db.dumps(metrics),
+                     db.dumps(llm_snapshot)),
+                ).lastrowid
+                conn.execute(
+                    "INSERT INTO eval_results (run_id, eval_item_id, status, hit_rank, top_score)"
+                    " VALUES (?, ?, 'hit', 1, 0.6)", (run_id, item_id))
+                return run_id
+
+            # Pair 1: only the chat model differs.
+            swapped_base = mk_run({"chat_model": "gemma-4-31b", "structured_output": ""})
+            swapped_cand = mk_run({"chat_model": "gpt-oss-120b", "structured_output": ""})
+            # Pair 2: same model, a sampling-shape change -- the normal experiment.
+            same_base = mk_run({"chat_model": "gemma-4-31b", "structured_output": ""})
+            same_cand = mk_run({"chat_model": "gemma-4-31b", "structured_output": "response_format"})
+
+        swapped = client.get(f"/admin/evals/compare?base={swapped_base}&candidate={swapped_cand}")
+        same = client.get(f"/admin/evals/compare?base={same_base}&candidate={same_cand}")
+
+    warning = "不能只歸因於參數差異"
+    assert swapped.status_code == 200 and same.status_code == 200
+    assert warning in swapped.text
+    # Names the field that moved, so the reader does not have to hunt for it.
+    assert "對話模型" in swapped.text.split(warning)[0].rsplit("<header", 1)[-1]
+    assert warning not in same.text

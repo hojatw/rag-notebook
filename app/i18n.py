@@ -295,6 +295,25 @@ MESSAGES: dict[str, dict[str, str]] = {
         # Runs created before this column existed have an empty snapshot. Saying
         # so beats an empty table that reads as "nothing differed".
         "evalr.llm_diff_missing": "這兩次執行沒有記錄 LLM 設定（在此功能加入前建立）。",
+        # --- O3: vector-path health on /admin/index -------------------------
+        "admin.vector_health_heading": "向量檢索健康狀態",
+        "admin.vector_health_ok": "向量檢索正常。最後一次成功：{last_success}。",
+        "admin.vector_health_idle": "這個行程還沒有服務過任何一次檢索，因此沒有資料。",
+        "admin.vector_health_degraded": (
+            "向量檢索正在退化：已連續 {failures} 次改用 SQLite 後備掃描（最後一次失敗："
+            "{last_failure}）。使用者仍然會拿到回答，但品質較差而且畫面上不會有任何錯誤——"
+            "這正是先前兩次事故沒被發現的原因。請查 logs/app.log 的 retrieve_vector_failed，"
+            "必要時用上方的「重建」。"
+        ),
+        "admin.vector_health_last_success": "最後一次成功：{last_success}。",
+        "admin.vector_health_scope": (
+            "這組計數只涵蓋目前這個網頁行程，重啟會歸零；若部署跑多個 uvicorn worker，"
+            "其他 worker 的失敗不會出現在這裡。"
+        ),
+        "evalr.serving_changed_warning": (
+            "這兩次執行的 {fields} 不同，下方的指標差異不能只歸因於參數差異——"
+            "換模型本身就會改變結果。要比較參數，請改挑兩次使用相同模型的執行。"
+        ),
         "evalr.setting": "設定",
         "evalr.baseline": "Baseline",
         "evalr.candidate": "Candidate",
@@ -585,6 +604,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "flow.minutes_no_source": "找不到已索引的來源，請重新整理後再試。",
         "flow.minutes_not_meeting": "這份來源看起來不像會議逐字稿或會議紀錄。",
         "flow.minutes_no_llm": "請先在系統設定完成 LLM 設定。",
+        "flow.minutes_partial_coverage": (
+            "這份整理只讀到逐字稿的前 {used} 段（全部 {total} 段），最後讀到「{location}」；"
+            "之後的內容沒有進入整理，請勿當成完整會議記錄使用。"
+        ),
         "flow.minutes_empty": "模型未能產生會議記錄，請再試一次。",
         "flow.artifact_need_index": "先完成來源索引，才能生成。",
         "flow.artifact_need_source": "請至少選擇一個來源。",
