@@ -1814,12 +1814,30 @@ async def generate_answer_result(
     answer_notes: list[str] | None = None,
     spreadsheet_guard: bool = False,
     domain_limits: dict[str, int] | None = None,
+    result_state: dict[str, Any] | None = None,
 ) -> AnswerResult:
-    """Generate and structurally classify a grounded answer before persistence."""
+    """Generate and structurally classify a grounded answer before persistence.
+
+    ``result_state`` mirrors the streaming path's out-dict: O6 records
+    ``dropped_chunks`` there so the caller can surface a thinner answer.
+    """
     if not settings.get("chat_model"):
         raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
 
     logger.info("answer_generation_started chunks=%s question_chars=%s", len(chunks), len(question))
+    chunks, dropped = fit_answer_chunks(
+        question,
+        chunks,
+        chat_window_budget(settings),
+        overhead_chars=_answer_overhead_chars(answer_policy, answer_notes),
+    )
+    if dropped:
+        logger.warning(
+            "answer_chunks_dropped_for_window dropped=%s kept=%s call_type=%s",
+            dropped, len(chunks), call_type,
+        )
+        if isinstance(result_state, dict):
+            result_state["dropped_chunks"] = dropped
     content = await chat_completion(
         settings,
         answer_prompt(
@@ -1873,6 +1891,19 @@ async def generate_answer_stream(
         raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
 
     logger.info("answer_stream_started chunks=%s question_chars=%s", len(chunks), len(question))
+    chunks, dropped = fit_answer_chunks(
+        question,
+        chunks,
+        chat_window_budget(settings),
+        overhead_chars=_answer_overhead_chars(answer_policy, answer_notes),
+    )
+    if dropped:
+        logger.warning(
+            "answer_chunks_dropped_for_window dropped=%s kept=%s call_type=answer_stream",
+            dropped, len(chunks),
+        )
+        if isinstance(result_state, dict):
+            result_state["dropped_chunks"] = dropped
     gate_chars = max(0, int(config.runtime.answer_stream_gate_chars))
     completion_parts: list[str] = []
     completion_chars = 0
@@ -2033,6 +2064,21 @@ def _domain_limit(domain_limits: dict[str, int] | None, key: str) -> int:
     return int(value) if isinstance(value, int) and not isinstance(value, bool) and value > 0 else fallback
 
 
+def _answer_overhead_chars(answer_policy: str, answer_notes: list[str] | None) -> int:
+    """Characters the answer prompt spends on things other than question + chunks.
+
+    The system prompt, the citation scaffolding around each excerpt and the E2
+    guidance block all consume window too. Counting them keeps `fit_answer_chunks`
+    from fitting a prompt that then overflows anyway; it is an estimate, which is
+    why the caller also keeps a reserve.
+    """
+    return (
+        len(SYSTEM_PROMPT)
+        + len(answer_policy or "")
+        + sum(len(note) for note in (answer_notes or []))
+    )
+
+
 def answer_prompt(
     question: str,
     chunks: list[dict[str, Any]],
@@ -2113,6 +2159,61 @@ def fit_rewrite_inputs(
         question = question[:low] + "\n……\n" + question[-low:]
 
     return question, kept_history, dropped
+
+
+def fit_answer_chunks(
+    question: str,
+    chunks: list[dict[str, Any]],
+    budget: int,
+    *,
+    overhead_chars: int = 0,
+    reserve: int = 1024,
+) -> tuple[list[dict[str, Any]], int]:
+    """Bound the answer prompt by dropping whole chunks, lowest-ranked first.
+
+    O6. `fit_rewrite_inputs` already guards query rewrite, but the answer prompt
+    is the larger of the two and had no active protection at all -- only the
+    `chat_input_over_window` warning in `build_chat_request`, which fires after
+    the fact and changes nothing. An over-window answer is refused by the
+    endpoint, and every caller turns that into a degraded result.
+
+    What is safe to cut differs from rewrite, which is why this is its own
+    function rather than a shared one. In rewrite, history is disposable and the
+    question is the payload. In an answer the **retrieved chunks are the
+    payload**: dropping evidence produces a confident answer grounded in less of
+    it, which looks exactly like a good answer. So:
+
+    - Never truncate a chunk's text. A half-chunk still gets cited as `[N]` and
+      that citation would then point at text the model never saw -- a wrong
+      citation is worse than a missing chunk, because it survives review.
+    - Drop from the end. `retrieve()` returns chunks best-first, so the tail is
+      the least relevant evidence and costs the least to lose.
+    - Always keep at least one chunk. An answer with no evidence is not an
+      answer; if even one chunk cannot fit, the endpoint's refusal is the
+      correct outcome and the caller's existing error path handles it.
+    - Return the count dropped so the caller can *say* the answer is thinner.
+      Silent degradation is the failure mode this whole item exists to remove.
+
+    `budget` of 0 means the window was never measured and everything is returned
+    untouched, exactly as `fit_rewrite_inputs` does.
+    """
+    from .governance import count_cjk_chars as _cjk
+
+    def _tokens(text: str) -> int:
+        return estimate_tokens(len(text), cjk_chars=_cjk(text))
+
+    if budget <= 0 or not chunks:
+        return chunks, 0
+
+    room = max(1, budget - reserve)
+    fixed = _tokens(question) + estimate_tokens(overhead_chars)
+    kept = list(chunks)
+    while len(kept) > 1:
+        used = fixed + sum(_tokens(chunk.get("text") or "") for chunk in kept)
+        if used <= room:
+            break
+        kept.pop()
+    return kept, len(chunks) - len(kept)
 
 
 async def rewrite_search_queries(
@@ -2245,7 +2346,10 @@ async def generate_starter_questions(
     if not settings.get("chat_model"):
         logger.info("starter_questions_skipped reason=no_chat_settings")
         return []
-    samples = excerpts[:8]
+    # Q1-8 sibling: the caller hands over a notebook-wide spread, so taking a
+    # prefix here would put the skew straight back. Spread again, with no head
+    # bias -- across a notebook there is no "opening" worth privileging.
+    samples = spread_sample(excerpts, 8, head=0)
     context = "\n\n".join(
         f"[{index}] {chunk['filename']} - {chunk['location']}\n{chunk['text'][:400]}"
         for index, chunk in enumerate(samples, start=1)
@@ -2463,6 +2567,75 @@ def detect_dominant_language(text: str) -> str:
     return ""
 
 
+#: How many chunks a source summary is built from. Unchanged from the original
+#: `chunks[:12]`; what changed is *which* twelve (Q1-8).
+SOURCE_SUMMARY_SAMPLE_SIZE = 12
+
+#: How many chunks the first `head` of a spread sample keeps in reading order.
+#: A document's opening carries the title, abstract or agenda, which is worth
+#: more per chunk than any other position -- so the sample keeps a few of them
+#: and spreads the rest rather than spreading uniformly from position zero.
+SPREAD_SAMPLE_HEAD = 3
+
+#: Appended to a summary prompt only when the sample was actually spread. The
+#: model must not read spaced excerpts as continuous text and infer a narrative
+#: across the gaps.
+SPREAD_SAMPLE_NOTE = (
+    "Note: these excerpts are samples taken from across the whole document, not "
+    "consecutive text. Do not assume they are adjacent, and do not infer what "
+    "happens between them."
+)
+
+
+def spread_sample(items: list[Any], limit: int, head: int = SPREAD_SAMPLE_HEAD) -> list[Any]:
+    """Pick at most `limit` items covering the whole list, in original order.
+
+    Q1-8: several features sampled with `items[:N]` and so described only a
+    document's opening -- for a meeting transcript, the agenda and the
+    introductions, never the decisions. This keeps the first `head` items (an
+    opening is genuinely more informative per chunk) and spaces the rest evenly
+    across everything that follows, at no extra cost: same count in, same
+    prompt size out.
+
+    Deterministic and order-preserving, so a summary does not change wording
+    between two ingests of the same file. Returns every item when there are no
+    more than `limit` of them, which is the common case for short sources.
+    """
+    if limit <= 0 or not items:
+        return []
+    if len(items) <= limit:
+        return list(items)
+    head = max(0, min(head, limit))
+    chosen = list(range(head))
+    taken = set(chosen)
+    remaining = limit - head
+    tail_start, last = head, len(items) - 1
+    if remaining > 0 and tail_start <= last:
+        # Interpolate *inclusively* across the tail so the final item is always
+        # sampled. Midpoint spacing would systematically miss it, and the end of
+        # a document is not filler: a transcript's decisions and action items
+        # live in its closing minutes, which is half of why Q1-8 was filed.
+        span = last - tail_start
+        for position in range(remaining):
+            offset = 0 if remaining == 1 else round(position * span / (remaining - 1))
+            index = min(tail_start + offset, last)
+            if index not in taken:
+                taken.add(index)
+                chosen.append(index)
+        if last not in taken:
+            taken.add(last)
+            chosen.append(last)
+    # Rounding can collide on short tails; top up in order so the caller always
+    # gets `limit` items when the list can supply them.
+    for index in range(len(items)):
+        if len(chosen) >= limit:
+            break
+        if index not in taken:
+            taken.add(index)
+            chosen.append(index)
+    return [items[index] for index in sorted(chosen)]
+
+
 MEETING_MINUTES_CONTEXT_CHARS = 16000
 
 
@@ -2536,12 +2709,15 @@ async def summarize_source(
     if not settings.get("chat_model"):
         logger.info("source_summary_skipped reason=no_chat_settings")
         return ""
-    samples = chunks[:12]
+    samples = spread_sample(chunks, SOURCE_SUMMARY_SAMPLE_SIZE)
     context = "\n\n".join(
         f"[{index}] {chunk.get('location', '')}\n{chunk['text']}"
         for index, chunk in enumerate(samples, start=1)
     )
-    user_prompt = f"Source excerpts:\n{context}\n\nWrite the summary now."
+    # Only claim the excerpts are spaced when they actually are; a short source
+    # is still read in order and should not carry a caveat that does not apply.
+    spread_note = f"{SPREAD_SAMPLE_NOTE}\n\n" if len(samples) < len(chunks) else ""
+    user_prompt = f"Source excerpts:\n{context}\n\n{spread_note}Write the summary now."
     try:
         content = await chat_completion(
             settings,

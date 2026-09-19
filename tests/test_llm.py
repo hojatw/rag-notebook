@@ -2206,3 +2206,195 @@ def test_a_prompt_within_the_window_is_not_reported(caplog):
         build_chat_request(settings, "短問題", "sys", call_type="briefing")
 
     assert not [r for r in caplog.records if "chat_input_over_window" in r.getMessage()]
+
+
+def test_spread_sample_covers_the_whole_list_and_keeps_the_opening():
+    """Q1-8: the sampler's contract, pinned independently of any caller.
+
+    Order-preserving and deterministic, because a summary that reworded itself
+    between two ingests of the same file would be indistinguishable from a
+    content change.
+    """
+    items = list(range(100))
+
+    picked = llm.spread_sample(items, 12)
+    assert len(picked) == 12
+    assert picked == sorted(picked), "order must be preserved"
+    assert picked[:3] == [0, 1, 2], "the opening is kept in reading order"
+    assert picked[-1] > 80, f"the tail must be represented, got {picked}"
+    assert llm.spread_sample(items, 12) == picked, "must be deterministic"
+
+    # A short list comes back whole -- the common case for short sources.
+    assert llm.spread_sample([1, 2, 3], 12) == [1, 2, 3]
+    assert llm.spread_sample([], 12) == []
+    assert llm.spread_sample(items, 0) == []
+    # The final item is always sampled: a transcript's decisions live in its
+    # closing minutes, so a sampler that never reaches the end misses them.
+    assert picked[-1] == 99
+    # head=0 spreads evenly end to end (notebook-wide sampling has no opening
+    # worth privileging, but it must still cover both extremes).
+    flat = llm.spread_sample(items, 4, head=0)
+    assert flat[0] == 0 and flat[-1] == 99
+
+
+def test_source_summary_sees_the_second_half_of_a_long_document(monkeypatch):
+    """Q1-8: `chunks[:12]` made every summary a summary of the opening.
+
+    For a meeting transcript that is the agenda and the introductions -- the
+    decisions come later -- so the summary, the briefing, the study guide and
+    the FAQ all described how the meeting started. Observed failing against the
+    prefix sampler: the marker below appeared nowhere in the prompt.
+    """
+    captured = {}
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
+        captured["user_prompt"] = user_prompt
+        return "摘要。"
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    # The distinctive content covers the whole second half rather than one
+    # index, so this asserts the property ("the later document is represented")
+    # instead of pinning the sampler's exact arithmetic.
+    chunks = [{"location": f"page {i}", "text": f"開場與議程說明第 {i} 段。"} for i in range(30)]
+    chunks += [{"location": f"page {i}", "text": f"決議事項第 {i} 項，由財務部執行。"}
+               for i in range(30, 60)]
+
+    asyncio.run(summarize_source(chunks, {"api_key": "sk", "chat_model": "m"}))
+
+    assert "決議事項" in captured["user_prompt"]
+    # The closing specifically -- a transcript's action items live there.
+    assert "決議事項第 59 項" in captured["user_prompt"]
+    # The model must not read spaced excerpts as continuous narrative.
+    assert llm.SPREAD_SAMPLE_NOTE in captured["user_prompt"]
+
+
+def test_short_source_summary_carries_no_spread_caveat(monkeypatch):
+    """The other half: a source read in full must not claim it was sampled."""
+    captured = {}
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
+        captured["user_prompt"] = user_prompt
+        return "摘要。"
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    chunks = [{"location": "page 1", "text": "短文件內容。"}]
+
+    asyncio.run(summarize_source(chunks, {"api_key": "sk", "chat_model": "m"}))
+
+    assert llm.SPREAD_SAMPLE_NOTE not in captured["user_prompt"]
+
+
+def test_starter_questions_sample_across_the_excerpts_given(monkeypatch):
+    """Q1-8 sibling: taking a prefix here would undo the caller's spread."""
+    captured = {}
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
+        captured["user_prompt"] = user_prompt
+        return '["Q1", "Q2"]'
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    excerpts = [
+        {"filename": "f.txt", "location": f"p{i}", "text": f"<內容 {i}>"} for i in range(40)
+    ]
+    excerpts[39]["text"] = "最後一段的獨特內容"
+
+    asyncio.run(
+        llm.generate_starter_questions(excerpts, {"api_key": "sk", "chat_model": "m"})
+    )
+
+    assert "最後一段的獨特內容" in captured["user_prompt"]
+    # Eight excerpts, drawn from across the list rather than its first eight.
+    assert captured["user_prompt"].count("[8]") == 1
+    assert "<內容 3>" not in captured["user_prompt"], "a prefix sample would include this"
+
+
+def _probed_window_settings(max_input_tokens):
+    """LLM settings carrying a probed, exact chat window (O5a's shape)."""
+    settings = {"api_key": "sk", "chat_model": "m", "provider": "openai_compatible",
+                "base_url": "https://x/v1"}
+    settings["diagnostics"] = {
+        "chat": {
+            "settings_fingerprint": llm.chat_settings_fingerprint(settings),
+            "capabilities": {
+                llm.CHAT_WINDOW_CAPABILITY: {
+                    "bound": "exact", "max_input_tokens": max_input_tokens,
+                },
+            },
+        },
+    }
+    return settings
+
+
+def test_fit_answer_chunks_drops_whole_chunks_from_the_tail():
+    """O6: the answer prompt had no active bound, only an after-the-fact warning.
+
+    Three properties, each of which would be a real bug if it broke:
+    chunks are never cut mid-text (a half-chunk still gets cited as `[N]`, and
+    that citation would point at text the model never saw), the tail goes first
+    (retrieve() returns best-first, so the tail is the cheapest evidence to
+    lose), and at least one chunk always survives.
+    """
+    chunks = [{"text": "證據內容。" * 200, "filename": "f", "location": f"p{i}"} for i in range(6)]
+
+    kept, dropped = llm.fit_answer_chunks("問題？", chunks, budget=2000)
+    assert dropped > 0, "a 6-chunk prompt must not fit a 2000-token window"
+    assert len(kept) + dropped == len(chunks)
+    # Whole chunks only, taken from the front of the ranking.
+    assert kept == chunks[: len(kept)]
+    assert all(chunk["text"] == chunks[0]["text"] for chunk in kept)
+
+    # Even an impossible budget keeps one chunk: an answer with no evidence is
+    # not an answer, and the endpoint's refusal is then the correct outcome.
+    kept_min, _ = llm.fit_answer_chunks("問題？", chunks, budget=1)
+    assert len(kept_min) == 1
+
+    # An unmeasured window (0) changes nothing, exactly like fit_rewrite_inputs.
+    kept_all, dropped_none = llm.fit_answer_chunks("問題？", chunks, budget=0)
+    assert kept_all == chunks and dropped_none == 0
+    # A prompt that already fits is untouched.
+    assert llm.fit_answer_chunks("問題？", chunks, budget=1_000_000) == (chunks, 0)
+
+
+def test_answer_generation_bounds_the_prompt_and_reports_it(monkeypatch):
+    """O6 end to end: the generator must trim *and* say that it trimmed.
+
+    Silent degradation is the whole point of the item -- an answer grounded in
+    less evidence reads exactly like a good one.
+    """
+    captured = {}
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
+        captured["user_prompt"] = user_prompt
+        return "回答內容 [1]"
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    chunks = [{"text": f"第 {i} 段證據。" * 200, "filename": "f", "location": f"p{i}"}
+              for i in range(8)]
+    state = {}
+
+    asyncio.run(
+        llm.generate_answer_result(
+            "這份報告的結論是什麼？", chunks, _probed_window_settings(2000), result_state=state,
+        )
+    )
+
+    assert state["dropped_chunks"] > 0
+    # The excerpts that survived are whole, and the dropped ones are absent.
+    assert "第 0 段證據。" in captured["user_prompt"]
+    assert f"第 {len(chunks) - 1} 段證據。" not in captured["user_prompt"]
+
+
+def test_answer_generation_reports_nothing_when_everything_fits(monkeypatch):
+    """The other half: no badge on a normal answer, or it becomes noise."""
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
+        return "回答內容 [1]"
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    chunks = [{"text": "短證據。", "filename": "f", "location": "p1"}]
+    state = {}
+
+    asyncio.run(
+        llm.generate_answer_result("問題？", chunks, _probed_window_settings(100_000), result_state=state)
+    )
+
+    assert "dropped_chunks" not in state

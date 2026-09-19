@@ -134,6 +134,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.warn_spreadsheet_truncated": "工作表 {sheets} 超過列數或欄數上限，只索引了前面的部分。可在 [spreadsheet] 設定調整上限。",
         "diag.warn_spreadsheet_uncached_formulas": "有 {count} 個公式儲存格沒有計算結果快取，讀進來是空的。請用 Excel 開啟並重新儲存，或匯出成含計算值的檔案。",
         "diag.warn_spreadsheet_wide_sheet": "工作表欄位偏多，每個分塊只能容納少數幾列，檢索精度可能下降。",
+        "diag.warn_subtitle_no_cue_timestamps": "這份逐字稿的時間碼無法解析，引用位置只會顯示「transcript」，無法指出答案出自第幾分鐘。文字本身不受影響。",
+        "diag.warn_subtitle_no_speaker_labels": "這份逐字稿沒有發言者標記（WebVTT 的 <v 姓名> 標籤）。內容仍可檢索，但無法判斷每句話是誰說的，行動項目的負責人需要人工確認。",
         "diag.warn_csv_encoding_fallback": "CSV 不是 UTF-8，已改用 {encoding} 解碼（無法辨識的字元 {replacements} 個）。若內容出現亂碼，請改存成 UTF-8 後重新上傳。",
         # A6c spreadsheet details
         "diag.sheets": "工作表",
@@ -144,6 +146,14 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.sheet_header_generated": "自動產生欄位名稱",
         "diag.sheet_qa_auto": "問答欄位為自動判斷",
         "diag.sheet_meta": "{rows} 列 · {columns} 欄 · {chunks} 分塊",
+        "chat.dropped_chunks_badge": "少用 {count} 段",
+        "chat.dropped_chunks_detail": (
+            "為了不超過對話模型的輸入上限，有 {count} 段檢索到的內容沒有送進這次回答"
+            "（捨棄的是排序最後、相關度最低的幾段）。答案仍然只根據實際送出的內容，"
+            "但依據比平常少，建議對照引用自行確認。"
+        ),
+        "diag.transcript": "逐字稿",
+        "diag.transcript_stats": "{cues} 段字幕 · {timed_cues} 段有時間碼 · {speaker_labels} 處發言者標記",
         "diag.csv_encoding": "CSV 編碼",
         "diag.csv_delimiter": "分隔符號",
         # --- Outputs shelf · entry type badges (U16 Phase 2) ------------------
