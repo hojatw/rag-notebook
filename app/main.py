@@ -54,7 +54,7 @@ from .worker import run_worker_loop
 from . import i18n
 import httpx
 
-from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, comparison_source_items, generate_answer_result, generate_answer_stream, generate_artifact, generate_briefing, generate_meeting_minutes, generate_starter_questions, select_minutes_chunks, set_http_client, suggest_followup_questions, translate_summary
+from .llm import ARTIFACT_PROMPTS, FOLLOWUPS_CACHE_VERSION, close_http_client, compare_sources, comparison_source_items, generate_answer_result, generate_answer_stream, generate_artifact, generate_briefing, generate_meeting_minutes, generate_starter_questions, select_minutes_chunks, set_http_client, spread_sample, suggest_followup_questions, translate_summary
 # Used by main itself (chat/ask flow, lifespan, message rendering):
 from .retrieval import (
     active_low_confidence_threshold,
@@ -2900,21 +2900,70 @@ async def notebook_suggestions(
     )
 
 
+#: How many notebook chunks the starter-question sampler collects before
+#: `generate_starter_questions` narrows them further.
+SUGGESTION_SAMPLE_SIZE = 24
+
+
 def _suggestions_context(notebook_id: int, user_id: int):
     with connect() as conn:
         notebook = get_notebook(conn, notebook_id, user_id)
-        rows = conn.execute(
+        # Q1-8 sibling: this used to be `ORDER BY chunks.id DESC LIMIT 24`.
+        # Chunk ids ascend with insertion, so that is the *end of the most
+        # recently indexed source* -- for a transcript, its closing remarks --
+        # and starter questions for a whole notebook were drawn from one
+        # document's last pages. Sample per source instead, round-robin, so
+        # every indexed source is represented and the questions describe the
+        # notebook. Only ids are read in the first pass; the text of the
+        # selected rows is fetched afterwards.
+        index_rows = conn.execute(
             """
-            SELECT chunks.text, chunks.location, sources.filename
+            SELECT chunks.id, chunks.source_id
             FROM chunks JOIN sources ON sources.id = chunks.source_id
             WHERE chunks.user_id = ? AND sources.notebook_id = ? AND sources.status = 'indexed'
-            ORDER BY chunks.id DESC
-            LIMIT 24
+            ORDER BY chunks.source_id ASC, chunks.chunk_index ASC
             """,
             (user_id, notebook_id),
         ).fetchall()
+        selected_ids = _round_robin_chunk_ids(index_rows, SUGGESTION_SAMPLE_SIZE)
+        rows = []
+        if selected_ids:
+            placeholders = ",".join("?" for _ in selected_ids)
+            rows = conn.execute(
+                f"""
+                SELECT chunks.text, chunks.location, sources.filename
+                FROM chunks JOIN sources ON sources.id = chunks.source_id
+                WHERE chunks.id IN ({placeholders})
+                ORDER BY chunks.source_id ASC, chunks.chunk_index ASC
+                """,
+                selected_ids,
+            ).fetchall()
         settings = load_llm_settings(conn)
     return notebook, rows, settings
+
+
+def _round_robin_chunk_ids(index_rows, limit: int) -> list[int]:
+    """Pick up to `limit` chunk ids, spread within and across sources.
+
+    Two levels of fairness, and both are needed: `spread_sample` inside a source
+    stops one document's opening (or ending) from standing in for the whole of
+    it, and the round-robin across sources stops one large document from
+    crowding out every other one -- which a flat spread over the notebook would
+    still allow, since it samples by position, not by source.
+    """
+    by_source: dict[int, list[int]] = {}
+    for row in index_rows:
+        by_source.setdefault(row["source_id"], []).append(row["id"])
+    if not by_source:
+        return []
+    per_source = max(1, limit // len(by_source))
+    pools = [spread_sample(ids, per_source, head=0) for ids in by_source.values()]
+    selected: list[int] = []
+    for position in range(max((len(pool) for pool in pools), default=0)):
+        for pool in pools:
+            if position < len(pool) and len(selected) < limit:
+                selected.append(pool[position])
+    return selected
 
 
 def _save_suggestions(notebook_id: int, questions: list[str]) -> None:
@@ -3844,6 +3893,7 @@ async def _answer_question(
         return i18n.t("chat.abstain"), [], metadata
 
     generate_started = time.perf_counter()
+    answer_state: dict[str, Any] = {}
     result = await generate_answer_result(
         question,
         retrieved,
@@ -3852,8 +3902,13 @@ async def _answer_question(
         answer_policy=str(domain_snapshot.get("answer_policy") or ""),
         answer_notes=matched_answer_notes(matched_hints),
         spreadsheet_guard=spreadsheet_answer_guard(retrieved),
+        result_state=answer_state,
     )
     answer = i18n.t("chat.abstain") if result.abstained else result.text
+    # O6: evidence dropped to fit the window is the one degradation that looks
+    # identical to a good answer, so it has to reach the debug pane.
+    if answer_state.get("dropped_chunks"):
+        metadata["dropped_chunks"] = int(answer_state["dropped_chunks"])
     metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
     metadata["answer_chars"] = len(answer)
     citations = [] if result.abstained else _referenced_citations(answer, retrieved)
@@ -4146,6 +4201,8 @@ async def ask_stream(
                     # shown text. Clear the client's buffer before appending the
                     # refusal, so the ungrounded preamble does not linger until
                     # the final `done` swap.
+                    if result_state.get("dropped_chunks"):
+                        metadata["dropped_chunks"] = int(result_state["dropped_chunks"])
                     if result_state.pop("discard_stream", False):
                         answer = ""
                         yield sse_event("discard", {})

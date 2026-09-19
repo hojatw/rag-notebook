@@ -618,3 +618,42 @@ def test_reindex_marks_the_source_queued_so_its_row_keeps_polling(monkeypatch, t
         row = client.get(f"/notebooks/{notebook_id}/sources/{source_id}/_partial")
         assert 'hx-trigger="every 2s' in row.text
         assert f"/notebooks/{notebook_id}/sources/{source_id}/_partial" in row.text
+
+
+def test_starter_question_sampling_reaches_every_source(monkeypatch, tmp_path):
+    """Q1-8 sibling, at the layer that caused it.
+
+    `_suggestions_context` ordered by `chunks.id DESC LIMIT 24`. Chunk ids
+    ascend with insertion, so the sample was the *end of the most recently
+    indexed source* -- a whole notebook's starter questions were drawn from one
+    document's closing pages. Observed failing against that query: the older
+    source contributed nothing at all.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app):
+        user, notebook_id = _seed_notebook(db)
+        _seed_two_sources(db, user, notebook_id)
+        _notebook, rows, _settings = main._suggestions_context(notebook_id, user["id"])
+
+    texts = [row["text"] for row in rows]
+    assert any(text.startswith("舊文件") for text in texts), "the older source must be represented"
+    assert any(text.startswith("新文件") for text in texts)
+    # Within a source the sample spans it, rather than clustering at one end.
+    old_indexes = [int(t.split("第 ")[1].split(" 段")[0]) for t in texts if t.startswith("舊文件")]
+    assert min(old_indexes) < 10 and max(old_indexes) > 30, old_indexes
+
+
+def _seed_two_sources(db, user, notebook_id):
+    with db.connect() as conn:
+        for filename, marker in (("old.pdf", "舊文件"), ("new.pdf", "新文件")):
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status) "
+                "VALUES (?, ?, ?, '/tmp/x', 'indexed')",
+                (user["id"], notebook_id, filename),
+            ).lastrowid
+            for index in range(40):
+                conn.execute(
+                    "INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json) "
+                    "VALUES (?, ?, ?, ?, ?, '[]')",
+                    (user["id"], source_id, index, f"page {index}", f"{marker} 第 {index} 段"),
+                )

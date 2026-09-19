@@ -22,6 +22,16 @@ logger = logging.getLogger(__name__)
 # from caption text so only the spoken words remain.
 _VTT_INLINE_TAG = re.compile(r"<[^>]+>")
 
+#: WebVTT voice span — `<v Name>`, `<v.loud Name>`, `<v.first.loud Name>`. This
+#: is where Teams-style exports put the speaker, and `_VTT_INLINE_TAG` would
+#: otherwise delete it with every other tag (T1c).
+_VTT_VOICE_RE = re.compile(r"<v(?:\.[^\s>]+)*\s+([^>]*)>", re.IGNORECASE)
+
+#: A cue's start time. SRT separates milliseconds with `,` and VTT with `.`;
+#: VTT also allows the short `MM:SS` form. Matched against the part before
+#: `-->` only, so VTT positioning settings after the end time are ignored.
+_CUE_TIME_RE = re.compile(r"^(?:(\d{1,3}):)?(\d{1,2}):(\d{2})(?:[.,]\d{1,3})?$")
+
 
 def supported(filename: str) -> bool:
     """Return whether the filename extension is accepted for ingestion."""
@@ -83,8 +93,9 @@ def extract_sections(path: Path) -> ExtractionResult:
         sections = _extract_html(path)
         extractor = "html"
     elif suffix in {".srt", ".vtt"}:
-        sections = _extract_subtitles(path)
-        extractor = "subtitles"
+        # Returns a full result: the subtitle path now reports its own speaker /
+        # timestamp signals, which T1e reads when pre-flighting customer files.
+        return _extract_subtitles(path)
     elif suffix in {".xlsx", ".csv"}:
         # Spreadsheets return fully-formed chunks (see _extract_spreadsheet).
         return _extract_spreadsheet(path)
@@ -101,16 +112,72 @@ def extract_sections(path: Path) -> ExtractionResult:
     return ExtractionResult(sections=sections, extractor=extractor, notes=notes)
 
 
-def _extract_subtitles(path: Path) -> list[tuple[str, str]]:
+def _cue_start_label(cue_line: str) -> str:
+    """The `HH:MM:SS` start time of a cue timing line, or "" if unparseable.
+
+    Accepts both separators (SRT `,`, VTT `.`), VTT's optional `MM:SS` short
+    form, and the positioning settings VTT allows after the end time. Sub-second
+    precision is dropped: this becomes a citation label a person reads, and
+    milliseconds are noise at that scale.
+    """
+    start = cue_line.split("-->")[0].strip()
+    match = _CUE_TIME_RE.match(start)
+    if not match:
+        return ""
+    hours, minutes, seconds = match.group(1), match.group(2), match.group(3)
+    return f"{int(hours or 0):02d}:{int(minutes):02d}:{int(seconds):02d}"
+
+
+def _rewrite_voice_spans(text: str) -> tuple[str, int]:
+    """Turn WebVTT voice spans into `Name: ` prefixes; return (text, speakers).
+
+    T1c: `<v 王小明>` is the only place a Teams-style VTT records who is
+    speaking, and the generic tag strip below removes it along with every other
+    tag — so the speaker was being deleted at ingest, and with it the main clue
+    for who owns an action item. Rewriting before the strip keeps the name in
+    the text where retrieval, the minutes tool and a citation can all see it.
+    Zoom-style cues that already write `Name: text` inline are untouched.
+    """
+    speakers = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal speakers
+        name = match.group(1).strip()
+        if not name:
+            return ""
+        speakers += 1
+        return f"{name}: "
+
+    return _VTT_VOICE_RE.sub(replace, text), speakers
+
+
+def _extract_subtitles(path: Path) -> ExtractionResult:
     """Extract spoken text from an .srt / .vtt subtitle file (A7).
 
-    Strips cue index numbers, timestamp lines, the WebVTT header and
-    NOTE/STYLE/REGION metadata blocks, and inline VTT tags — leaving the
-    caption text as a single ``transcript`` section. Consecutive duplicate
-    lines (common with rolling captions) are collapsed. No new dependency.
+    Strips cue index numbers, the WebVTT header and NOTE/STYLE/REGION metadata
+    blocks, and inline VTT tags. Consecutive duplicate lines (common with
+    rolling captions) are collapsed. No new dependency.
+
+    Two things survive that previously did not:
+
+    - **Speakers** (T1c), via :func:`_rewrite_voice_spans`.
+    - **Time** (T1d). Each cue becomes its own ``transcript HH:MM:SS`` section,
+      so a packed chunk is labelled with the span it covers — the same shape
+      PPTX gets from `slide 1 – slide 2`, via :func:`_span_label`. Before this
+      every citation in every transcript read simply ``transcript``, which is
+      useless in an exported deliverable: there is no way to find the moment an
+      answer came from. Per-cue sections rather than fixed windows means the
+      span always matches the chunk instead of an arbitrary grouping.
+
+    A file whose cues carry no parseable timing falls back to the previous
+    single ``transcript`` section, so an unusual dialect degrades to today's
+    behaviour rather than losing its text.
     """
     raw = path.read_text(encoding="utf-8", errors="ignore")
-    lines: list[str] = []
+    cues: list[tuple[str, str]] = []  # (timestamp label, caption line)
+    current_time = ""
+    speaker_labels = 0
+    timed_cues = 0
     skip_block = False
     for line in raw.splitlines():
         stripped = line.strip()
@@ -124,17 +191,53 @@ def _extract_subtitles(path: Path) -> list[tuple[str, str]]:
         if skip_block:
             continue
         if "-->" in stripped:  # timestamp cue line (SRT or VTT, incl. positioning)
+            current_time = _cue_start_label(stripped)
             continue
         if stripped.isdigit():  # bare SRT cue index
             continue
-        text = _VTT_INLINE_TAG.sub("", stripped).strip()
+        spoken, speakers = _rewrite_voice_spans(stripped)
+        text = _VTT_INLINE_TAG.sub("", spoken).strip()
         if not text:
             continue
-        if lines and lines[-1] == text:  # collapse rolling-caption repeats
+        if cues and cues[-1][1] == text:  # collapse rolling-caption repeats
             continue
-        lines.append(text)
-    transcript = "\n".join(lines)
-    return [("transcript", transcript)] if transcript else []
+        speaker_labels += speakers
+        if current_time:
+            timed_cues += 1
+        cues.append((current_time, text))
+
+    if not cues:
+        return ExtractionResult(sections=[], extractor="subtitles")
+
+    details: dict[str, Any] = {
+        "speaker_labels": speaker_labels,
+        "timed_cues": timed_cues,
+        "cues": len(cues),
+    }
+    notes: list[str] = []
+    if not timed_cues:
+        # No usable timing anywhere: keep the old single-section shape rather
+        # than inventing labels. T1e reads this note off the diagnostics panel
+        # when pre-flighting a customer's transcript tool.
+        notes.append("subtitle_no_cue_timestamps")
+        return ExtractionResult(
+            sections=[("transcript", "\n".join(text for _, text in cues))],
+            extractor="subtitles",
+            notes=notes,
+            details=details,
+        )
+    if not speaker_labels:
+        notes.append("subtitle_no_speaker_labels")
+
+    sections: list[tuple[str, str]] = []
+    last_label = "transcript"
+    for timestamp, text in cues:
+        if timestamp:
+            last_label = f"transcript {timestamp}"
+        sections.append((last_label, text))
+    return ExtractionResult(
+        sections=sections, extractor="subtitles", notes=notes, details=details,
+    )
 
 
 def _extract_pdf_with_pypdf(path: Path) -> list[tuple[str, str]]:
