@@ -9,6 +9,32 @@
 
 ## [未發布]
 
+### 安全性
+
+- **CI 的 GitHub Actions 全部釘成 commit SHA**：`actions/checkout`、`actions/setup-python`、
+  `actions/cache` 先前都用浮動 tag（`@v4`／`@v5`）。tag 與分支名可以被 action 擁有者
+  無聲改指——`trivy-action` 與 `kics-github-action` 都真的發生過——等於把 CI 跑什麼
+  交給對方的 tag 指標。現在釘 SHA，尾註版本號只給人看。
+  配套在 `.github/dependabot.yml` 新增 `github-actions` ecosystem：釘死之後 tag 不會
+  再自動跟進，沒有它等於把 action 版本永久凍結在釘下去的那一刻，安全修補也拿不到。
+- **Dependabot 加上 7 天 cooldown**（`pip` 與 `github-actions` 兩個 ecosystem）：剛發布的
+  版本正是供應鏈投毒最容易得手的窗口，被投毒的版本通常在數小時到數天內就被下架，
+  而沒有 cooldown 的 Dependabot 會在發布當天就開 PR。代價是延後拿到功能更新。
+  **不影響安全修補**——Dependabot security update 走另一條路徑，不吃 cooldown。
+- **`_messages.html` 移除多餘的 `| safe`**：`data-citations` 先前寫成
+  `{{ message.citations | tojson | safe }}`。Jinja 的 `tojson` 本來就回傳 `Markup`，
+  而且會把 `<` `>` `&` `'` 轉成 `\uXXXX`，所以那個 `| safe` 是 no-op——已實測
+  移除前後輸出位元組完全相同。刪掉是為了讓模板不再讀起來像「這裡關掉了跳脫」。
+
+### 內部
+
+- **標記 13 項 SSDLC 掃描誤報**（`nosemgrep`，非行為變更）：11 項 `CWE-532 日誌寫入
+  敏感資訊` 與 2 項 `CWE-79 var-in-href`。前者是規則對 log 的 **format string 做關鍵字
+  子字串比對**，命中的全是結構化 log 的欄位名（`token_version`、`budget_tokens`、
+  `api_key_changed` 等），實際帶入的值是 id、bool、字數、模型名稱，沒有一處寫入憑證
+  內容；後者的 `href` 全由伺服器端以 DB 整數 id 組出，不可能出現 `javascript:` scheme。
+  每處都附上判定理由，`nosemgrep` 標記放在被回報的那一行的正上方（差一行就不會生效）。
+
 
 ## [0.10.0] - 2026-09-18
 

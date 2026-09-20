@@ -535,6 +535,8 @@ def current_user(request: Request) -> dict:
     if user is None:
         raise HTTPException(status_code=401)
     if int(user["password_version"]) != token_password_version:
+        # 誤報："token_version" 是 session 版本號整數，不是 token 內容。
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logger.info(
             "session_revoked user_id=%s reason=password_changed token_version=%s current_version=%s",
             user_id, token_password_version, user["password_version"],
@@ -564,6 +566,8 @@ def require_login(request: Request) -> dict:
     except HTTPException:
         raise HTTPException(status_code=303, headers={"Location": "/login"})
     if user.get("must_change_password") and request.url.path not in PASSWORD_CHANGE_ALLOWED_PATHS:
+        # 誤報：命中的是欄位名裡的 "password"，值是 user id 與路徑。
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logger.info(
             "password_change_required_redirect user_id=%s path=%s",
             user["id"],
@@ -5055,6 +5059,8 @@ def change_own_password(
             (hash_password(new_password), user["id"]),
         )
         new_version = _password_version(conn, user["id"])
+    # 誤報：命中的是欄位名裡的 "password"，值是 user id、bool、版本號。
+    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
     logger.info(
         "password_changed user_id=%s forced=%s password_version=%s sessions_revoked=others",
         user["id"], was_forced, new_version,

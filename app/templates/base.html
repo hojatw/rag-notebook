@@ -53,6 +53,10 @@
           <nav aria-label="{{ t('a11y.breadcrumb') }}" class="breadcrumb">
             {% for crumb in breadcrumb_items %}
               {% if crumb.href %}
+                {# 誤報：crumb.href 由伺服器端組出（app/main.py、app/evals.py 的
+                   breadcrumb_items），值不是寫死的路徑就是 f"/notebooks/{int id}"，
+                   沒有使用者可控的輸入，不可能出現 javascript: scheme。 #}
+                {# nosemgrep: generic.html-templates.security.var-in-href.var-in-href #}
                 <a href="{{ crumb.href }}">{{ crumb.label }}</a>
               {% else %}
                 <span class="crumb-current">{{ crumb.label }}</span>
