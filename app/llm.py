@@ -183,6 +183,44 @@ Rules:
 - Stay strictly grounded in the transcript; never invent attendees, decisions, or dates.
 - If the document is clearly NOT a meeting transcript or meeting notes, reply with exactly one line saying it does not look like a meeting record (in the document's language) and nothing else."""
 
+MEETING_MINUTES_WINDOW_PROMPT = """You extract meeting facts from ONE PORTION of a longer transcript.
+
+This is not the whole meeting. Another step merges your output with the other
+portions, so do not write an introduction, a conclusion, or an overall summary.
+
+LANGUAGE RULE — strictly match the dominant language of the transcript; do NOT translate.
+
+Rules:
+- Record only what this portion actually contains: decisions, action items,
+  open questions, and the topics discussed.
+- Under action items, one bullet per item as: **owner (if stated)** — task — deadline (if stated).
+- Keep speaker names exactly as they appear; they are how an action item gets an owner.
+- Stay strictly grounded in this portion; never invent attendees, decisions, or dates.
+- If this portion contains nothing worth recording (silence, pleasantries, setup
+  chatter), reply with exactly: NOTHING
+- If the document is clearly NOT a meeting transcript or meeting notes, reply with
+  exactly one line saying it does not look like a meeting record (in the document's
+  language) and nothing else."""
+
+MEETING_MINUTES_MERGE_PROMPT = """You merge per-portion meeting notes into one set of minutes.
+
+The input is several sets of notes, each taken from a different portion of the
+SAME meeting, in chronological order. Produce the minutes for the whole meeting.
+
+LANGUAGE RULE — strictly match the dominant language of the notes; do NOT translate:
+- Traditional Chinese -> 繁體中文, use headings: ## 會議主題 / ## 重要決議 / ## 行動項目 / ## 待辦與追蹤 / ## 未決事項
+- Simplified Chinese -> Simplified Chinese with equivalent headings.
+- Japanese -> Japanese with equivalent headings.
+- English -> English, use headings: ## Topic / ## Decisions / ## Action items / ## Follow-ups / ## Open questions
+
+Rules:
+- OMIT any section that would be empty. No filler, no preamble before the first heading.
+- Merge duplicates: the same decision or action item raised in two portions is ONE entry.
+- A later portion that revises or reverses an earlier one wins; record the final position,
+  not both, unless the disagreement itself was left unresolved.
+- Under 行動項目 / Action items, one bullet per item as: **負責人/owner (if stated)** — task — 期限/deadline (if stated).
+- Add nothing that is not in the notes. You are merging, not summarising a transcript."""
+
 SOURCE_SUMMARY_PROMPT = """You write tight summaries of single source documents.
 Read the provided excerpts (which are the first chunks of one document).
 Write 2 to 4 sentences capturing what the document is about and its key claims or findings.
@@ -1814,12 +1852,30 @@ async def generate_answer_result(
     answer_notes: list[str] | None = None,
     spreadsheet_guard: bool = False,
     domain_limits: dict[str, int] | None = None,
+    result_state: dict[str, Any] | None = None,
 ) -> AnswerResult:
-    """Generate and structurally classify a grounded answer before persistence."""
+    """Generate and structurally classify a grounded answer before persistence.
+
+    ``result_state`` mirrors the streaming path's out-dict: O6 records
+    ``dropped_chunks`` there so the caller can surface a thinner answer.
+    """
     if not settings.get("chat_model"):
         raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
 
     logger.info("answer_generation_started chunks=%s question_chars=%s", len(chunks), len(question))
+    chunks, dropped = fit_answer_chunks(
+        question,
+        chunks,
+        chat_window_budget(settings),
+        overhead_text=_answer_overhead_chars(answer_policy, answer_notes),
+    )
+    if dropped:
+        logger.warning(
+            "answer_chunks_dropped_for_window dropped=%s kept=%s call_type=%s",
+            dropped, len(chunks), call_type,
+        )
+        if isinstance(result_state, dict):
+            result_state["dropped_chunks"] = dropped
     content = await chat_completion(
         settings,
         answer_prompt(
@@ -1873,6 +1929,19 @@ async def generate_answer_stream(
         raise RuntimeError("LLM settings are not configured. Ask an admin to set base URL, API key, and chat model.")
 
     logger.info("answer_stream_started chunks=%s question_chars=%s", len(chunks), len(question))
+    chunks, dropped = fit_answer_chunks(
+        question,
+        chunks,
+        chat_window_budget(settings),
+        overhead_text=_answer_overhead_chars(answer_policy, answer_notes),
+    )
+    if dropped:
+        logger.warning(
+            "answer_chunks_dropped_for_window dropped=%s kept=%s call_type=answer_stream",
+            dropped, len(chunks),
+        )
+        if isinstance(result_state, dict):
+            result_state["dropped_chunks"] = dropped
     gate_chars = max(0, int(config.runtime.answer_stream_gate_chars))
     completion_parts: list[str] = []
     completion_chars = 0
@@ -2033,6 +2102,30 @@ def _domain_limit(domain_limits: dict[str, int] | None, key: str) -> int:
     return int(value) if isinstance(value, int) and not isinstance(value, bool) and value > 0 else fallback
 
 
+#: Characters of scaffolding each excerpt costs beyond its own text: the
+#: `[N] filename - location\n` header plus the blank line joining it to the
+#: next. Filename and location vary, so this is added to their measured length
+#: rather than standing in for it.
+ANSWER_EXCERPT_OVERHEAD_CHARS = 8
+
+
+def _answer_overhead_chars(answer_policy: str, answer_notes: list[str] | None) -> str:
+    """The non-chunk text of an answer prompt, returned for measurement.
+
+    The system prompt and the E2 guidance both consume window, and the guidance
+    is frequently Chinese -- roughly one token per character against English's
+    four. Returning the text rather than a character count lets the caller
+    measure it the same way it measures everything else, instead of pricing CJK
+    guidance at Latin density and quietly under-reserving.
+
+    Per-excerpt scaffolding is *not* counted here; it depends on which chunks
+    survive, so `fit_answer_chunks` prices it inside its own loop.
+    """
+    return "\n".join(
+        part for part in (SYSTEM_PROMPT, answer_policy or "", *(answer_notes or [])) if part
+    )
+
+
 def answer_prompt(
     question: str,
     chunks: list[dict[str, Any]],
@@ -2113,6 +2206,69 @@ def fit_rewrite_inputs(
         question = question[:low] + "\n……\n" + question[-low:]
 
     return question, kept_history, dropped
+
+
+def fit_answer_chunks(
+    question: str,
+    chunks: list[dict[str, Any]],
+    budget: int,
+    *,
+    overhead_text: str = "",
+    reserve: int = 1024,
+) -> tuple[list[dict[str, Any]], int]:
+    """Bound the answer prompt by dropping whole chunks, lowest-ranked first.
+
+    O6. `fit_rewrite_inputs` already guards query rewrite, but the answer prompt
+    is the larger of the two and had no active protection at all -- only the
+    `chat_input_over_window` warning in `build_chat_request`, which fires after
+    the fact and changes nothing. An over-window answer is refused by the
+    endpoint, and every caller turns that into a degraded result.
+
+    What is safe to cut differs from rewrite, which is why this is its own
+    function rather than a shared one. In rewrite, history is disposable and the
+    question is the payload. In an answer the **retrieved chunks are the
+    payload**: dropping evidence produces a confident answer grounded in less of
+    it, which looks exactly like a good answer. So:
+
+    - Never truncate a chunk's text. A half-chunk still gets cited as `[N]` and
+      that citation would then point at text the model never saw -- a wrong
+      citation is worse than a missing chunk, because it survives review.
+    - Drop from the end. `retrieve()` returns chunks best-first, so the tail is
+      the least relevant evidence and costs the least to lose.
+    - Always keep at least one chunk. An answer with no evidence is not an
+      answer; if even one chunk cannot fit, the endpoint's refusal is the
+      correct outcome and the caller's existing error path handles it.
+    - Return the count dropped so the caller can *say* the answer is thinner.
+      Silent degradation is the failure mode this whole item exists to remove.
+
+    `budget` of 0 means the window was never measured and everything is returned
+    untouched, exactly as `fit_rewrite_inputs` does.
+    """
+    from .governance import count_cjk_chars as _cjk
+
+    def _tokens(text: str) -> int:
+        return estimate_tokens(len(text), cjk_chars=_cjk(text))
+
+    if budget <= 0 or not chunks:
+        return chunks, 0
+
+    def _chunk_tokens(chunk: dict[str, Any]) -> int:
+        # Price the excerpt exactly as `answer_prompt` will render it: its text
+        # plus the `[N] filename - location` header the citation contract needs.
+        scaffolding = (
+            str(chunk.get("filename") or "")
+            + str(chunk.get("location") or "")
+        )
+        return _tokens(str(chunk.get("text") or "") + scaffolding) + ANSWER_EXCERPT_OVERHEAD_CHARS
+
+    room = max(1, budget - reserve)
+    fixed = _tokens(question) + _tokens(overhead_text)
+    kept = list(chunks)
+    while len(kept) > 1:
+        if fixed + sum(_chunk_tokens(chunk) for chunk in kept) <= room:
+            break
+        kept.pop()
+    return kept, len(chunks) - len(kept)
 
 
 async def rewrite_search_queries(
@@ -2245,7 +2401,10 @@ async def generate_starter_questions(
     if not settings.get("chat_model"):
         logger.info("starter_questions_skipped reason=no_chat_settings")
         return []
-    samples = excerpts[:8]
+    # Q1-8 sibling: the caller hands over a notebook-wide spread, so taking a
+    # prefix here would put the skew straight back. Spread again, with no head
+    # bias -- across a notebook there is no "opening" worth privileging.
+    samples = spread_sample(excerpts, 8, head=0)
     context = "\n\n".join(
         f"[{index}] {chunk['filename']} - {chunk['location']}\n{chunk['text'][:400]}"
         for index, chunk in enumerate(samples, start=1)
@@ -2463,26 +2622,127 @@ def detect_dominant_language(text: str) -> str:
     return ""
 
 
+#: How many chunks a source summary is built from. Unchanged from the original
+#: `chunks[:12]`; what changed is *which* twelve (Q1-8).
+SOURCE_SUMMARY_SAMPLE_SIZE = 12
+
+#: How many chunks the first `head` of a spread sample keeps in reading order.
+#: A document's opening carries the title, abstract or agenda, which is worth
+#: more per chunk than any other position -- so the sample keeps a few of them
+#: and spreads the rest rather than spreading uniformly from position zero.
+SPREAD_SAMPLE_HEAD = 3
+
+#: Appended to a summary prompt only when the sample was actually spread. The
+#: model must not read spaced excerpts as continuous text and infer a narrative
+#: across the gaps.
+SPREAD_SAMPLE_NOTE = (
+    "Note: these excerpts are samples taken from across the whole document, not "
+    "consecutive text. Do not assume they are adjacent, and do not infer what "
+    "happens between them."
+)
+
+
+def spread_sample(items: list[Any], limit: int, head: int = SPREAD_SAMPLE_HEAD) -> list[Any]:
+    """Pick at most `limit` items covering the whole list, in original order.
+
+    Q1-8: several features sampled with `items[:N]` and so described only a
+    document's opening -- for a meeting transcript, the agenda and the
+    introductions, never the decisions. This keeps the first `head` items (an
+    opening is genuinely more informative per chunk) and spaces the rest evenly
+    across everything that follows, at no extra cost: same count in, same
+    prompt size out.
+
+    Deterministic and order-preserving, so a summary does not change wording
+    between two ingests of the same file. Returns every item when there are no
+    more than `limit` of them, which is the common case for short sources.
+    """
+    if limit <= 0 or not items:
+        return []
+    if len(items) <= limit:
+        return list(items)
+    head = max(0, min(head, limit))
+    chosen = list(range(head))
+    taken = set(chosen)
+    remaining = limit - head
+    tail_start, last = head, len(items) - 1
+    if remaining > 0 and tail_start <= last:
+        # Interpolate *inclusively* across the tail so the final item is always
+        # sampled. Midpoint spacing would systematically miss it, and the end of
+        # a document is not filler: a transcript's decisions and action items
+        # live in its closing minutes, which is half of why Q1-8 was filed.
+        span = last - tail_start
+        for position in range(remaining):
+            offset = 0 if remaining == 1 else round(position * span / (remaining - 1))
+            index = min(tail_start + offset, last)
+            if index not in taken:
+                taken.add(index)
+                chosen.append(index)
+        if last not in taken:
+            taken.add(last)
+            chosen.append(last)
+    # Rounding can collide on short tails; top up in order so the caller always
+    # gets `limit` items when the list can supply them.
+    for index in range(len(items)):
+        if len(chosen) >= limit:
+            break
+        if index not in taken:
+            taken.add(index)
+            chosen.append(index)
+    return [items[index] for index in sorted(chosen)]
+
+
 MEETING_MINUTES_CONTEXT_CHARS = 16000
 
 
-def select_minutes_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The leading chunks that fit `MEETING_MINUTES_CONTEXT_CHARS`.
+#: Hard cap on how many portions one minutes run may process (T1a step 2).
+#: At `MEETING_MINUTES_CONTEXT_CHARS` per window and ~10-15k characters per hour
+#: of Chinese speech, 8 windows is roughly an eight-hour recording -- far beyond
+#: any real meeting, and there to bound cost on a pathological upload rather
+#: than to trim a normal one. When it bites, the coverage notice from step 1
+#: reports it, which is why that machinery stays.
+MEETING_MINUTES_MAX_WINDOWS = 8
 
-    Extracted so the route can report **what was actually sent** (T1a) instead of
-    computing its own estimate of it. A second copy of this loop would be a
-    silent-drift bug the first time the budget or the packing changes, and the
-    whole point of the coverage notice is that the number is trustworthy.
+
+def split_minutes_windows(chunks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Partition a transcript into portions that each fit one chat call.
+
+    T1a step 2. Step 1 only *disclosed* that the minutes read a prefix; this is
+    what makes them read the whole thing. Greedy packing in document order, so a
+    portion is a contiguous stretch of the meeting and the merge step downstream
+    can rely on chronological order.
+
+    A chunk longer than the whole budget still gets its own window rather than
+    being dropped or truncated: a transcript's text is the payload here, and the
+    endpoint refusing one oversized portion is a better outcome than silently
+    losing that part of the meeting.
     """
-    selected: list[dict[str, Any]] = []
+    windows: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
     used = 0
     for chunk in chunks:
-        text = chunk["text"]
-        if used + len(text) > MEETING_MINUTES_CONTEXT_CHARS:
-            break
-        selected.append(chunk)
+        text = chunk.get("text") or ""
+        if current and used + len(text) > MEETING_MINUTES_CONTEXT_CHARS:
+            windows.append(current)
+            current, used = [], 0
+            if len(windows) >= MEETING_MINUTES_MAX_WINDOWS:
+                return windows
+        current.append(chunk)
         used += len(text)
-    return selected
+    if current:
+        windows.append(current)
+    return windows
+
+
+def select_minutes_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every chunk a minutes run will actually read.
+
+    Still the single definition of "what was sent", which is what the step-1
+    coverage notice reports; step 2 simply widened it from the first window to
+    all of them, bounded by `MEETING_MINUTES_MAX_WINDOWS`. Keeping one function
+    means the notice cannot drift from the generator, which was the whole reason
+    it was extracted.
+    """
+    return [chunk for window in split_minutes_windows(chunks) for chunk in window]
 
 
 async def generate_meeting_minutes(
@@ -2501,22 +2761,181 @@ async def generate_meeting_minutes(
     if not settings.get("chat_model"):
         logger.info("meeting_minutes_skipped reason=no_chat_settings")
         return ""
-    parts = [chunk["text"] for chunk in select_minutes_chunks(chunks)]
-    user_prompt = f"Transcript:\n{'\n\n'.join(parts)}\n\nWrite the minutes now."
+    async for kind, payload in stream_meeting_minutes(
+        chunks, settings, usage_context=usage_context
+    ):
+        if kind == "result":
+            return payload
+    return ""
+
+
+def minutes_declines_meeting(minutes: str) -> bool:
+    """Detect the prompt's "not a meeting record" abstention response.
+
+    Moved here from `app/main.py` with T1a step 2: the windowed generator has to
+    stop as soon as a portion declines, and it cannot import the route module
+    without a cycle. It belongs here anyway -- it classifies model output, like
+    the other parsers in this file.
+    """
+    normalized = minutes.strip().lower()
+    if not normalized:
+        return False
+    decline_markers = [
+        "不像會議",
+        "不是會議",
+        "不屬於會議",
+        "not look like a meeting",
+        "does not look like a meeting",
+        "not a meeting transcript",
+        "not meeting notes",
+    ]
+    return any(marker in normalized for marker in decline_markers)
+
+
+#: A window that produced nothing worth recording answers with this, so the
+#: merge step is not handed a page of "no decisions were made in this portion".
+MINUTES_WINDOW_EMPTY = "NOTHING"
+
+
+def _window_span_label(window: list[dict[str, Any]]) -> str:
+    """A human label for one portion, for the progress line.
+
+    Post-`T1d` a transcript chunk's location is `transcript HH:MM:SS`, so this
+    reads as the stretch of the meeting being processed. Any other format
+    degrades to first-to-last, and an unlabelled source to "".
+    """
+    locations = [str(chunk.get("location") or "") for chunk in window]
+    locations = [loc for loc in locations if loc]
+    if not locations:
+        return ""
+    first, last = locations[0], locations[-1]
+    return first if first == last else f"{first} – {last}"
+
+
+async def stream_meeting_minutes(
+    chunks: list[dict[str, Any]],
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+):
+    """Windowed minutes over the whole transcript, yielding progress (T1a step 2).
+
+    Yields ``("progress", {...})`` per portion and finally ``("result", text)``.
+    The caller decides whether anyone sees the progress; `generate_meeting_minutes`
+    drains this and returns just the text.
+
+    Shape, and why (the sizing argument is in `ROADMAP.md` T1a step 2): a
+    two-hour meeting is about 2 windows and a four-hour one about 4, so this is
+    3-5 sequential calls, roughly one to two ordinary chat questions. It
+    therefore runs **in the request, sequentially** -- no job queue, no
+    concurrency. Concurrency would buy almost nothing at this width and would
+    compete with other people's live questions on a borrowed shared endpoint.
+
+    A single window keeps the original one-call path verbatim, so the common
+    case of a short meeting costs exactly what it did before and produces the
+    same prompt. Only a transcript that genuinely needs more than one portion
+    pays for the map-reduce.
+
+    A portion that declines ("this is not a meeting record") ends the run
+    immediately: the remaining calls would cost the same and say the same, and
+    the caller already renders that reply as a no-save result.
+    """
+    windows = split_minutes_windows(chunks)
+    total = len(windows)
+
+    if total == 1:
+        yield "progress", {"done": 0, "total": 1, "span": _window_span_label(windows[0])}
+        text = await _minutes_for_window(
+            windows[0], settings, MEETING_MINUTES_PROMPT, usage_context=usage_context,
+        )
+        logger.info(
+            "meeting_minutes_generated windows=1 chunks_used=%s chars=%s",
+            len(windows[0]), len(text),
+        )
+        yield "result", text.strip()
+        return
+
+    partials: list[str] = []
+    for index, window in enumerate(windows):
+        yield "progress", {"done": index, "total": total, "span": _window_span_label(window)}
+        text = await _minutes_for_window(
+            window, settings, MEETING_MINUTES_WINDOW_PROMPT, usage_context=usage_context,
+        )
+        if not text:
+            logger.warning("meeting_minutes_window_failed window=%s of=%s", index + 1, total)
+            continue
+        if minutes_declines_meeting(text):
+            logger.info("meeting_minutes_declined_at_window window=%s of=%s", index + 1, total)
+            yield "result", text.strip()
+            return
+        if text.strip().upper() != MINUTES_WINDOW_EMPTY:
+            partials.append(text.strip())
+
+    if not partials:
+        logger.warning("meeting_minutes_no_usable_windows windows=%s", total)
+        yield "result", ""
+        return
+
+    yield "progress", {"done": total, "total": total, "span": ""}
+    merged = await _merge_minutes_windows(partials, settings, usage_context=usage_context)
+    logger.info(
+        "meeting_minutes_generated windows=%s usable=%s chunks_used=%s chars=%s",
+        total, len(partials), sum(len(w) for w in windows), len(merged),
+    )
+    yield "result", merged.strip()
+
+
+async def _minutes_for_window(
+    window: list[dict[str, Any]],
+    settings: dict[str, Any],
+    system_prompt: str,
+    *,
+    usage_context: dict[str, Any] | None = None,
+) -> str:
+    """One portion -> its notes. Returns "" on failure; the caller decides."""
+    body = "\n\n".join(chunk.get("text") or "" for chunk in window)
     try:
-        minutes = await chat_completion(
+        return await chat_completion(
             settings,
-            user_prompt,
-            MEETING_MINUTES_PROMPT,
+            f"Transcript:\n{body}\n\nWrite the minutes now.",
+            system_prompt,
             intent=ChatIntent.BALANCED,
             call_type="meeting_minutes",
             usage_context=usage_context,
         )
     except Exception:
-        logger.exception("meeting_minutes_failed chunks=%s", len(chunks))
+        logger.exception("meeting_minutes_failed chunks=%s", len(window))
         return ""
-    logger.info("meeting_minutes_generated chunks_used=%s chars=%s", len(parts), len(minutes))
-    return minutes.strip()
+
+
+async def _merge_minutes_windows(
+    partials: list[str],
+    settings: dict[str, Any],
+    *,
+    usage_context: dict[str, Any] | None = None,
+) -> str:
+    """Per-portion notes -> the meeting's minutes.
+
+    On failure the partials are returned joined rather than discarded: notes in
+    the wrong shape are worth more to the user than nothing at all, and this is
+    the last call in a run that may already have cost several.
+    """
+    numbered = "\n\n".join(
+        f"--- Portion {index} of {len(partials)} ---\n{text}"
+        for index, text in enumerate(partials, start=1)
+    )
+    try:
+        return await chat_completion(
+            settings,
+            f"Notes from each portion, in order:\n{numbered}\n\nMerge them into the minutes now.",
+            MEETING_MINUTES_MERGE_PROMPT,
+            intent=ChatIntent.BALANCED,
+            call_type="meeting_minutes_merge",
+            usage_context=usage_context,
+        )
+    except Exception:
+        logger.exception("meeting_minutes_merge_failed portions=%s", len(partials))
+        return "\n\n".join(partials)
 
 
 async def summarize_source(
@@ -2536,12 +2955,15 @@ async def summarize_source(
     if not settings.get("chat_model"):
         logger.info("source_summary_skipped reason=no_chat_settings")
         return ""
-    samples = chunks[:12]
+    samples = spread_sample(chunks, SOURCE_SUMMARY_SAMPLE_SIZE)
     context = "\n\n".join(
         f"[{index}] {chunk.get('location', '')}\n{chunk['text']}"
         for index, chunk in enumerate(samples, start=1)
     )
-    user_prompt = f"Source excerpts:\n{context}\n\nWrite the summary now."
+    # Only claim the excerpts are spaced when they actually are; a short source
+    # is still read in order and should not carry a caveat that does not apply.
+    spread_note = f"{SPREAD_SAMPLE_NOTE}\n\n" if len(samples) < len(chunks) else ""
+    user_prompt = f"Source excerpts:\n{context}\n\n{spread_note}Write the summary now."
     try:
         content = await chat_completion(
             settings,

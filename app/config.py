@@ -185,6 +185,7 @@ class MaxTokensConfig:
     chat_completion: int = 2048          # the non-streaming default call_type
     eval_answer: int = 2048              # same shape as an answer
     meeting_minutes: int = 3072          # headed sections with bullets
+    meeting_minutes_merge: int = 3072    # T1a: same shape, merged from portions
     compare: int = 3072
     artifact_study_guide: int = 3072
     artifact_faq: int = 3072

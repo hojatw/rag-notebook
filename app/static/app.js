@@ -74,6 +74,7 @@ function bindAll(root) {
   bindConfirms(root);
   bindWorkspacePaneSwitcher(root);
   bindStreamingAskForms(root);
+  bindStreamingToolForms(root);
   bindLoadingForms(root);
   bindFileLabels(root);
   bindProviderNotes();
@@ -122,6 +123,95 @@ function bindWorkspacePaneSwitcher(root) {
     });
 
     setActive(workspace.dataset.activePane || "chat");
+  });
+}
+
+// ---- Streaming Studio tools (T1a step 2) ---------------------------------
+// A windowed minutes run is several sequential chat calls, so the tool modal
+// shows per-portion progress instead of a spinner that says nothing for minutes
+// at a time. HTMX stays on the form as the no-JS fallback: the plain POST route
+// returns the same fragment, just without progress.
+
+function bindStreamingToolForms(root) {
+  bindOnce(root, "form.tool-panel-form[data-stream-url]", "toolstream", (form) => {
+    form.addEventListener("submit", async (event) => {
+      if (!window.fetch || !window.ReadableStream) return;  // HTMX handles it
+      event.preventDefault();
+
+      const result = document.getElementById("tool-result");
+      const loading = document.getElementById("tool-loading");
+      const button = form.querySelector("button[type='submit']");
+      if (!result) return;
+
+      const setProgress = (text) => {
+        if (loading) {
+          loading.textContent = text;
+          loading.classList.add("is-active");
+        }
+      };
+      const done = () => {
+        if (loading) {
+          loading.classList.remove("is-active");
+          loading.textContent = tr("tool_generating", "產生中…");
+        }
+        if (button) button.disabled = false;
+      };
+
+      if (button) button.disabled = true;
+      result.innerHTML = "";
+      setProgress(tr("tool_generating", "產生中…"));
+
+      try {
+        const headers = { "Accept": "text/event-stream" };
+        const token = csrfToken();
+        if (token) headers["X-CSRF-Token"] = token;
+        const response = await fetch(form.dataset.streamUrl, {
+          method: "POST",
+          body: new FormData(form),
+          headers,
+        });
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+        await consumeEventStream(response.body, (eventName, data) => {
+          if (eventName === "progress") {
+            setProgress(formatToolProgress(data));
+          } else if (eventName === "done") {
+            result.innerHTML = data.html || "";
+            renderMarkdown(result);
+            bindAll(result);
+          } else if (eventName === "error") {
+            result.innerHTML = "";
+            const message = document.createElement("p");
+            message.className = "compare-error";
+            message.textContent = data.text || tr("error_generic", "發生錯誤");
+            result.appendChild(message);
+          }
+        });
+      } catch (error) {
+        console.error("[notebook] tool stream failed", error);
+        const message = document.createElement("p");
+        message.className = "compare-error";
+        message.textContent = tr("error_generic", "發生錯誤");
+        result.innerHTML = "";
+        result.appendChild(message);
+      } finally {
+        done();
+      }
+    });
+  });
+}
+
+// `done` counts portions finished, so it reaches `total` on the merge step --
+// which is the one the user waits on longest and the one worth naming.
+function formatToolProgress(data) {
+  const total = Number(data.total) || 1;
+  const finished = Number(data.done) || 0;
+  if (total > 1 && finished >= total) {
+    return tr("minutes_progress_merging", "正在合併 {total} 段的整理結果…", { total });
+  }
+  return tr("minutes_progress", "正在整理第 {done} / {total} 段{span}…", {
+    done: finished + 1,
+    total,
+    span: data.span ? `（${data.span}）` : "",
   });
 }
 
