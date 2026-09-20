@@ -9,3 +9,21 @@ updates:
     directory: "/" # Location of package manifests
     schedule:
       interval: "weekly"
+    # 剛發布的版本正是供應鏈投毒最容易得手的窗口——被投毒的版本通常在數小時到
+    # 數天內就被下架，而 Dependabot 沒有 cooldown 時會在發布當天就開 PR。等 7 天
+    # 再開，代價是延後拿到功能更新，換到的是讓生態系有時間發現並下架。
+    #
+    # 這不會延後安全修補：Dependabot security update（有 CVE/GHSA 對應的那種）
+    # 走的是另一條路徑，不受 cooldown 影響。
+    cooldown:
+      default-days: 7
+
+  # ci.yml 的 actions 已釘成 commit SHA，tag 不會再自動跟進；沒有這個 ecosystem
+  # 就等於把 action 版本永久凍結在釘下去的那一刻，安全修補也拿不到。Dependabot
+  # 更新時會同時改 SHA 與尾註的版本號。
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7

@@ -552,6 +552,8 @@ def admin_reset_password(
         {"target_username": target["username"], "sessions_revoked": True},
         "high",
     )
+    # 誤報：命中的是欄位名 "password_reset"，值是兩個 user id。
+    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
     logger.info(
         "password_reset admin_user_id=%s target_user_id=%s sessions_revoked=all",
         user["id"], target_id,

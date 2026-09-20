@@ -653,6 +653,8 @@ async def update_settings(
         audited_fields,
         "high" if embedding_changed or api_key.strip() or embedding_api_key.strip() else "normal",
     )
+    # 誤報："api_key_changed" 記的是 bool；金鑰本體只經 security.py 加密入庫。
+    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
     logger.info(
         "settings_updated admin_user_id=%s provider=%s base_url_set=%s embedding_base_url_set=%s chat_model_set=%s embedding_model_set=%s api_version=%s temperature=%s reasoning_effort_mode=%s reasoning_effort=%s timeout_seconds=%s api_key_changed=%s",
         user["id"],

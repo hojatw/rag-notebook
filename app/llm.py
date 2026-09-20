@@ -617,6 +617,8 @@ def _fit_to_embedding_window(
             fitted.append(text)
             continue
         kept = _cut_to_budget(text, budget)[0]
+        # 誤報："budget_tokens" 是 token 預算數字，不是憑證。
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logger.warning(
             "embedding_input_truncated role=%s original_chars=%s kept_chars=%s budget_tokens=%s",
             role or "", len(text), len(kept), budget,
@@ -787,6 +789,8 @@ async def probe_embedding_window(
             "max_input_tokens": limit,
             "bound": "exact",
         })
+        # 誤報："max_input_tokens" 是視窗大小，不是憑證。
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logger.info("embedding_window_probed model=%s max_input_tokens=%s bound=exact", model, limit)
         return result
     except Exception as exc:
@@ -802,6 +806,8 @@ async def probe_embedding_window(
         "max_input_tokens": probe_tokens,
         "bound": "at_least",
     })
+    # 誤報："max_input_tokens" 是視窗大小，不是憑證。
+    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
     logger.info("embedding_window_probed model=%s max_input_tokens=%s bound=at_least", model, probe_tokens)
     return result
 
@@ -2794,6 +2800,8 @@ async def chat_completion(
         model_key="chat_model",
     )
     # Use the same dependency-free CJK-aware fallback as persisted telemetry.
+    # 誤報："prompt_tokens_est" 是估算的 token 數，不是憑證。
+    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
     logger.info(
         "chat_completion_completed provider=%s model=%s prompt_chars=%s prompt_tokens_est=%s response_chars=%s response_tokens_est=%s elapsed_ms=%.1f",
         settings.get("provider") or "openai_compatible",
@@ -3783,6 +3791,8 @@ def build_chat_request(
         chars = _message_chars(payload["messages"])
         estimated = estimate_tokens(chars, cjk_chars=_message_cjk_chars(payload["messages"]))
         if estimated > window:
+            # 誤報："estimated_tokens" 是估算的 token 數，不是憑證。
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
             logger.warning(
                 "chat_input_over_window call_type=%s estimated_tokens=%s window=%s chars=%s",
                 call_type or "", estimated, window, chars,
