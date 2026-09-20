@@ -2398,3 +2398,57 @@ def test_answer_generation_reports_nothing_when_everything_fits(monkeypatch):
     )
 
     assert "dropped_chunks" not in state
+
+
+def test_a_chinese_answer_policy_costs_more_window_than_a_latin_one(monkeypatch):
+    """The guard must price CJK guidance at CJK density, through the real path.
+
+    `estimate_tokens` bills Latin at ~4 chars/token and CJK at ~1, so an
+    overhead measured as a bare character count is ~4x optimistic on a Chinese
+    answer policy -- the exact direction that lets an over-window prompt through
+    the guard that exists to stop it. Asserted on what `generate_answer_result`
+    actually sends, not on arithmetic this test does itself.
+    """
+    policy_cjk = "所有數字必須出自引用的證據。" * 30
+    policy_latin = "A" * len(policy_cjk)
+    chunks = [{"text": "證據內容。" * 40, "filename": "f.vtt", "location": f"p{i}"}
+              for i in range(10)]
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
+        return "回答 [1]"
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    settings = _probed_window_settings(2600)
+
+    def dropped_for(policy):
+        state = {}
+        asyncio.run(llm.generate_answer_result(
+            "問題？", chunks, settings, answer_policy=policy, result_state=state,
+        ))
+        return state.get("dropped_chunks", 0)
+
+    assert dropped_for(policy_cjk) > dropped_for(policy_latin), (
+        "the same number of characters costs far more window in Chinese"
+    )
+
+
+def test_fit_answer_chunks_counts_the_citation_scaffolding():
+    """Each excerpt costs its `[N] filename - location` header too.
+
+    Ignoring it means fitting a prompt that then overflows anyway -- the guard
+    reporting success while the endpoint still refuses the call.
+    """
+    long_name = "會議逐字稿_2026年度預算檢討會議_完整版.vtt"
+    chunks = [
+        {"text": "證據。" * 60, "filename": long_name,
+         "location": "transcript 00:12:30 – transcript 00:15:10"}
+        for _ in range(10)
+    ]
+    bare = [{"text": chunk["text"], "filename": "", "location": ""} for chunk in chunks]
+
+    kept_labelled, _ = llm.fit_answer_chunks("問題？", chunks, budget=1500)
+    kept_bare, _ = llm.fit_answer_chunks("問題？", bare, budget=1500)
+
+    assert len(kept_labelled) < len(kept_bare), (
+        "long filenames and time-span locations consume window and must be counted"
+    )

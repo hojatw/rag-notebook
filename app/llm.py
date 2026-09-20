@@ -1829,7 +1829,7 @@ async def generate_answer_result(
         question,
         chunks,
         chat_window_budget(settings),
-        overhead_chars=_answer_overhead_chars(answer_policy, answer_notes),
+        overhead_text=_answer_overhead_chars(answer_policy, answer_notes),
     )
     if dropped:
         logger.warning(
@@ -1895,7 +1895,7 @@ async def generate_answer_stream(
         question,
         chunks,
         chat_window_budget(settings),
-        overhead_chars=_answer_overhead_chars(answer_policy, answer_notes),
+        overhead_text=_answer_overhead_chars(answer_policy, answer_notes),
     )
     if dropped:
         logger.warning(
@@ -2064,18 +2064,27 @@ def _domain_limit(domain_limits: dict[str, int] | None, key: str) -> int:
     return int(value) if isinstance(value, int) and not isinstance(value, bool) and value > 0 else fallback
 
 
-def _answer_overhead_chars(answer_policy: str, answer_notes: list[str] | None) -> int:
-    """Characters the answer prompt spends on things other than question + chunks.
+#: Characters of scaffolding each excerpt costs beyond its own text: the
+#: `[N] filename - location\n` header plus the blank line joining it to the
+#: next. Filename and location vary, so this is added to their measured length
+#: rather than standing in for it.
+ANSWER_EXCERPT_OVERHEAD_CHARS = 8
 
-    The system prompt, the citation scaffolding around each excerpt and the E2
-    guidance block all consume window too. Counting them keeps `fit_answer_chunks`
-    from fitting a prompt that then overflows anyway; it is an estimate, which is
-    why the caller also keeps a reserve.
+
+def _answer_overhead_chars(answer_policy: str, answer_notes: list[str] | None) -> str:
+    """The non-chunk text of an answer prompt, returned for measurement.
+
+    The system prompt and the E2 guidance both consume window, and the guidance
+    is frequently Chinese -- roughly one token per character against English's
+    four. Returning the text rather than a character count lets the caller
+    measure it the same way it measures everything else, instead of pricing CJK
+    guidance at Latin density and quietly under-reserving.
+
+    Per-excerpt scaffolding is *not* counted here; it depends on which chunks
+    survive, so `fit_answer_chunks` prices it inside its own loop.
     """
-    return (
-        len(SYSTEM_PROMPT)
-        + len(answer_policy or "")
-        + sum(len(note) for note in (answer_notes or []))
+    return "\n".join(
+        part for part in (SYSTEM_PROMPT, answer_policy or "", *(answer_notes or [])) if part
     )
 
 
@@ -2166,7 +2175,7 @@ def fit_answer_chunks(
     chunks: list[dict[str, Any]],
     budget: int,
     *,
-    overhead_chars: int = 0,
+    overhead_text: str = "",
     reserve: int = 1024,
 ) -> tuple[list[dict[str, Any]], int]:
     """Bound the answer prompt by dropping whole chunks, lowest-ranked first.
@@ -2205,12 +2214,20 @@ def fit_answer_chunks(
     if budget <= 0 or not chunks:
         return chunks, 0
 
+    def _chunk_tokens(chunk: dict[str, Any]) -> int:
+        # Price the excerpt exactly as `answer_prompt` will render it: its text
+        # plus the `[N] filename - location` header the citation contract needs.
+        scaffolding = (
+            str(chunk.get("filename") or "")
+            + str(chunk.get("location") or "")
+        )
+        return _tokens(str(chunk.get("text") or "") + scaffolding) + ANSWER_EXCERPT_OVERHEAD_CHARS
+
     room = max(1, budget - reserve)
-    fixed = _tokens(question) + estimate_tokens(overhead_chars)
+    fixed = _tokens(question) + _tokens(overhead_text)
     kept = list(chunks)
     while len(kept) > 1:
-        used = fixed + sum(_tokens(chunk.get("text") or "") for chunk in kept)
-        if used <= room:
+        if fixed + sum(_chunk_tokens(chunk) for chunk in kept) <= room:
             break
         kept.pop()
     return kept, len(chunks) - len(kept)
