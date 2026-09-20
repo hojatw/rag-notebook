@@ -188,6 +188,7 @@ answer_stream = 2048
 chat_completion = 2048
 eval_answer = 2048
 meeting_minutes = 3072
+meeting_minutes_merge = 3072
 compare = 3072
 artifact_study_guide = 3072
 artifact_faq = 3072

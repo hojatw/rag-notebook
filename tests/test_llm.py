@@ -2452,3 +2452,147 @@ def test_fit_answer_chunks_counts_the_citation_scaffolding():
     assert len(kept_labelled) < len(kept_bare), (
         "long filenames and time-span locations consume window and must be counted"
     )
+
+
+def _transcript(chunks, chars=1000):
+    return [{"text": f"第{i}段。" + "逐" * chars, "location": f"transcript 00:{i:02d}:00"}
+            for i in range(chunks)]
+
+
+def test_minutes_windows_cover_every_chunk_in_order():
+    """T1a step 2: nothing between the first window and the end may be skipped.
+
+    The whole point is coverage, so the property asserted is that the windows
+    reconstruct the transcript exactly -- not that there are N of them, which
+    would just re-encode the arithmetic into the test.
+    """
+    chunks = _transcript(120)
+    windows = llm.split_minutes_windows(chunks)
+
+    assert len(windows) > 1, "a 120k-character transcript needs more than one window"
+    assert [chunk for window in windows for chunk in window] == chunks
+    assert all(window for window in windows), "no empty windows"
+    # Each window fits one call, except a single oversized chunk which gets its
+    # own window rather than being dropped.
+    for window in windows:
+        if len(window) > 1:
+            assert sum(len(c["text"]) for c in window) <= llm.MEETING_MINUTES_CONTEXT_CHARS
+
+    # The cap bounds cost on a pathological upload.
+    capped = llm.split_minutes_windows(_transcript(2000))
+    assert len(capped) == llm.MEETING_MINUTES_MAX_WINDOWS
+
+
+def test_a_long_meeting_is_extracted_per_portion_then_merged(monkeypatch):
+    """The map-reduce shape, driven through the real generator.
+
+    Asserted on the calls actually made, because "did it read the later part of
+    the meeting" is the question the item exists to answer.
+    """
+    seen = []
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
+        seen.append((system_prompt, user_prompt))
+        if system_prompt == llm.MEETING_MINUTES_MERGE_PROMPT:
+            return "## 會議主題\n合併後的會議記錄"
+        return f"## 決議\n第 {len(seen)} 段的決議"
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    chunks = _transcript(60)
+    chunks[-1]["text"] = "最後一段：預算案通過。"
+
+    result = asyncio.run(
+        llm.generate_meeting_minutes(chunks, {"api_key": "sk", "chat_model": "m"})
+    )
+
+    prompts = [system for system, _ in seen]
+    assert prompts.count(llm.MEETING_MINUTES_MERGE_PROMPT) == 1, "exactly one merge call"
+    assert prompts[:-1] == [llm.MEETING_MINUTES_WINDOW_PROMPT] * (len(seen) - 1)
+    # The end of the meeting reached the model -- the failure step 1 disclosed.
+    assert any("最後一段：預算案通過。" in user for _, user in seen)
+    assert result == "## 會議主題\n合併後的會議記錄"
+
+
+def test_a_short_meeting_still_costs_exactly_one_call(monkeypatch):
+    """The common case must not start paying for map-reduce.
+
+    One window keeps the original prompt and the original single call, so a
+    short meeting is unchanged by step 2 in both cost and output.
+    """
+    seen = []
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
+        seen.append(system_prompt)
+        return "## 會議主題\n短會議"
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+
+    asyncio.run(
+        llm.generate_meeting_minutes(_transcript(3), {"api_key": "sk", "chat_model": "m"})
+    )
+
+    assert seen == [llm.MEETING_MINUTES_PROMPT]
+
+
+def test_minutes_stop_at_the_first_portion_that_declines(monkeypatch):
+    """A non-meeting source must not pay for every remaining window.
+
+    The later calls would cost the same and say the same thing, and the caller
+    already renders a decline as a no-save result.
+    """
+    calls = {"n": 0}
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
+        calls["n"] += 1
+        return "這份文件看起來不像會議記錄。"
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+
+    result = asyncio.run(
+        llm.generate_meeting_minutes(_transcript(60), {"api_key": "sk", "chat_model": "m"})
+    )
+
+    assert calls["n"] == 1, "the run must stop at the first decline"
+    assert llm.minutes_declines_meeting(result)
+
+
+def test_empty_portions_do_not_reach_the_merge(monkeypatch):
+    """Silence and setup chatter must not become "this portion had no decisions"."""
+    merged_input = {}
+
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
+        if system_prompt == llm.MEETING_MINUTES_MERGE_PROMPT:
+            merged_input["user"] = user_prompt
+            return "## 會議主題\n合併"
+        # Only the first portion has content.
+        return "## 決議\n有內容" if "第0段" in user_prompt else llm.MINUTES_WINDOW_EMPTY
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+    asyncio.run(llm.generate_meeting_minutes(_transcript(60), {"api_key": "sk", "chat_model": "m"}))
+
+    assert llm.MINUTES_WINDOW_EMPTY not in merged_input["user"]
+    assert "有內容" in merged_input["user"]
+
+
+def test_minutes_stream_reports_progress_per_portion(monkeypatch):
+    """The progress the SSE route forwards, asserted at its source."""
+    async def fake_chat(settings, user_prompt, system_prompt, temperature=None, **kwargs):
+        return "## 決議\n內容"
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat)
+
+    async def collect():
+        events = []
+        async for kind, payload in llm.stream_meeting_minutes(
+            _transcript(60), {"api_key": "sk", "chat_model": "m"}
+        ):
+            events.append((kind, payload))
+        return events
+
+    events = asyncio.run(collect())
+    progress = [payload for kind, payload in events if kind == "progress"]
+    assert events[-1][0] == "result"
+    assert len(progress) > 2, "one per portion plus the merge step"
+    assert progress[0]["done"] == 0 and progress[-1]["done"] == progress[-1]["total"]
+    # The span is what the user reads, and T1d's labels are what make it useful.
+    assert progress[0]["span"].startswith("transcript 00:00:00")

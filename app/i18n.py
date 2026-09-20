@@ -146,6 +146,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.sheet_header_generated": "自動產生欄位名稱",
         "diag.sheet_qa_auto": "問答欄位為自動判斷",
         "diag.sheet_meta": "{rows} 列 · {columns} 欄 · {chunks} 分塊",
+        "error.action_minutes": "整理會議記錄",
         "chat.dropped_chunks_badge": "少用 {count} 段",
         "chat.dropped_chunks_detail": (
             "為了不超過對話模型的輸入上限，有 {count} 段檢索到的內容沒有送進這次回答"
@@ -783,6 +784,11 @@ MESSAGES: dict[str, dict[str, str]] = {
         "js.processing": "處理中…",
         "js.generating": "正在生成回答…",
         "js.answer_failed": "回答生成失敗。",
+        # T1a step 2: the Studio tool modal's streaming progress.
+        "js.tool_generating": "產生中…",
+        "js.minutes_progress": "正在整理第 {done} / {total} 段{span}…",
+        "js.minutes_progress_merging": "正在合併 {total} 段的整理結果…",
+        "js.error_generic": "發生錯誤，請稍後再試。",
         "js.answer_failed_retry": "回答生成失敗，請稍後再試。",
         "js.role_you": "你",
         "js.role_assistant": "助理",

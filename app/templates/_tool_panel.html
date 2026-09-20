@@ -38,7 +38,12 @@
   {% elif kind == "minutes" %}
     <h3 class="tool-panel-title">📝 {{ t('tool.minutes_title') }}</h3>
     <p class="muted small">{{ t('tool.minutes_blurb') }}</p>
+    {# T1a step 2: a windowed run is several sequential chat calls, so this form
+       streams progress instead of posting and waiting. `data-stream-url` is what
+       `bindStreamingToolForms` looks for; the plain POST route still exists and
+       returns the same fragment for anything that does not stream. #}
     <form class="minutes-form tool-panel-form"
+          data-stream-url="/notebooks/{{ notebook.id }}/minutes/stream"
           hx-post="/notebooks/{{ notebook.id }}/minutes"
           hx-target="#tool-result"
           hx-swap="innerHTML"
