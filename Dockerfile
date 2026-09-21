@@ -31,12 +31,31 @@ WORKDIR /app
 
 # 3) Install Python deps before copying the app code so a code-only change
 #    doesn't bust the wheel-install layer cache.
+#
+#    build-essential is the only apt package we need, and only to compile the
+#    few sdists that have no manylinux wheel; it is purged in the same layer.
+#    Deliberately NOT installed: libxml2. lxml (pulled in by python-docx and
+#    python-pptx) ships manylinux wheels that statically bundle libxml2 and
+#    libxslt — `ldd` on lxml/etree*.so lists no libxml2.so at all — so the
+#    system package was dead weight carrying its own unpatched CVEs. Re-add it
+#    only if a dependency is ever built from source against system libxml2, and
+#    say which one in a comment here.
+#
+#    pip itself is uninstalled once the requirements are in, in the same layer.
+#    Nothing at runtime runs pip (the container only starts uvicorn / the
+#    worker), and every pip version drags its own advisories into the image
+#    scan: the base image's 25.0.1 carries six, and upgrading does not help —
+#    26.x ships an SBOM of its vendored packages (pip/_vendor/bom.cdx.json), so
+#    the scanner then flags the vendored msgpack/setuptools as HIGH instead.
+#    Removing it clears both. Need pip inside a running container for
+#    debugging? `python -m ensurepip --user` restores it for the non-root app
+#    user (the bundled wheel stays in the stdlib); don't bake it back in.
 COPY requirements.txt .
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         build-essential \
-        libxml2 \
  && pip install --no-cache-dir --no-compile -r requirements.txt \
+ && pip uninstall -y pip \
  && apt-get purge -y --auto-remove build-essential \
  && rm -rf /var/lib/apt/lists/*
 
