@@ -875,7 +875,7 @@ def test_fallback_retrieval_is_named_in_the_log_line(local_embed, monkeypatch, c
     _fallback_harness(monkeypatch, rows)
 
     with caplog.at_level("INFO", logger="app.retrieval"):
-        asyncio.run(main.retrieve("api_version", [], {}, user_id=1))
+        asyncio.run(main.retrieve("api_version", [], {}, user_id=1, source_ids=[1]))
 
     completed = [r.getMessage() for r in caplog.records if "retrieve_completed" in r.getMessage()]
     assert completed and "mode=sqlite_fallback" in completed[0]
@@ -896,7 +896,7 @@ def test_a_run_of_vector_failures_escalates_to_error(local_embed, monkeypatch, c
     for _ in range(retrieval.VECTOR_FAILURE_ALERT_THRESHOLD):
         caplog.clear()
         with caplog.at_level("WARNING", logger="app.retrieval"):
-            asyncio.run(main.retrieve("api_version", [], {}, user_id=1))
+            asyncio.run(main.retrieve("api_version", [], {}, user_id=1, source_ids=[1]))
         levels.append(next(r.levelno for r in caplog.records
                            if "retrieve_vector_failed" in r.getMessage()))
 
@@ -915,14 +915,14 @@ def test_a_healthy_vector_query_clears_the_failure_run(local_embed, monkeypatch)
     rows = [{"id": 1, "source_id": 1, "filename": "a.md", "location": "doc",
              "text": "api_version controls the API version", "embedding_json": dumps([0.0] * 384)}]
     _fallback_harness(monkeypatch, rows)
-    asyncio.run(main.retrieve("api_version", [], {}, user_id=1))
+    asyncio.run(main.retrieve("api_version", [], {}, user_id=1, source_ids=[1]))
     assert retrieval.vector_health()["consecutive_failures"] == 1
 
     monkeypatch.setattr(retrieval, "query_vectors", lambda *a, **k: [
         {"id": 1, "source_id": 1, "filename": "a.md", "location": "doc",
          "text": "api_version controls the API version", "vector_score": 0.9}])
     monkeypatch.setattr(retrieval, "keyword_candidates_from_sqlite", lambda *a, **k: [])
-    asyncio.run(main.retrieve("api_version", [], {}, user_id=1))
+    asyncio.run(main.retrieve("api_version", [], {}, user_id=1, source_ids=[1]))
 
     assert retrieval.vector_health()["consecutive_failures"] == 0
     assert retrieval.vector_health()["last_success_at"] is not None

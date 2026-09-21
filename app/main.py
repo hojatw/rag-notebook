@@ -3706,26 +3706,72 @@ def _normalize_conversation_id(value: str | int | None) -> int | None:
     return int(text) if text else None
 
 
+# `source_scope` form value the ask form sends when the user chose sources in
+# the Sources pane. Without it (no-JS form, older client) an empty `source_ids`
+# means "the whole notebook"; with it, an empty list is the user's explicit
+# "none" and is refused rather than widened.
+SOURCE_SCOPE_SELECTED = "selected"
+
+
+def _resolve_question_scope(
+    conn, notebook_id: int, user_id: int, source_ids: list[int], source_scope: str
+) -> str | None:
+    """Narrow ``source_ids`` in place to this notebook; return a refusal text or None.
+
+    Retrieval can only be kept inside a notebook through source ids (chunks and
+    Chroma metadata carry no notebook_id), so this is the single place that
+    turns whatever the client sent into ids that provably belong to *this*
+    notebook. It never widens past the notebook: see docs/SECURITY.md.
+    """
+    if source_ids:
+        placeholders = ",".join("?" for _ in source_ids)
+        allowed = {
+            row["id"]
+            for row in conn.execute(
+                f"SELECT id FROM sources WHERE notebook_id = ? AND user_id = ? AND id IN ({placeholders})",
+                (notebook_id, user_id, *source_ids),
+            ).fetchall()
+        }
+        submitted = len(source_ids)
+        source_ids[:] = [sid for sid in source_ids if sid in allowed]
+        if not source_ids:
+            logger.warning(
+                "chat_scope_rejected reason=all_invalid user_id=%s notebook_id=%s submitted=%s",
+                user_id, notebook_id, submitted,
+            )
+            return i18n.t("chat.scope_invalid")
+        return None
+    if source_scope == SOURCE_SCOPE_SELECTED:
+        logger.info("chat_scope_rejected reason=none_selected user_id=%s notebook_id=%s", user_id, notebook_id)
+        return i18n.t("chat.scope_none_selected")
+    source_ids[:] = [
+        row["id"]
+        for row in conn.execute(
+            "SELECT id FROM sources WHERE notebook_id = ? AND user_id = ? AND status = 'indexed' ORDER BY id",
+            (notebook_id, user_id),
+        ).fetchall()
+    ]
+    return None
+
+
 def _prepare_question(
     notebook_id: int,
     user: dict,
     question: str,
     conversation_id: int | None,
     source_ids: list[int],
-) -> tuple[int, list[dict[str, str]], dict[str, Any]]:
-    """Persist the user question and return context needed to answer it."""
+    source_scope: str = "",
+) -> tuple[int, list[dict[str, str]], dict[str, Any], str | None]:
+    """Persist the user question and return context needed to answer it.
+
+    ``source_ids`` is narrowed in place to this notebook's sources (see
+    ``_resolve_question_scope``). The last element is a user-facing refusal
+    when the submitted scope is unusable; the caller then saves it as the
+    answer and skips retrieval entirely.
+    """
     with connect() as conn:
         get_notebook(conn, notebook_id, user["id"])
-        if source_ids:
-            placeholders = ",".join("?" for _ in source_ids)
-            allowed = {
-                row["id"]
-                for row in conn.execute(
-                    f"SELECT id FROM sources WHERE notebook_id = ? AND user_id = ? AND id IN ({placeholders})",
-                    (notebook_id, user["id"], *source_ids),
-                ).fetchall()
-            }
-            source_ids[:] = [sid for sid in source_ids if sid in allowed]
+        scope_error = _resolve_question_scope(conn, notebook_id, user["id"], source_ids, source_scope)
 
         logger.info(
             "chat_question_received user_id=%s notebook_id=%s conversation_id=%s selected_sources=%s question_chars=%s",
@@ -3766,7 +3812,7 @@ def _prepare_question(
         ]
         history.reverse()
         settings = load_llm_settings(conn)
-    return conversation_id, history, settings or {}
+    return conversation_id, history, settings or {}, scope_error
 
 
 def _effective_domain_context(
@@ -3821,6 +3867,8 @@ async def _answer_question(
     )
     metadata.update(domain_metadata)
     retrieve_started = time.perf_counter()
+    # Empty only when the notebook has no indexed source yet: nothing to search,
+    # so abstain below rather than trip retrieve()'s unscoped-call guard.
     retrieved = await retrieve(
         question,
         None,
@@ -3830,7 +3878,7 @@ async def _answer_question(
         source_ids,
         usage_context=usage_context,
         domain_hints=matched_hints,
-    )
+    ) if source_ids else []
     metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
     metadata["retrieved_chunks"] = len(retrieved)
     top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
@@ -3996,6 +4044,7 @@ async def ask(
     question: str = Form(...),
     conversation_id: str | None = Form(None),
     source_ids: list[int] = Form(default=[]),
+    source_scope: str = Form(default=""),
 ):
     """Persist a user question within a notebook, run retrieval, and save the assistant answer.
 
@@ -4011,8 +4060,8 @@ async def ask(
     metadata: dict[str, Any] = {}
     usage_watermark = await asyncio.to_thread(_llm_usage_event_watermark)
     try:
-        conversation_id, history, settings = await asyncio.to_thread(
-            _prepare_question, notebook_id, user, question, conversation_id, source_ids
+        conversation_id, history, settings, scope_error = await asyncio.to_thread(
+            _prepare_question, notebook_id, user, question, conversation_id, source_ids, source_scope
         )
         await asyncio.to_thread(
             record_ai_safety_events,
@@ -4022,15 +4071,18 @@ async def ask(
             context={"user_id": user["id"], "notebook_id": notebook_id, "conversation_id": conversation_id},
             metadata={"source_count": len(source_ids)},
         )
-        answer, citations, metadata = await _answer_question(
-            question, settings, history, user["id"], notebook_id, conversation_id, source_ids
-        )
+        if scope_error:
+            answer, citations, metadata = scope_error, [], {"outcome": "scope_rejected"}
+        else:
+            answer, citations, metadata = await _answer_question(
+                question, settings, history, user["id"], notebook_id, conversation_id, source_ids
+            )
     except HTTPException:
         raise
     except Exception as exc:
         if conversation_id is None:
-            conversation_id, _history, _settings = await asyncio.to_thread(
-                _prepare_question, notebook_id, user, question, None, source_ids
+            conversation_id, _history, _settings, _scope_error = await asyncio.to_thread(
+                _prepare_question, notebook_id, user, question, None, source_ids, source_scope
             )
         answer = friendly_error_message(exc, i18n.t("error.action_answer"))
         citations = []
@@ -4075,6 +4127,7 @@ async def ask_stream(
     question: str = Form(...),
     conversation_id: str | None = Form(None),
     source_ids: list[int] = Form(default=[]),
+    source_scope: str = Form(default=""),
 ):
     """Stream a chat answer while preserving the saved message/citation flow."""
     question = question.strip()
@@ -4089,8 +4142,8 @@ async def ask_stream(
         answer = ""
         usage_watermark = 0
         try:
-            conversation, history, settings = await asyncio.to_thread(
-                _prepare_question, notebook_id, user, question, conversation, source_ids
+            conversation, history, settings, scope_error = await asyncio.to_thread(
+                _prepare_question, notebook_id, user, question, conversation, source_ids, source_scope
             )
             usage_watermark = await asyncio.to_thread(_llm_usage_event_watermark)
             usage_context = {"user_id": user["id"], "notebook_id": notebook_id, "conversation_id": conversation}
@@ -4103,65 +4156,72 @@ async def ask_stream(
                 metadata={"source_count": len(source_ids)},
             )
             yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
-            yield sse_event("status", {"text": i18n.t("js.retrieving")})
-
-            domain_snapshot, matched_hints, domain_metadata = await asyncio.to_thread(
-                _effective_domain_context, notebook_id, user["id"], question, history
-            )
-            metadata.update(domain_metadata)
-            retrieve_started = time.perf_counter()
-            retrieved = await retrieve(
-                question,
-                None,
-                settings,
-                history,
-                user["id"],
-                source_ids,
-                usage_context=usage_context,
-                domain_hints=matched_hints,
-            )
-            metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
-            metadata["retrieved_chunks"] = len(retrieved)
-            top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
-            if retrieved:
-                metadata["top_score"] = round(top_score, 3)
-
-            if not retrieved or top_score < active_low_confidence_threshold():
-                answer = i18n.t("chat.abstain")
-                metadata["outcome"] = "low_confidence" if retrieved else "no_retrieval"
-                metadata["threshold"] = active_low_confidence_threshold()
+            if scope_error:
+                # Unusable scope: refuse without retrieving, never widen.
+                answer = scope_error
+                metadata["outcome"] = "scope_rejected"
                 yield sse_event("chunk", {"text": answer})
             else:
-                yield sse_event("status", {"text": i18n.t("js.generating")})
-                generate_started = time.perf_counter()
-                result_state: dict[str, Any] = {}
-                async for piece in generate_answer_stream(
+                yield sse_event("status", {"text": i18n.t("js.retrieving")})
+
+                domain_snapshot, matched_hints, domain_metadata = await asyncio.to_thread(
+                    _effective_domain_context, notebook_id, user["id"], question, history
+                )
+                metadata.update(domain_metadata)
+                retrieve_started = time.perf_counter()
+                # Empty only when the notebook has nothing indexed yet (see ask()).
+                retrieved = await retrieve(
                     question,
-                    retrieved,
+                    None,
                     settings,
+                    history,
+                    user["id"],
+                    source_ids,
                     usage_context=usage_context,
-                    answer_policy=str(domain_snapshot.get("answer_policy") or ""),
-                    answer_notes=matched_answer_notes(matched_hints),
-                    spreadsheet_guard=spreadsheet_answer_guard(retrieved),
-                    abstain_text=i18n.t("chat.abstain"),
-                    result_state=result_state,
-                ):
-                    # The stream classified an abstention after it had already
-                    # shown text. Clear the client's buffer before appending the
-                    # refusal, so the ungrounded preamble does not linger until
-                    # the final `done` swap.
-                    if result_state.pop("discard_stream", False):
-                        answer = ""
-                        yield sse_event("discard", {})
-                    answer += piece
-                    yield sse_event("chunk", {"text": piece})
-                metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
-                abstained = bool(result_state.get("abstained"))
-                if abstained:
+                    domain_hints=matched_hints,
+                ) if source_ids else []
+                metadata["retrieval_ms"] = round((time.perf_counter() - retrieve_started) * 1000, 1)
+                metadata["retrieved_chunks"] = len(retrieved)
+                top_score = float(retrieved[0].get("score", 0.0)) if retrieved else 0.0
+                if retrieved:
+                    metadata["top_score"] = round(top_score, 3)
+
+                if not retrieved or top_score < active_low_confidence_threshold():
                     answer = i18n.t("chat.abstain")
-                metadata["answer_chars"] = len(answer)
-                citations = [] if abstained else _referenced_citations(answer, retrieved)
-                metadata["outcome"] = "abstained" if abstained else "answered"
+                    metadata["outcome"] = "low_confidence" if retrieved else "no_retrieval"
+                    metadata["threshold"] = active_low_confidence_threshold()
+                    yield sse_event("chunk", {"text": answer})
+                else:
+                    yield sse_event("status", {"text": i18n.t("js.generating")})
+                    generate_started = time.perf_counter()
+                    result_state: dict[str, Any] = {}
+                    async for piece in generate_answer_stream(
+                        question,
+                        retrieved,
+                        settings,
+                        usage_context=usage_context,
+                        answer_policy=str(domain_snapshot.get("answer_policy") or ""),
+                        answer_notes=matched_answer_notes(matched_hints),
+                        spreadsheet_guard=spreadsheet_answer_guard(retrieved),
+                        abstain_text=i18n.t("chat.abstain"),
+                        result_state=result_state,
+                    ):
+                        # The stream classified an abstention after it had already
+                        # shown text. Clear the client's buffer before appending the
+                        # refusal, so the ungrounded preamble does not linger until
+                        # the final `done` swap.
+                        if result_state.pop("discard_stream", False):
+                            answer = ""
+                            yield sse_event("discard", {})
+                        answer += piece
+                        yield sse_event("chunk", {"text": piece})
+                    metadata["generation_ms"] = round((time.perf_counter() - generate_started) * 1000, 1)
+                    abstained = bool(result_state.get("abstained"))
+                    if abstained:
+                        answer = i18n.t("chat.abstain")
+                    metadata["answer_chars"] = len(answer)
+                    citations = [] if abstained else _referenced_citations(answer, retrieved)
+                    metadata["outcome"] = "abstained" if abstained else "answered"
 
             assistant_message_id = await asyncio.to_thread(
                 _save_assistant_message,
@@ -4188,8 +4248,8 @@ async def ask_stream(
                 # The initial _prepare_question failed, so there's no row to
                 # attach the error to — try once more.
                 try:
-                    conversation, _history, _settings = await asyncio.to_thread(
-                        _prepare_question, notebook_id, user, question, None, source_ids
+                    conversation, _history, _settings, _scope_error = await asyncio.to_thread(
+                        _prepare_question, notebook_id, user, question, None, source_ids, source_scope
                     )
                     yield sse_event("init", {"conversation_id": conversation, "url": f"/notebooks/{notebook_id}?conversation_id={conversation}"})
                 except Exception:

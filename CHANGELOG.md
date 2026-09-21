@@ -11,6 +11,16 @@
 
 ### 安全性
 
+- **問答檢索不再跑出當前 notebook**：`ask` / `ask-stream` 沒帶 `source_ids`（左欄按
+  「全不選」、無 JS 表單），或送來的 id 全部不屬於這個 notebook 時，檢索會退化成只篩
+  `user_id`，搜遍該使用者**所有** notebook——實測回答引用了另一個 notebook 的 PDF。
+  同一使用者範圍內，不是跨使用者外洩。現在範圍一律在伺服器端決定：
+  - 沒送任何來源（無 JS、舊客戶端）→ 這個 notebook 的全部已索引來源；
+  - 使用者明確全不選 → 回覆「請先勾選至少一個來源」，不檢索（前端也會直接擋下送出）；
+  - 送來的來源全部不屬於這個 notebook → 回覆「所選的來源已不在這個筆記本中」，不檢索、不放寬；
+  - `retrieve()` 本身在沒有來源範圍時回傳空結果並記 `retrieve_refused_unscoped`，
+    日後的新呼叫端忘了限定範圍也只會拒答，不會外洩。
+  拒答訊息的 `metadata.outcome` 為 `scope_rejected`。不變式記在 `docs/SECURITY.md`。
 - **CI 的 GitHub Actions 全部釘成 commit SHA**：`actions/checkout`、`actions/setup-python`、
   `actions/cache` 先前都用浮動 tag（`@v4`／`@v5`）。tag 與分支名可以被 action 擁有者
   無聲改指——`trivy-action` 與 `kics-github-action` 都真的發生過——等於把 CI 跑什麼

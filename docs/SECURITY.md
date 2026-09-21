@@ -149,6 +149,47 @@ and high-sensitivity. Domain
 audit metadata is allowlisted to identifiers, flags, counts, and character
 lengths/fingerprints; it must never contain domain text or snapshots.
 
+### 問答檢索不得離開當前 notebook（2026-09-21）
+
+**不變式：chat 檢索的範圍永遠是「這個 notebook 裡、屬於這個使用者的來源」的子集，
+不論客戶端送來什麼。** 這不是跨使用者授權問題（那一層是 `user_id` 篩選，一直都在），
+而是同一使用者的 notebook 邊界——回答不能引用另一個 notebook 的來源。
+
+為什麼需要明文寫下：`chunks` 表與 Chroma metadata 都**沒有** `notebook_id`，
+notebook 範圍只能透過 `source_ids` 表達。先前 `ask` / `ask-stream` 沒帶
+`source_ids`（左欄按「全不選」、無 JS 表單），或送來的 id 全部被驗證濾掉時，
+清單變成空的，而 `build_where` 與 `keyword_candidates_from_sqlite` 對空清單的解讀是
+「不加來源篩選」——結果搜遍該使用者的全部語料。實測在一個只有 4 份測試檔的
+notebook 裡，回答引用了另一個 notebook 的 PDF。
+
+現在由兩層共同保證：
+
+- **路由層（唯一決定範圍的地方）**：`app/main.py` 的 `_resolve_question_scope`
+  （由 `_prepare_question` 呼叫）把客戶端送來的東西轉成「可證明屬於本 notebook」的 id：
+  | 送來的 | 結果 |
+  |---|---|
+  | 有 `source_ids`，至少一個屬於本 notebook | 只留屬於本 notebook 的（其餘丟掉，維持原行為） |
+  | 有 `source_ids`，**全部**不屬於本 notebook | 拒答（`chat.scope_invalid`），不檢索、不放寬 |
+  | 沒有 `source_ids`，且 `source_scope=selected` | 使用者明確「全不選」→ 拒答（`chat.scope_none_selected`） |
+  | 沒有 `source_ids`，也沒有 `source_scope` | 本 notebook 的全部已索引來源（無 JS 表單、舊客戶端）；一個都沒有時不呼叫 `retrieve()`，照常 abstain |
+
+  拒答會照常存成一則 assistant 訊息，`metadata.outcome = "scope_rejected"`。
+  前端（`initSourceScope`）在全不選時直接擋下送出並顯示同義提示，省一次來回；
+  但伺服器**不依賴**前端，繞過 JS 送出也一樣被拒。
+- **檢索層（fail closed 的第二道防線）**：`retrieve()` 收到 `user_id` 卻沒有
+  `source_ids` 時直接回傳 `[]` 並記 `retrieve_refused_unscoped`（WARNING），
+  不搜尋整個語料。日後新增的呼叫端若忘了先決定範圍，結果是拒答而不是外洩。
+  看到這行 log 代表某個呼叫端有 bug，不是使用者操作造成。
+
+其他 `retrieve()` 呼叫端都已自行把範圍限定在 notebook 內：主題比較
+（`_topic_comparison_evidence`，每次只傳一個經 `_fetch_source_summaries` 驗證的來源）、
+Eval run（`run_eval_job` 在伺服器端查出該 notebook 的已索引來源，沒有就讓 run 失敗）。
+`tests/eval_retrieval.py` 是開發者 CLI，不經網頁。
+
+釘住它的測試在 `tests/test_ui_chat.py`：同一使用者的兩個 notebook、另一本的 chunk
+刻意是更好的命中，走真的 `ask` / `ask-stream` 路由與真的 `retrieve()`，斷言引用來源
+**等於**本 notebook 的來源集合。新增會呼叫 `retrieve()` 的路由時，比照補一個。
+
 ## Hardening status
 
 A full review on **2026-08-22** surfaced eight hardening items (`SEC-1`–`SEC-8`). All of them have landed and their durable record is the sections below; the temporary review backlog that staged them is no longer the source of truth.
