@@ -344,6 +344,53 @@ Current mitigations are structural rather than sandboxing:
 - Phase 1 PPTX **never decodes image bytes** — images are counted, not opened — so Pillow is currently a transitive dependency that ingest does not actually exercise. That changes the day `A8`/`A9` add OCR or vision, which is when this note needs revisiting.
 
 **Keep these parsers patched** (they are the highest-value dependency updates in this project), and re-evaluate isolation if the app is ever exposed to untrusted uploaders.
+## Triaged SAST findings
+
+Findings from the SSDLC source scan (Semgrep, `p/owasp-top-ten` + `p/security-audit`). Like the dependency section below, each entry records **how it was assessed**, so a `# nosemgrep` marker in the code is never just someone's assertion — the reasoning is here and can be checked.
+
+### CWE-532 "logging sensitive information" — 11 findings, all false positives (2026-09-20)
+
+Rule `python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure`.
+
+The rule does a **keyword substring match on the format string** (`password`, `token`, `key`). Every hit is a *field name* in a structured log line; the values interpolated into them are ids, booleans, character counts and model names:
+
+| Site | Substring that matched | What is actually logged |
+|---|---|---|
+| `app/admin.py` `admin_reset_password` | `password_reset` | two user ids |
+| `app/db.py` `_flag_default_passwords` | `password` | username |
+| `app/llm.py` `_fit_to_embedding_window` | `budget_tokens` | role, char counts, token budget |
+| `app/llm.py` `probe_embedding_window` (×2) | `max_input_tokens` | model name, int |
+| `app/llm.py` `chat_completion` | `prompt_tokens_est` | provider, model name, char counts, ms |
+| `app/llm.py` `build_chat_request` | `estimated_tokens` | call type, ints |
+| `app/main.py` `current_user` | `token_version` | user id, session version integer |
+| `app/main.py` `require_login` | `password_change` | user id, request path |
+| `app/main.py` `change_own_password` | `password_changed` | user id, bool, version integer |
+| `app/settings.py` `update_settings` | `api_key_changed` | ids, provider, **booleans** |
+
+`app/settings.py` is the one worth re-reading if you are auditing this: it logs `bool(base_url.strip())`-style flags and `api_key_changed=<bool>`, never the key. API keys only ever leave `app/security.py` encrypted.
+
+**Why annotation rather than renaming.** Renaming the fields (`token_version` → `session_version`) would also silence the rule, but it breaks the grep conventions these log lines exist for — including the strings recorded in [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — and amounts to changing semantic names to satisfy a linter. Routing the calls through a `_log_event()` helper would be worse: that is defeating the scanner with indirection, and it is the kind of broad refactor `AGENTS.md` tells you not to do.
+
+### CWE-79 `var-in-href` — 2 findings, both false positives (2026-09-20)
+
+Rule `generic.html-templates.security.var-in-href.var-in-href`.
+
+| Template | Variable | Every construction site |
+|---|---|---|
+| `app/templates/base.html` | `crumb.href` | `app/main.py` `_domain_settings_context`; `app/evals.py` `admin_eval_set_detail`, `admin_eval_run_detail`, `admin_eval_compare` |
+| `app/templates/search.html` | `item.url` | `app/main.py` `global_search` — four result branches, all `f"/notebooks/{<DB integer id>}"` |
+
+Every value is either a hardcoded internal path or an f-string over a database integer id, so a `javascript:` scheme cannot reach either attribute. The list of construction sites is exhaustive as of `0.10.0` — **if you add a fifth `breadcrumb_items` producer or a fifth search branch, it is not covered by this assessment.** A breadcrumb or search URL that could ever carry an externally-supplied value needs the annotation removed and the scheme validated at render time.
+
+### Writing a `nosemgrep` marker that actually works
+
+Both mistakes below were made and caught during the 2026-09-20 triage. Both leave the code looking annotated while the scan result is completely unchanged, and **neither produces any error**:
+
+- **The marker must be on the line immediately above the line the scanner reports** (for a multi-line call, that is the `logger.…(` line, not the format string). Putting an explanatory comment *between* the marker and the call suppresses nothing. Reason comment first, marker last.
+- **Use the full rule id exactly as the report prints it.** `var-in-href`'s last segment is doubled (`…security.var-in-href.var-in-href`); writing only `…security.var-in-href` matches no rule.
+
+Verify rather than assume: re-scan, or reproduce locally with a rule file whose `id` equals the upstream one and diff the finding count with and without the markers. Note that a rule loaded from a local file gets its path prefixed onto its id, so the marker must carry that prefix too when testing that way.
+
 ## Triaged dependency-audit findings
 
 The items below are surfaced by Dependabot / `pip-audit`. Each records how it was assessed against *this* deployment, so the alerts are not repeatedly re-investigated. An advisory that turns out not to apply is still patched when the upgrade is cheap — the note explains why the alert existed, not why the upgrade was skipped.
