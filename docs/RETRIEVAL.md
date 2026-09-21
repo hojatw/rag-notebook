@@ -15,7 +15,7 @@ question
   ▼ (2) embed all queries      app/llm.py:embed_texts
   │
   ├─► (3a) vector search       app/vector_store.py:query (top-20 per query)
-  │       Chroma cosine, scoped by user_id + optional source_ids
+  │       Chroma cosine, scoped by user_id + source_ids (always set; see SECURITY.md)
   │
   └─► (3b) keyword search      app/retrieval.py:keyword_candidates_from_sqlite (top-20)
           SQLite LIKE on Latin tokens + CJK 2/3-grams
@@ -78,7 +78,7 @@ queries. Invalid or over-budget data falls back to the baseline query pipeline.
 
 [`query`](../app/vector_store.py). All rewritten queries go through one [`embed_texts`](../app/llm.py) invocation, which splits requests into bounded HTTP batches (default size 64), and Chroma is queried with the full list of vectors. Chroma collection uses cosine space (`metadata={"hnsw:space": "cosine"}`). Per-chunk `vector_score = max(0, 1 - distance)`; for chunks that match multiple queries we keep the best score.
 
-Filter is always `{user_id}` (multi-tenant isolation) and adds `{source_id: {$in: [...]}}` when the user picked specific sources in the chat form. `n_results` follows the active `candidate_pool_size` (default 20).
+Filter is always `{user_id}` (multi-tenant isolation) plus `{source_id: {$in: [...]}}`. Neither Chroma metadata nor `chunks` carries a `notebook_id`, so `source_ids` is the **only** notebook boundary: the chat routes resolve it server-side (the checked sources, or every indexed source of the notebook when the form sends none), and `retrieve()` returns `[]` rather than search the user's whole corpus when it is empty. The full rule is in [`SECURITY.md`](SECURITY.md#問答檢索不得離開當前-notebook2026-09-21). `n_results` follows the active `candidate_pool_size` (default 20).
 
 No-embedding-fallback policy: `embed_texts` raises when the embedding model isn't configured (previously fell back to a SHA-256 hash bag-of-tokens vector — removed because the resulting vectors are dim-incompatible with any real model and silent fallback masked misconfiguration as poor retrieval). The upload route refuses ingestion when the embedding model is not ready ([`llm_settings_status`](../app/main.py)), and `/settings` save probes the embedding endpoint to validate connectivity + dimension consistency against the existing Chroma index. A blank API key remains valid for local services.
 
