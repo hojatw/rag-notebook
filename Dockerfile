@@ -3,8 +3,9 @@
 # Why python:3.12-slim:
 #   - Matches the local development runtime pinned by .python-version and
 #     setup.sh.
-#   - Keeps native dependency wheels such as onnxruntime available on the
-#     supported local and container platforms.
+#   - Keeps native dependency wheels (numpy, chromadb's Rust bindings)
+#     available on the supported local and container platforms — neither
+#     ships musl wheels, so Alpine is not an option.
 #   - slim variant keeps the image around 250 MB while still carrying glibc
 #     (so we don't fight musl quirks).
 #
@@ -50,11 +51,28 @@ WORKDIR /app
 #    Removing it clears both. Need pip inside a running container for
 #    debugging? `python -m ensurepip --user` restores it for the non-root app
 #    user (the bundled wheel stays in the stdlib); don't bake it back in.
+#
+#    Five of chromadb's declared dependencies are uninstalled too, in the same
+#    layer (a later RUN would only stack on top and save nothing). They are
+#    unreachable in this app for structural reasons, not by luck:
+#      - onnxruntime, tokenizers, huggingface_hub, hf_xet: chromadb's default
+#        ONNX MiniLM embedding function. The app computes embeddings itself
+#        over HTTP (app/llm.py) and app/vector_store.py never passes an
+#        embedding_function to Chroma, so this chain is never loaded.
+#      - kubernetes: chromadb's k8s auth provider for a Chroma *server*. The
+#        app only uses the embedded PersistentClient (see docs/SECURITY.md,
+#        ChromaDB advisory cluster), never HttpClient.
+#    Verified: upload/index, query, source delete (Chroma `where` delete),
+#    /admin/index, and restart + startup sync all work without them. If one
+#    ever has to come back, say here which code path needs it.
+#    Do NOT try the same with opentelemetry/grpc/rich/typer: chromadb's
+#    __init__ imports opentelemetry unconditionally and fails without it.
 COPY requirements.txt .
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         build-essential \
  && pip install --no-cache-dir --no-compile -r requirements.txt \
+ && pip uninstall -y kubernetes onnxruntime tokenizers hf_xet huggingface_hub \
  && pip uninstall -y pip \
  && apt-get purge -y --auto-remove build-essential \
  && rm -rf /var/lib/apt/lists/*
