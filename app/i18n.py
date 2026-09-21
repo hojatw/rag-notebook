@@ -388,6 +388,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "chat.step3_title": "開始提問",
         "chat.step3_body": "在下方輸入問題，回答會附上引用來源。",
         "chat.abstain": "依據所選的來源，我無法判斷這個問題的答案。",
+        "chat.scope_none_selected": "目前沒有勾選任何來源。請先在「來源」勾選至少一個，再提問。",
+        "chat.scope_invalid": "所選的來源已不在這個筆記本中（可能剛被刪除或移動）。請重新整理頁面，再勾選要提問的來源。",
         # --- Studio tools + suggestions (Phase 1a) ---------------------------
         "studio.tools_heading": "工具",
         "studio.tools_empty": "先上傳並完成索引，工具才能使用。",
@@ -751,6 +753,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "js.generating": "正在生成回答…",
         "js.answer_failed": "回答生成失敗。",
         "js.answer_failed_retry": "回答生成失敗，請稍後再試。",
+        "js.scope_none_selected": "請先在「來源」勾選至少一個來源，再送出問題。",
         "js.role_you": "你",
         "js.role_assistant": "助理",
         "js.copied": "✓ 已複製",

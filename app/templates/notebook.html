@@ -249,6 +249,10 @@
       <input type="hidden" id="conversation-id-field" name="conversation_id"
              value="{{ conversation.id if conversation else '' }}">
 
+      {# Shown by app.js when every source is unchecked; the server refuses
+         that scope too (never widens it) — docs/SECURITY.md. #}
+      <p class="alert-inline ask-scope-error" role="alert" data-scope-error hidden></p>
+
       <div class="question-row">
         <textarea name="question" rows="2"
                   id="question-input"
