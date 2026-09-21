@@ -56,6 +56,15 @@
 
 ### 內部
 
+- **容器映像縮小 171 MB（737 MB → 566 MB；壓縮後 174 MB → 139 MB）**：在安裝依賴的同一層
+  `pip uninstall` 掉 chromadb 宣告、但本 app 結構上用不到的五個套件——`onnxruntime`、
+  `tokenizers`、`huggingface_hub`、`hf_xet`（chromadb 預設的 ONNX embedding function；
+  本 app 的 embedding 由 `app/llm.py` 打 HTTP 自己算，從不傳 `embedding_function`）與
+  `kubernetes`（Chroma *server* 的 k8s 認證 provider；本 app 只用嵌入式
+  `PersistentClient`）。以容器實測上傳 PDF/DOCX/PPTX/XLSX → 索引 → 問答 → 刪除來源
+  （向量同步刪除）→ 重啟與 startup sync 全數正常。`opentelemetry` 等拿不掉：
+  chromadb 的 `__init__` 硬 import 它。
+
 - **標記 13 項 SSDLC 掃描誤報**（`nosemgrep`，非行為變更）：11 項 `CWE-532 日誌寫入
   敏感資訊` 與 2 項 `CWE-79 var-in-href`。前者是規則對 log 的 **format string 做關鍵字
   子字串比對**，命中的全是結構化 log 的欄位名（`token_version`、`budget_tokens`、
