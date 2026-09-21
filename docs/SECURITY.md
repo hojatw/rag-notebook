@@ -434,3 +434,76 @@ References: [GHSA-f4j7-r4q5-qw2c](https://github.com/advisories/GHSA-f4j7-r4q5-q
 [GHSA-36p7-vc44-83pf](https://github.com/advisories/GHSA-36p7-vc44-83pf),
 [GHSA-2wm9-hf6c-p5cr](https://github.com/advisories/GHSA-2wm9-hf6c-p5cr),
 [GHSA-xph7-9rjv-w5fr](https://github.com/advisories/GHSA-xph7-9rjv-w5fr).
+
+### Image-layer findings — `libxml2` and `pip` removed from the image (2026-09-21)
+
+The SSDLC container scan of `0.10.0` surfaced 17 findings that come from the
+**image**, not from `requirements.txt`. None of them gated the release (all were
+`NOT_GATED` / `NO_FIX`), but both causes turned out to be removable rather than
+merely tolerable, so they were fixed instead of triaged away.
+
+**`libxml2` (11 findings, all `NO_FIX`).** [`Dockerfile`](../Dockerfile) installed
+the Debian `libxml2` package with no comment explaining why; `git log -S libxml2 --
+Dockerfile` traces it to the `0.4.0` release commit (`34fbab4`), whose message does
+not mention it. The plausible reason was `lxml`, which is not a direct dependency
+but is pulled in by both `python-docx` and `python-pptx` (`lxml>=3.1.0`).
+
+That reason does not hold. lxml's manylinux wheels **statically bundle libxml2 and
+libxslt**. In a clean `python:3.12-slim` with no libxml packages installed
+(`dpkg -l | grep libxml` is empty, `ldconfig -p` lists neither library):
+
+- `ldd lxml/etree.cpython-312-x86_64-linux-gnu.so` links only
+  `librt`/`libm`/`libpthread`/`libc` — no `libxml2.so`, no `libxslt.so`;
+- `lxml.etree.LIBXML_VERSION` reports `(2, 14, 6)`, the wheel's own bundled copy,
+  which is not the Debian package's version and is not patched by it;
+- `import docx` and `import pptx` both succeed.
+
+So the system package was never in the code path — it contributed its CVEs to the
+image without contributing a symbol to the app. The findings it carried:
+`CVE-2026-6653` (critical), `CVE-2026-74860`, `CVE-2026-86138`, `CVE-2026-86139`,
+`CVE-2026-86140`, `CVE-2026-86142`, `CVE-2026-86143`, `CVE-2026-86144` (high),
+`CVE-2026-86137` (medium), `CVE-2026-11979`, `CVE-2026-86141` (low). Debian has
+shipped no fix for any of them, so removing the package was the only available
+action as well as the correct one.
+
+- **Verified by smoke test, not by inference.** The rebuilt image was run under
+  Docker Compose and one source of each lxml-touching format was ingested end to
+  end: **DOCX** and **PPTX** (the two that go through lxml, via `python-docx` /
+  `python-pptx`) plus **XLSX** (openpyxl) and **PDF** (pdfplumber) as controls.
+  All four reached `indexed` and were retrievable with citations.
+- **Re-add only with a reason.** If a future dependency is ever built from source
+  against system libxml2, the `Dockerfile` comment must name that dependency.
+
+**`pip` (6 findings, all with fixes) — removed rather than upgraded.** The base
+image ships `pip 25.0.1`, carrying `CVE-2025-8869`, `CVE-2026-1703`,
+`CVE-2026-3219`, `CVE-2026-6357`, `CVE-2026-8643` and `CVE-2026-13346` — all
+arbitrary-file-write-on-install issues, reachable only by running `pip install`
+against a hostile package. Nothing does that at runtime: the container starts
+`uvicorn` (or the worker) as the non-root `app` user and no request or ingest
+path shells out to pip. Real risk was close to zero; the goal was a clean scan.
+
+The obvious fix — upgrade to `pip==26.2.1`, the latest release and past every
+listed fix version — was tried first and **made the gate worse**. pip 26.x ships
+an SBOM of its own vendored packages (`pip/_vendor/bom.cdx.json`; `25.0.1` has
+none), so Trivy newly sees the vendored `msgpack 1.1.2` (GHSA-6v7p-g79w-8964)
+and `setuptools 70.3.0` (CVE-2025-47273): both HIGH with a fix available, i.e.
+two new GATE-02 BLOCKs under production rules. The old pip vendored equivalent
+code; the scanner simply could not see it. (The setuptools hit is likely a false
+positive in substance — pip vendors only `pkg_resources`, not the
+`package_index` module the CVE lives in — but it gates all the same.)
+
+So the [`Dockerfile`](../Dockerfile) now runs `pip uninstall -y pip` in the same
+layer, right after the requirements install, which clears the six original
+findings and never introduces the two vendored ones. This follows the SSDLC
+SOP's own guidance for vulnerabilities inside pip's bundled packages.
+
+- **Nothing depends on pip in the container.** `setup.sh` uses the host venv;
+  the healthcheck and entrypoints use `python` / `uvicorn` directly.
+- **Debug escape hatch:** the stdlib still bundles the wheel, so
+  `docker exec <container> python -m ensurepip --user` restores pip for the
+  non-root `app` user (verified in `python:3.12-slim`). Do not bake it back in.
+- **Build hygiene matters for this triage.** A scan of an image built on a
+  stale cached `python:3.12-slim` (from 2026-05) showed 41 extra OS-package
+  BLOCKs that the current base had already patched. Build the scanned image with
+  `docker build --pull --no-cache`, as the SSDLC SOP requires, or the image
+  layer will not be comparable between scans.
