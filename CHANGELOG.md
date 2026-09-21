@@ -35,6 +35,24 @@
   `{{ message.citations | tojson | safe }}`。Jinja 的 `tojson` 本來就回傳 `Markup`，
   而且會把 `<` `>` `&` `'` 轉成 `\uXXXX`，所以那個 `| safe` 是 no-op——已實測
   移除前後輸出位元組完全相同。刪掉是為了讓模板不再讀起來像「這裡關掉了跳脫」。
+- **容器映像不再安裝系統的 `libxml2`**：這一行是 `0.4.0` 那個大 commit（`34fbab4`）
+  裡混進 `Dockerfile` 的，沒有任何註解說明用途。推測是為了 `lxml`（`python-docx`
+  與 `python-pptx` 的相依），但 lxml 的 manylinux wheel **自己靜態連結了 libxml2 與
+  libxslt**——在乾淨的 `python:3.12-slim` 裡對 `lxml/etree*.so` 跑 `ldd`，輸出完全沒有
+  `libxml2.so`，只有 libc/libm/librt/libpthread。系統套件因此是純粹的多餘負擔，而且
+  自帶 **11 筆 Debian 尚未修補（NO_FIX）的 CVE**：1 筆 CRITICAL（`CVE-2026-6653`）、
+  7 筆 HIGH（`CVE-2026-74860`、`86138`、`86139`、`86140`、`86142`、`86143`、`86144`）、
+  1 筆 MEDIUM（`86137`）、2 筆 LOW（`CVE-2026-11979`、`86141`）。移除後這 11 筆全數消失。
+  這些弱點原本都是 NOT_GATED／NO_FIX，**不影響任何部署放行判定**，純粹是把映像掃乾淨。
+- **最終映像不再包含 pip**：基底映像帶的 `pip 25.0.1` 累積 6 筆 MEDIUM/LOW 弱點
+  （`CVE-2025-8869`、`CVE-2026-1703`、`CVE-2026-3219`、`CVE-2026-6357`、
+  `CVE-2026-8643`、`CVE-2026-13346`），全是「安裝惡意套件時被任意寫檔」一類。原本打算
+  升級到 `26.2.1`，但重掃後發現反效果：pip 26.x 附帶自身 vendored 套件的 SBOM，掃描器
+  因此看得到 vendored 的 `msgpack` 與 `setuptools`，**反而多出 2 筆 HIGH 且有修補版的
+  放行阻擋項**。執行期根本沒有人在容器裡跑 pip，所以改為在安裝完相依套件後、同一層
+  直接移除 pip——原本 6 筆與升級會帶進來的 2 筆一起消失。需要在執行中的容器裡除錯時，
+  可用 `python -m ensurepip --user` 臨時還原。這兩項維運者只需重新
+  `docker compose up --build`，資料面、設定鍵、schema 都不變。
 
 ### 內部
 
