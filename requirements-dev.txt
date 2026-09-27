@@ -2,4 +2,4 @@
 
 pytest==9.1.1
 pytest-xdist==3.8.0
-uvicorn[standard]==0.52.4
+uvicorn[standard]==0.53.0
