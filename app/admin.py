@@ -8,6 +8,7 @@ unchanged.
 
 import json
 import logging
+from datetime import datetime
 from typing import Annotated, Any
 from urllib.parse import urlparse
 
@@ -19,6 +20,7 @@ from . import i18n, index_migration
 from .config import config
 from .db import connect, loads
 from .main import record_audit_event, render, require_admin
+from .retrieval import VECTOR_FAILURE_ALERT_THRESHOLD, vector_health
 from .security import hash_password
 from .vector_store import clear_all_vectors, sync_from_sqlite
 from .vector_store import index_status as vector_index_status
@@ -184,8 +186,42 @@ def admin_index(
     return render(
         request,
         "admin_index.html",
-        {"user": user, "status": status, "msg": msg or "", "migration": _migration_preview()},
+        {"user": user, "status": status, "msg": msg or "", "migration": _migration_preview(),
+         "vector_health": _vector_health_view()},
     )
+
+
+def _format_epoch(value: Any) -> str:
+    """Epoch seconds -> a readable server-local timestamp, or "" when unset."""
+    if not value:
+        return ""
+    try:
+        return datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _vector_health_view() -> dict[str, Any]:
+    """O3: the vector path's health, shaped for the index page.
+
+    The fallback in `retrieve()` is good enough that a Chroma outage produces
+    worse answers rather than errors, which is why two real incidents ran for
+    two hours and two days unnoticed. The counters already existed; nothing
+    displayed them. Note the scope this can and cannot claim: the counts are
+    per-process and reset on restart, so with more than one uvicorn worker this
+    page reports the worker that happened to serve it. That is a real limit and
+    the page says so rather than implying deployment-wide coverage.
+    """
+    health = vector_health()
+    failures = int(health.get("consecutive_failures") or 0)
+    return {
+        "consecutive_failures": failures,
+        "degraded": failures > 0,
+        "alerting": failures >= VECTOR_FAILURE_ALERT_THRESHOLD,
+        "last_success_at": _format_epoch(health.get("last_success_at")),
+        "last_failure_at": _format_epoch(health.get("last_failure_at")),
+        "served_any": bool(health.get("last_success_at") or health.get("last_failure_at")),
+    }
 
 
 def _migration_preview() -> dict[str, Any]:

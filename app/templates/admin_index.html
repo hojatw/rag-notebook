@@ -26,6 +26,28 @@
     <div class="alert">此環境無法載入 ChromaDB，安裝前向量搜尋停用。</div>
   {% endif %}
 
+  {# O3: the vector path can fail without anything on screen changing -- the
+     fallback answers anyway, worse. Put the state where an admin already looks
+     when they suspect the index. #}
+  <section class="settings-section">
+    <h2>{{ t('admin.vector_health_heading') }}</h2>
+    {% if vector_health.degraded %}
+      <div class="{{ 'alert' if vector_health.alerting else 'warn' }}">
+        {{ t('admin.vector_health_degraded',
+              failures=vector_health.consecutive_failures,
+              last_failure=vector_health.last_failure_at or '—') }}
+      </div>
+      {% if vector_health.last_success_at %}
+        <p class="muted small">{{ t('admin.vector_health_last_success', last_success=vector_health.last_success_at) }}</p>
+      {% endif %}
+    {% elif vector_health.served_any %}
+      <div class="notice">{{ t('admin.vector_health_ok', last_success=vector_health.last_success_at or '—') }}</div>
+    {% else %}
+      <p class="muted small">{{ t('admin.vector_health_idle') }}</p>
+    {% endif %}
+    <p class="muted small">{{ t('admin.vector_health_scope') }}</p>
+  </section>
+
   <section class="settings-section">
     <h2>狀態</h2>
     <div class="index-stat-grid">
