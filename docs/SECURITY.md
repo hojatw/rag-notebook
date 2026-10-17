@@ -149,6 +149,47 @@ and high-sensitivity. Domain
 audit metadata is allowlisted to identifiers, flags, counts, and character
 lengths/fingerprints; it must never contain domain text or snapshots.
 
+### 問答檢索不得離開當前 notebook（2026-09-21）
+
+**不變式：chat 檢索的範圍永遠是「這個 notebook 裡、屬於這個使用者的來源」的子集，
+不論客戶端送來什麼。** 這不是跨使用者授權問題（那一層是 `user_id` 篩選，一直都在），
+而是同一使用者的 notebook 邊界——回答不能引用另一個 notebook 的來源。
+
+為什麼需要明文寫下：`chunks` 表與 Chroma metadata 都**沒有** `notebook_id`，
+notebook 範圍只能透過 `source_ids` 表達。先前 `ask` / `ask-stream` 沒帶
+`source_ids`（左欄按「全不選」、無 JS 表單），或送來的 id 全部被驗證濾掉時，
+清單變成空的，而 `build_where` 與 `keyword_candidates_from_sqlite` 對空清單的解讀是
+「不加來源篩選」——結果搜遍該使用者的全部語料。實測在一個只有 4 份測試檔的
+notebook 裡，回答引用了另一個 notebook 的 PDF。
+
+現在由兩層共同保證：
+
+- **路由層（唯一決定範圍的地方）**：`app/main.py` 的 `_resolve_question_scope`
+  （由 `_prepare_question` 呼叫）把客戶端送來的東西轉成「可證明屬於本 notebook」的 id：
+  | 送來的 | 結果 |
+  |---|---|
+  | 有 `source_ids`，至少一個屬於本 notebook | 只留屬於本 notebook 的（其餘丟掉，維持原行為） |
+  | 有 `source_ids`，**全部**不屬於本 notebook | 拒答（`chat.scope_invalid`），不檢索、不放寬 |
+  | 沒有 `source_ids`，且 `source_scope=selected` | 使用者明確「全不選」→ 拒答（`chat.scope_none_selected`） |
+  | 沒有 `source_ids`，也沒有 `source_scope` | 本 notebook 的全部已索引來源（無 JS 表單、舊客戶端）；一個都沒有時不呼叫 `retrieve()`，照常 abstain |
+
+  拒答會照常存成一則 assistant 訊息，`metadata.outcome = "scope_rejected"`。
+  前端（`initSourceScope`）在全不選時直接擋下送出並顯示同義提示，省一次來回；
+  但伺服器**不依賴**前端，繞過 JS 送出也一樣被拒。
+- **檢索層（fail closed 的第二道防線）**：`retrieve()` 收到 `user_id` 卻沒有
+  `source_ids` 時直接回傳 `[]` 並記 `retrieve_refused_unscoped`（WARNING），
+  不搜尋整個語料。日後新增的呼叫端若忘了先決定範圍，結果是拒答而不是外洩。
+  看到這行 log 代表某個呼叫端有 bug，不是使用者操作造成。
+
+其他 `retrieve()` 呼叫端都已自行把範圍限定在 notebook 內：主題比較
+（`_topic_comparison_evidence`，每次只傳一個經 `_fetch_source_summaries` 驗證的來源）、
+Eval run（`run_eval_job` 在伺服器端查出該 notebook 的已索引來源，沒有就讓 run 失敗）。
+`tests/eval_retrieval.py` 是開發者 CLI，不經網頁。
+
+釘住它的測試在 `tests/test_ui_chat.py`：同一使用者的兩個 notebook、另一本的 chunk
+刻意是更好的命中，走真的 `ask` / `ask-stream` 路由與真的 `retrieve()`，斷言引用來源
+**等於**本 notebook 的來源集合。新增會呼叫 `retrieve()` 的路由時，比照補一個。
+
 ## Hardening status
 
 A full review on **2026-08-22** surfaced eight hardening items (`SEC-1`–`SEC-8`). All of them have landed and their durable record is the sections below; the temporary review backlog that staged them is no longer the source of truth.
@@ -303,6 +344,53 @@ Current mitigations are structural rather than sandboxing:
 - Phase 1 PPTX **never decodes image bytes** — images are counted, not opened — so Pillow is currently a transitive dependency that ingest does not actually exercise. That changes the day `A8`/`A9` add OCR or vision, which is when this note needs revisiting.
 
 **Keep these parsers patched** (they are the highest-value dependency updates in this project), and re-evaluate isolation if the app is ever exposed to untrusted uploaders.
+## Triaged SAST findings
+
+Findings from the SSDLC source scan (Semgrep, `p/owasp-top-ten` + `p/security-audit`). Like the dependency section below, each entry records **how it was assessed**, so a `# nosemgrep` marker in the code is never just someone's assertion — the reasoning is here and can be checked.
+
+### CWE-532 "logging sensitive information" — 11 findings, all false positives (2026-09-20)
+
+Rule `python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure`.
+
+The rule does a **keyword substring match on the format string** (`password`, `token`, `key`). Every hit is a *field name* in a structured log line; the values interpolated into them are ids, booleans, character counts and model names:
+
+| Site | Substring that matched | What is actually logged |
+|---|---|---|
+| `app/admin.py` `admin_reset_password` | `password_reset` | two user ids |
+| `app/db.py` `_flag_default_passwords` | `password` | username |
+| `app/llm.py` `_fit_to_embedding_window` | `budget_tokens` | role, char counts, token budget |
+| `app/llm.py` `probe_embedding_window` (×2) | `max_input_tokens` | model name, int |
+| `app/llm.py` `chat_completion` | `prompt_tokens_est` | provider, model name, char counts, ms |
+| `app/llm.py` `build_chat_request` | `estimated_tokens` | call type, ints |
+| `app/main.py` `current_user` | `token_version` | user id, session version integer |
+| `app/main.py` `require_login` | `password_change` | user id, request path |
+| `app/main.py` `change_own_password` | `password_changed` | user id, bool, version integer |
+| `app/settings.py` `update_settings` | `api_key_changed` | ids, provider, **booleans** |
+
+`app/settings.py` is the one worth re-reading if you are auditing this: it logs `bool(base_url.strip())`-style flags and `api_key_changed=<bool>`, never the key. API keys only ever leave `app/security.py` encrypted.
+
+**Why annotation rather than renaming.** Renaming the fields (`token_version` → `session_version`) would also silence the rule, but it breaks the grep conventions these log lines exist for — including the strings recorded in [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — and amounts to changing semantic names to satisfy a linter. Routing the calls through a `_log_event()` helper would be worse: that is defeating the scanner with indirection, and it is the kind of broad refactor `AGENTS.md` tells you not to do.
+
+### CWE-79 `var-in-href` — 2 findings, both false positives (2026-09-20)
+
+Rule `generic.html-templates.security.var-in-href.var-in-href`.
+
+| Template | Variable | Every construction site |
+|---|---|---|
+| `app/templates/base.html` | `crumb.href` | `app/main.py` `_domain_settings_context`; `app/evals.py` `admin_eval_set_detail`, `admin_eval_run_detail`, `admin_eval_compare` |
+| `app/templates/search.html` | `item.url` | `app/main.py` `global_search` — four result branches, all `f"/notebooks/{<DB integer id>}"` |
+
+Every value is either a hardcoded internal path or an f-string over a database integer id, so a `javascript:` scheme cannot reach either attribute. The list of construction sites is exhaustive as of `0.10.0` — **if you add a fifth `breadcrumb_items` producer or a fifth search branch, it is not covered by this assessment.** A breadcrumb or search URL that could ever carry an externally-supplied value needs the annotation removed and the scheme validated at render time.
+
+### Writing a `nosemgrep` marker that actually works
+
+Both mistakes below were made and caught during the 2026-09-20 triage. Both leave the code looking annotated while the scan result is completely unchanged, and **neither produces any error**:
+
+- **The marker must be on the line immediately above the line the scanner reports** (for a multi-line call, that is the `logger.…(` line, not the format string). Putting an explanatory comment *between* the marker and the call suppresses nothing. Reason comment first, marker last.
+- **Use the full rule id exactly as the report prints it.** `var-in-href`'s last segment is doubled (`…security.var-in-href.var-in-href`); writing only `…security.var-in-href` matches no rule.
+
+Verify rather than assume: re-scan, or reproduce locally with a rule file whose `id` equals the upstream one and diff the finding count with and without the markers. Note that a rule loaded from a local file gets its path prefixed onto its id, so the marker must carry that prefix too when testing that way.
+
 ## Triaged dependency-audit findings
 
 The items below are surfaced by Dependabot / `pip-audit`. Each records how it was assessed against *this* deployment, so the alerts are not repeatedly re-investigated. An advisory that turns out not to apply is still patched when the upgrade is cheap — the note explains why the alert existed, not why the upgrade was skipped.
@@ -393,3 +481,76 @@ References: [GHSA-f4j7-r4q5-qw2c](https://github.com/advisories/GHSA-f4j7-r4q5-q
 [GHSA-36p7-vc44-83pf](https://github.com/advisories/GHSA-36p7-vc44-83pf),
 [GHSA-2wm9-hf6c-p5cr](https://github.com/advisories/GHSA-2wm9-hf6c-p5cr),
 [GHSA-xph7-9rjv-w5fr](https://github.com/advisories/GHSA-xph7-9rjv-w5fr).
+
+### Image-layer findings — `libxml2` and `pip` removed from the image (2026-09-21)
+
+The SSDLC container scan of `0.10.0` surfaced 17 findings that come from the
+**image**, not from `requirements.txt`. None of them gated the release (all were
+`NOT_GATED` / `NO_FIX`), but both causes turned out to be removable rather than
+merely tolerable, so they were fixed instead of triaged away.
+
+**`libxml2` (11 findings, all `NO_FIX`).** [`Dockerfile`](../Dockerfile) installed
+the Debian `libxml2` package with no comment explaining why; `git log -S libxml2 --
+Dockerfile` traces it to the `0.4.0` release commit (`34fbab4`), whose message does
+not mention it. The plausible reason was `lxml`, which is not a direct dependency
+but is pulled in by both `python-docx` and `python-pptx` (`lxml>=3.1.0`).
+
+That reason does not hold. lxml's manylinux wheels **statically bundle libxml2 and
+libxslt**. In a clean `python:3.12-slim` with no libxml packages installed
+(`dpkg -l | grep libxml` is empty, `ldconfig -p` lists neither library):
+
+- `ldd lxml/etree.cpython-312-x86_64-linux-gnu.so` links only
+  `librt`/`libm`/`libpthread`/`libc` — no `libxml2.so`, no `libxslt.so`;
+- `lxml.etree.LIBXML_VERSION` reports `(2, 14, 6)`, the wheel's own bundled copy,
+  which is not the Debian package's version and is not patched by it;
+- `import docx` and `import pptx` both succeed.
+
+So the system package was never in the code path — it contributed its CVEs to the
+image without contributing a symbol to the app. The findings it carried:
+`CVE-2026-6653` (critical), `CVE-2026-74860`, `CVE-2026-86138`, `CVE-2026-86139`,
+`CVE-2026-86140`, `CVE-2026-86142`, `CVE-2026-86143`, `CVE-2026-86144` (high),
+`CVE-2026-86137` (medium), `CVE-2026-11979`, `CVE-2026-86141` (low). Debian has
+shipped no fix for any of them, so removing the package was the only available
+action as well as the correct one.
+
+- **Verified by smoke test, not by inference.** The rebuilt image was run under
+  Docker Compose and one source of each lxml-touching format was ingested end to
+  end: **DOCX** and **PPTX** (the two that go through lxml, via `python-docx` /
+  `python-pptx`) plus **XLSX** (openpyxl) and **PDF** (pdfplumber) as controls.
+  All four reached `indexed` and were retrievable with citations.
+- **Re-add only with a reason.** If a future dependency is ever built from source
+  against system libxml2, the `Dockerfile` comment must name that dependency.
+
+**`pip` (6 findings, all with fixes) — removed rather than upgraded.** The base
+image ships `pip 25.0.1`, carrying `CVE-2025-8869`, `CVE-2026-1703`,
+`CVE-2026-3219`, `CVE-2026-6357`, `CVE-2026-8643` and `CVE-2026-13346` — all
+arbitrary-file-write-on-install issues, reachable only by running `pip install`
+against a hostile package. Nothing does that at runtime: the container starts
+`uvicorn` (or the worker) as the non-root `app` user and no request or ingest
+path shells out to pip. Real risk was close to zero; the goal was a clean scan.
+
+The obvious fix — upgrade to `pip==26.2.1`, the latest release and past every
+listed fix version — was tried first and **made the gate worse**. pip 26.x ships
+an SBOM of its own vendored packages (`pip/_vendor/bom.cdx.json`; `25.0.1` has
+none), so Trivy newly sees the vendored `msgpack 1.1.2` (GHSA-6v7p-g79w-8964)
+and `setuptools 70.3.0` (CVE-2025-47273): both HIGH with a fix available, i.e.
+two new GATE-02 BLOCKs under production rules. The old pip vendored equivalent
+code; the scanner simply could not see it. (The setuptools hit is likely a false
+positive in substance — pip vendors only `pkg_resources`, not the
+`package_index` module the CVE lives in — but it gates all the same.)
+
+So the [`Dockerfile`](../Dockerfile) now runs `pip uninstall -y pip` in the same
+layer, right after the requirements install, which clears the six original
+findings and never introduces the two vendored ones. This follows the SSDLC
+SOP's own guidance for vulnerabilities inside pip's bundled packages.
+
+- **Nothing depends on pip in the container.** `setup.sh` uses the host venv;
+  the healthcheck and entrypoints use `python` / `uvicorn` directly.
+- **Debug escape hatch:** the stdlib still bundles the wheel, so
+  `docker exec <container> python -m ensurepip --user` restores pip for the
+  non-root `app` user (verified in `python:3.12-slim`). Do not bake it back in.
+- **Build hygiene matters for this triage.** A scan of an image built on a
+  stale cached `python:3.12-slim` (from 2026-05) showed 41 extra OS-package
+  BLOCKs that the current base had already patched. Build the scanned image with
+  `docker build --pull --no-cache`, as the SSDLC SOP requires, or the image
+  layer will not be comparable between scans.
