@@ -21,9 +21,10 @@ def test_minutes_renders_with_save_button_no_autosave(monkeypatch, tmp_path):
     main, db = _fresh_app(monkeypatch, tmp_path)
 
     async def fake_minutes(chunks, settings, **kwargs):
-        return "## 會議主題\n測試會議\n\n## 重要決議\n- 通過提案"
+        """T1a step 2: the generator yields progress then ("result", text)."""
+        yield "result", "## 會議主題\n測試會議\n\n## 重要決議\n- 通過提案"
 
-    monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
+    monkeypatch.setattr(main, "stream_meeting_minutes", fake_minutes)
 
     with TestClient(main.app) as client:
         _login(client)
@@ -58,19 +59,21 @@ def test_minutes_renders_with_save_button_no_autosave(monkeypatch, tmp_path):
 
 
 def test_minutes_discloses_partial_coverage_and_carries_it_into_the_note(monkeypatch, tmp_path):
-    """T1a step 1: a transcript read only in part must say so, on screen and in the note.
+    """T1a: a transcript read only in part must say so, on screen and in the note.
 
-    The failure this guards is silent, which is why the assertion is about what
-    the *user* sees rather than about `chunks_used` reaching the log: before this,
-    a two-hour meeting summarised from its first twenty minutes rendered exactly
-    like a complete one.
+    Step 1 added this notice when the minutes read only the first window. Step 2
+    made them read the whole transcript, so the notice now guards the residual
+    case only: a recording long enough to hit `MEETING_MINUTES_MAX_WINDOWS`.
+    The failure is silent either way, which is why the assertion is about what
+    the *user* sees rather than about `chunks_used` reaching the log.
     """
     main, db = _fresh_app(monkeypatch, tmp_path)
 
     async def fake_minutes(chunks, settings, **kwargs):
-        return "## 會議主題\n測試會議\n\n## 重要決議\n- 通過提案"
+        """T1a step 2: the generator yields progress then ("result", text)."""
+        yield "result", "## 會議主題\n測試會議\n\n## 重要決議\n- 通過提案"
 
-    monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
+    monkeypatch.setattr(main, "stream_meeting_minutes", fake_minutes)
 
     with TestClient(main.app) as client:
         _login(client)
@@ -86,9 +89,9 @@ def test_minutes_discloses_partial_coverage_and_carries_it_into_the_note(monkeyp
                 "VALUES (?, ?, 'long-meeting.vtt', '/tmp/m.vtt', 'indexed')",
                 (user["id"], notebook_id),
             ).lastrowid
-            # Enough chunks that the 16k-character budget stops well short of the
-            # end: 40 x 1000 chars = 40k, so only the first 16 are sent.
-            for index in range(40):
+            # Past the window cap: 200 x 1000 chars = 200k, and 8 windows of 16k
+            # is 128k, so the last ~72 chunks are beyond what one run will read.
+            for index in range(200):
                 conn.execute(
                     "INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json) "
                     "VALUES (?, ?, ?, ?, ?, '[]')",
@@ -101,7 +104,7 @@ def test_minutes_discloses_partial_coverage_and_carries_it_into_the_note(monkeyp
 
     assert resp.status_code == 200
     assert "之後的內容沒有進入整理" in resp.text, "the coverage caveat must be on screen"
-    assert "全部 40 段" in resp.text
+    assert "全部 200 段" in resp.text
     # The saved note has to carry it too -- an exported file loses the page.
     note_content = re.search(r'name="content" value="(.*?)">', resp.text, re.S)
     assert note_content is not None, "the save-to-notes form must be present"
@@ -115,9 +118,10 @@ def test_minutes_stays_quiet_when_the_whole_transcript_fits(monkeypatch, tmp_pat
     main, db = _fresh_app(monkeypatch, tmp_path)
 
     async def fake_minutes(chunks, settings, **kwargs):
-        return "## 會議主題\n短會議"
+        """T1a step 2: the generator yields progress then ("result", text)."""
+        yield "result", "## 會議主題\n短會議"
 
-    monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
+    monkeypatch.setattr(main, "stream_meeting_minutes", fake_minutes)
 
     with TestClient(main.app) as client:
         _login(client)
@@ -155,10 +159,11 @@ def test_minutes_warns_before_non_meeting_source(monkeypatch, tmp_path):
     assert "發言者標記" not in ambiguous["reason"]
 
     async def fake_minutes(chunks, settings, **kwargs):
+        """T1a step 2: the generator yields progress then ("result", text)."""
         calls["n"] += 1
-        return "## 會議主題\n不應先產生"
+        yield "result", "## 會議主題\n不應先產生"
 
-    monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
+    monkeypatch.setattr(main, "stream_meeting_minutes", fake_minutes)
 
     with TestClient(main.app) as client:
         _login(client)
@@ -202,9 +207,10 @@ def test_minutes_decline_is_not_saved(monkeypatch, tmp_path):
     main, db = _fresh_app(monkeypatch, tmp_path)
 
     async def fake_minutes(chunks, settings, **kwargs):
-        return "This does not look like a meeting record."
+        """T1a step 2: the generator yields progress then ("result", text)."""
+        yield "result", "This does not look like a meeting record."
 
-    monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
+    monkeypatch.setattr(main, "stream_meeting_minutes", fake_minutes)
 
     with TestClient(main.app) as client:
         _login(client)
@@ -885,3 +891,100 @@ def test_shelf_shows_the_time_so_same_day_entries_differ(monkeypatch, tmp_path):
         assert shelf.status_code == 200
         assert "07-25 14:35" in shelf.text
         assert 'title="2026-07-25 14:35:54"' in shelf.text   # full stamp on hover
+
+
+def test_minutes_stream_sends_progress_then_the_result_fragment(monkeypatch, tmp_path):
+    """T1a step 2 at the route: progress must arrive *before* the result.
+
+    A progress indicator that only appears once the work is finished is worse
+    than none, so the ordering is the property, not merely the presence of the
+    events.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_minutes(chunks, settings, **kwargs):
+        yield "progress", {"done": 0, "total": 2, "span": "transcript 00:00:00"}
+        yield "progress", {"done": 1, "total": 2, "span": "transcript 00:30:00"}
+        yield "result", "## 會議主題\n測試會議\n\n## 重要決議\n- 通過提案"
+
+    monkeypatch.setattr(main, "stream_meeting_minutes", fake_minutes)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status) "
+                "VALUES (?, ?, 'meeting.vtt', '/tmp/m.vtt', 'indexed')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            for index in range(4):
+                conn.execute(
+                    "INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json) "
+                    "VALUES (?, ?, ?, ?, '會議逐字稿 與會者：甲乙丙 決議：通過', '[]')",
+                    (user["id"], source_id, index, f"transcript 00:{index:02d}:00"),
+                )
+
+        resp = client.post(
+            f"/notebooks/{notebook_id}/minutes/stream", data={"source_id": source_id}
+        )
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "event: progress" in body
+    assert body.index("event: progress") < body.index("event: done"), (
+        "progress must reach the browser before the result, not with it"
+    )
+    assert "transcript 00:30:00" in body
+    # The fragment carries the save-to-notes form, which needs its CSRF token --
+    # rendering the template without the app's globals would silently drop it.
+    assert "重要決議" in body and "csrf_token" in body
+
+
+def test_minutes_stream_and_plain_post_agree(monkeypatch, tmp_path):
+    """One implementation, two entry points: the fragments must match.
+
+    Two code paths for the same tool is exactly the drift AGENTS.md warns about,
+    so this pins them together rather than trusting the refactor.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_minutes(chunks, settings, **kwargs):
+        yield "result", "## 會議主題\n一致性測試"
+
+    monkeypatch.setattr(main, "stream_meeting_minutes", fake_minutes)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status) "
+                "VALUES (?, ?, 'meeting.vtt', '/tmp/m.vtt', 'indexed')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json) "
+                "VALUES (?, ?, 0, 'transcript 00:00:00', '會議逐字稿 與會者：甲乙丙 決議：通過', '[]')",
+                (user["id"], source_id),
+            )
+
+        plain = client.post(f"/notebooks/{notebook_id}/minutes", data={"source_id": source_id})
+        streamed = client.post(
+            f"/notebooks/{notebook_id}/minutes/stream", data={"source_id": source_id}
+        )
+
+    assert plain.status_code == 200
+    for marker in ("一致性測試", "存成筆記"):
+        assert marker in plain.text, marker
+        assert marker in streamed.text, marker
