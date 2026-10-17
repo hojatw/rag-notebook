@@ -30,8 +30,15 @@
     <div class="markdown-body" data-markdown>{{ minutes }}</div>
   {% else %}
     <p class="muted small">已從「{{ filename }}」整理完成，確認後可存成筆記。</p>
+    {# T1a: the minutes may cover only part of the transcript. Say so here *and*
+       inside the saved note, so an exported file carries the caveat too. #}
+    {% if coverage_note %}
+      <p class="warn">{{ coverage_note }}</p>
+    {% endif %}
     <div class="markdown-body" data-markdown>{{ minutes }}</div>
-    {% with note_title = "會議整理 — " ~ filename, note_content = minutes, note_kind = "minutes" %}
+    {% with note_title = "會議整理 — " ~ filename,
+            note_content = minutes ~ ("\n\n> " ~ coverage_note if coverage_note else ""),
+            note_kind = "minutes" %}
       {% include "_save_note_button.html" %}
     {% endwith %}
   {% endif %}
