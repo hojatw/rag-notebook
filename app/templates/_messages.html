@@ -72,11 +72,15 @@
                 {% if message.metadata.retrieval_ms %} · 檢索 {{ message.metadata.retrieval_ms }}ms{% endif %}
                 {% if message.metadata.generation_ms %} · 生成 {{ message.metadata.generation_ms }}ms{% endif %}
                 {% if message.metadata.top_score %} · 最高分 {{ message.metadata.top_score }}{% endif %}
+                {% if message.metadata.dropped_chunks %} · {{ t('chat.dropped_chunks_badge', count=message.metadata.dropped_chunks) }}{% endif %}
               {% else %}
                 為什麼引用這些內容？
               {% endif %}
             </span>
           </summary>
+          {% if message.metadata.dropped_chunks %}
+            <p class="warn">{{ t('chat.dropped_chunks_detail', count=message.metadata.dropped_chunks) }}</p>
+          {% endif %}
           {% if message.metadata.outcome == "low_confidence" %}
             <p class="muted small">最高分段落只有 {{ message.metadata.top_score }}，低於信心門檻 {{ message.metadata.threshold|default(0.25) }} — 為避免幻覺，模型選擇不作答。</p>
           {% elif message.metadata.outcome == "no_retrieval" %}

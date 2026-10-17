@@ -90,7 +90,17 @@ async def retrieve(
     ``params`` overrides the runtime-safe retrieval knobs for this call only
     (used by the eval workbench for isolated per-run experiments); None falls
     back to the active applied profile.
+
+    ``source_ids`` is the **only** thing that keeps a search inside one
+    notebook — neither ``chunks`` nor the Chroma metadata carry a notebook_id.
+    So with a ``user_id`` and no ``source_ids`` this fails closed (returns []),
+    instead of searching every notebook the user owns. Callers resolve the
+    scope first (see ``_prepare_question`` in ``app/main.py``); invariant in
+    docs/SECURITY.md.
     """
+    if user_id is not None and not source_ids:
+        logger.warning("retrieve_refused_unscoped user_id=%s — caller passed no source_ids", user_id)
+        return []
     started = time.perf_counter()
     p = resolve_retrieval_params(params)
     pool_size = int(p["candidate_pool_size"])

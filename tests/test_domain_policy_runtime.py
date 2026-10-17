@@ -1,6 +1,6 @@
 import json
 
-from tests.ui_helpers import TestClient, _fresh_app, _login, _seed_notebook
+from tests.ui_helpers import TestClient, _fresh_app, _login, _seed_indexed_source, _seed_notebook
 
 
 def test_streaming_runtime_applies_domain_context_and_never_persists_marker(monkeypatch, tmp_path):
@@ -29,6 +29,8 @@ def test_streaming_runtime_applies_domain_context_and_never_persists_marker(monk
     with TestClient(main.app) as client:
         _login(client)
         user, notebook_id = _seed_notebook(db)
+        # 範圍一律在伺服器端解析成本 notebook 的已索引來源；沒有來源就不會檢索。
+        _seed_indexed_source(db, user["id"], notebook_id)
         with db.connect() as conn:
             conn.execute(
                 "INSERT INTO notebook_domain_config "
@@ -143,6 +145,7 @@ def test_stream_discards_shown_text_when_it_abstains_after_the_gate(monkeypatch,
     with TestClient(main.app) as client:
         _login(client)
         user, notebook_id = _seed_notebook(db)
+        _seed_indexed_source(db, user["id"], notebook_id)
         with db.connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO llm_settings "

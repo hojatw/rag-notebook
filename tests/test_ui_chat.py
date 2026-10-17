@@ -8,7 +8,10 @@
 """
 
 import asyncio
+import json
 import time
+
+import pytest
 
 from starlette.requests import Request
 
@@ -69,6 +72,8 @@ def test_streaming_ask_saves_answer_and_returns_final_messages(monkeypatch, tmp_
     with TestClient(main.app) as client:
         _login(client)
         user, notebook_id = _seed_notebook(db)
+        # 範圍一律在伺服器端解析成本 notebook 的已索引來源；沒有來源就不會檢索。
+        _seed_indexed_source(db, user["id"], notebook_id)
         with db.connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
@@ -436,3 +441,323 @@ def test_citation_payload_and_merge_carry_chunk_id(monkeypatch, tmp_path):
     vec = [{"id": 5, "source_id": 2, "filename": "f", "location": "l", "text": "alpha beta", "vector_score": 0.8}]
     merged = main.merge_candidates(vec, [], ["alpha"])
     assert merged[5]["id"] == 5
+
+
+# --- 問答檢索不得離開當前 notebook -------------------------------------------
+#
+# chunks 表與 Chroma metadata 都沒有 notebook_id，notebook 範圍只能靠 source_ids
+# 表達。曾經發生：ask 沒帶 source_ids（左欄按「全不選」或無 JS 表單）時，檢索
+# 退化成只篩 user_id，回答引用了同一使用者「另一個 notebook」的來源。
+# 這組測試跑真的 ask / ask-stream 路由與真的 retrieve()（Chroma 向量＋SQLite
+# 關鍵字兩條路都走），只替換掉需要網路的 embedding／改寫／rerank／生成。
+
+
+def _two_notebooks_same_user(main, db):
+    """同一使用者的兩個 notebook，各一個含相同關鍵字的已索引來源。
+
+    另一本的 chunk 刻意是「更好」的命中（向量完全相同、文字也不同，不會被去重），
+    所以範圍一旦外漏，它一定會排進結果、出現在引用裡。
+    """
+    import app.vector_store as vector_store
+
+    user, nb_here = _seed_notebook(db, title="這一本")
+    _user, nb_other = _seed_notebook(db, title="另一本")
+    here_source = _seed_indexed_source(db, user["id"], nb_here, filename="here.md", summary="潮汐發電概述")
+    other_source = _seed_indexed_source(
+        db, user["id"], nb_other, filename="other.md", summary="潮汐發電的原理與成本"
+    )
+    embeddings = {here_source: [0.8, 0.6, 0.0], other_source: [1.0, 0.0, 0.0]}
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT chunks.*, sources.filename FROM chunks JOIN sources ON sources.id = chunks.source_id"
+        ).fetchall()
+        conn.execute(
+            "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, chat_model, embedding_model) "
+            "VALUES (1, 'openai_compatible', 'https://x/v1', 'chat', 'embed')"
+        )
+    vector_store.upsert_chunks([{**dict(row), "embedding": embeddings[row["source_id"]]} for row in rows])
+    return user, nb_here, here_source, other_source
+
+
+def _stub_network_calls(main, monkeypatch):
+    """只換掉需要網路的呼叫；retrieve() 本身與兩條候選搜尋都是真的。"""
+    import app.retrieval as retrieval
+    from app.llm import AnswerResult
+
+    async def fake_rewrite(question, history, settings, **kwargs):
+        return [question]
+
+    async def fake_embed(texts, settings, **kwargs):
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    async def fake_rerank(question, candidates, settings, limit=6, **kwargs):
+        return candidates[:limit]
+
+    def cite_everything(chunks):
+        return "回答 " + " ".join(f"[{i}]" for i in range(1, len(chunks) + 1))
+
+    async def fake_answer(question, chunks, settings, **kwargs):
+        return AnswerResult(text=cite_everything(chunks))
+
+    async def fake_stream(question, chunks, settings, **kwargs):
+        yield cite_everything(chunks)
+
+    monkeypatch.setattr(retrieval, "rewrite_search_queries", fake_rewrite)
+    monkeypatch.setattr(retrieval, "embed_texts", fake_embed)
+    monkeypatch.setattr(retrieval, "rerank_chunks", fake_rerank)
+    monkeypatch.setattr(main, "generate_answer_result", fake_answer)
+    monkeypatch.setattr(main, "generate_answer_stream", fake_stream)
+
+
+def _last_assistant(db):
+    from app.db import loads
+
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT content, citations_json, metadata_json FROM messages WHERE role = 'assistant' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    return row["content"], loads(row["citations_json"] or "[]"), loads(row["metadata_json"] or "{}")
+
+
+@pytest.mark.parametrize("route", ["ask", "ask-stream"])
+def test_ask_without_source_ids_stays_inside_the_notebook(monkeypatch, tmp_path, route):
+    """沒帶 source_ids（無 JS 表單、舊客戶端）= 這個 notebook 的全部已索引來源，絕不是整個語料。"""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    _stub_network_calls(main, monkeypatch)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        _user, nb_here, here_source, other_source = _two_notebooks_same_user(main, db)
+
+        resp = client.post(
+            f"/notebooks/{nb_here}/chat/{route}",
+            data={"question": "潮汐發電", "conversation_id": ""},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+
+    answer, citations, metadata = _last_assistant(db)
+    assert metadata["outcome"] == "answered"
+    # 只有本 notebook 的來源——用 == 而不是 in，另一本的引用混進來也要紅。
+    assert {c["source_id"] for c in citations} == {here_source}
+    assert "other.md" not in answer
+
+
+@pytest.mark.parametrize("route", ["ask", "ask-stream"])
+@pytest.mark.parametrize(
+    "case, expected_key",
+    [
+        ("explicit_none", "chat.scope_none_selected"),
+        ("all_invalid", "chat.scope_invalid"),
+    ],
+)
+def test_ask_with_unusable_scope_is_refused_not_widened(monkeypatch, tmp_path, route, case, expected_key):
+    """明確全不選、或送來的 id 全部不屬於本 notebook：拒答並說明，不退回任何更大的範圍。"""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    _stub_network_calls(main, monkeypatch)
+    retrieve_calls = []
+    real_retrieve = main.retrieve
+
+    async def spy_retrieve(*args, **kwargs):
+        retrieve_calls.append(args)
+        return await real_retrieve(*args, **kwargs)
+
+    monkeypatch.setattr(main, "retrieve", spy_retrieve)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        _user, nb_here, _here_source, other_source = _two_notebooks_same_user(main, db)
+        data = {"question": "潮汐發電", "conversation_id": "", "source_scope": "selected"}
+        if case == "all_invalid":
+            # 另一個 notebook 的來源 id（同一使用者，舊版會照單全收地檢索）
+            data["source_ids"] = [str(other_source), "999999"]
+
+        resp = client.post(
+            f"/notebooks/{nb_here}/chat/{route}", data=data, headers={"HX-Request": "true"}
+        )
+        assert resp.status_code == 200
+
+    answer, citations, metadata = _last_assistant(db)
+    assert answer == main.i18n.t(expected_key)
+    assert citations == []
+    assert metadata["outcome"] == "scope_rejected"
+    assert retrieve_calls == []
+
+
+def test_retrieve_fails_closed_without_a_source_scope(monkeypatch, tmp_path, caplog):
+    """底層防線：有 user_id 卻沒有 source_ids 時回傳空結果，不搜尋使用者的整個語料。"""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    _stub_network_calls(main, monkeypatch)
+    with TestClient(main.app) as client:
+        _login(client)
+        user, *_ = _two_notebooks_same_user(main, db)
+
+    with caplog.at_level("WARNING", logger="app.retrieval"):
+        out = asyncio.run(main.retrieve("潮汐發電", None, {}, [], user["id"], []))
+    assert out == []
+    assert any("retrieve_refused_unscoped" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("route", ["ask", "ask-stream"])
+def test_ask_in_a_notebook_with_nothing_indexed_abstains_without_the_unscoped_warning(
+    monkeypatch, tmp_path, caplog, route
+):
+    """尚無已索引來源的 notebook：照常拒答，而且不觸發 retrieve() 的「呼叫端有 bug」警告。"""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    _stub_network_calls(main, monkeypatch)
+    with TestClient(main.app) as client:
+        _login(client)
+        _user, nb_here, *_ = _two_notebooks_same_user(main, db)
+        _user, nb_empty = _seed_notebook(db, title="空的")
+        with caplog.at_level("WARNING", logger="app.retrieval"):
+            resp = client.post(
+                f"/notebooks/{nb_empty}/chat/{route}",
+                data={"question": "潮汐發電", "conversation_id": ""},
+                headers={"HX-Request": "true"},
+            )
+        assert resp.status_code == 200
+
+    answer, citations, metadata = _last_assistant(db)
+    assert answer == main.i18n.t("chat.abstain")
+    assert citations == []
+    assert metadata["outcome"] == "no_retrieval"
+    assert not [r for r in caplog.records if "retrieve_refused_unscoped" in r.getMessage()]
+
+
+# --- ask-stream：串流閘門、discard、dropped_chunks 的端到端行為 -------------------
+# 這組測試跑真的 generate_answer_stream（只替換最底層的 chat_completion_stream 與
+# retrieve），因為上面的 fake_stream 測試只證明路由「有讀 result_state」，
+# 沒證明真正的生產者寫出的 result_state 與路由讀的是同一個契約。
+
+def _sse_events(body):
+    """把 SSE 文字拆成 [(event, data_json_or_text), ...]，順序即送出順序。"""
+    events = []
+    for block in body.strip().split("\n\n"):
+        name, _, data = block.partition("\ndata: ")
+        events.append((name.removeprefix("event: "), json.loads(data) if data else {}))
+    return events
+
+
+def _stream_fixture(monkeypatch, tmp_path, *, deltas, gate_chars=0, window_tokens=None, chunk_count=1):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    producer_globals = main.generate_answer_stream.__globals__
+
+    async def fake_retrieve(question, rows, settings, history, user_id, source_ids=None, **kwargs):
+        return [{"id": i, "source_id": 10, "filename": "e.pdf", "location": f"p{i}",
+                 "text": f"第 {i} 段證據。" * 200, "score": 0.9} for i in range(chunk_count)]
+
+    async def fake_provider_stream(settings, user_prompt, system_prompt, **kwargs):
+        for delta in deltas:
+            yield delta
+
+    monkeypatch.setattr(main, "retrieve", fake_retrieve)
+    monkeypatch.setitem(producer_globals, "chat_completion_stream", fake_provider_stream)
+    monkeypatch.setattr(producer_globals["config"].runtime, "answer_stream_gate_chars", gate_chars)
+    if window_tokens is not None:
+        monkeypatch.setitem(producer_globals, "chat_window_budget", lambda settings: window_tokens)
+    return main, db
+
+
+def _post_stream(main, db):
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        _seed_indexed_source(db, user["id"], notebook_id)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+        resp = client.post(
+            f"/notebooks/{notebook_id}/chat/ask-stream",
+            data={"question": "營收成長多少？", "conversation_id": ""},
+        )
+    assert resp.status_code == 200
+    return resp.text
+
+
+def test_stream_with_the_default_gate_buffers_then_delivers_the_answer_once(monkeypatch, tmp_path):
+    """gate=0 是出貨預設：中途不外送任何文字，結束時一次送出，且絕不出現 discard。"""
+    main, db = _stream_fixture(monkeypatch, tmp_path, deltas=["串流", "回答 ", "[1]"], gate_chars=0)
+    events = _sse_events(_post_stream(main, db))
+
+    chunks = [d["text"] for name, d in events if name == "chunk"]
+    assert chunks == ["串流回答 [1]"]
+    assert "discard" not in [name for name, _ in events]
+    assert [name for name, _ in events][-1] == "done"
+    answer, citations, metadata = _last_assistant(db)
+    assert answer == "串流回答 [1]"
+    assert metadata["outcome"] == "answered"
+    assert "dropped_chunks" not in metadata
+
+
+def test_stream_with_a_gate_emits_incrementally_and_persists_the_same_text(monkeypatch, tmp_path):
+    main, db = _stream_fixture(
+        monkeypatch, tmp_path,
+        deltas=["這是第一段回答，", "內容很長很長很長，", "結論在這裡 [1]"], gate_chars=5,
+    )
+    events = _sse_events(_post_stream(main, db))
+
+    chunks = [d["text"] for name, d in events if name == "chunk"]
+    assert len(chunks) > 1, "a positive gate must produce partial output"
+    assert "".join(chunks) == "這是第一段回答，內容很長很長很長，結論在這裡 [1]"
+    assert "discard" not in [name for name, _ in events]
+    answer, _citations, metadata = _last_assistant(db)
+    assert answer == "".join(chunks)
+    assert metadata["outcome"] == "answered"
+
+
+def test_stream_late_abstention_clears_the_browser_then_persists_only_the_refusal(monkeypatch, tmp_path):
+    """gate 之後才出現 marker：順序必須是 chunk(前言) → discard → chunk(拒答)，marker 不外洩。"""
+    preamble = "這份文件確實提到了相關的營收數字。"
+    main, db = _stream_fixture(
+        monkeypatch, tmp_path,
+        deltas=[preamble, preamble, "[[RAG_ABSTAIN]]"], gate_chars=5,
+    )
+    refusal = main.i18n.t("chat.abstain")
+    body = _post_stream(main, db)
+    events = _sse_events(body)
+    names = [name for name, _ in events]
+
+    assert "RAG_ABSTAIN" not in body
+    assert names.count("discard") == 1
+    texts = [(name, d.get("text")) for name, d in events if name in ("chunk", "discard")]
+    assert texts[-1] == ("chunk", refusal)
+    assert names.index("discard") < len(names) - 1 - names[::-1].index("chunk")
+    answer, citations, metadata = _last_assistant(db)
+    assert answer == refusal
+    assert citations == []
+    assert metadata["outcome"] == "abstained"
+
+
+def test_stream_marker_alone_never_reaches_the_client_even_with_the_gate_off(monkeypatch, tmp_path):
+    main, db = _stream_fixture(monkeypatch, tmp_path, deltas=["[[RAG_", "ABSTAIN]]"], gate_chars=0)
+    body = _post_stream(main, db)
+    events = _sse_events(body)
+
+    assert "RAG_ABSTAIN" not in body
+    assert "discard" not in [name for name, _ in events]
+    assert [d["text"] for name, d in events if name == "chunk"] == [main.i18n.t("chat.abstain")]
+    assert _last_assistant(db)[2]["outcome"] == "abstained"
+
+
+def test_stream_records_how_many_chunks_were_dropped_for_the_context_window(monkeypatch, tmp_path):
+    """O6 的端到端契約：fit_answer_chunks → result_state → ask-stream → messages.metadata_json。"""
+    main, db = _stream_fixture(
+        monkeypatch, tmp_path, deltas=["回答 [1]"], window_tokens=2000, chunk_count=8,
+    )
+    _post_stream(main, db)
+
+    _answer, _citations, metadata = _last_assistant(db)
+    assert metadata["dropped_chunks"] > 0
+    assert metadata["outcome"] == "answered"
+
+
+def test_stream_reports_no_dropped_chunks_when_everything_fits(monkeypatch, tmp_path):
+    main, db = _stream_fixture(
+        monkeypatch, tmp_path, deltas=["回答 [1]"], window_tokens=1_000_000, chunk_count=2,
+    )
+    _post_stream(main, db)
+
+    assert "dropped_chunks" not in _last_assistant(db)[2]

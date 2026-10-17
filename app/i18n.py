@@ -134,6 +134,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.warn_spreadsheet_truncated": "工作表 {sheets} 超過列數或欄數上限，只索引了前面的部分。可在 [spreadsheet] 設定調整上限。",
         "diag.warn_spreadsheet_uncached_formulas": "有 {count} 個公式儲存格沒有計算結果快取，讀進來是空的。請用 Excel 開啟並重新儲存，或匯出成含計算值的檔案。",
         "diag.warn_spreadsheet_wide_sheet": "工作表欄位偏多，每個分塊只能容納少數幾列，檢索精度可能下降。",
+        "diag.warn_subtitle_no_cue_timestamps": "這份逐字稿的時間碼無法解析，引用位置只會顯示「transcript」，無法指出答案出自第幾分鐘。文字本身不受影響。",
+        "diag.warn_subtitle_no_speaker_labels": "這份逐字稿沒有發言者標記（WebVTT 的 <v 姓名> 標籤）。內容仍可檢索，但無法判斷每句話是誰說的，行動項目的負責人需要人工確認。",
         "diag.warn_csv_encoding_fallback": "CSV 不是 UTF-8，已改用 {encoding} 解碼（無法辨識的字元 {replacements} 個）。若內容出現亂碼，請改存成 UTF-8 後重新上傳。",
         # A6c spreadsheet details
         "diag.sheets": "工作表",
@@ -144,6 +146,15 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.sheet_header_generated": "自動產生欄位名稱",
         "diag.sheet_qa_auto": "問答欄位為自動判斷",
         "diag.sheet_meta": "{rows} 列 · {columns} 欄 · {chunks} 分塊",
+        "error.action_minutes": "整理會議記錄",
+        "chat.dropped_chunks_badge": "少用 {count} 段",
+        "chat.dropped_chunks_detail": (
+            "為了不超過對話模型的輸入上限，有 {count} 段檢索到的內容沒有送進這次回答"
+            "（捨棄的是排序最後、相關度最低的幾段）。答案仍然只根據實際送出的內容，"
+            "但依據比平常少，建議對照引用自行確認。"
+        ),
+        "diag.transcript": "逐字稿",
+        "diag.transcript_stats": "{cues} 段字幕 · {timed_cues} 段有時間碼 · {speaker_labels} 處發言者標記",
         "diag.csv_encoding": "CSV 編碼",
         "diag.csv_delimiter": "分隔符號",
         # --- Outputs shelf · entry type badges (U16 Phase 2) ------------------
@@ -295,6 +306,25 @@ MESSAGES: dict[str, dict[str, str]] = {
         # Runs created before this column existed have an empty snapshot. Saying
         # so beats an empty table that reads as "nothing differed".
         "evalr.llm_diff_missing": "這兩次執行沒有記錄 LLM 設定（在此功能加入前建立）。",
+        # --- O3: vector-path health on /admin/index -------------------------
+        "admin.vector_health_heading": "向量檢索健康狀態",
+        "admin.vector_health_ok": "向量檢索正常。最後一次成功：{last_success}。",
+        "admin.vector_health_idle": "這個行程還沒有服務過任何一次檢索，因此沒有資料。",
+        "admin.vector_health_degraded": (
+            "向量檢索正在退化：已連續 {failures} 次改用 SQLite 後備掃描（最後一次失敗："
+            "{last_failure}）。使用者仍然會拿到回答，但品質較差而且畫面上不會有任何錯誤——"
+            "這正是先前兩次事故沒被發現的原因。請查 logs/app.log 的 retrieve_vector_failed，"
+            "必要時用上方的「重建」。"
+        ),
+        "admin.vector_health_last_success": "最後一次成功：{last_success}。",
+        "admin.vector_health_scope": (
+            "這組計數只涵蓋目前這個網頁行程，重啟會歸零；若部署跑多個 uvicorn worker，"
+            "其他 worker 的失敗不會出現在這裡。"
+        ),
+        "evalr.serving_changed_warning": (
+            "這兩次執行的 {fields} 不同，下方的指標差異不能只歸因於參數差異——"
+            "換模型本身就會改變結果。要比較參數，請改挑兩次使用相同模型的執行。"
+        ),
         "evalr.setting": "設定",
         "evalr.baseline": "Baseline",
         "evalr.candidate": "Candidate",
@@ -388,6 +418,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "chat.step3_title": "開始提問",
         "chat.step3_body": "在下方輸入問題，回答會附上引用來源。",
         "chat.abstain": "依據所選的來源，我無法判斷這個問題的答案。",
+        "chat.scope_none_selected": "目前沒有勾選任何來源。請先在「來源」勾選至少一個，再提問。",
+        "chat.scope_invalid": "所選的來源已不在這個筆記本中（可能剛被刪除或移動）。請重新整理頁面，再勾選要提問的來源。",
         # --- Studio tools + suggestions (Phase 1a) ---------------------------
         "studio.tools_heading": "工具",
         "studio.tools_empty": "先上傳並完成索引，工具才能使用。",
@@ -585,6 +617,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "flow.minutes_no_source": "找不到已索引的來源，請重新整理後再試。",
         "flow.minutes_not_meeting": "這份來源看起來不像會議逐字稿或會議紀錄。",
         "flow.minutes_no_llm": "請先在系統設定完成 LLM 設定。",
+        "flow.minutes_partial_coverage": (
+            "這份整理只讀到逐字稿的前 {used} 段（全部 {total} 段），最後讀到「{location}」；"
+            "之後的內容沒有進入整理，請勿當成完整會議記錄使用。"
+        ),
         "flow.minutes_empty": "模型未能產生會議記錄，請再試一次。",
         "flow.artifact_need_index": "先完成來源索引，才能生成。",
         "flow.artifact_need_source": "請至少選擇一個來源。",
@@ -750,7 +786,13 @@ MESSAGES: dict[str, dict[str, str]] = {
         "js.processing": "處理中…",
         "js.generating": "正在生成回答…",
         "js.answer_failed": "回答生成失敗。",
+        # T1a step 2: the Studio tool modal's streaming progress.
+        "js.tool_generating": "產生中…",
+        "js.minutes_progress": "正在整理第 {done} / {total} 段{span}…",
+        "js.minutes_progress_merging": "正在合併 {total} 段的整理結果…",
+        "js.error_generic": "發生錯誤，請稍後再試。",
         "js.answer_failed_retry": "回答生成失敗，請稍後再試。",
+        "js.scope_none_selected": "請先在「來源」勾選至少一個來源，再送出問題。",
         "js.role_you": "你",
         "js.role_assistant": "助理",
         "js.copied": "✓ 已複製",
