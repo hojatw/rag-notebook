@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import json
 import time
 
 import pytest
@@ -621,3 +622,142 @@ def test_ask_in_a_notebook_with_nothing_indexed_abstains_without_the_unscoped_wa
     assert citations == []
     assert metadata["outcome"] == "no_retrieval"
     assert not [r for r in caplog.records if "retrieve_refused_unscoped" in r.getMessage()]
+
+
+# --- ask-stream：串流閘門、discard、dropped_chunks 的端到端行為 -------------------
+# 這組測試跑真的 generate_answer_stream（只替換最底層的 chat_completion_stream 與
+# retrieve），因為上面的 fake_stream 測試只證明路由「有讀 result_state」，
+# 沒證明真正的生產者寫出的 result_state 與路由讀的是同一個契約。
+
+def _sse_events(body):
+    """把 SSE 文字拆成 [(event, data_json_or_text), ...]，順序即送出順序。"""
+    events = []
+    for block in body.strip().split("\n\n"):
+        name, _, data = block.partition("\ndata: ")
+        events.append((name.removeprefix("event: "), json.loads(data) if data else {}))
+    return events
+
+
+def _stream_fixture(monkeypatch, tmp_path, *, deltas, gate_chars=0, window_tokens=None, chunk_count=1):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    producer_globals = main.generate_answer_stream.__globals__
+
+    async def fake_retrieve(question, rows, settings, history, user_id, source_ids=None, **kwargs):
+        return [{"id": i, "source_id": 10, "filename": "e.pdf", "location": f"p{i}",
+                 "text": f"第 {i} 段證據。" * 200, "score": 0.9} for i in range(chunk_count)]
+
+    async def fake_provider_stream(settings, user_prompt, system_prompt, **kwargs):
+        for delta in deltas:
+            yield delta
+
+    monkeypatch.setattr(main, "retrieve", fake_retrieve)
+    monkeypatch.setitem(producer_globals, "chat_completion_stream", fake_provider_stream)
+    monkeypatch.setattr(producer_globals["config"].runtime, "answer_stream_gate_chars", gate_chars)
+    if window_tokens is not None:
+        monkeypatch.setitem(producer_globals, "chat_window_budget", lambda settings: window_tokens)
+    return main, db
+
+
+def _post_stream(main, db):
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        _seed_indexed_source(db, user["id"], notebook_id)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+        resp = client.post(
+            f"/notebooks/{notebook_id}/chat/ask-stream",
+            data={"question": "營收成長多少？", "conversation_id": ""},
+        )
+    assert resp.status_code == 200
+    return resp.text
+
+
+def test_stream_with_the_default_gate_buffers_then_delivers_the_answer_once(monkeypatch, tmp_path):
+    """gate=0 是出貨預設：中途不外送任何文字，結束時一次送出，且絕不出現 discard。"""
+    main, db = _stream_fixture(monkeypatch, tmp_path, deltas=["串流", "回答 ", "[1]"], gate_chars=0)
+    events = _sse_events(_post_stream(main, db))
+
+    chunks = [d["text"] for name, d in events if name == "chunk"]
+    assert chunks == ["串流回答 [1]"]
+    assert "discard" not in [name for name, _ in events]
+    assert [name for name, _ in events][-1] == "done"
+    answer, citations, metadata = _last_assistant(db)
+    assert answer == "串流回答 [1]"
+    assert metadata["outcome"] == "answered"
+    assert "dropped_chunks" not in metadata
+
+
+def test_stream_with_a_gate_emits_incrementally_and_persists_the_same_text(monkeypatch, tmp_path):
+    main, db = _stream_fixture(
+        monkeypatch, tmp_path,
+        deltas=["這是第一段回答，", "內容很長很長很長，", "結論在這裡 [1]"], gate_chars=5,
+    )
+    events = _sse_events(_post_stream(main, db))
+
+    chunks = [d["text"] for name, d in events if name == "chunk"]
+    assert len(chunks) > 1, "a positive gate must produce partial output"
+    assert "".join(chunks) == "這是第一段回答，內容很長很長很長，結論在這裡 [1]"
+    assert "discard" not in [name for name, _ in events]
+    answer, _citations, metadata = _last_assistant(db)
+    assert answer == "".join(chunks)
+    assert metadata["outcome"] == "answered"
+
+
+def test_stream_late_abstention_clears_the_browser_then_persists_only_the_refusal(monkeypatch, tmp_path):
+    """gate 之後才出現 marker：順序必須是 chunk(前言) → discard → chunk(拒答)，marker 不外洩。"""
+    preamble = "這份文件確實提到了相關的營收數字。"
+    main, db = _stream_fixture(
+        monkeypatch, tmp_path,
+        deltas=[preamble, preamble, "[[RAG_ABSTAIN]]"], gate_chars=5,
+    )
+    refusal = main.i18n.t("chat.abstain")
+    body = _post_stream(main, db)
+    events = _sse_events(body)
+    names = [name for name, _ in events]
+
+    assert "RAG_ABSTAIN" not in body
+    assert names.count("discard") == 1
+    texts = [(name, d.get("text")) for name, d in events if name in ("chunk", "discard")]
+    assert texts[-1] == ("chunk", refusal)
+    assert names.index("discard") < len(names) - 1 - names[::-1].index("chunk")
+    answer, citations, metadata = _last_assistant(db)
+    assert answer == refusal
+    assert citations == []
+    assert metadata["outcome"] == "abstained"
+
+
+def test_stream_marker_alone_never_reaches_the_client_even_with_the_gate_off(monkeypatch, tmp_path):
+    main, db = _stream_fixture(monkeypatch, tmp_path, deltas=["[[RAG_", "ABSTAIN]]"], gate_chars=0)
+    body = _post_stream(main, db)
+    events = _sse_events(body)
+
+    assert "RAG_ABSTAIN" not in body
+    assert "discard" not in [name for name, _ in events]
+    assert [d["text"] for name, d in events if name == "chunk"] == [main.i18n.t("chat.abstain")]
+    assert _last_assistant(db)[2]["outcome"] == "abstained"
+
+
+def test_stream_records_how_many_chunks_were_dropped_for_the_context_window(monkeypatch, tmp_path):
+    """O6 的端到端契約：fit_answer_chunks → result_state → ask-stream → messages.metadata_json。"""
+    main, db = _stream_fixture(
+        monkeypatch, tmp_path, deltas=["回答 [1]"], window_tokens=2000, chunk_count=8,
+    )
+    _post_stream(main, db)
+
+    _answer, _citations, metadata = _last_assistant(db)
+    assert metadata["dropped_chunks"] > 0
+    assert metadata["outcome"] == "answered"
+
+
+def test_stream_reports_no_dropped_chunks_when_everything_fits(monkeypatch, tmp_path):
+    main, db = _stream_fixture(
+        monkeypatch, tmp_path, deltas=["回答 [1]"], window_tokens=1_000_000, chunk_count=2,
+    )
+    _post_stream(main, db)
+
+    assert "dropped_chunks" not in _last_assistant(db)[2]
