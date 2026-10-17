@@ -74,6 +74,7 @@ function bindAll(root) {
   bindConfirms(root);
   bindWorkspacePaneSwitcher(root);
   bindStreamingAskForms(root);
+  bindStreamingToolForms(root);
   bindLoadingForms(root);
   bindFileLabels(root);
   bindProviderNotes();
@@ -122,6 +123,95 @@ function bindWorkspacePaneSwitcher(root) {
     });
 
     setActive(workspace.dataset.activePane || "chat");
+  });
+}
+
+// ---- Streaming Studio tools (T1a step 2) ---------------------------------
+// A windowed minutes run is several sequential chat calls, so the tool modal
+// shows per-portion progress instead of a spinner that says nothing for minutes
+// at a time. HTMX stays on the form as the no-JS fallback: the plain POST route
+// returns the same fragment, just without progress.
+
+function bindStreamingToolForms(root) {
+  bindOnce(root, "form.tool-panel-form[data-stream-url]", "toolstream", (form) => {
+    form.addEventListener("submit", async (event) => {
+      if (!window.fetch || !window.ReadableStream) return;  // HTMX handles it
+      event.preventDefault();
+
+      const result = document.getElementById("tool-result");
+      const loading = document.getElementById("tool-loading");
+      const button = form.querySelector("button[type='submit']");
+      if (!result) return;
+
+      const setProgress = (text) => {
+        if (loading) {
+          loading.textContent = text;
+          loading.classList.add("is-active");
+        }
+      };
+      const done = () => {
+        if (loading) {
+          loading.classList.remove("is-active");
+          loading.textContent = tr("tool_generating", "產生中…");
+        }
+        if (button) button.disabled = false;
+      };
+
+      if (button) button.disabled = true;
+      result.innerHTML = "";
+      setProgress(tr("tool_generating", "產生中…"));
+
+      try {
+        const headers = { "Accept": "text/event-stream" };
+        const token = csrfToken();
+        if (token) headers["X-CSRF-Token"] = token;
+        const response = await fetch(form.dataset.streamUrl, {
+          method: "POST",
+          body: new FormData(form),
+          headers,
+        });
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+        await consumeEventStream(response.body, (eventName, data) => {
+          if (eventName === "progress") {
+            setProgress(formatToolProgress(data));
+          } else if (eventName === "done") {
+            result.innerHTML = data.html || "";
+            renderMarkdown(result);
+            bindAll(result);
+          } else if (eventName === "error") {
+            result.innerHTML = "";
+            const message = document.createElement("p");
+            message.className = "compare-error";
+            message.textContent = data.text || tr("error_generic", "發生錯誤");
+            result.appendChild(message);
+          }
+        });
+      } catch (error) {
+        console.error("[notebook] tool stream failed", error);
+        const message = document.createElement("p");
+        message.className = "compare-error";
+        message.textContent = tr("error_generic", "發生錯誤");
+        result.innerHTML = "";
+        result.appendChild(message);
+      } finally {
+        done();
+      }
+    });
+  });
+}
+
+// `done` counts portions finished, so it reaches `total` on the merge step --
+// which is the one the user waits on longest and the one worth naming.
+function formatToolProgress(data) {
+  const total = Number(data.total) || 1;
+  const finished = Number(data.done) || 0;
+  if (total > 1 && finished >= total) {
+    return tr("minutes_progress_merging", "正在合併 {total} 段的整理結果…", { total });
+  }
+  return tr("minutes_progress", "正在整理第 {done} / {total} 段{span}…", {
+    done: finished + 1,
+    total,
+    span: data.span ? `（${data.span}）` : "",
   });
 }
 
@@ -579,12 +669,43 @@ function initSourceScope() {
 
   // Inject source_ids hidden inputs into the ask form just before submit so
   // the server receives only the checked sources. Capture phase runs before
-  // data-loading-form's submit lock.
+  // data-loading-form's submit lock and the streaming handler.
   const askForm = document.querySelector("form.ask-form");
   if (!askForm) return;
-  askForm.addEventListener("submit", () => {
-    askForm.querySelectorAll("input[name='source_ids'][type='hidden']").forEach((el) => el.remove());
-    document.querySelectorAll(".source-scope-toggle:checked").forEach((cb) => {
+  const scopeError = askForm.querySelector("[data-scope-error]");
+  const hideScopeError = () => { if (scopeError) scopeError.hidden = true; };
+  document.addEventListener("change", (e) => {
+    if (e.target.closest(".source-scope-toggle")) hideScopeError();
+  });
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-scope-action='select-all']")) hideScopeError();
+  });
+  askForm.addEventListener("submit", (event) => {
+    askForm.querySelectorAll("input[name='source_ids'][type='hidden'], input[name='source_scope']").forEach((el) => el.remove());
+    const toggles = [...document.querySelectorAll(".source-scope-toggle")];
+    // No indexed sources yet: send no scope and let the server resolve the
+    // notebook (it answers with the ordinary abstain).
+    if (!toggles.length) return;
+    const checked = toggles.filter((cb) => cb.checked);
+    // "None" is an explicit choice. The server would refuse it too (and never
+    // widen it to the whole notebook); stopping here just saves a round trip
+    // and keeps the question in the box.
+    if (!checked.length) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (scopeError) {
+        scopeError.textContent = tr("scope_none_selected", "請先在「來源」勾選至少一個來源，再送出問題。");
+        scopeError.hidden = false;
+      }
+      return;
+    }
+    hideScopeError();
+    const marker = document.createElement("input");
+    marker.type = "hidden";
+    marker.name = "source_scope";
+    marker.value = "selected";
+    askForm.appendChild(marker);
+    checked.forEach((cb) => {
       const input = document.createElement("input");
       input.type = "hidden";
       input.name = "source_ids";
