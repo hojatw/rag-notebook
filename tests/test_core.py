@@ -3,7 +3,7 @@ import importlib
 
 
 def test_subtitle_extraction_strips_cues_and_tags(fresh_modules, tmp_path):
-    """A7: .srt / .vtt parse to clean transcript text (no indices/timestamps/tags)."""
+    """A7: .srt / .vtt parse to clean transcript text (no indices/metadata/tags)."""
     ingest = fresh_modules.ingest
 
     assert ingest.supported("meeting.srt")
@@ -15,16 +15,14 @@ def test_subtitle_extraction_strips_cues_and_tags(fresh_modules, tmp_path):
         "2\n00:00:04,000 --> 00:00:07,000\n第一項是預算。\n第一項是預算。\n",
         encoding="utf-8",
     )
-    sections = ingest._extract_subtitles(srt)
-    assert len(sections) == 1
-    loc, text = sections[0]
-    assert loc == "transcript"
-    assert "大家好，今天討論專案進度。" in text
-    assert "第一項是預算。" in text
-    assert "-->" not in text and "00:00:01" not in text
+    result = ingest._extract_subtitles(srt)
+    body = "\n".join(text for _, text in result.sections)
+    assert "大家好，今天討論專案進度。" in body
+    assert "第一項是預算。" in body
+    assert "-->" not in body
     # SRT indices dropped; rolling-caption duplicate collapsed.
-    assert text.count("第一項是預算。") == 1
-    assert not any(line.strip().isdigit() for line in text.splitlines())
+    assert body.count("第一項是預算。") == 1
+    assert not any(line.strip().isdigit() for line in body.splitlines())
 
     vtt = (tmp_path / "m.vtt")
     vtt.write_text(
@@ -33,10 +31,89 @@ def test_subtitle_extraction_strips_cues_and_tags(fresh_modules, tmp_path):
         "00:00:04.000 --> 00:00:07.000\nLet's begin.\n",
         encoding="utf-8",
     )
-    text2 = ingest._extract_subtitles(vtt)[0][1]
-    assert "Welcome everyone." in text2 and "Let's begin." in text2
-    assert "WEBVTT" not in text2 and "this is metadata" not in text2
-    assert "<v" not in text2 and "-->" not in text2
+    body2 = "\n".join(text for _, text in ingest._extract_subtitles(vtt).sections)
+    assert "Welcome everyone." in body2 and "Let's begin." in body2
+    assert "WEBVTT" not in body2 and "this is metadata" not in body2
+    assert "<v" not in body2 and "-->" not in body2
+
+
+def test_vtt_voice_spans_become_speaker_prefixes(fresh_modules, tmp_path):
+    """T1c: the speaker is the main clue for who owns an action item.
+
+    `_VTT_INLINE_TAG` deleted `<v 王小明>` along with every other tag, so a
+    Teams-style export lost every speaker at ingest and no later stage could
+    recover it. Observed failing against the strip-everything extractor.
+    """
+    ingest = fresh_modules.ingest
+    vtt = tmp_path / "meeting.vtt"
+    vtt.write_text(
+        "WEBVTT\n\n"
+        "00:00:01.000 --> 00:00:04.000\n<v 王小明>這一版的預算要重估。</v>\n\n"
+        "00:00:05.000 --> 00:00:09.000\n<v.loud 李美華>我下週三前提修正版。</v>\n\n"
+        "00:00:10.000 --> 00:00:12.000\n<v.first.loud Chen>Agreed.</v>\n",
+        encoding="utf-8",
+    )
+    result = ingest._extract_subtitles(vtt)
+    body = "\n".join(text for _, text in result.sections)
+
+    assert "王小明: 這一版的預算要重估。" in body
+    # A class on the voice tag must not hide the name.
+    assert "李美華: 我下週三前提修正版。" in body
+    assert "Chen: Agreed." in body
+    assert "<v" not in body and "</v>" not in body
+    assert result.details["speaker_labels"] == 3
+    assert "subtitle_no_speaker_labels" not in result.notes
+
+
+def test_transcript_citations_carry_a_time_span(fresh_modules, tmp_path):
+    """T1d: `transcript` as a citation location is useless in an export.
+
+    Every chunk of every transcript was labelled `transcript`, so a reader of an
+    exported deliverable had no way to find the moment an answer came from.
+    Each cue is now its own section, and the chunker's span label turns a packed
+    chunk into the time window it actually covers.
+    """
+    ingest = fresh_modules.ingest
+    vtt = tmp_path / "long.vtt"
+    cues = ["WEBVTT", ""]
+    for minute in range(6):
+        cues += [f"00:{minute:02d}:30.000 --> 00:{minute:02d}:59.000",
+                 f"<v 主持人>第 {minute} 分鐘的討論內容，" + "細節說明。" * 30,
+                 ""]
+    vtt.write_text("\n".join(cues), encoding="utf-8")
+
+    result = ingest._extract_subtitles(vtt)
+    assert result.sections[0][0] == "transcript 00:00:30"
+    assert result.details["timed_cues"] == 6
+
+    chunks = ingest.chunk_sections(result.sections)
+    locations = [location for location, _ in chunks]
+    # Not one chunk is left with the bare label.
+    assert "transcript" not in locations
+    # A chunk that merged several cues is labelled with the span it covers.
+    assert any(" – " in location for location in locations), locations
+    assert all(location.startswith("transcript 00:0") for location in locations)
+
+
+def test_transcript_without_parseable_timing_keeps_the_old_shape(fresh_modules, tmp_path):
+    """The fallback half: an unusual dialect degrades, it does not lose text.
+
+    "Detect nothing -> fall back to current behaviour safely" is the primary
+    path for every structure-dependent feature here, not an edge case.
+    """
+    ingest = fresh_modules.ingest
+    odd = tmp_path / "odd.vtt"
+    odd.write_text(
+        "WEBVTT\n\nnot-a-timestamp --> also-not-one\n第一句話。\n\n"
+        "nope --> nope\n第二句話。\n",
+        encoding="utf-8",
+    )
+    result = ingest._extract_subtitles(odd)
+
+    assert [location for location, _ in result.sections] == ["transcript"]
+    assert "第一句話。" in result.sections[0][1]
+    assert "第二句話。" in result.sections[0][1]
+    assert "subtitle_no_cue_timestamps" in result.notes
 
 
 def test_passwords_are_hashed():

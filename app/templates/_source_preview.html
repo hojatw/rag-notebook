@@ -81,6 +81,16 @@
              images=source.diagnostics.details.images) }}
       </p>
     {% endif %}
+    {# T1d/T1e: whether speakers and cue timestamps survived extraction is the
+       first thing to check when pre-flighting a customer's transcript tool. #}
+    {% if source.diagnostics.details and source.diagnostics.details.cues %}
+      <p class="muted small">
+        {{ t('diag.transcript') }}：{{ t('diag.transcript_stats',
+             cues=source.diagnostics.details.cues,
+             timed_cues=source.diagnostics.details.timed_cues,
+             speaker_labels=source.diagnostics.details.speaker_labels) }}
+      </p>
+    {% endif %}
     {% if source.diagnostics.details and source.diagnostics.details.encoding %}
       <p class="muted small">
         {{ t('diag.csv_encoding') }}：{{ source.diagnostics.details.encoding.encoding }}
