@@ -34,12 +34,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # GATE-03: actions 必須釘 commit SHA。tag 與分支名可被 action 擁有者無聲
+      # 改指（trivy-action、kics-github-action 都發生過），釘 tag 等於把 CI 的
+      # 執行內容交給對方的 tag 指標。尾註的版本號只是給人看的，真正決定跑什麼的
+      # 是 SHA——Dependabot 的 github-actions ecosystem 會同時更新兩者。
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Python
         id: setup-python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           # pip's *download* cache. Keeps the cold path (a venv-cache miss) from
@@ -68,7 +72,7 @@ jobs:
       # edits requirements*.txt, which changes the key and rebuilds.
       - name: Restore virtualenv
         id: venv-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
           key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}

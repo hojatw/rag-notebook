@@ -70,6 +70,69 @@
   指標差異不能只歸因於參數。結構化輸出等其他設定的變動**刻意不觸發**警告——那些正是
   評測要跑的實驗，對它們示警只會讓人很快忽略所有警告。
 
+### 安全性
+
+- **問答檢索不再跑出當前 notebook**：`ask` / `ask-stream` 沒帶 `source_ids`（左欄按
+  「全不選」、無 JS 表單），或送來的 id 全部不屬於這個 notebook 時，檢索會退化成只篩
+  `user_id`，搜遍該使用者**所有** notebook——實測回答引用了另一個 notebook 的 PDF。
+  同一使用者範圍內，不是跨使用者外洩。現在範圍一律在伺服器端決定：
+  - 沒送任何來源（無 JS、舊客戶端）→ 這個 notebook 的全部已索引來源；
+  - 使用者明確全不選 → 回覆「請先勾選至少一個來源」，不檢索（前端也會直接擋下送出）；
+  - 送來的來源全部不屬於這個 notebook → 回覆「所選的來源已不在這個筆記本中」，不檢索、不放寬；
+  - `retrieve()` 本身在沒有來源範圍時回傳空結果並記 `retrieve_refused_unscoped`，
+    日後的新呼叫端忘了限定範圍也只會拒答，不會外洩。
+  拒答訊息的 `metadata.outcome` 為 `scope_rejected`。不變式記在 `docs/SECURITY.md`。
+- **CI 的 GitHub Actions 全部釘成 commit SHA**：`actions/checkout`、`actions/setup-python`、
+  `actions/cache` 先前都用浮動 tag（`@v4`／`@v5`）。tag 與分支名可以被 action 擁有者
+  無聲改指——`trivy-action` 與 `kics-github-action` 都真的發生過——等於把 CI 跑什麼
+  交給對方的 tag 指標。現在釘 SHA，尾註版本號只給人看。
+  配套在 `.github/dependabot.yml` 新增 `github-actions` ecosystem：釘死之後 tag 不會
+  再自動跟進，沒有它等於把 action 版本永久凍結在釘下去的那一刻，安全修補也拿不到。
+- **Dependabot 加上 7 天 cooldown**（`pip` 與 `github-actions` 兩個 ecosystem）：剛發布的
+  版本正是供應鏈投毒最容易得手的窗口，被投毒的版本通常在數小時到數天內就被下架，
+  而沒有 cooldown 的 Dependabot 會在發布當天就開 PR。代價是延後拿到功能更新。
+  **不影響安全修補**——Dependabot security update 走另一條路徑，不吃 cooldown。
+- **`_messages.html` 移除多餘的 `| safe`**：`data-citations` 先前寫成
+  `{{ message.citations | tojson | safe }}`。Jinja 的 `tojson` 本來就回傳 `Markup`，
+  而且會把 `<` `>` `&` `'` 轉成 `\uXXXX`，所以那個 `| safe` 是 no-op——已實測
+  移除前後輸出位元組完全相同。刪掉是為了讓模板不再讀起來像「這裡關掉了跳脫」。
+- **容器映像不再安裝系統的 `libxml2`**：這一行是 `0.4.0` 那個大 commit（`34fbab4`）
+  裡混進 `Dockerfile` 的，沒有任何註解說明用途。推測是為了 `lxml`（`python-docx`
+  與 `python-pptx` 的相依），但 lxml 的 manylinux wheel **自己靜態連結了 libxml2 與
+  libxslt**——在乾淨的 `python:3.12-slim` 裡對 `lxml/etree*.so` 跑 `ldd`，輸出完全沒有
+  `libxml2.so`，只有 libc/libm/librt/libpthread。系統套件因此是純粹的多餘負擔，而且
+  自帶 **11 筆 Debian 尚未修補（NO_FIX）的 CVE**：1 筆 CRITICAL（`CVE-2026-6653`）、
+  7 筆 HIGH（`CVE-2026-74860`、`86138`、`86139`、`86140`、`86142`、`86143`、`86144`）、
+  1 筆 MEDIUM（`86137`）、2 筆 LOW（`CVE-2026-11979`、`86141`）。移除後這 11 筆全數消失。
+  這些弱點原本都是 NOT_GATED／NO_FIX，**不影響任何部署放行判定**，純粹是把映像掃乾淨。
+- **最終映像不再包含 pip**：基底映像帶的 `pip 25.0.1` 累積 6 筆 MEDIUM/LOW 弱點
+  （`CVE-2025-8869`、`CVE-2026-1703`、`CVE-2026-3219`、`CVE-2026-6357`、
+  `CVE-2026-8643`、`CVE-2026-13346`），全是「安裝惡意套件時被任意寫檔」一類。原本打算
+  升級到 `26.2.1`，但重掃後發現反效果：pip 26.x 附帶自身 vendored 套件的 SBOM，掃描器
+  因此看得到 vendored 的 `msgpack` 與 `setuptools`，**反而多出 2 筆 HIGH 且有修補版的
+  放行阻擋項**。執行期根本沒有人在容器裡跑 pip，所以改為在安裝完相依套件後、同一層
+  直接移除 pip——原本 6 筆與升級會帶進來的 2 筆一起消失。需要在執行中的容器裡除錯時，
+  可用 `python -m ensurepip --user` 臨時還原。這兩項維運者只需重新
+  `docker compose up --build`，資料面、設定鍵、schema 都不變。
+
+### 內部
+
+- **容器映像縮小 171 MB（737 MB → 566 MB；壓縮後 174 MB → 139 MB）**：在安裝依賴的同一層
+  `pip uninstall` 掉 chromadb 宣告、但本 app 結構上用不到的五個套件——`onnxruntime`、
+  `tokenizers`、`huggingface_hub`、`hf_xet`（chromadb 預設的 ONNX embedding function；
+  本 app 的 embedding 由 `app/llm.py` 打 HTTP 自己算，從不傳 `embedding_function`）與
+  `kubernetes`（Chroma *server* 的 k8s 認證 provider；本 app 只用嵌入式
+  `PersistentClient`）。以容器實測上傳 PDF/DOCX/PPTX/XLSX → 索引 → 問答 → 刪除來源
+  （向量同步刪除）→ 重啟與 startup sync 全數正常。`opentelemetry` 等拿不掉：
+  chromadb 的 `__init__` 硬 import 它。
+
+- **標記 13 項 SSDLC 掃描誤報**（`nosemgrep`，非行為變更）：11 項 `CWE-532 日誌寫入
+  敏感資訊` 與 2 項 `CWE-79 var-in-href`。前者是規則對 log 的 **format string 做關鍵字
+  子字串比對**，命中的全是結構化 log 的欄位名（`token_version`、`budget_tokens`、
+  `api_key_changed` 等），實際帶入的值是 id、bool、字數、模型名稱，沒有一處寫入憑證
+  內容；後者的 `href` 全由伺服器端以 DB 整數 id 組出，不可能出現 `javascript:` scheme。
+  每處都附上判定理由，`nosemgrep` 標記放在被回報的那一行的正上方（差一行就不會生效）。
+
 
 ## [0.10.0] - 2026-09-18
 

@@ -899,6 +899,8 @@ def _flag_default_passwords(conn: sqlite3.Connection) -> None:
         if not verify_password(default_password, row["password_hash"]):
             continue
         if row["external_identity_count"]:
+            # 誤報：命中的是欄位名裡的 "password"，值是 username；密碼本體不在這裡。
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
             logger.warning(
                 "seeded_default_password_left_unflagged username=%s reason=sso_linked "
                 "detail=account still accepts its seeded password over local login, but "
