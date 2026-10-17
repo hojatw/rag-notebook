@@ -46,7 +46,7 @@
       {% if message.role == "assistant" %}
         <div class="message-body markdown-body"
              data-markdown
-             data-citations='{{ message.citations | tojson | safe }}'>{{ message.content }}</div>
+             data-citations='{{ message.citations | tojson }}'>{{ message.content }}</div>
       {% else %}
         <p class="message-body">{{ message.content }}</p>
       {% endif %}

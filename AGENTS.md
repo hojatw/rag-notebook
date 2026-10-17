@@ -158,6 +158,7 @@ drift in the first place.
   another app-rebuild routine. A helper that a second file starts needing moves
   into `ui_helpers.py`; one used by a single file stays in that file.
 - Keep Markdown rendering sanitized through the existing marked + DOMPurify path.
+- A new structured log line whose **field names** contain `password`, `token`, `key` or `secret` will be flagged by the SSDLC source scan, which substring-matches the format string. Do not rename the field to dodge it — those names are the grep handles the log lines exist for. Add a `# nosemgrep: <full rule id>` marker on the line immediately above the `logger.…(` call, with a one-line reason above that, and check the values really are ids/booleans/counts rather than credential contents. The rule id, the placement rule and the assessed sites are in [`docs/SECURITY.md`](docs/SECURITY.md) → *Triaged SAST findings*.
 - Avoid broad refactors unless they directly reduce risk for the requested change.
 - Tunable parameters (retrieval weights, top-k, chunking sizes, retry, queue timeouts, TTLs) live in `app/config.py`, resolved as defaults ← `config.toml` ← `NOTEBOOKLM_<GROUP>_<FIELD>` env. Add new tunables there rather than hardcoding; keep the dataclass defaults equal to current behavior and update `config.example.toml` (kept in sync by `tests/test_config.py`).
 

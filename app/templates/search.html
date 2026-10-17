@@ -26,6 +26,9 @@
       <ul class="result-list">
         {% for item in results %}
           <li class="result-item">
+            {# 誤報：item.url 由 app/main.py 的搜尋查詢組出，一律是
+               f"/notebooks/{DB 整數 id}" 形式的站內路徑，沒有使用者可控輸入。 #}
+            {# nosemgrep: generic.html-templates.security.var-in-href.var-in-href #}
             <a href="{{ item.url }}">
               <span class="result-type">{{ item.type }}</span>
               <strong>{{ item.title }}</strong>

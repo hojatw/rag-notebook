@@ -579,12 +579,43 @@ function initSourceScope() {
 
   // Inject source_ids hidden inputs into the ask form just before submit so
   // the server receives only the checked sources. Capture phase runs before
-  // data-loading-form's submit lock.
+  // data-loading-form's submit lock and the streaming handler.
   const askForm = document.querySelector("form.ask-form");
   if (!askForm) return;
-  askForm.addEventListener("submit", () => {
-    askForm.querySelectorAll("input[name='source_ids'][type='hidden']").forEach((el) => el.remove());
-    document.querySelectorAll(".source-scope-toggle:checked").forEach((cb) => {
+  const scopeError = askForm.querySelector("[data-scope-error]");
+  const hideScopeError = () => { if (scopeError) scopeError.hidden = true; };
+  document.addEventListener("change", (e) => {
+    if (e.target.closest(".source-scope-toggle")) hideScopeError();
+  });
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-scope-action='select-all']")) hideScopeError();
+  });
+  askForm.addEventListener("submit", (event) => {
+    askForm.querySelectorAll("input[name='source_ids'][type='hidden'], input[name='source_scope']").forEach((el) => el.remove());
+    const toggles = [...document.querySelectorAll(".source-scope-toggle")];
+    // No indexed sources yet: send no scope and let the server resolve the
+    // notebook (it answers with the ordinary abstain).
+    if (!toggles.length) return;
+    const checked = toggles.filter((cb) => cb.checked);
+    // "None" is an explicit choice. The server would refuse it too (and never
+    // widen it to the whole notebook); stopping here just saves a round trip
+    // and keeps the question in the box.
+    if (!checked.length) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (scopeError) {
+        scopeError.textContent = tr("scope_none_selected", "請先在「來源」勾選至少一個來源，再送出問題。");
+        scopeError.hidden = false;
+      }
+      return;
+    }
+    hideScopeError();
+    const marker = document.createElement("input");
+    marker.type = "hidden";
+    marker.name = "source_scope";
+    marker.value = "selected";
+    askForm.appendChild(marker);
+    checked.forEach((cb) => {
       const input = document.createElement("input");
       input.type = "hidden";
       input.name = "source_ids";
