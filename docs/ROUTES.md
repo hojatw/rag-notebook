@@ -74,7 +74,7 @@ POST /admin/users/{uid}/toggle-admin                      promote / demote
 POST /admin/users/{uid}/delete                            cascade-delete a user
 GET  /admin/auth                                          auth mode display + SSO configuration diagnostics
 
-GET  /admin/index                                         Chroma index health page (admin only)
+GET  /admin/index                                         Chroma index health + vector-search health (O3: last success / consecutive fallbacks; per-process) (admin only)
 POST /admin/index/rebuild                                 full re-upsert of every SQLite chunk
 POST /admin/index/clear                                   delete every Chroma vector
 POST /admin/index/migrate                                 O0: replace the collection to change embedding dimension.
