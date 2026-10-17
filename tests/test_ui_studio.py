@@ -7,6 +7,7 @@
 由 tests/test_ui.py 拆出；共用固件見 tests/ui_helpers.py。
 """
 
+import re
 from html.parser import HTMLParser
 
 import pytest
@@ -54,6 +55,95 @@ def test_minutes_renders_with_save_button_no_autosave(monkeypatch, tmp_path):
                 "SELECT COUNT(*) c FROM notes WHERE notebook_id = ?", (notebook_id,)
             ).fetchone()["c"] == 0
 
+
+
+def test_minutes_discloses_partial_coverage_and_carries_it_into_the_note(monkeypatch, tmp_path):
+    """T1a step 1: a transcript read only in part must say so, on screen and in the note.
+
+    The failure this guards is silent, which is why the assertion is about what
+    the *user* sees rather than about `chunks_used` reaching the log: before this,
+    a two-hour meeting summarised from its first twenty minutes rendered exactly
+    like a complete one.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_minutes(chunks, settings, **kwargs):
+        return "## 會議主題\n測試會議\n\n## 重要決議\n- 通過提案"
+
+    monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status) "
+                "VALUES (?, ?, 'long-meeting.vtt', '/tmp/m.vtt', 'indexed')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            # Enough chunks that the 16k-character budget stops well short of the
+            # end: 40 x 1000 chars = 40k, so only the first 16 are sent.
+            for index in range(40):
+                conn.execute(
+                    "INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json) "
+                    "VALUES (?, ?, ?, ?, ?, '[]')",
+                    (user["id"], source_id, index,
+                     f"00:{index:02d}:00",
+                     f"會議逐字稿 與會者：甲乙丙 決議：第 {index} 項" + "逐" * 960),
+                )
+
+        resp = client.post(f"/notebooks/{notebook_id}/minutes", data={"source_id": source_id})
+
+    assert resp.status_code == 200
+    assert "之後的內容沒有進入整理" in resp.text, "the coverage caveat must be on screen"
+    assert "全部 40 段" in resp.text
+    # The saved note has to carry it too -- an exported file loses the page.
+    note_content = re.search(r'name="content" value="(.*?)">', resp.text, re.S)
+    assert note_content is not None, "the save-to-notes form must be present"
+    assert "之後的內容沒有進入整理" in note_content.group(1), (
+        "the caveat must be inside the note body, not only in the on-screen notice"
+    )
+
+
+def test_minutes_stays_quiet_when_the_whole_transcript_fits(monkeypatch, tmp_path):
+    """The other half: no caveat on a short source, or it becomes noise."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    async def fake_minutes(chunks, settings, **kwargs):
+        return "## 會議主題\n短會議"
+
+    monkeypatch.setattr(main, "generate_meeting_minutes", fake_minutes)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_settings (id, provider, base_url, api_key, chat_model, embedding_model) "
+                "VALUES (1, 'openai_compatible', 'https://x/v1', ?, 'chat', 'embed')",
+                (db.encrypt_for_storage("sk-test"),),
+            )
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status) "
+                "VALUES (?, ?, 'short.txt', '/tmp/s.txt', 'indexed')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            for index in range(3):
+                conn.execute(
+                    "INSERT INTO chunks (user_id, source_id, chunk_index, location, text, embedding_json) "
+                    "VALUES (?, ?, ?, 'document', '會議逐字稿 與會者：甲乙丙 決議：通過', '[]')",
+                    (user["id"], source_id, index),
+                )
+
+        resp = client.post(f"/notebooks/{notebook_id}/minutes", data={"source_id": source_id})
+
+    assert resp.status_code == 200
+    assert "之後的內容沒有進入整理" not in resp.text
 
 def test_minutes_warns_before_non_meeting_source(monkeypatch, tmp_path):
     """Non-meeting sources show a warning first and do not spend an LLM call."""
