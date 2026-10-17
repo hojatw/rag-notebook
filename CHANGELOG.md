@@ -115,6 +115,21 @@
   可用 `python -m ensurepip --user` 臨時還原。這兩項維運者只需重新
   `docker compose up --build`，資料面、設定鍵、schema 都不變。
 
+### 依賴
+
+- `fastapi` 0.141.1 → 0.142.2（#166）、`uvicorn` 0.52.4 → 0.54.0（#163）、
+  `cryptography` 50.0.1 → 50.0.2（#165）、`pypdf` 6.18.1 → 6.19.0（#162）、
+  `charset-normalizer` 3.5.1 → 3.5.2（#164）。五項合併前都在最新的 `main` 上跑過 CI，
+  合併後的完整測試套件通過。只需重建 image 或重跑 `./setup.sh`，不必重新索引。
+- **`uvicorn` 0.53.0 起，`FORWARDED_ALLOW_IPS` 的預設值多了 `::1`**（IPv6 loopback）。
+  如果部署是「同機反向代理 + 沒有明確設定 `FORWARDED_ALLOW_IPS`」，現在從 IPv6 loopback
+  來的 `X-Forwarded-*` 也會被信任；有明確設定該值的部署不受影響。這是依上游 release note
+  整理，本專案的實際部署設定**待確認**。0.53.0／0.54.0 的其餘新增是實驗性、需要
+  `--http zttp --http2` 才會啟用的 HTTP/2，預設不影響。
+- `fastapi`、`cryptography`、`pypdf`、`charset-normalizer` 的上游 release note 未逐項核對，
+  細節**待確認**。`pypdf` 與 `charset-normalizer` 處理使用者上傳的檔案，建議升級後上傳一份
+  PDF 與一份非 UTF-8 文字檔抽查。
+
 ### 內部
 
 - **容器映像縮小 171 MB（737 MB → 566 MB；壓縮後 174 MB → 139 MB）**：在安裝依賴的同一層
