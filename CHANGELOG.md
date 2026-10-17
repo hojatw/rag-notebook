@@ -126,6 +126,12 @@
   來的 `X-Forwarded-*` 也會被信任；有明確設定該值的部署不受影響。這是依上游 release note
   整理，本專案的實際部署設定**待確認**。0.53.0／0.54.0 的其餘新增是實驗性、需要
   `--http zttp --http2` 才會啟用的 HTTP/2，預設不影響。
+- CI 的 GitHub Actions 升版（仍是 commit SHA 釘選，尾註版本號同步更新）：
+  `actions/checkout` 4.4.0 → 7.0.1（#156）、`actions/cache` 4.3.0 → 6.1.0（#155）、
+  `actions/setup-python` 5.6.0 → 7.0.0（#154）。三項都是跨 2–3 個 major，合併前各自在新的
+  `main` 上跑過 CI，合併後 `main` 上三者組合的 CI 也成功。只影響 CI，不影響執行期，
+  維運者不需要做任何事。三個 SHA 與其 tag 的對應是信任 Dependabot 產生的結果，
+  **未獨立核對**；各 action 的 release note 也未逐項閱讀，breaking change 細節待確認。
 - `fastapi`、`cryptography`、`pypdf`、`charset-normalizer` 的上游 release note 未逐項核對，
   細節**待確認**。`pypdf` 與 `charset-normalizer` 處理使用者上傳的檔案，建議升級後上傳一份
   PDF 與一份非 UTF-8 文字檔抽查。
