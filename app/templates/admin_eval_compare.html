@@ -8,6 +8,9 @@
       Baseline <strong>#{{ base_run.id }}</strong> ↔ Candidate <strong>#{{ candidate_run.id }}</strong>
       · 進步 {{ improved }} 題 · 退步 {{ regressed }} 題
     </p>
+    {% if serving_changed %}
+      <p class="warn">{{ t('evalr.serving_changed_warning', fields=serving_changed | join('、')) }}</p>
+    {% endif %}
   </header>
 
   <section class="settings-section">
