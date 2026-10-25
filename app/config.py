@@ -220,6 +220,12 @@ class JobsConfig:
     # Must stay below visibility_timeout_s; a larger value is clamped.
     extract_isolation: bool = True     # false = parse in a worker thread (pre-isolation behaviour)
     extract_timeout_s: float = 300.0
+    # Cap on the child's data segment (RLIMIT_DATA, Linux only), so a
+    # decompression or allocation bomb fails that source instead of exhausting
+    # the host. 2048 is a starting point, not a measurement: synthetic fixtures
+    # peak at 38–73 MB RSS. Tune it from `extract_child_finished peak_rss_mb=`.
+    # 0 = no cap.
+    extract_memory_limit_mb: int = 2048
 
 
 @dataclasses.dataclass

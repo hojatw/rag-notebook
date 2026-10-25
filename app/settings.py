@@ -55,18 +55,33 @@ def settings_page(request: Request, user: Annotated[dict, Depends(require_admin)
     return render_settings(request, user, settings, active_tab=tab if tab in SETTINGS_TABS else "chat")
 
 
-def _ingest_view(*, submitted: str | None = None) -> dict[str, Any]:
-    """What the 檔案處理 tab shows: effective timeout, its source, bounds, recent data."""
-    key = system_settings.EXTRACT_TIMEOUT_KEY
+#: The 檔案處理 tab's fields: form field name -> system_settings key.
+INGEST_FIELDS = {
+    "extract_timeout_s": system_settings.EXTRACT_TIMEOUT_KEY,
+    "extract_memory_limit_mb": system_settings.EXTRACT_MEMORY_LIMIT_KEY,
+}
+
+
+def _ingest_field(key: str, submitted: str | None) -> dict[str, Any]:
     spec = system_settings.SETTINGS[key]
     value, source = system_settings.effective(key)
     return {
-        "timeout_s": value,
-        "timeout_input": submitted if submitted is not None else f"{value:g}",
+        "key": key,
+        "value": value,
+        "input": submitted if submitted is not None else f"{value:g}",
         "source": source,
-        "deployment_default_s": spec.default(),
-        "min_s": spec.minimum(),
-        "max_s": spec.maximum(),
+        "default": spec.default(),
+        "min": spec.minimum(),
+        "max": spec.maximum(),
+    }
+
+
+def _ingest_view(*, submitted: dict[str, str] | None = None) -> dict[str, Any]:
+    """What the 檔案處理 tab shows: each effective value, its source, bounds, recent data."""
+    submitted = submitted or {}
+    return {
+        "timeout": _ingest_field(system_settings.EXTRACT_TIMEOUT_KEY, submitted.get("extract_timeout_s")),
+        "memory": _ingest_field(system_settings.EXTRACT_MEMORY_LIMIT_KEY, submitted.get("extract_memory_limit_mb")),
         "stats": system_settings.recent_extract_stats(),
     }
 
@@ -81,7 +96,7 @@ def _settings_context(
     active_tab: str = "chat",
     ingest_notice: str = "",
     ingest_error: str = "",
-    ingest_submitted: str | None = None,
+    ingest_submitted: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     return {
         "user": user,
@@ -117,7 +132,7 @@ def render_settings(
     active_tab: str = "chat",
     ingest_notice: str = "",
     ingest_error: str = "",
-    ingest_submitted: str | None = None,
+    ingest_submitted: dict[str, str] | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
     return render(
@@ -479,41 +494,57 @@ async def test_embedding_settings(
 
 
 @router.post("/settings/ingest", response_class=HTMLResponse)
-def update_ingest_settings(
-    request: Request,
-    user: Annotated[dict, Depends(require_admin)],
-    extract_timeout_s: str = Form(""),
-):
-    """Save the admin override for the extraction timeout (applies to the next source)."""
-    key = system_settings.EXTRACT_TIMEOUT_KEY
+async def update_ingest_settings(request: Request, user: Annotated[dict, Depends(require_admin)]):
+    """Save admin overrides for the 檔案處理 fields (apply to the next parsed source).
+
+    All submitted fields are validated before anything is stored. Only a field
+    whose value differs from the one in effect is written: re-saving the form
+    must not turn an untouched deployment default into a pinned admin override.
+    """
+    # Read the raw form: FastAPI's Form(None) turns an empty field into None,
+    # which would make "submitted blank" look like "not submitted" and pass.
+    form = await request.form()
+    submitted = {field: str(form[field]) for field in INGEST_FIELDS if field in form}
     with connect() as conn:
         settings = load_llm_settings_for_display(conn)
-    before, before_source = system_settings.effective(key)
     try:
-        after = system_settings.set_override(key, extract_timeout_s, user["id"])
+        validated = {field: system_settings.validate(INGEST_FIELDS[field], raw) for field, raw in submitted.items()}
     except ValueError as exc:
         return render_settings(
             request, user, settings, active_tab="ingest",
-            ingest_error=str(exc), ingest_submitted=extract_timeout_s, status_code=400,
+            ingest_error=str(exc), ingest_submitted=submitted, status_code=400,
         )
-    record_audit_event(
-        request, user, "ingest_settings_updated", "system_settings", None,
-        {"key": key, "before": before, "before_source": before_source, "after": after},
-    )
-    logger.info(
-        "ingest_settings_updated setting=%s old=%s new=%s admin_user_id=%s",
-        key, before, after, user["id"],
-    )
+    changed = 0
+    for field, value in validated.items():
+        key = INGEST_FIELDS[field]
+        before, before_source = system_settings.effective(key)
+        if value == before:
+            continue
+        after = system_settings.set_override(key, value, user["id"])
+        changed += 1
+        record_audit_event(
+            request, user, "ingest_settings_updated", "system_settings", None,
+            {"key": key, "before": before, "before_source": before_source, "after": after},
+        )
+        logger.info(
+            "ingest_settings_updated setting=%s old=%s new=%s admin_user_id=%s",
+            key, before, after, user["id"],
+        )
     return render_settings(
         request, user, settings, active_tab="ingest",
-        ingest_notice=i18n.t("settings.ingest_saved", seconds=f"{after:g}"),
+        ingest_notice=i18n.t("settings.ingest_saved" if changed else "settings.ingest_unchanged"),
     )
 
 
 @router.post("/settings/ingest/reset", response_class=HTMLResponse)
-def reset_ingest_settings(request: Request, user: Annotated[dict, Depends(require_admin)]):
-    """Drop the admin override so the deployment value applies again."""
-    key = system_settings.EXTRACT_TIMEOUT_KEY
+def reset_ingest_settings(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+    key: str = Form(system_settings.EXTRACT_TIMEOUT_KEY),
+):
+    """Drop one admin override so the deployment value applies again."""
+    if key not in INGEST_FIELDS.values():
+        raise HTTPException(status_code=400, detail=i18n.t("settings.ingest_unknown_setting"))
     with connect() as conn:
         settings = load_llm_settings_for_display(conn)
     before, before_source = system_settings.effective(key)
@@ -529,7 +560,7 @@ def reset_ingest_settings(request: Request, user: Annotated[dict, Depends(requir
     )
     return render_settings(
         request, user, settings, active_tab="ingest",
-        ingest_notice=i18n.t("settings.ingest_reset_done", seconds=f"{after:g}"),
+        ingest_notice=i18n.t("settings.ingest_reset_done"),
     )
 
 

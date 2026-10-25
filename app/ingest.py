@@ -2041,6 +2041,15 @@ class ExtractionError(Exception):
 
 EXTRACT_FAILED_TIMEOUT = "extract_timeout"
 EXTRACT_FAILED_CRASHED = "extract_crashed"
+EXTRACT_FAILED_MEMORY = "extract_memory"
+
+#: A failed parse whose peak RSS reached this share of the cap is reported as a
+#: memory failure even when the parser said something else: under RLIMIT_DATA,
+#: lxml reports exhaustion as "XMLSyntaxError: unknown error".
+_EXTRACT_MEMORY_NEAR_CAP = 0.9
+#: stderr fragments that mean a C library ran out under the cap and exited
+#: without a result (OpenBLAS: "Memory allocation still failed …"). Best-effort.
+_EXTRACT_OOM_STDERR = ("MemoryError", "Memory allocation", "Cannot allocate memory", "bad_alloc", "out of memory")
 
 #: Extra CPU seconds the child may use past the wall-clock timeout before the
 #: kernel ends it. Only reached if the parent died and could not kill it.
@@ -2075,9 +2084,18 @@ def _extract_timeout_s() -> float:
     return timeout
 
 
-def _extract_child_argv(path: Path, result_path: Path, cpu_limit_s: int) -> list[str]:
+def _extract_memory_limit_mb() -> int:
+    """Admin override (/settings) if one is stored, else config; 0 = no cap."""
+    value, _source = system_settings.effective(system_settings.EXTRACT_MEMORY_LIMIT_KEY)
+    return max(0, int(value))
+
+
+def _extract_child_argv(path: Path, result_path: Path, cpu_limit_s: int, memory_limit_mb: int) -> list[str]:
     """Command line for the extraction child (a seam tests replace)."""
-    return [sys.executable, "-m", "app.extract_child", str(path), str(result_path), str(cpu_limit_s)]
+    return [
+        sys.executable, "-m", "app.extract_child",
+        str(path), str(result_path), str(cpu_limit_s), str(memory_limit_mb),
+    ]
 
 
 def _child_env() -> dict[str, str]:
@@ -2089,6 +2107,13 @@ def _child_env() -> dict[str, str]:
     env = dict(os.environ)
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(_APP_ROOT) + (os.pathsep + existing if existing else "")
+    # openpyxl imports numpy whenever it is installed (chromadb pulls it in),
+    # and OpenBLAS then reserves buffers per core at import: measured 193 MB of
+    # data segment vs 75 MB with one thread, for the same XLSX. Extraction does
+    # no numeric work, so one thread costs nothing and keeps the memory cap
+    # about what the parse really uses instead of about the host's core count.
+    env["OPENBLAS_NUM_THREADS"] = "1"
+    env["OMP_NUM_THREADS"] = "1"
     return env
 
 
@@ -2099,18 +2124,22 @@ def _relay_child_stderr(path: Path, raw: bytes) -> None:
             logger.info("extract_child_log path=%s line=%s", path.name, line)
 
 
-async def _extract_isolated(path: Path) -> ExtractionResult:
+async def _extract_isolated(path: Path, telemetry: dict[str, Any] | None = None) -> ExtractionResult:
     """Run `extract_sections` in a child process that is killed on timeout.
 
-    Raises `ExtractionFailed` when the child times out or dies, and
-    `ExtractionError` (same message) when an extractor raised inside it.
+    Raises `ExtractionFailed` when the child times out, dies, or runs out of
+    memory under its cap, and `ExtractionError` (same message) when an extractor
+    raised inside it. ``telemetry``, when given, receives ``peak_rss_mb`` as
+    reported by the child — also on failure, which is when it matters most.
     """
     timeout = _extract_timeout_s()
+    memory_limit_mb = _extract_memory_limit_mb()
+    telemetry = telemetry if telemetry is not None else {}
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="notebooklm-extract-") as tmp:
         result_path = Path(tmp) / "result.json"
         proc = await asyncio.create_subprocess_exec(
-            *_extract_child_argv(path, result_path, int(timeout) + _EXTRACT_CPU_GRACE_S),
+            *_extract_child_argv(path, result_path, int(timeout) + _EXTRACT_CPU_GRACE_S, memory_limit_mb),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
@@ -2144,15 +2173,35 @@ async def _extract_isolated(path: Path) -> ExtractionResult:
                     payload = json.loads(result_path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     outcome = "crashed"
+            peak_rss_mb = None
+            if isinstance(payload, dict):
+                runtime = payload.get("runtime") or {}
+                peak_rss_mb = runtime.get("peak_rss_mb")
+                telemetry["peak_rss_mb"] = peak_rss_mb
+                telemetry["runtime"] = runtime
+                if not payload.get("ok") and _looks_like_memory_exhaustion(
+                    payload.get("error_type"), peak_rss_mb, memory_limit_mb
+                ):
+                    outcome = "memory"
+            elif outcome == "crashed" and memory_limit_mb and any(
+                marker in (stderr or b"").decode("utf-8", errors="replace") for marker in _EXTRACT_OOM_STDERR
+            ):
+                outcome = "memory"
             logger.info(
-                "extract_child_finished path=%s duration_s=%.2f outcome=%s rc=%s timeout_s=%s",
-                path.name, duration, outcome, proc.returncode, int(timeout),
+                "extract_child_finished path=%s duration_s=%.2f outcome=%s rc=%s timeout_s=%s "
+                "memory_limit_mb=%s peak_rss_mb=%s",
+                path.name, duration, outcome, proc.returncode, int(timeout), memory_limit_mb, peak_rss_mb,
             )
 
     if outcome == "timeout":
         raise ExtractionFailed(
             EXTRACT_FAILED_TIMEOUT,
             i18n.t("ingest.error.extract_timeout", seconds=int(timeout)),
+        )
+    if outcome == "memory":
+        raise ExtractionFailed(
+            EXTRACT_FAILED_MEMORY,
+            i18n.t("ingest.error.extract_memory", limit_mb=memory_limit_mb),
         )
     if outcome == "crashed" or not isinstance(payload, dict):
         raise ExtractionFailed(
@@ -2166,7 +2215,13 @@ async def _extract_isolated(path: Path) -> ExtractionResult:
     return ExtractionResult(**result)
 
 
-async def run_extraction(path: Path) -> ExtractionResult:
+def _looks_like_memory_exhaustion(error_type: str | None, peak_rss_mb: float | None, limit_mb: int) -> bool:
+    if error_type == "MemoryError":
+        return True
+    return bool(limit_mb) and isinstance(peak_rss_mb, (int, float)) and peak_rss_mb >= limit_mb * _EXTRACT_MEMORY_NEAR_CAP
+
+
+async def run_extraction(path: Path, telemetry: dict[str, Any] | None = None) -> ExtractionResult:
     """Extract a source off the event loop — isolated in a child unless disabled.
 
     Either way the loop stays free: extraction is synchronous, CPU-bound, and
@@ -2175,7 +2230,7 @@ async def run_extraction(path: Path) -> ExtractionResult:
     child can also be *stopped*; a thread running a hung parser cannot.
     """
     if config.jobs.extract_isolation:
-        return await _extract_isolated(path)
+        return await _extract_isolated(path, telemetry)
     return await asyncio.to_thread(extract_sections, path)
 
 
@@ -2204,6 +2259,7 @@ async def process_source(source_id: int) -> None:
     stage = "extract"
     diagnostics: dict[str, Any] = {}
     extract_started = time.monotonic()
+    extract_telemetry: dict[str, Any] = {}
     try:
         logger.info(
             "ingest_started source_id=%s user_id=%s filename=%s",
@@ -2216,7 +2272,7 @@ async def process_source(source_id: int) -> None:
         # extraction runs is how the event-loop half of this surfaced; a queue
         # that stops draining behind one hung PDF is the process half.
         extract_started = time.monotonic()
-        extraction = await run_extraction(Path(source["stored_path"]))
+        extraction = await run_extraction(Path(source["stored_path"]), extract_telemetry)
         extract_duration_s = round(time.monotonic() - extract_started, 2)
         sections = extraction.sections
         stage = "chunk"
@@ -2233,6 +2289,8 @@ async def process_source(source_id: int) -> None:
         # see, and it is the only window into a failed source.
         diagnostics = collect_ingest_diagnostics(extraction, records)
         diagnostics["extract_duration_s"] = extract_duration_s
+        if extract_telemetry.get("peak_rss_mb") is not None:
+            diagnostics["extract_peak_rss_mb"] = extract_telemetry["peak_rss_mb"]
         if not records:
             raise ValueError("No extractable text found.")
 
@@ -2304,6 +2362,8 @@ async def process_source(source_id: int) -> None:
         failed_diagnostics = {**diagnostics, "failed_stage": stage}
         if stage == "extract":
             failed_diagnostics["extract_duration_s"] = round(time.monotonic() - extract_started, 2)
+            if extract_telemetry.get("peak_rss_mb") is not None:
+                failed_diagnostics["extract_peak_rss_mb"] = extract_telemetry["peak_rss_mb"]
         if isinstance(exc, ExtractionFailed):
             failed_diagnostics["failed_reason"] = exc.reason
         with connect() as conn:

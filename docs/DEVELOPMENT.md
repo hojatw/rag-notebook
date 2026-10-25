@@ -125,11 +125,20 @@ Values resolve in three layers:
 3. environment variables `NOTEBOOKLM_<GROUP>_<FIELD>`.
 
 A small, whitelisted set of operational values can also be overridden by an
-admin at runtime on `/settings`. Today that is only `[jobs].extract_timeout_s`,
-on the 檔案處理 tab. The override is stored in the `system_settings` table and
+admin at runtime on `/settings`. Today those are `[jobs].extract_timeout_s` and
+`[jobs].extract_memory_limit_mb`, on the 檔案處理 tab. An override is stored in the `system_settings` table and
 wins over all three layers above. Those layers become its *default*, which the
 page shows and can reset to. It takes effect on the next parsed source without a
 restart, including in the standalone worker.
+
+**Optional outer memory bound for the worker.** `extract_memory_limit_mb` caps
+each parse. It does not cap the worker container as a whole, and
+`docker-compose.yml` deliberately sets no `mem_limit`, because the right figure
+depends on the host. To add one, put `mem_limit:` under the `worker` service, set
+at least the extraction cap plus the worker's own footprint (measure
+`docker stats` while idle). Parse children run with `oom_score_adj=1000`, so if
+the container does hit its limit the kernel kills the parse that caused it, not
+the worker.
 
 E2 notebook domain hints and answer policy limits are in the `[domain_policy]`
 group in `config.example.toml` and resolve through the same layers. They bound

@@ -47,6 +47,7 @@ def test_defaults_match_the_previously_hardcoded_values(tmp_path, monkeypatch):
     assert c.jobs.poll_interval_s == 2.0
     assert c.jobs.extract_isolation is True
     assert c.jobs.extract_timeout_s == 300.0
+    assert c.jobs.extract_memory_limit_mb == 2048
 
     assert c.runtime.briefing_lock_timeout_s == 90.0
     assert c.runtime.upload_batch_limit == 5
