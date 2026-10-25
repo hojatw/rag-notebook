@@ -43,6 +43,13 @@
 
 ### 修正
 
+- **`[feedback]` 設定與 `NOTEBOOKLM_FEEDBACK_*` 環境變數現在會生效**：`load_config()`
+  漏載了這一組，`enabled`、`other_reason_max_chars`、`admin_page_limit`、
+  `admin_page_limit_max` 不論怎麼設都停在預設值，設 `enabled = false` 也照樣顯示回饋
+  控制項。**升級後行為可能改變**：曾在 `config.toml` 或環境變數設過這些鍵的部署，
+  升級後才會真正套用——例如 `enabled = false` 會讓聊天畫面的回饋控制項消失、送出端點
+  回 404（管理頁仍可查閱既有紀錄）。升級前請確認這些值是你要的。另新增測試，確保
+  `AppConfig` 的每一組設定都有被載入，避免同類遺漏再發生。
 - **摘要與起始問題不再只看文件開頭**（`QUALITY.md` `Q1-8`）：來源摘要讀的是前 12 個
   分塊，也就是開頭幾頁。對會議逐字稿來說那是議程與寒暄，決議都在後面——於是摘要、
   briefing、學習指南、FAQ、時間軸全都在描述「會議怎麼開始」。現在改為保留開頭三段、
