@@ -1799,6 +1799,7 @@ def test_ingest_timeout_out_of_range_is_rejected_and_nothing_stored(monkeypatch,
             response = client.post("/settings/ingest", data={"extract_timeout_s": bad})
             assert response.status_code == 400, bad
             assert 'role="alert"' in response.text, bad
+            assert 'aria-invalid="true"' in response.text, bad
 
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM system_settings").fetchone()[0] == 0

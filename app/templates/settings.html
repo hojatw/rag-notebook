@@ -211,7 +211,8 @@
           {{ t('settings.ingest_timeout_label') }}
           <input name="extract_timeout_s" type="number" inputmode="numeric" step="1"
                  min="{{ '%d'|format(timeout.min) }}" max="{{ '%d'|format(timeout.max) }}"
-                 x-model="timeout" value="{{ timeout.input }}" required>
+                 x-model="timeout" value="{{ timeout.input }}" required
+                 {% if ingest_error %}aria-invalid="true"{% endif %}>
         </label>
         <p class="hint">{{ t('settings.ingest_range_hint', low='%d'|format(timeout.min), high='%d'|format(timeout.max)) }}</p>
         {% if stats.max_s %}
@@ -242,7 +243,8 @@
           {{ t('settings.ingest_memory_label') }}
           <input name="extract_memory_limit_mb" type="number" inputmode="numeric" step="1"
                  min="0" max="{{ '%d'|format(memory.max) }}"
-                 x-model="memory" value="{{ memory.input }}" required>
+                 x-model="memory" value="{{ memory.input }}" required
+                 {% if ingest_error %}aria-invalid="true"{% endif %}>
         </label>
         <p class="hint">{{ t('settings.ingest_memory_range_hint', low='%d'|format(memory.min), high='%d'|format(memory.max)) }}</p>
         {% if stats.rss_max_mb %}
