@@ -193,6 +193,30 @@ def test_chat_page_renders_the_feedback_control_for_answers_only(monkeypatch, tm
         assert page.text.count('class="answer-feedback"') == 1
 
 
+def test_feedback_disabled_by_env_hides_the_control_and_refuses_submissions(monkeypatch, tmp_path):
+    # Drive the real loader (env -> load_config) rather than patching
+    # `config.feedback.enabled`: the bug this guards was the loader ignoring
+    # the [feedback] group entirely.
+    monkeypatch.setenv("NOTEBOOKLM_FEEDBACK_ENABLED", "false")
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+        _uid, nb, convo, msg = _seed_answer(main, db)
+        page = client.get(f"/notebooks/{nb}?conversation_id={convo}")
+        assert page.status_code == 200
+        assert 'class="answer-feedback"' not in page.text
+        assert f'id="feedback-msg-{msg}"' not in page.text
+
+        resp = client.post(
+            f"/notebooks/{nb}/chat/{convo}/messages/{msg}/feedback", data={"rating": "usable"}
+        )
+        assert resp.status_code == 404
+        assert _feedback_rows(db) == []
+
+        # Existing records stay reviewable (config.example.toml promises this).
+        assert client.get("/admin/feedback").status_code == 200
+
+
 def test_admin_feedback_page_lists_entries_counts_and_audits_the_read(monkeypatch, tmp_path):
     main, db = _fresh_app(monkeypatch, tmp_path)
     with TestClient(main.app) as client:
