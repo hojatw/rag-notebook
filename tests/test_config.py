@@ -173,3 +173,54 @@ def test_new_key_wins_over_the_deprecated_one(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(toml))
     assert cfg.load_config().runtime.extract_max_file_bytes == 2222222
+
+
+def test_feedback_group_reads_toml_and_env(tmp_path, monkeypatch):
+    toml = tmp_path / "config.toml"
+    toml.write_text(
+        "[feedback]\nenabled = false\nother_reason_max_chars = 50\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(toml))
+    monkeypatch.setenv("NOTEBOOKLM_FEEDBACK_ADMIN_PAGE_LIMIT", "7")
+    c = cfg.load_config()
+
+    assert c.feedback.enabled is False              # from TOML
+    assert c.feedback.other_reason_max_chars == 50  # from TOML
+    assert c.feedback.admin_page_limit == 7         # from env
+    assert c.feedback.admin_page_limit_max == 300   # untouched default
+
+
+def test_every_appconfig_group_is_loaded_from_toml(tmp_path, monkeypatch):
+    """A group added to `AppConfig` but not to `load_config()` keeps its
+    defaults forever, silently (that is how `[feedback]` shipped). Override
+    one field of every group via TOML and check each one took effect."""
+    import dataclasses
+
+    lines = []
+    expected = {}
+    for group in dataclasses.fields(cfg.AppConfig):
+        group_cls = group.default_factory
+        field = next(
+            f for f in dataclasses.fields(group_cls) if f.type in (bool, int, float, str)
+        )
+        default = getattr(group_cls(), field.name)
+        if field.type is bool:
+            value, literal = (not default), str(not default).lower()
+        elif field.type is str:
+            value = f"{default}-override"
+            literal = f'"{value}"'
+        else:
+            value = default + 1
+            literal = str(value)
+        lines.append(f"[{group.name}]\n{field.name} = {literal}\n")
+        expected[(group.name, field.name)] = value
+    toml = tmp_path / "config.toml"
+    toml.write_text("".join(lines), encoding="utf-8")
+    monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(toml))
+    c = cfg.load_config()
+
+    not_loaded = [
+        group for (group, name), value in expected.items()
+        if getattr(getattr(c, group), name) != value
+    ]
+    assert not_loaded == []
