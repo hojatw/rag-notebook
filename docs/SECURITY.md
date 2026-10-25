@@ -196,6 +196,21 @@ A full review on **2026-08-22** surfaced eight hardening items (`SEC-1`–`SEC-8
 
 **Fixed:** `SEC-1` bootstrap accounts (above), `SEC-2` upload size limits / multipart buffering (see the parser note below), `SEC-3` session lifetime + revocation (below), `SEC-4` shared login rate limiting, `SEC-5` Traditional/Simplified Chinese prompt-injection telemetry patterns, `SEC-6` explicit session-user field projection that excludes `password_hash`, `SEC-7` generic user-creation errors, and `SEC-8` aligned session-cookie deletion attributes.
 
+### Uploaded-file parsing runs in a killable child process (2026-10-25)
+
+A crafted upload can make a parser loop forever, crash, or allocate without bound. The `pypdf` advisories triaged on 2026-10-25 were all of the first kind. Before this change extraction ran via `asyncio.to_thread`, and a thread cannot be stopped. One hung parse therefore never returned, and because the worker handles one job at a time, **every user's later uploads waited behind it** until the process was restarted. With the inline worker the spinning thread also lived inside the web process.
+
+`process_source` now calls `ingest.run_extraction`. That runs `extract_sections` in a fresh child (`python -m app.extract_child`) for **every format**, since PDF, DOCX, PPTX, XLSX, CSV, HTML and subtitles all parse untrusted bytes:
+
+- **Wall-clock limit:** `[jobs].extract_timeout_s` (default 300s). After it the child is killed. The source fails with `failed_reason = extract_timeout`, and the user sees why in `sources.error`. It is **not retried**, because a file that hangs once hangs again. The value is clamped below 90% of `[jobs].visibility_timeout_s`, so a slow but legitimate parse is never re-claimed by a second worker.
+- **Crash containment:** a child that dies by signal or writes no result fails only that source (`failed_reason = extract_crashed`). A segfault in a C parser no longer takes the worker with it.
+- **Orphan backstop:** the child sets `RLIMIT_CPU` to the timeout plus 30s. If the parent is SIGKILLed mid-parse and cannot kill the child, the kernel ends it.
+- **Cancellation:** worker shutdown cancels the parse and kills the child.
+- **Not covered yet:** memory. A decompression or allocation bomb still grows until the OS steps in. In Docker that is the `worker` container, not the web app. A memory cap is a follow-up, which needs measuring first: `RLIMIT_AS` counts virtual address space and can kill legitimate parses.
+- **Kill-switch:** `[jobs].extract_isolation = false` restores the in-thread path without a code change.
+
+Operators: grep `extract_child_finished` for per-file `duration_s` and `outcome` (`ok` · `timeout` · `crashed`). Tune `extract_timeout_s` from the observed durations. The largest measured parse so far is 32s.
+
 ### Framework API docs disabled (2026-09-11)
 
 FastAPI's stock `/docs` (Swagger UI), `/redoc` and `/openapi.json` are turned
@@ -427,7 +442,7 @@ Found by a `pip-audit` sweep on 2026-10-25, against `pypdf 6.19.0`. All eleven a
 - **Reachability:** the same fallback path as GHSA-763m-79hh-57f2 above. Any logged-in user can upload a PDF that makes pdfplumber return nothing, which forces it into pypdf.
 - **Blast radius, corrected:** the earlier entries call this "one stuck ingest job", which understates it. Extraction runs via `asyncio.to_thread(extract_sections, …)` (`process_source` in `app/ingest.py`). A thread cannot be cancelled, and `run_worker_loop` (`app/worker.py`) awaits one job at a time. An infinite loop therefore never returns, and the worker never claims another job. **Every user's** later uploads sit at "processing" until the process is restarted, and the visibility timeout does not help, because the stuck process holds no lease it could lose. With the inline worker that spinning thread also lives in the web process. This is an inference from the code and the advisory text; it was **not reproduced with a proof-of-concept PDF**.
 - **Action:** patched to `6.21.2`. Verified: the full suite passes. A real PDF also goes through both `_extract_pdf_with_pdfplumber` and `_extract_pdf_with_pypdf` and comes out with the expected text (the suite itself fakes the extractor output, so it never runs real pypdf). Operators only need to rebuild the image or rerun `./setup.sh`; re-indexing is not required.
-- **Not fixed by this:** the structural problem, that a parser hang has no timeout and stalls the queue. That needs extraction in a killable subprocess with a wall-clock limit, and it is tracked as a separate design item rather than folded into a dependency bump.
+- **Not fixed by this bump; fixed separately:** the structural problem was that a parser hang had no timeout and stalled the queue. It is now addressed by running extraction in a killable child process with a wall-clock limit (#174), rather than by this dependency bump. See *Hardening status → Uploaded-file parsing runs in a killable child process*.
 
 ### 37 advisories — `Pillow < 13.0.0` — not reachable today, patched (2026-10-25)
 

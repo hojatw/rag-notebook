@@ -92,6 +92,8 @@ max_attempts = 3              # cap on (re)claims before a job is failed
 poll_interval_s = 2.0         # worker idle poll interval
 health_port = 0               # standalone loopback liveness; Compose worker sets 8001
 health_timeout_s = 3.0        # below Docker healthcheck's 5s timeout
+extract_isolation = true      # parse uploads in a killable child process; false = in-process thread
+extract_timeout_s = 300.0     # child is killed after this; must stay below visibility_timeout_s
 
 # --- Misc runtime ------------------------------------------------------------
 [runtime]
