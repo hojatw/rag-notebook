@@ -212,6 +212,14 @@ class JobsConfig:
     poll_interval_s: float = 2.0
     health_port: int = 0               # standalone loopback probe; 0 disables listener
     health_timeout_s: float = 3.0      # keep below Docker healthcheck's 5s timeout
+    # File parsing runs in a child process that is killed after this many
+    # seconds, so one crafted or pathological upload fails that source instead
+    # of stalling the whole queue (an in-process thread cannot be stopped).
+    # 300s is a starting point, not a measurement: the largest observed parse is
+    # 32s (881-section PDF). Tune it from `extract_child_finished duration_s=`.
+    # Must stay below visibility_timeout_s; a larger value is clamped.
+    extract_isolation: bool = True     # false = parse in a worker thread (pre-isolation behaviour)
+    extract_timeout_s: float = 300.0
 
 
 @dataclasses.dataclass

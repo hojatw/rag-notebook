@@ -98,6 +98,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.stage_chunk": "切塊",
         "diag.stage_embed": "產生向量（embedding）",
         "diag.stage_store": "寫入索引",
+        "ingest.error.extract_timeout": "檔案解析超過 {seconds} 秒仍未完成，已中止。檔案可能損壞、經過特殊構造，或過於複雜；可以試著另存或拆分後重新上傳。",
+        "ingest.error.extract_crashed": "檔案解析程序異常結束（代碼 {code}），已中止。檔案可能損壞或格式不受支援。",
         "diag.warnings": "注意事項",
         "diag.row_warning": "萃取有注意事項",
         # Extractor paths

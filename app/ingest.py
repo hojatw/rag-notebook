@@ -1,10 +1,16 @@
 import asyncio
 import dataclasses
+import json
 import logging
+import os
 import re
+import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
+from . import i18n
 from .config import config
 from .db import connect, dumps, load_llm_settings
 from .llm import embed_texts, summarize_source
@@ -1943,6 +1949,160 @@ async def _generate_source_summary(source_id: int) -> None:
         logger.exception("source_summary_unhandled source_id=%s", source_id)
 
 
+class ExtractionFailed(Exception):
+    """The isolated extraction child timed out or died; ``reason`` says which.
+
+    ``reason`` is stored as ``diagnostics_json.failed_reason`` — one of the
+    ``EXTRACT_FAILED_*`` constants, never a literal.
+    """
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+class ExtractionError(Exception):
+    """An extractor raised inside the child; carries its original ``str(exc)``."""
+
+
+EXTRACT_FAILED_TIMEOUT = "extract_timeout"
+EXTRACT_FAILED_CRASHED = "extract_crashed"
+
+#: Extra CPU seconds the child may use past the wall-clock timeout before the
+#: kernel ends it. Only reached if the parent died and could not kill it.
+_EXTRACT_CPU_GRACE_S = 30
+#: How much of the child's stderr is relayed into the app log.
+_EXTRACT_STDERR_MAX_CHARS = 8000
+
+_APP_ROOT = Path(__file__).resolve().parents[1]
+_timeout_clamp_logged = False
+
+
+def _extract_timeout_s() -> float:
+    """The configured extraction timeout, kept below the job visibility timeout.
+
+    A parse still running when the visibility timeout expires could be claimed
+    again by a second worker (inline + standalone), so the timeout must end the
+    child first.
+    """
+    global _timeout_clamp_logged
+    timeout = float(config.jobs.extract_timeout_s)
+    ceiling = float(config.jobs.visibility_timeout_s) * 0.9
+    if timeout <= 0 or timeout > ceiling:
+        if not _timeout_clamp_logged:
+            logger.warning(
+                "extract_timeout_clamped configured_s=%s effective_s=%s visibility_timeout_s=%s",
+                timeout, ceiling, config.jobs.visibility_timeout_s,
+            )
+            _timeout_clamp_logged = True
+        return ceiling
+    return timeout
+
+
+def _extract_child_argv(path: Path, result_path: Path, cpu_limit_s: int) -> list[str]:
+    """Command line for the extraction child (a seam tests replace)."""
+    return [sys.executable, "-m", "app.extract_child", str(path), str(result_path), str(cpu_limit_s)]
+
+
+def _child_env() -> dict[str, str]:
+    """The parent's environment, plus the app root on ``PYTHONPATH``.
+
+    The working directory is deliberately inherited rather than set: `config.toml`
+    is resolved relative to it, and the child must read the same config as us.
+    """
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(_APP_ROOT) + (os.pathsep + existing if existing else "")
+    return env
+
+
+def _relay_child_stderr(path: Path, raw: bytes) -> None:
+    text = raw.decode("utf-8", errors="replace")[-_EXTRACT_STDERR_MAX_CHARS:]
+    for line in text.splitlines():
+        if line.strip():
+            logger.info("extract_child_log path=%s line=%s", path.name, line)
+
+
+async def _extract_isolated(path: Path) -> ExtractionResult:
+    """Run `extract_sections` in a child process that is killed on timeout.
+
+    Raises `ExtractionFailed` when the child times out or dies, and
+    `ExtractionError` (same message) when an extractor raised inside it.
+    """
+    timeout = _extract_timeout_s()
+    started = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="notebooklm-extract-") as tmp:
+        result_path = Path(tmp) / "result.json"
+        proc = await asyncio.create_subprocess_exec(
+            *_extract_child_argv(path, result_path, int(timeout) + _EXTRACT_CPU_GRACE_S),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            env=_child_env(),
+        )
+        outcome = "ok"
+        stderr = b""
+        try:
+            # communicate() drains stderr while waiting; an undrained pipe would
+            # block a chatty child once the buffer fills — a new hang of our own.
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            outcome = "timeout"
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            # Timeout, or the worker is shutting down (CancelledError): the
+            # child must not outlive this call either way.
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:  # exited between the check and the kill
+                    pass
+                await proc.wait()
+            duration = time.monotonic() - started
+            _relay_child_stderr(path, stderr or b"")
+            payload = None
+            if outcome == "ok":
+                try:
+                    payload = json.loads(result_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    outcome = "crashed"
+            logger.info(
+                "extract_child_finished path=%s duration_s=%.2f outcome=%s rc=%s",
+                path.name, duration, outcome, proc.returncode,
+            )
+
+    if outcome == "timeout":
+        raise ExtractionFailed(
+            EXTRACT_FAILED_TIMEOUT,
+            i18n.t("ingest.error.extract_timeout", seconds=int(timeout)),
+        )
+    if outcome == "crashed" or not isinstance(payload, dict):
+        raise ExtractionFailed(
+            EXTRACT_FAILED_CRASHED,
+            i18n.t("ingest.error.extract_crashed", code=proc.returncode),
+        )
+    if not payload.get("ok"):
+        raise ExtractionError(payload.get("error", ""))
+    result = payload["result"]
+    result["sections"] = [tuple(section) for section in result["sections"]]
+    return ExtractionResult(**result)
+
+
+async def run_extraction(path: Path) -> ExtractionResult:
+    """Extract a source off the event loop — isolated in a child unless disabled.
+
+    Either way the loop stays free: extraction is synchronous, CPU-bound, and
+    can run for tens of seconds (measured: 32s for an 881-section PDF), and with
+    the inline worker that would otherwise freeze every web request. Only the
+    child can also be *stopped*; a thread running a hung parser cannot.
+    """
+    if config.jobs.extract_isolation:
+        return await _extract_isolated(path)
+    return await asyncio.to_thread(extract_sections, path)
+
+
 async def process_source(source_id: int) -> None:
     """Extract, chunk, embed, and persist vectors for one source record."""
     with connect() as conn:
@@ -1967,6 +2127,7 @@ async def process_source(source_id: int) -> None:
     # nothing or the embedding endpoint was down (A6a "failure reason").
     stage = "extract"
     diagnostics: dict[str, Any] = {}
+    extract_started = time.monotonic()
     try:
         logger.info(
             "ingest_started source_id=%s user_id=%s filename=%s",
@@ -1974,16 +2135,13 @@ async def process_source(source_id: int) -> None:
             source["user_id"],
             source["filename"],
         )
-        # Off the event loop: extraction is synchronous, CPU-bound, and can run
-        # for tens of seconds (measured: 32s for an 881-section PDF through
-        # pdfplumber). With the inline worker that time is spent inside the web
-        # process, so running it here would freeze every request — including the
-        # 2s source-row polls that are supposed to show "processing", which is
-        # exactly how this surfaced: the row sat at "uploaded" because the
-        # server could not answer a single poll until extraction finished.
-        # `extract_sections` only reads the file and returns text, so it holds
-        # no connection and is safe to hand to a thread.
-        extraction = await asyncio.to_thread(extract_sections, Path(source["stored_path"]))
+        # Off the event loop, and (by default) in a killable child process —
+        # see `run_extraction`. A source-row poll that cannot be answered while
+        # extraction runs is how the event-loop half of this surfaced; a queue
+        # that stops draining behind one hung PDF is the process half.
+        extract_started = time.monotonic()
+        extraction = await run_extraction(Path(source["stored_path"]))
+        extract_duration_s = round(time.monotonic() - extract_started, 2)
         sections = extraction.sections
         stage = "chunk"
         # Pack sentences across sections up to the chunk target so formats that
@@ -1998,6 +2156,7 @@ async def process_source(source_id: int) -> None:
         # nothing still gets diagnostics — that is the case users most need to
         # see, and it is the only window into a failed source.
         diagnostics = collect_ingest_diagnostics(extraction, records)
+        diagnostics["extract_duration_s"] = extract_duration_s
         if not records:
             raise ValueError("No extractable text found.")
 
@@ -2067,6 +2226,10 @@ async def process_source(source_id: int) -> None:
         # (when extraction got that far) what it managed to pull out. Without
         # this a failed source shows an error string and nothing else.
         failed_diagnostics = {**diagnostics, "failed_stage": stage}
+        if stage == "extract":
+            failed_diagnostics["extract_duration_s"] = round(time.monotonic() - extract_started, 2)
+        if isinstance(exc, ExtractionFailed):
+            failed_diagnostics["failed_reason"] = exc.reason
         with connect() as conn:
             conn.execute(
                 """

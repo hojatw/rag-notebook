@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import pytest
 
 
 def test_subtitle_extraction_strips_cues_and_tags(fresh_modules, tmp_path):
@@ -857,8 +858,9 @@ def test_upload_limit_uses_the_stricter_cap_for_eagerly_parsed_formats():
         assert ingest.upload_limit_for(name) == extract_cap, name
 
 
-def test_extraction_does_not_block_the_event_loop(fresh_modules, local_embed, tmp_path, monkeypatch):
-    """A slow extract must not freeze the web process.
+@pytest.mark.parametrize("isolated", [True, False], ids=["child-process", "thread"])
+def test_extraction_does_not_block_the_event_loop(fresh_modules, local_embed, tmp_path, monkeypatch, isolated):
+    """A slow extract must not freeze the web process — in either extraction mode.
 
     With the inline worker, ingestion runs inside the app. Extraction is
     synchronous and can take tens of seconds (measured: 32s for an 881-section
@@ -867,19 +869,34 @@ def test_extraction_does_not_block_the_event_loop(fresh_modules, local_embed, tm
     source's row stayed at "uploaded" because not one of its 2s status polls
     could be served until extraction finished.
     """
+    import sys
     import time
 
     db, ingest = fresh_modules.db, fresh_modules.ingest
     source_path = tmp_path / "slow.txt"
     source_path.write_text("Alpha project revenue is 42 dollars.", encoding="utf-8")
+    monkeypatch.setattr(ingest.config.jobs, "extract_isolation", isolated)
 
-    real_extract = ingest.extract_sections
+    if isolated:
+        # The child is a fresh interpreter, so a monkeypatch cannot reach it:
+        # slow the real child down from its own command line instead.
+        delay_then_extract = (
+            "import runpy, sys, time; time.sleep(0.5); "
+            "sys.argv = ['extract_child', *sys.argv[1:]]; "
+            "runpy.run_module('app.extract_child', run_name='__main__')"
+        )
+        monkeypatch.setattr(
+            ingest, "_extract_child_argv",
+            lambda path, result, cpu: [sys.executable, "-c", delay_then_extract, str(path), str(result), str(cpu)],
+        )
+    else:
+        real_extract = ingest.extract_sections
 
-    def slow_extract(path):
-        time.sleep(0.5)          # stands in for pdfplumber on a large PDF
-        return real_extract(path)
+        def slow_extract(path):
+            time.sleep(0.5)          # stands in for pdfplumber on a large PDF
+            return real_extract(path)
 
-    monkeypatch.setattr(ingest, "extract_sections", slow_extract)
+        monkeypatch.setattr(ingest, "extract_sections", slow_extract)
 
     with db.connect() as conn:
         user = conn.execute("SELECT * FROM users WHERE username = 'user'").fetchone()
@@ -906,9 +923,12 @@ def test_extraction_does_not_block_the_event_loop(fresh_modules, local_embed, tm
         return ticks
 
     ticks = asyncio.run(drive())
-    # A blocking extract starves the loop and leaves this at ~0; off-thread it
+    # A blocking extract starves the loop and leaves this at ~0; off-loop it
     # keeps ticking throughout the 0.5s sleep.
     assert ticks >= 3, f"event loop was starved during extraction (ticks={ticks})"
+    with db.connect() as conn:
+        status = conn.execute("SELECT status FROM sources WHERE id = ?", (source_id,)).fetchone()["status"]
+    assert status == "indexed"
 
 
 # -------------------- degraded-retrieval visibility --------------------
