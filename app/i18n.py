@@ -131,6 +131,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         # A6c spreadsheet warnings
         "diag.warn_spreadsheet_generic_records": "沒有偵測到問答（Q&A）欄位，因此整份試算表以「一般資料列」方式切塊。語意搜尋仍可用，但精確的篩選、計數與加總不在目前支援範圍。",
         "diag.warn_spreadsheet_hidden_sheets_skipped": "已略過隱藏的工作表：{sheets}。隱藏表通常是暫存或過期資料，預設不索引。",
+        "diag.warn_spreadsheet_no_data_rows": "試算表只讀到表頭，沒有任何資料列，因此沒有可檢索的內容。若檔案其實有資料，可能是編碼或分隔符號判斷錯誤；請改存成 UTF-8 CSV 或 XLSX 後重新上傳。",
         "diag.warn_spreadsheet_truncated": "工作表 {sheets} 超過列數或欄數上限，只索引了前面的部分。可在 [spreadsheet] 設定調整上限。",
         "diag.warn_spreadsheet_uncached_formulas": "有 {count} 個公式儲存格沒有計算結果快取，讀進來是空的。請用 Excel 開啟並重新儲存，或匯出成含計算值的檔案。",
         "diag.warn_spreadsheet_wide_sheet": "工作表欄位偏多，每個分塊只能容納少數幾列，檢索精度可能下降。",
