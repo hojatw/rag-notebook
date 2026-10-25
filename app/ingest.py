@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import i18n
+from . import i18n, system_settings
 from .config import config
 from .db import connect, dumps, load_llm_settings
 from .llm import embed_texts, summarize_source
@@ -1979,14 +1979,16 @@ _timeout_clamp_logged = False
 
 
 def _extract_timeout_s() -> float:
-    """The configured extraction timeout, kept below the job visibility timeout.
+    """The effective extraction timeout, kept below the job visibility timeout.
 
     A parse still running when the visibility timeout expires could be claimed
     again by a second worker (inline + standalone), so the timeout must end the
     child first.
     """
     global _timeout_clamp_logged
-    timeout = float(config.jobs.extract_timeout_s)
+    # Admin override (/settings) if one is stored, else config. Read per call:
+    # the admin saves in the web process, the standalone worker reads here.
+    timeout, _source = system_settings.effective(system_settings.EXTRACT_TIMEOUT_KEY)
     ceiling = float(config.jobs.visibility_timeout_s) * 0.9
     if timeout <= 0 or timeout > ceiling:
         if not _timeout_clamp_logged:
@@ -2069,8 +2071,8 @@ async def _extract_isolated(path: Path) -> ExtractionResult:
                 except (OSError, ValueError):
                     outcome = "crashed"
             logger.info(
-                "extract_child_finished path=%s duration_s=%.2f outcome=%s rc=%s",
-                path.name, duration, outcome, proc.returncode,
+                "extract_child_finished path=%s duration_s=%.2f outcome=%s rc=%s timeout_s=%s",
+                path.name, duration, outcome, proc.returncode, int(timeout),
             )
 
     if outcome == "timeout":

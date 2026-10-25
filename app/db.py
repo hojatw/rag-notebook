@@ -287,6 +287,17 @@ def init_db() -> None:
 
             INSERT OR IGNORE INTO vector_index_state (id, generation) VALUES (1, 0);
 
+            -- Admin overrides of operational tunables, read by every process
+            -- (web and the standalone ingest worker) at the point of use, so a
+            -- change applies without a restart. Keys are a whitelist in
+            -- app/system_settings.py; a missing row means "use config".
+            CREATE TABLE IF NOT EXISTS system_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             -- Admin-only in-deployment eval workbench (E1). Eval data stays in
             -- the customer deployment; runs snapshot the profile and per-item
             -- results so tuning decisions can be audited and revisited.

@@ -1692,3 +1692,209 @@ def test_compare_warns_only_when_the_serving_model_changed(monkeypatch, tmp_path
     # Names the field that moved, so the reader does not have to hunt for it.
     assert "對話模型" in swapped.text.split(warning)[0].rsplit("<header", 1)[-1]
     assert warning not in same.text
+
+
+# -------------------- /settings 檔案處理：admin-adjustable extraction timeout --------------------
+
+def _seed_plain_user(main, db, username="viewer", password="viewer-password"):
+    db.init_db()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO users (username, password_hash, is_admin, must_change_password) VALUES (?, ?, 0, 0)",
+            (username, main.hash_password(password)),
+        )
+    return username, password
+
+
+def test_ingest_settings_are_admin_only_and_csrf_protected(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    username, password = _seed_plain_user(main, db)
+
+    with TestClient(main.app) as client:
+        client.post("/login", data={"username": username, "password": password}, follow_redirects=False)
+        assert client.post("/settings/ingest", data={"extract_timeout_s": "120"}).status_code == 403
+        assert client.post("/settings/ingest/reset").status_code == 403
+
+    with TestClient(main.app) as client:
+        _login(client)
+        forged = client.post(
+            "/settings/ingest", data={"extract_timeout_s": "120"}, headers={"X-CSRF-Token": "forged"}
+        )
+        assert forged.status_code == 403
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM system_settings").fetchone()[0] == 0
+
+
+def test_saved_timeout_reaches_the_ingest_reader_without_restart(monkeypatch, tmp_path):
+    """The route writes, `ingest._extract_timeout_s` (the worker's reader) sees it at once."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.ingest as ingest
+
+    assert ingest._extract_timeout_s() == 300.0
+    with TestClient(main.app) as client:
+        _login(client)
+        saved = client.post("/settings/ingest", data={"extract_timeout_s": "120"})
+        assert saved.status_code == 200
+        assert "120 秒" in saved.text
+        assert "來源：管理者設定" in saved.text
+    assert ingest._extract_timeout_s() == 120.0
+
+    with TestClient(main.app) as client:
+        _login(client)
+        reset = client.post("/settings/ingest/reset")
+        assert reset.status_code == 200
+        assert "來源：部署預設" in reset.text
+    assert ingest._extract_timeout_s() == 300.0
+
+
+def test_admin_timeout_is_what_actually_kills_a_hung_parse(monkeypatch, tmp_path):
+    """Producer -> reader at the layer the user sees: a hung parse fails at the saved value."""
+    import asyncio
+    import sys
+
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.ingest as ingest
+
+    # The deployment value is far too long for a test, so only the admin value
+    # can end this in time. The 30s floor is lowered to 1s for the same reason;
+    # the real floor is covered by the out-of-range test.
+    system_settings = ingest.system_settings
+    monkeypatch.setattr(ingest.config.jobs, "extract_timeout_s", 600.0)
+    monkeypatch.setitem(
+        system_settings.SETTINGS,
+        system_settings.EXTRACT_TIMEOUT_KEY,
+        system_settings.SettingSpec(default=lambda: 600.0, minimum=lambda: 1.0, maximum=lambda: 1620.0),
+    )
+    monkeypatch.setattr(
+        ingest, "_extract_child_argv", lambda *a: [sys.executable, "-c", "while True: pass"]
+    )
+    with TestClient(main.app) as client:
+        _login(client)
+        assert client.post("/settings/ingest", data={"extract_timeout_s": "1"}).status_code == 200
+
+    path = tmp_path / "hang.txt"
+    path.write_text("x", encoding="utf-8")
+    with db.connect() as conn:
+        source_id = conn.execute(
+            "INSERT INTO sources (user_id, filename, stored_path, content_type, status) "
+            "VALUES (1, 'hang.txt', ?, 'text/plain', 'uploaded')",
+            (str(path),),
+        ).lastrowid
+    asyncio.run(asyncio.wait_for(ingest.process_source(source_id), timeout=30))
+
+    with db.connect() as conn:
+        row = conn.execute("SELECT status, error, diagnostics_json FROM sources WHERE id = ?", (source_id,)).fetchone()
+    assert row["status"] == "failed"
+    assert json.loads(row["diagnostics_json"])["failed_reason"] == ingest.EXTRACT_FAILED_TIMEOUT
+    assert "1 秒" in row["error"]
+
+
+def test_ingest_timeout_out_of_range_is_rejected_and_nothing_stored(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        for bad in ("29", "1621", "abc", "", "nan", "inf"):
+            response = client.post("/settings/ingest", data={"extract_timeout_s": bad})
+            assert response.status_code == 400, bad
+            assert 'role="alert"' in response.text, bad
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM system_settings").fetchone()[0] == 0
+
+
+def test_ingest_settings_changes_are_audited(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        client.post("/settings/ingest", data={"extract_timeout_s": "120"})
+        client.post("/settings/ingest/reset")
+
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT action, metadata_json FROM audit_events "
+            "WHERE action LIKE 'ingest_settings_%' ORDER BY id"
+        ).fetchall()
+    assert [row["action"] for row in rows] == ["ingest_settings_updated", "ingest_settings_reset"]
+    saved, reset = (json.loads(row["metadata_json"]) for row in rows)
+    assert saved == {"key": "jobs.extract_timeout_s", "before": 300.0, "before_source": "deployment", "after": 120.0}
+    assert reset == {"key": "jobs.extract_timeout_s", "before": 120.0, "before_source": "admin", "after": 300.0}
+
+
+def test_unreadable_override_falls_back_to_the_deployment_value(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.ingest as ingest
+
+    db.init_db()
+    with db.connect() as conn:
+        conn.execute("DROP TABLE system_settings")
+    assert ingest._extract_timeout_s() == 300.0      # read failure: never blocks ingest
+
+    db.init_db()
+    with db.connect() as conn:
+        conn.execute("INSERT INTO system_settings (key, value) VALUES ('jobs.extract_timeout_s', 'garbage')")
+    assert ingest._extract_timeout_s() == 300.0
+
+
+def test_ingest_tab_shows_recent_parse_durations(monkeypatch, tmp_path):
+    """Stats are read from what `process_source` actually writes."""
+    import asyncio
+
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.ingest as ingest
+
+    async def fake_embed(texts, settings, *, role=None, usage_context=None):
+        return [[0.1, 0.2, 0.3] for _ in texts]
+
+    monkeypatch.setattr(ingest, "embed_texts", fake_embed)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        empty = client.get("/settings?tab=ingest")
+        assert "尚無完成解析的耗時資料" in empty.text
+
+    path = tmp_path / "doc.txt"
+    path.write_text("Alpha project revenue is 42 dollars.", encoding="utf-8")
+    with db.connect() as conn:
+        source_id = conn.execute(
+            "INSERT INTO sources (user_id, filename, stored_path, content_type, status) "
+            "VALUES (1, 'doc.txt', ?, 'text/plain', 'uploaded')",
+            (str(path),),
+        ).lastrowid
+    asyncio.run(ingest.process_source(source_id))
+
+    with TestClient(main.app) as client:
+        _login(client)
+        page = client.get("/settings?tab=ingest")
+    assert "最近 1 份完成解析的來源" in page.text
+    assert "另有 0 份因逾時中止" in page.text
+    assert "tab: 'ingest'" in page.text
+
+
+def test_timed_out_parses_do_not_count_as_observed_durations(monkeypatch, tmp_path):
+    """A timed-out parse's duration is only the timeout in force, not a measurement.
+
+    Hand-written diagnostics are safe here: the key names and the timeout value
+    are pinned by tests that drive the real `process_source`.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.system_settings as system_settings
+
+    db.init_db()
+    rows = [
+        {"extract_duration_s": 10.0},
+        {"extract_duration_s": 50.0},
+        {"extract_duration_s": 120.0, "failed_stage": "extract", "failed_reason": "extract_timeout"},
+    ]
+    with db.connect() as conn:
+        for diagnostics in rows:
+            conn.execute(
+                "INSERT INTO sources (user_id, filename, stored_path, content_type, status, diagnostics_json) "
+                "VALUES (1, 'f', '/nonexistent', 'application/pdf', 'indexed', ?)",
+                (json.dumps(diagnostics),),
+            )
+
+    stats = system_settings.recent_extract_stats()
+    assert stats == {"count": 2, "max_s": 50.0, "p95_s": 50.0, "timeouts": 1}

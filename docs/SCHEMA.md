@@ -75,6 +75,7 @@ users ─┬─< notebooks ─┬─< sources ─┬─< chunks
        └─< external_identities
 llm_settings : single row (id = 1), global
 vector_index_state : single row (id = 1), global
+system_settings : global key/value admin overrides (updated_by → users, SET NULL)
 login_rate_limits : global table of opaque per-account throttle buckets (no user/content FK)
 login_verification_leases : short cross-process PBKDF2 admission leases (no user/content FK)
 
@@ -425,6 +426,18 @@ Chroma locks a collection's embedding dimension on the first upsert, and deletin
 The lock rule has one definition, `index_migration.migration_lock_is_live()`, used by the admin route, the page preview, and the worker's claim alike — so the barrier cannot mean one thing to the migration and another to the queue it pauses.
 
 **Why there are two counters.** A `generation` mismatch means the collection object was replaced, and re-fetching the handle is enough. A `write_seq` mismatch means another process wrote records, and re-fetching is **not** enough: chromadb caches one `System` per store path and hands it to every `PersistentClient` built for that path, so the stale in-memory HNSW index survives both a new handle and a new client. `collection()` therefore calls `SharedSystemClient.clear_system_cache()` and drops `_client` on a `write_seq` mismatch. Measured against chromadb 1.5.9; `tests/test_vector_store.py::test_query_sees_records_written_by_another_process` pins it with a real subprocess (an in-process module reload shares the cached `System`, so it cannot observe this). See `docs/TROUBLESHOOTING.md`.
+
+## `system_settings`
+Admin overrides of operational tunables, edited on `/settings` and read **at the point of use** by every process. The admin saves in the web app; the standalone ingest worker reads in its own process, so nothing here is cached. A missing row means "use the deployment value" from `app/config.py` (default ← `config.toml` ← env). Deleting the row is how "恢復部署預設" works.
+
+| Column | Type | Notes |
+|---|---|---|
+| `key` | TEXT **PK** | Must be registered in `system_settings.SETTINGS`; anything else is refused. Today only `jobs.extract_timeout_s` |
+| `value` | TEXT NOT NULL | The validated value as text (`repr(float)`). An unparseable value is ignored with a warning and the deployment value applies, so the reader (ingest) never fails on it |
+| `updated_by` | INTEGER FK → `users.id` ON DELETE SET NULL | Admin who last saved it |
+| `updated_at` | TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP | |
+
+Range rules live in the registry, not in SQL. `jobs.extract_timeout_s` accepts 30s up to 90% of `[jobs].visibility_timeout_s`, the same ceiling `ingest._extract_timeout_s` clamps to, so a saved value is never silently changed. Every save and reset is audited (`ingest_settings_updated` / `ingest_settings_reset`, with before/after values and the before-source).
 
 ## `retrieval_profiles`
 Admin-created retrieval parameter snapshots for the in-deployment eval workbench (E1). Profiles are audit/history records **and** applyable: the `is_active` row seeds the live `ACTIVE_RETRIEVAL_PARAMS` in `app/retrieval.py` at startup (E1c apply/rollback).
