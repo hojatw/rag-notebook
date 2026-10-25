@@ -449,6 +449,7 @@ def load_config() -> AppConfig:
         runtime=_load_group(RuntimeConfig, "runtime", toml_data),
         ui=_load_group(UIConfig, "ui", toml_data),
         auth=_load_group(AuthConfig, "auth", toml_data),
+        feedback=_load_group(FeedbackConfig, "feedback", toml_data),
     )
 
 
