@@ -72,6 +72,16 @@
 
 ### 安全性
 
+- **`pypdf` 6.19.0 → 6.21.2，修掉 11 個惡意 PDF 造成的服務阻斷漏洞**（無限迴圈、記憶體暴增、
+  超長執行時間）。任何已登入使用者上傳一份刻意構造的 PDF 就可能觸發，而且**影響的不是
+  單一來源**：解析卡住時 ingest worker 不會再接下一個工作，之後所有人的上傳都會停在
+  「處理中」，直到重啟 worker。這項升級只修已知的幾種卡法；「解析沒有時間上限」本身是
+  另一個設計題，尚未處理。Dependabot 開的 `pypdf-6.20.0` PR 只修到其中 4 個，已被本項取代。
+- **`Pillow` 12.3.0 → 13.0.0，修掉 37 個圖片解碼相關漏洞**（含內附 libopenjp2 的
+  heap overflow）。目前的攝取流程**不會解碼任何圖片**，這些漏洞現在碰不到，升級是為了
+  在之後加入 OCR／vision 時不帶著它們上線。
+- 兩項都只需重建 image 或重跑 `./setup.sh`，不必重新索引，資料、設定鍵與 schema 都不變。
+  評估細節見 `docs/SECURITY.md` → *Triaged dependency-audit findings*。
 - **問答檢索不再跑出當前 notebook**：`ask` / `ask-stream` 沒帶 `source_ids`（左欄按
   「全不選」、無 JS 表單），或送來的 id 全部不屬於這個 notebook 時，檢索會退化成只篩
   `user_id`，搜遍該使用者**所有** notebook——實測回答引用了另一個 notebook 的 PDF。
@@ -130,8 +140,9 @@
   `actions/checkout` 4.4.0 → 7.0.1（#156）、`actions/cache` 4.3.0 → 6.1.0（#155）、
   `actions/setup-python` 5.6.0 → 7.0.0（#154）。三項都是跨 2–3 個 major，合併前各自在新的
   `main` 上跑過 CI，合併後 `main` 上三者組合的 CI 也成功。只影響 CI，不影響執行期，
-  維運者不需要做任何事。三個 SHA 與其 tag 的對應是信任 Dependabot 產生的結果，
-  **未獨立核對**；各 action 的 release note 也未逐項閱讀，breaking change 細節待確認。
+  維運者不需要做任何事。三個 SHA 與其 tag 的對應已於 2026-10-25 用 `git ls-remote`
+  對照各 action 官方 repo 的 tag 獨立核對，完全一致；各 action 的 release note 未逐項閱讀，
+  breaking change 細節待確認。
 - `fastapi`、`cryptography`、`pypdf`、`charset-normalizer` 的上游 release note 未逐項核對，
   細節**待確認**。`pypdf` 與 `charset-normalizer` 處理使用者上傳的檔案，建議升級後上傳一份
   PDF 與一份非 UTF-8 文字檔抽查。
