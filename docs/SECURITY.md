@@ -207,7 +207,8 @@ A crafted upload can make a parser loop forever, crash, or allocate without boun
 - **Orphan backstop:** the child sets `RLIMIT_CPU` to the timeout plus 30s. If the parent is SIGKILLed mid-parse and cannot kill the child, the kernel ends it.
 - **Cancellation:** worker shutdown cancels the parse and kills the child.
 - **Not covered yet:** memory. A decompression or allocation bomb still grows until the OS steps in. In Docker that is the `worker` container, not the web app. A memory cap is a follow-up, which needs measuring first: `RLIMIT_AS` counts virtual address space and can kill legitimate parses.
-- **Kill-switch:** `[jobs].extract_isolation = false` restores the in-thread path without a code change.
+- **Kill-switch:** `[jobs].extract_isolation = false` restores the in-thread path without a code change. It is deliberately **not** exposed on `/settings`: turning isolation off removes this protection, so it stays an operator-only lever.
+- **Admin override of the timeout:** admins can change the timeout on `/settings` → 檔案處理 (`system_settings` table) within 30s to 90% of the visibility timeout. Every change is audited with its before and after values. The page shows recent completed-parse durations, and warns when the new value is below the longest one.
 
 Operators: grep `extract_child_finished` for per-file `duration_s` and `outcome` (`ok` · `timeout` · `crashed`). Tune `extract_timeout_s` from the observed durations. The largest measured parse so far is 32s.
 

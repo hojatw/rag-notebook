@@ -93,7 +93,7 @@ poll_interval_s = 2.0         # worker idle poll interval
 health_port = 0               # standalone loopback liveness; Compose worker sets 8001
 health_timeout_s = 3.0        # below Docker healthcheck's 5s timeout
 extract_isolation = true      # parse uploads in a killable child process; false = in-process thread
-extract_timeout_s = 300.0     # child is killed after this; must stay below visibility_timeout_s
+extract_timeout_s = 300.0     # child is killed after this; must stay below visibility_timeout_s. An admin override on /settings (檔案處理) wins over this value
 
 # --- Misc runtime ------------------------------------------------------------
 [runtime]

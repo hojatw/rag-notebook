@@ -14,7 +14,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from . import i18n
+from . import i18n, system_settings
 from .db import (
     connect,
     dumps,
@@ -44,12 +44,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+SETTINGS_TABS = ("chat", "embedding", "ingest")
+
+
 @router.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request, user: Annotated[dict, Depends(require_admin)]):
-    """Render the admin LLM settings page without exposing the API key."""
+def settings_page(request: Request, user: Annotated[dict, Depends(require_admin)], tab: str = "chat"):
+    """Render the admin settings page without exposing the API key."""
     with connect() as conn:
         settings = load_llm_settings_for_display(conn)
-    return render_settings(request, user, settings)
+    return render_settings(request, user, settings, active_tab=tab if tab in SETTINGS_TABS else "chat")
+
+
+def _ingest_view(*, submitted: str | None = None) -> dict[str, Any]:
+    """What the 檔案處理 tab shows: effective timeout, its source, bounds, recent data."""
+    key = system_settings.EXTRACT_TIMEOUT_KEY
+    spec = system_settings.SETTINGS[key]
+    value, source = system_settings.effective(key)
+    return {
+        "timeout_s": value,
+        "timeout_input": submitted if submitted is not None else f"{value:g}",
+        "source": source,
+        "deployment_default_s": spec.default(),
+        "min_s": spec.minimum(),
+        "max_s": spec.maximum(),
+        "stats": system_settings.recent_extract_stats(),
+    }
 
 
 def _settings_context(
@@ -60,11 +79,17 @@ def _settings_context(
     diagnostic_notice: str = "",
     diagnostic_kind: str = "",
     active_tab: str = "chat",
+    ingest_notice: str = "",
+    ingest_error: str = "",
+    ingest_submitted: str | None = None,
 ) -> dict[str, Any]:
     return {
         "user": user,
         "settings": settings,
         "saved": saved,
+        "ingest": _ingest_view(submitted=ingest_submitted),
+        "ingest_notice": ingest_notice,
+        "ingest_error": ingest_error,
         "diagnostic_notice": diagnostic_notice,
         # Which card the notice belongs to, so the message lands next to the
         # result the admin is looking at instead of at the top of the page.
@@ -90,6 +115,10 @@ def render_settings(
     diagnostic_notice: str = "",
     diagnostic_kind: str = "",
     active_tab: str = "chat",
+    ingest_notice: str = "",
+    ingest_error: str = "",
+    ingest_submitted: str | None = None,
+    status_code: int = 200,
 ) -> HTMLResponse:
     return render(
         request,
@@ -101,7 +130,11 @@ def render_settings(
             diagnostic_notice=diagnostic_notice,
             diagnostic_kind=diagnostic_kind,
             active_tab=active_tab,
+            ingest_notice=ingest_notice,
+            ingest_error=ingest_error,
+            ingest_submitted=ingest_submitted,
         ),
+        status_code=status_code,
     )
 
 
@@ -442,6 +475,61 @@ async def test_embedding_settings(
         return render_diagnostic_card(request, user, settings, kind="embedding", diagnostic_notice=notice)
     return render_settings(
         request, user, settings, diagnostic_notice=notice, diagnostic_kind="embedding", active_tab="embedding"
+    )
+
+
+@router.post("/settings/ingest", response_class=HTMLResponse)
+def update_ingest_settings(
+    request: Request,
+    user: Annotated[dict, Depends(require_admin)],
+    extract_timeout_s: str = Form(""),
+):
+    """Save the admin override for the extraction timeout (applies to the next source)."""
+    key = system_settings.EXTRACT_TIMEOUT_KEY
+    with connect() as conn:
+        settings = load_llm_settings_for_display(conn)
+    before, before_source = system_settings.effective(key)
+    try:
+        after = system_settings.set_override(key, extract_timeout_s, user["id"])
+    except ValueError as exc:
+        return render_settings(
+            request, user, settings, active_tab="ingest",
+            ingest_error=str(exc), ingest_submitted=extract_timeout_s, status_code=400,
+        )
+    record_audit_event(
+        request, user, "ingest_settings_updated", "system_settings", None,
+        {"key": key, "before": before, "before_source": before_source, "after": after},
+    )
+    logger.info(
+        "ingest_settings_updated setting=%s old=%s new=%s admin_user_id=%s",
+        key, before, after, user["id"],
+    )
+    return render_settings(
+        request, user, settings, active_tab="ingest",
+        ingest_notice=i18n.t("settings.ingest_saved", seconds=f"{after:g}"),
+    )
+
+
+@router.post("/settings/ingest/reset", response_class=HTMLResponse)
+def reset_ingest_settings(request: Request, user: Annotated[dict, Depends(require_admin)]):
+    """Drop the admin override so the deployment value applies again."""
+    key = system_settings.EXTRACT_TIMEOUT_KEY
+    with connect() as conn:
+        settings = load_llm_settings_for_display(conn)
+    before, before_source = system_settings.effective(key)
+    system_settings.clear_override(key)
+    after, _ = system_settings.effective(key)
+    record_audit_event(
+        request, user, "ingest_settings_reset", "system_settings", None,
+        {"key": key, "before": before, "before_source": before_source, "after": after},
+    )
+    logger.info(
+        "ingest_settings_reset setting=%s old=%s new=%s admin_user_id=%s",
+        key, before, after, user["id"],
+    )
+    return render_settings(
+        request, user, settings, active_tab="ingest",
+        ingest_notice=i18n.t("settings.ingest_reset_done", seconds=f"{after:g}"),
     )
 
 

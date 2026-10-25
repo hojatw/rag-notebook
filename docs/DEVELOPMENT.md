@@ -124,6 +124,13 @@ Values resolve in three layers:
 2. a TOML file such as `config.toml`,
 3. environment variables `NOTEBOOKLM_<GROUP>_<FIELD>`.
 
+A small, whitelisted set of operational values can also be overridden by an
+admin at runtime on `/settings`. Today that is only `[jobs].extract_timeout_s`,
+on the 檔案處理 tab. The override is stored in the `system_settings` table and
+wins over all three layers above. Those layers become its *default*, which the
+page shows and can reset to. It takes effect on the next parsed source without a
+restart, including in the standalone worker.
+
 E2 notebook domain hints and answer policy limits are in the `[domain_policy]`
 group in `config.example.toml` and resolve through the same layers. They bound
 owner-authored input and query-time expansion; changing them never requires
