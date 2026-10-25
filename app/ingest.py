@@ -886,6 +886,37 @@ def _cell_text(value: Any) -> str:
     return str(value).strip()
 
 
+_NUMERIC_TEXT_RE = re.compile(r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?")
+
+
+def _is_numeric_cell(value: Any) -> bool:
+    """True for a number cell, or a CSV string that reads as one (``1,200``, ``7%``).
+
+    CSV hands every cell over as ``str``, so a type check alone only works for
+    XLSX — the same "北區,7" row would count as numeric in one format and not
+    the other.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    return isinstance(value, str) and bool(_NUMERIC_TEXT_RE.fullmatch(value.strip()))
+
+
+def _numeric_body_columns(rows: list[list[Any]]) -> set[int]:
+    """Columns whose non-blank cells below row 0 are all numeric (at least one)."""
+    width = max((len(row) for row in rows[1:]), default=0)
+    numeric: set[int] = set()
+    for index in range(width):
+        cells = [
+            row[index] for row in rows[1:]
+            if index < len(row) and _cell_text(row[index])
+        ]
+        if cells and all(_is_numeric_cell(cell) for cell in cells):
+            numeric.add(index)
+    return numeric
+
+
 def _looks_like_header(rows: list[list[Any]]) -> bool:
     """Decide whether row 0 is a header rather than data.
 
@@ -898,7 +929,7 @@ def _looks_like_header(rows: list[list[Any]]) -> bool:
     values = [v for v in rows[0] if _cell_text(v)]
     if not values:
         return False
-    if any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
+    if any(_is_numeric_cell(v) for v in values):
         return False
     labels = [_cell_text(v) for v in values]
     if len(set(labels)) != len(labels):
@@ -909,7 +940,16 @@ def _looks_like_header(rows: list[list[Any]]) -> bool:
     # exported FAQ ("忘記密碼怎麼辦？") from a real header row ("問題").
     if any(label[-1] in "。？！?!." for label in labels):
         return False
-    # A header should also be terser than the rows beneath it.
+    # A text label over a column of numbers is a header however short the
+    # numbers are ("銷售" over 7, 9). Row 0 has no numeric cell at this point,
+    # so as data its label could not belong to an all-numeric column. A blank
+    # row-0 cell proves nothing — a headerless row may simply lack that value.
+    if any(
+        index < len(rows[0]) and _cell_text(rows[0][index])
+        for index in _numeric_body_columns(rows)
+    ):
+        return True
+    # Otherwise a header should be terser than the rows beneath it.
     body = [_cell_text(v) for row in rows[1:] for v in row if _cell_text(v)]
     if body:
         avg_header = sum(len(label) for label in labels) / len(labels)
@@ -944,8 +984,13 @@ def _match_column(columns: list[str], synonyms: list[str]) -> int | None:
     return None
 
 
-def _detect_qa_columns(columns: list[str], has_header: bool) -> dict[str, Any] | None:
-    """Return the Q&A column mapping for this sheet, or None if it isn't Q&A."""
+def _detect_qa_columns(
+    columns: list[str], has_header: bool, rows: list[list[Any]]
+) -> dict[str, Any] | None:
+    """Return the Q&A column mapping for this sheet, or None if it isn't Q&A.
+
+    `rows` is the sampled body (no header row), used only for the headerless guess.
+    """
     s = config.spreadsheet
     question = _match_column(columns, _synonyms(s.qa_question_synonyms))
     answer = _match_column(columns, _synonyms(s.qa_answer_synonyms))
@@ -953,7 +998,8 @@ def _detect_qa_columns(columns: list[str], has_header: bool) -> dict[str, Any] |
         return {"question": question, "answer": answer, "auto_detected": False}
     # A headerless two-column sheet is the classic exported FAQ: treat it as
     # question/answer but record that the mapping was guessed.
-    if not has_header and len(columns) == 2:
+    # An all-numeric second column is a lookup table ("北區, 7"), not answers.
+    if not has_header and len(columns) == 2 and 1 not in _numeric_body_columns([[], *rows]):
         return {"question": 0, "answer": 1, "auto_detected": True}
     return None
 
@@ -1310,17 +1356,36 @@ def _detect_csv_encoding(raw: bytes) -> tuple[str, dict[str, Any]]:
     try:
         from charset_normalizer import from_bytes
 
-        best = from_bytes(raw).best()
-        if best is not None and best.encoding:
-            _decode_csv_sample(raw, best.encoding)
-            return best.encoding, {
-                "encoding": best.encoding,
+        for match in from_bytes(raw):
+            if not match.encoding or _implausible_wide_encoding(raw, match.encoding):
+                continue
+            _decode_csv_sample(raw, match.encoding)
+            return match.encoding, {
+                "encoding": match.encoding,
                 "source": "detected",
                 "replacements": 0,
             }
     except Exception:
         logger.exception("csv_encoding_detection_failed")
     return "utf-8", {"encoding": "utf-8", "source": "replace", "replacements": 0}
+
+
+def _implausible_wide_encoding(raw: bytes, encoding: str) -> bool:
+    """Reject a BOM-less UTF-16/32 guess for a sample with no NUL byte.
+
+    CSV delimiters and newlines are ASCII, so genuine UTF-16/32 text always
+    contains NUL bytes. A short double-byte sample (e.g. a 3-line CP950 file)
+    has none, yet any even-length byte string decodes "cleanly" as UTF-16 and
+    charset-normalizer can rank it first — producing one line of CJK noise with
+    no delimiters and therefore no data rows. BOM-marked UTF-16 never gets here.
+    """
+    import codecs
+
+    try:
+        name = codecs.lookup(encoding).name
+    except LookupError:
+        return False
+    return name.startswith(("utf-16", "utf-32")) and b"\x00" not in raw
 
 
 def _same_encoding(left: str, right: str) -> bool:
@@ -1489,7 +1554,11 @@ def _extract_spreadsheet(path: Path) -> ExtractionResult:
             not _cell_text(v) for _, values in body_rows for v in values
         )
 
-        qa = _detect_qa_columns(columns, has_header)
+        qa = _detect_qa_columns(
+            columns,
+            has_header,
+            [values for _, values in body_rows[: max(1, s.header_sample_rows)]],
+        )
         if qa is not None:
             sheet_sections = _qa_sections(sheet_name, columns, body_rows, qa)
             sheet_type = "qa_pairs"
@@ -1526,6 +1595,11 @@ def _extract_spreadsheet(path: Path) -> ExtractionResult:
             notes.append("spreadsheet_uncached_formulas")
 
     details["sheets"] = sheet_reports
+    if not sections and any(report.get("type") != "empty" for report in sheet_reports):
+        # Rows were read but none became content — a header-only file, or a
+        # misdetected encoding/delimiter. Say so instead of indexing "successfully"
+        # with nothing searchable.
+        notes.append("spreadsheet_no_data_rows")
     if not any(report.get("type") == "qa_pairs" for report in sheet_reports):
         # Be explicit that nothing was recognised as Q&A rather than letting the
         # user assume the sheet was understood.

@@ -79,6 +79,73 @@ def test_headerless_two_column_sheet_is_treated_as_qa_but_flagged(tmp_path):
     assert result.sections[0][0] == 'sheet "Sheet1" row 1'
 
 
+# -------------------- header inference --------------------
+
+def _write_csv(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "lookup.csv"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("text", [
+    "地區,銷售\n北區,7\n南區,9\n",
+    "地區,銷售\n" + "北區,7\n" * 40,
+    "id,qty\nA,7\nB,9\n",
+    "品項,占比\nA,5%\nB,2%\n",
+], ids=["short-zh", "forty-rows", "short-en", "percent"])
+def test_short_header_over_numeric_column_is_a_header(tmp_path, text):
+    """A text label over short numbers is a header, not a Q&A row.
+
+    The "header terser than body" rule rejected 地區/銷售 (avg 2 chars) over
+    北區/7/南區/9 (avg 1.5), and the headerless-two-column guess then turned the
+    table into "Question: 北區 / Answer: 7" — every row chunk lost its column
+    name, one chunk per row, and diagnostics claimed auto-detected Q&A.
+    """
+    header = text.split("\n", 1)[0].split(",")
+
+    result = extract_sections(_write_csv(tmp_path, text))
+
+    sheet = result.details["sheets"][0]
+    assert sheet["header"] == "detected"
+    assert sheet["type"] == "records"
+    assert sheet["rows"] == text.count("\n") - 1
+    assert f"Columns: {', '.join(header)}" in result.sections[0][1]
+    assert f"{header[0]} = " in result.sections[0][1]
+
+
+@pytest.mark.parametrize("write", ["csv", "xlsx"])
+def test_headerless_numeric_first_row_is_kept_as_data(tmp_path, write):
+    """A first row with a number is data in both formats — CSV must not eat it.
+
+    CSV cells are all ``str``, so the "row 0 holds a number" check only ever fired
+    for XLSX: the same headerless table lost 北區/7 as column names in CSV.
+    """
+    rows = [["北區", 7], ["南區", 9], ["東區", 3]]
+    if write == "csv":
+        path = _write_csv(tmp_path, "".join(f"{a},{b}\n" for a, b in rows))
+    else:
+        path = _write_xlsx(tmp_path, {"lookup": rows})
+
+    result = extract_sections(path)
+
+    sheet = result.details["sheets"][0]
+    assert sheet["header"] == "generated"
+    assert sheet["rows"] == 3
+    # A numeric second column is a lookup table, not answers.
+    assert sheet["type"] == "records"
+    text = "\n".join(body for _, body in result.sections)
+    assert "Column A = 北區" in text and "Column B = 7" in text
+
+
+def test_blank_first_row_cell_over_numbers_does_not_make_a_header(tmp_path):
+    """Only a label over a numeric column counts; a missing value does not."""
+    result = extract_sections(_write_csv(tmp_path, "北區,\n南區,9\n東區,3\n"))
+
+    sheet = result.details["sheets"][0]
+    assert sheet["header"] == "generated"
+    assert sheet["rows"] == 3
+
+
 # -------------------- generic records --------------------
 
 def test_non_qa_sheet_falls_back_to_records_and_says_so(tmp_path):
@@ -203,6 +270,55 @@ def test_csv_big5_is_decoded_and_flagged(tmp_path):
     assert result.details["encoding"]["source"] == "detected"
     assert "csv_encoding_fallback" in result.notes
     assert "如何退貨？" in result.sections[0][1]     # decoded, not replacement chars
+
+
+def test_csv_short_big5_is_not_mistaken_for_bomless_utf16(tmp_path):
+    """A 3-line CP950 lookup table must keep its rows.
+
+    charset-normalizer 3.5.2 ranks BOM-less utf_16_le first for this sample
+    (chaos 0.0): any even-length byte string decodes "cleanly" as UTF-16, so the
+    file became one line of CJK noise with no delimiter and 0 data rows — and
+    still indexed "successfully". The same shape at 40 rows detected fine.
+    """
+    text = "地區,銷售\n北區,7\n南區,9\n"
+    utf8_dir = tmp_path / "utf8"
+    utf8_dir.mkdir()
+    (utf8_dir / "short.csv").write_text(text, encoding="utf-8")
+    path = tmp_path / "short.csv"
+    path.write_bytes(text.encode("cp950"))
+
+    baseline = extract_sections(utf8_dir / "short.csv")
+    result = extract_sections(path)
+
+    sheet = result.details["sheets"][0]
+    # Header + 2 data rows: `地區,銷售` is a header over a numeric column, which
+    # the header inference recognises (it used to read it as a third data row).
+    assert (sheet["rows"], sheet["columns"], sheet["header"]) == (2, 2, "detected")
+    assert result.details["encoding"]["source"] == "detected"
+    assert result.details["encoding"]["encoding"] in {"big5", "cp950"}
+    assert result.details["delimiter"] == ","
+    # Same rows and chunks as the UTF-8 file — encoding must not change content.
+    assert result.details["sheets"] == baseline.details["sheets"]
+    assert result.sections == baseline.sections
+    assert "spreadsheet_no_data_rows" not in result.notes
+
+
+def test_csv_header_only_is_flagged_as_no_data_rows(tmp_path):
+    """Rows read but no content produced must surface, not index silently empty."""
+    path = tmp_path / "header-only.csv"
+    path.write_text("地區,銷售\n", encoding="utf-8")
+
+    result = extract_sections(path)
+
+    assert result.sections == []
+    assert "spreadsheet_no_data_rows" in result.notes
+    from app.i18n import t
+    from app.ingest import collect_ingest_diagnostics
+
+    codes = [w["code"] for w in collect_ingest_diagnostics(result, [])["warnings"]]
+    assert "spreadsheet_no_data_rows" in codes
+    # The preview renders t("diag.warn_" + code); a missing key shows the raw key.
+    assert t("diag.warn_spreadsheet_no_data_rows") != "diag.warn_spreadsheet_no_data_rows"
 
 
 def test_csv_gbk_is_decoded_not_mistaken_for_korean(tmp_path):
