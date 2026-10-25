@@ -11,6 +11,8 @@
 
 ### 升級注意事項
 
+- **曾設定 `[feedback]` 或 `NOTEBOOKLM_FEEDBACK_*` 的部署，升級後這些值才會真正生效**
+  （先前被靜默忽略，見下方「修正」）。例如 `enabled = false` 會讓回饋控制項消失。
 - **既有的 `.vtt` / `.srt` 來源需要重新索引**才會拿到發言者與時間碼。不重新索引不會
   壞，只是那些來源的引用位置仍然只顯示 `transcript`、發言者仍然是缺的。
 - **既有來源的摘要不會自動更新。** 摘要只在（重新）攝取時產生，所以取樣改善只對之後
@@ -43,6 +45,20 @@
 
 ### 修正
 
+- **`[feedback]` 設定與 `NOTEBOOKLM_FEEDBACK_*` 環境變數現在會生效**：`load_config()`
+  漏載了這一組，`enabled`、`other_reason_max_chars`、`admin_page_limit`、
+  `admin_page_limit_max` 不論怎麼設都停在預設值，設 `enabled = false` 也照樣顯示回饋
+  控制項。**升級後行為可能改變**：曾在 `config.toml` 或環境變數設過這些鍵的部署，
+  升級後才會真正套用——例如 `enabled = false` 會讓聊天畫面的回饋控制項消失、送出端點
+  回 404（管理頁仍可查閱既有紀錄）。升級前請確認這些值是你要的。另新增測試，確保
+  `AppConfig` 的每一組設定都有被載入，避免同類遺漏再發生。
+- **短的 Big5/CP950 CSV 不再被解成 0 列**：只有幾行的 CP950 CSV（例如三行的對照表）會被
+  `charset-normalizer` 判成無 BOM 的 UTF-16——任何偶數長度的位元組都能「乾淨地」解成
+  UTF-16——結果整份變成一行沒有逗號的亂碼，**索引顯示成功但沒有任何內容**；同樣格式到
+  40 行就正常。現在樣本裡沒有 NUL byte 時不接受無 BOM 的 UTF-16/32 判定（CSV 的逗號與換行
+  是 ASCII，真正的 UTF-16 一定會有 NUL），改用下一個候選。另外，試算表讀到列卻產出 0 個
+  分塊時，來源預覽會出現新的「只讀到表頭、沒有資料列」警告，不再安靜地索引一份空來源。
+  既有受影響的來源需要**重新索引**才會修正。
 - **值很短的對照表不再被當成問答集**：像 `地區,銷售` / `北區,7` 這種兩欄表，因為表頭字數比
   資料值長，會被判定成「沒有表頭」，再被當成無表頭的 FAQ——每一列變成「Question: 北區 /
   Answer: 7」，欄位名稱從列裡消失、一列一個分塊，預覽還顯示「自動偵測為問答」。現在文字標籤
@@ -79,6 +95,16 @@
 
 ### 安全性
 
+- **`pypdf` 6.19.0 → 6.21.2，修掉 11 個惡意 PDF 造成的服務阻斷漏洞**（無限迴圈、記憶體暴增、
+  超長執行時間）。任何已登入使用者上傳一份刻意構造的 PDF 就可能觸發，而且**影響的不是
+  單一來源**：解析卡住時 ingest worker 不會再接下一個工作，之後所有人的上傳都會停在
+  「處理中」，直到重啟 worker。這項升級只修已知的幾種卡法；「解析沒有時間上限」本身是
+  另一個設計題，尚未處理。Dependabot 開的 `pypdf-6.20.0` PR 只修到其中 4 個，已被本項取代。
+- **`Pillow` 12.3.0 → 13.0.0，修掉 37 個圖片解碼相關漏洞**（含內附 libopenjp2 的
+  heap overflow）。目前的攝取流程**不會解碼任何圖片**，這些漏洞現在碰不到，升級是為了
+  在之後加入 OCR／vision 時不帶著它們上線。
+- 兩項都只需重建 image 或重跑 `./setup.sh`，不必重新索引，資料、設定鍵與 schema 都不變。
+  評估細節見 `docs/SECURITY.md` → *Triaged dependency-audit findings*。
 - **問答檢索不再跑出當前 notebook**：`ask` / `ask-stream` 沒帶 `source_ids`（左欄按
   「全不選」、無 JS 表單），或送來的 id 全部不屬於這個 notebook 時，檢索會退化成只篩
   `user_id`，搜遍該使用者**所有** notebook——實測回答引用了另一個 notebook 的 PDF。
@@ -137,8 +163,9 @@
   `actions/checkout` 4.4.0 → 7.0.1（#156）、`actions/cache` 4.3.0 → 6.1.0（#155）、
   `actions/setup-python` 5.6.0 → 7.0.0（#154）。三項都是跨 2–3 個 major，合併前各自在新的
   `main` 上跑過 CI，合併後 `main` 上三者組合的 CI 也成功。只影響 CI，不影響執行期，
-  維運者不需要做任何事。三個 SHA 與其 tag 的對應是信任 Dependabot 產生的結果，
-  **未獨立核對**；各 action 的 release note 也未逐項閱讀，breaking change 細節待確認。
+  維運者不需要做任何事。三個 SHA 與其 tag 的對應已於 2026-10-25 用 `git ls-remote`
+  對照各 action 官方 repo 的 tag 獨立核對，完全一致；各 action 的 release note 未逐項閱讀，
+  breaking change 細節待確認。
 - `fastapi`、`cryptography`、`pypdf`、`charset-normalizer` 的上游 release note 未逐項核對，
   細節**待確認**。`pypdf` 與 `charset-normalizer` 處理使用者上傳的檔案，建議升級後上傳一份
   PDF 與一份非 UTF-8 文字檔抽查。

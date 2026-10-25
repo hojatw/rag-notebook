@@ -1350,17 +1350,36 @@ def _detect_csv_encoding(raw: bytes) -> tuple[str, dict[str, Any]]:
     try:
         from charset_normalizer import from_bytes
 
-        best = from_bytes(raw).best()
-        if best is not None and best.encoding:
-            _decode_csv_sample(raw, best.encoding)
-            return best.encoding, {
-                "encoding": best.encoding,
+        for match in from_bytes(raw):
+            if not match.encoding or _implausible_wide_encoding(raw, match.encoding):
+                continue
+            _decode_csv_sample(raw, match.encoding)
+            return match.encoding, {
+                "encoding": match.encoding,
                 "source": "detected",
                 "replacements": 0,
             }
     except Exception:
         logger.exception("csv_encoding_detection_failed")
     return "utf-8", {"encoding": "utf-8", "source": "replace", "replacements": 0}
+
+
+def _implausible_wide_encoding(raw: bytes, encoding: str) -> bool:
+    """Reject a BOM-less UTF-16/32 guess for a sample with no NUL byte.
+
+    CSV delimiters and newlines are ASCII, so genuine UTF-16/32 text always
+    contains NUL bytes. A short double-byte sample (e.g. a 3-line CP950 file)
+    has none, yet any even-length byte string decodes "cleanly" as UTF-16 and
+    charset-normalizer can rank it first — producing one line of CJK noise with
+    no delimiters and therefore no data rows. BOM-marked UTF-16 never gets here.
+    """
+    import codecs
+
+    try:
+        name = codecs.lookup(encoding).name
+    except LookupError:
+        return False
+    return name.startswith(("utf-16", "utf-32")) and b"\x00" not in raw
 
 
 def _same_encoding(left: str, right: str) -> bool:
@@ -1570,6 +1589,11 @@ def _extract_spreadsheet(path: Path) -> ExtractionResult:
             notes.append("spreadsheet_uncached_formulas")
 
     details["sheets"] = sheet_reports
+    if not sections and any(report.get("type") != "empty" for report in sheet_reports):
+        # Rows were read but none became content — a header-only file, or a
+        # misdetected encoding/delimiter. Say so instead of indexing "successfully"
+        # with nothing searchable.
+        notes.append("spreadsheet_no_data_rows")
     if not any(report.get("type") == "qa_pairs" for report in sheet_reports):
         # Be explicit that nothing was recognised as Q&A rather than letting the
         # user assume the sheet was understood.
