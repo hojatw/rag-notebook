@@ -205,6 +205,53 @@ def test_csv_big5_is_decoded_and_flagged(tmp_path):
     assert "如何退貨？" in result.sections[0][1]     # decoded, not replacement chars
 
 
+def test_csv_short_big5_is_not_mistaken_for_bomless_utf16(tmp_path):
+    """A 3-line CP950 lookup table must keep its rows.
+
+    charset-normalizer 3.5.2 ranks BOM-less utf_16_le first for this sample
+    (chaos 0.0): any even-length byte string decodes "cleanly" as UTF-16, so the
+    file became one line of CJK noise with no delimiter and 0 data rows — and
+    still indexed "successfully". The same shape at 40 rows detected fine.
+    """
+    text = "地區,銷售\n北區,7\n南區,9\n"
+    utf8_dir = tmp_path / "utf8"
+    utf8_dir.mkdir()
+    (utf8_dir / "short.csv").write_text(text, encoding="utf-8")
+    path = tmp_path / "short.csv"
+    path.write_bytes(text.encode("cp950"))
+
+    baseline = extract_sections(utf8_dir / "short.csv")
+    result = extract_sections(path)
+
+    sheet = result.details["sheets"][0]
+    assert (sheet["rows"], sheet["columns"]) == (3, 2)
+    assert result.details["encoding"]["source"] == "detected"
+    assert result.details["encoding"]["encoding"] in {"big5", "cp950"}
+    assert result.details["delimiter"] == ","
+    # Same rows and chunks as the UTF-8 file — encoding must not change content.
+    assert result.details["sheets"] == baseline.details["sheets"]
+    assert result.sections == baseline.sections
+    assert "spreadsheet_no_data_rows" not in result.notes
+
+
+def test_csv_header_only_is_flagged_as_no_data_rows(tmp_path):
+    """Rows read but no content produced must surface, not index silently empty."""
+    path = tmp_path / "header-only.csv"
+    path.write_text("地區,銷售\n", encoding="utf-8")
+
+    result = extract_sections(path)
+
+    assert result.sections == []
+    assert "spreadsheet_no_data_rows" in result.notes
+    from app.i18n import t
+    from app.ingest import collect_ingest_diagnostics
+
+    codes = [w["code"] for w in collect_ingest_diagnostics(result, [])["warnings"]]
+    assert "spreadsheet_no_data_rows" in codes
+    # The preview renders t("diag.warn_" + code); a missing key shows the raw key.
+    assert t("diag.warn_spreadsheet_no_data_rows") != "diag.warn_spreadsheet_no_data_rows"
+
+
 def test_csv_gbk_is_decoded_not_mistaken_for_korean(tmp_path):
     """GBK/GB18030 exports (zh-CN) must decode as Chinese, not cp949 mojibake.
 

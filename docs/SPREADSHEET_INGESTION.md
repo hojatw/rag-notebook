@@ -310,6 +310,10 @@ assumed UTF-8. Ingestion must:
 3. fall back to `charset-normalizer` detection (expect Big5/CP950 candidates),
    using the bounded failing decoder buffer when non-UTF-8 bytes first appear
    after the initial sample, then restart the incremental read;
+   a BOM-less UTF-16/32 candidate is skipped when the sample has no NUL byte
+   (CSV delimiters and newlines are ASCII, so real UTF-16 always has them) —
+   short double-byte samples otherwise decode "cleanly" as UTF-16 and lose
+   every row;
 4. decode with `errors="replace"` only as a last resort, counting replacement
    characters;
 5. record the chosen encoding, decision source (`bom` / `strict` / `detected` /
@@ -396,6 +400,9 @@ Spreadsheet ingestion should integrate with `A6a` diagnostics:
   embedding-token window;
 - preview of the first generated chunks;
 - warnings when the sheet is too wide, too large, or mostly numeric.
+- a `spreadsheet_no_data_rows` warning when rows were read but no chunk was
+  produced (header-only file, or a misdetected encoding/delimiter), so an empty
+  source never looks successfully indexed.
 
 Diagnostics are part of the product contract: users need to know whether the system
 understood the sheet as Q&A, records, metrics, or something else.
