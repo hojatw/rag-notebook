@@ -120,7 +120,9 @@
   **不會自動重試**，其他來源照常處理。子行程異常結束（例如解析器 crash）也只會讓那一份失敗。
   所有格式都適用。對既有部署：不需要重新索引，也不必改設定；如果你的文件**正常解析就要
   超過 300 秒**，請調高 `extract_timeout_s`（會自動壓在 `visibility_timeout_s` 的九成以下）。
-  每份檔案的解析耗時記在 log 的 `extract_child_finished duration_s=`，可以據此調整。
+  每份檔案的解析耗時記在 log 的 `extract_child_finished duration_s=`，可以據此調整（Docker
+  部署下這行在 `docker compose logs worker`，不在 `logs/app.log`，見 `ROADMAP.md` `O2`；
+  「系統設定 → 檔案處理」的統計則不受影響，因為它讀的是資料庫）。
   萬一新機制出問題，設 `extract_isolation = false` 即可退回原本的行為。每份來源多約
   0.3–0.6 秒的啟動成本。記憶體上限見下一條。
 - **檔案解析加上記憶體上限**：解析子行程現在有資料段上限 `[jobs].extract_memory_limit_mb`
@@ -191,6 +193,10 @@
   維運者不需要做任何事。三個 SHA 與其 tag 的對應已於 2026-10-25 用 `git ls-remote`
   對照各 action 官方 repo 的 tag 獨立核對，完全一致；各 action 的 release note 未逐項閱讀，
   breaking change 細節待確認。
+- `fastapi` 0.142.2 → 0.143.0（#169）。上游唯一的破壞性變更是 **OpenTelemetry exporter 的
+  自動設定改為需要 opt-in**（`FASTAPI_OTEL_AUTO_CONFIGURE=true`）；本專案沒有用 FastAPI 設定
+  OTEL exporter（chromadb 的 telemetry 另外是關閉的），所以不受影響、也不需要設定這個變數。
+  合併前疊在當時最新的 `main` 上跑過完整測試套件並通過。只需重建 image 或重跑 `./setup.sh`。
 - `fastapi`、`cryptography`、`pypdf`、`charset-normalizer` 的上游 release note 未逐項核對，
   細節**待確認**。`pypdf` 與 `charset-normalizer` 處理使用者上傳的檔案，建議升級後上傳一份
   PDF 與一份非 UTF-8 文字檔抽查。

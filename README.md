@@ -115,7 +115,7 @@ Future image-source support is gated on these diagnostics: image uploads should
 stay blocked unless the active chat model passes the image-understanding probe
 or the deployment intentionally enables an OCR-only path.
 
-The settings page has **two independent cards** — a **Chat model** card and an
+The settings page has **two independent model cards** — a **Chat model** card and an
 **Embedding model** card — each with its own provider, base URL, API key, model,
 Azure API version (for Azure OpenAI), and **Test** button. They can point at completely different services (e.g. a
 hosted chat model plus a local e5 embedding server).
@@ -172,6 +172,8 @@ endpoint, not stored chunks.
   expansions, answer notes, and answer policy; query-time only, with no
   re-indexing or extra LLM call for hints.
 - **Admin surfaces:** user management, vector-index console, LLM settings,
+  file-parsing limits (per-file timeout and memory cap, applied without a
+  restart),
   audit trail, and in-deployment Eval Workbench with retrieval profiles,
   optional answer/citation judging, E2 mode comparisons, exports, and tuning
   guide.

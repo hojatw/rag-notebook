@@ -369,7 +369,8 @@ git diff --check
 ### 測試為什麼是並行的
 
 `pytest.ini` 設了 `addopts = -n auto --maxprocesses=8`（pytest-xdist），本機
-16 核上全套 567 個測試從單核約 132 秒降到約 30 秒，CI 上 `pytest -q` 會自動沿用
+16 核上全套 567 個測試從單核約 132 秒降到約 30 秒（2026-09 量測；2026-10-25 時全套 617 個、
+4 核約 33 秒），CI 上 `pytest -q` 會自動沿用
 同一組設定。
 
 耗時幾乎不是來自測試數量，而是每個測試的固定重建成本：`tests/test_ui_*.py` 的
@@ -433,12 +434,14 @@ app/retrieval.py       Retrieval engine: hybrid search, scoring, ACTIVE_RETRIEVA
 app/domain_policy.py   E2 domain-hint/policy validation, matching, snapshots, export summaries.
 app/evals.py           Admin Eval Workbench router (/admin/evals/*).
 app/admin.py           Admin console router (/admin/index*, /admin/audit, /admin/users*).
-app/settings.py        Admin LLM settings router (/settings, connection diagnostics).
+app/settings.py        Admin settings router (/settings, connection diagnostics, 檔案處理 tab).
+app/system_settings.py Admin overrides of tunables (system_settings table), read per use.
 app/config.py          Centralized tunables (defaults <- config.toml <- env vars).
 app/db.py              SQLite schema + idempotent migrations (_ensure_column), load_llm_settings
                        (the only sanctioned way to read the decrypted API key).
 app/ingest.py          Text extraction (PDF/DOCX/HTML/subtitles/PPTX/XLSX/CSV), chunking,
                        vector upsert, per-source summary, A6a ingestion diagnostics.
+app/extract_child.py   Extraction child process (timeout / memory cap / oom_score_adj).
 app/jobs.py            DB-backed ingest queue (ingest_jobs): enqueue + atomic claim + retry.
 app/worker.py          Ingest worker loop (standalone or inline).
 app/worker_health.py   Loopback-only standalone worker liveness server + probe CLI.
