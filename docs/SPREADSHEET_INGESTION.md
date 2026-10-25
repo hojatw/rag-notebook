@@ -53,7 +53,8 @@ Detection should support:
 - explicit columns named like `question`, `q`, `問題`, `提問`;
 - explicit columns named like `answer`, `a`, `答案`, `回覆`;
 - optional `category`, `tags`, `keywords`, `source`, `updated_at`;
-- headerless two-column sheets, with diagnostics marking the mapping as auto-detected.
+- headerless two-column sheets (unless the second column is all numeric), with
+  diagnostics marking the mapping as auto-detected.
 
 Each Q&A row should become one chunk unless the answer is very long. If the answer
 must be split, every child chunk should repeat the original question and row metadata.
@@ -109,6 +110,18 @@ Do not blindly treat the first row as column names. The importer should:
 3. fall back to generated labels such as `Column A`, `Column B`;
 4. for Q&A candidates, infer likely question/answer columns from text shape;
 5. show the decision in ingestion diagnostics and allow a future UI override.
+
+Header signals, applied the same way to XLSX and CSV (CSV cells arrive as
+strings, so "numeric" includes number-shaped text such as `7`, `1,200`, `5%`):
+
+- a first row containing any numeric cell is data, never a header;
+- duplicates, labels over 40 characters, or sentence-ending punctuation mean data;
+- a text label over a column whose sampled body cells are all numeric is a
+  header, however short those numbers are (`地區,銷售` over `北區,7`);
+- otherwise the header must be terser than the rows beneath it.
+
+The headerless two-column Q&A guess is skipped when the second column is all
+numeric — that shape is a lookup table (`北區, 7`), not question/answer pairs.
 
 For a headerless two-column Q&A sheet, the generated chunk can still use clear
 labels (the auto-detection note goes to metadata/diagnostics, not the embedded
