@@ -79,6 +79,73 @@ def test_headerless_two_column_sheet_is_treated_as_qa_but_flagged(tmp_path):
     assert result.sections[0][0] == 'sheet "Sheet1" row 1'
 
 
+# -------------------- header inference --------------------
+
+def _write_csv(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "lookup.csv"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("text", [
+    "地區,銷售\n北區,7\n南區,9\n",
+    "地區,銷售\n" + "北區,7\n" * 40,
+    "id,qty\nA,7\nB,9\n",
+    "品項,占比\nA,5%\nB,2%\n",
+], ids=["short-zh", "forty-rows", "short-en", "percent"])
+def test_short_header_over_numeric_column_is_a_header(tmp_path, text):
+    """A text label over short numbers is a header, not a Q&A row.
+
+    The "header terser than body" rule rejected 地區/銷售 (avg 2 chars) over
+    北區/7/南區/9 (avg 1.5), and the headerless-two-column guess then turned the
+    table into "Question: 北區 / Answer: 7" — every row chunk lost its column
+    name, one chunk per row, and diagnostics claimed auto-detected Q&A.
+    """
+    header = text.split("\n", 1)[0].split(",")
+
+    result = extract_sections(_write_csv(tmp_path, text))
+
+    sheet = result.details["sheets"][0]
+    assert sheet["header"] == "detected"
+    assert sheet["type"] == "records"
+    assert sheet["rows"] == text.count("\n") - 1
+    assert f"Columns: {', '.join(header)}" in result.sections[0][1]
+    assert f"{header[0]} = " in result.sections[0][1]
+
+
+@pytest.mark.parametrize("write", ["csv", "xlsx"])
+def test_headerless_numeric_first_row_is_kept_as_data(tmp_path, write):
+    """A first row with a number is data in both formats — CSV must not eat it.
+
+    CSV cells are all ``str``, so the "row 0 holds a number" check only ever fired
+    for XLSX: the same headerless table lost 北區/7 as column names in CSV.
+    """
+    rows = [["北區", 7], ["南區", 9], ["東區", 3]]
+    if write == "csv":
+        path = _write_csv(tmp_path, "".join(f"{a},{b}\n" for a, b in rows))
+    else:
+        path = _write_xlsx(tmp_path, {"lookup": rows})
+
+    result = extract_sections(path)
+
+    sheet = result.details["sheets"][0]
+    assert sheet["header"] == "generated"
+    assert sheet["rows"] == 3
+    # A numeric second column is a lookup table, not answers.
+    assert sheet["type"] == "records"
+    text = "\n".join(body for _, body in result.sections)
+    assert "Column A = 北區" in text and "Column B = 7" in text
+
+
+def test_blank_first_row_cell_over_numbers_does_not_make_a_header(tmp_path):
+    """Only a label over a numeric column counts; a missing value does not."""
+    result = extract_sections(_write_csv(tmp_path, "北區,\n南區,9\n東區,3\n"))
+
+    sheet = result.details["sheets"][0]
+    assert sheet["header"] == "generated"
+    assert sheet["rows"] == 3
+
+
 # -------------------- generic records --------------------
 
 def test_non_qa_sheet_falls_back_to_records_and_says_so(tmp_path):
