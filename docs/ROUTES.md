@@ -111,12 +111,14 @@ GET  /settings                                            admin LLM settings (ad
 POST /settings                                            save LLM settings (API key is encrypted on write)
 POST /settings/test-chat                                  test chat model + capability probes without saving raw prompts/outputs
 POST /settings/test-embedding                             test embedding model + dimension without saving raw prompts/outputs
-GET  /settings?tab=ingest                                 open the 檔案處理 tab (also chat / embedding)
-POST /settings/ingest                                     save the admin override for [jobs].extract_timeout_s (30s–90% of visibility timeout; audited)
-POST /settings/ingest/reset                               drop the override so the deployment value applies again (audited)
      ^ both answer an HX-Request with just the diagnostics card partial
        (#chat-diagnostics / #embedding-diagnostics); a plain POST still gets
        the full page, so the endpoints keep working without JS.
+GET  /settings?tab=ingest                                 open the 檔案處理 tab (also chat / embedding)
+POST /settings/ingest                                     save admin overrides for [jobs].extract_timeout_s (30s–90% of visibility
+                                                          timeout) and [jobs].extract_memory_limit_mb (0 = off, or 256–16384);
+                                                          all-or-nothing validation; only changed fields are stored; audited per field
+POST /settings/ingest/reset                               form field `key`: drop that override so the deployment value applies (audited)
 ```
 
 FastAPI's built-in `/docs`, `/redoc` and `/openapi.json` are intentionally

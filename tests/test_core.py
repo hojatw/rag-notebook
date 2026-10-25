@@ -887,7 +887,7 @@ def test_extraction_does_not_block_the_event_loop(fresh_modules, local_embed, tm
         )
         monkeypatch.setattr(
             ingest, "_extract_child_argv",
-            lambda path, result, cpu: [sys.executable, "-c", delay_then_extract, str(path), str(result), str(cpu)],
+            lambda path, *limits: [sys.executable, "-c", delay_then_extract, str(path), *map(str, limits)],
         )
     else:
         real_extract = ingest.extract_sections

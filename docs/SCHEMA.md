@@ -48,7 +48,7 @@ that drives the **real producer** rather than hand-writing the value.
 | `llm_usage_events.status` | `governance.record_llm_usage_event` | `/admin` usage views, cost reporting | `succeeded` · `failed` | `tests/test_governance.py` |
 | `eval_runs.domain_config_snapshot_json` | `domain_policy` snapshot builder | `domain_policy` validation — rejects the whole snapshot on mismatch | must carry `schema_version == SNAPSHOT_SCHEMA_VERSION` and `prompt_version == PROMPT_VERSION`; bump both together | `tests/test_domain_policy_evals.py` (snapshot rejection) |
 | `sources.diagnostics_json` | `ingest.collect_ingest_diagnostics` | source preview drawer (A6a) | `extractor`, `notes`, `warnings` — a new extractor must fill its own | `test_failed_source_row_is_openable_and_flags_warnings` |
-| …`failed_reason` (+ `extract_duration_s`) | `ingest.process_source` from `ingest.ExtractionFailed.reason` | operators via `logs/app.log` grep and the stored row; the user-facing text is `sources.error` | `extract_timeout` · `extract_crashed` — use `ingest.EXTRACT_FAILED_*`, never a literal. Absent unless the isolated extraction child timed out or died | `test_hung_parser_fails_the_source_and_the_child_is_killed`, `test_crashing_child_fails_the_source_with_crash_reason` |
+| …`failed_reason` (+ `extract_duration_s`, `extract_peak_rss_mb`) | `ingest.process_source` from `ingest.ExtractionFailed.reason`; peak RSS from the child's `runtime.peak_rss_mb` | operators via `logs/app.log` grep and the stored row; `system_settings.recent_extract_stats` (檔案處理 tab); the user-facing text is `sources.error` | `extract_timeout` · `extract_crashed` · `extract_memory` — use `ingest.EXTRACT_FAILED_*`, never a literal. Absent unless the isolated extraction child timed out, died or hit the memory cap | `test_hung_parser_fails_the_source_and_the_child_is_killed`, `test_crashing_child_fails_the_source_with_crash_reason` |
 | `ingest._extract_isolated` ← `app.extract_child` result file | `extract_child.main` (`dataclasses.asdict(ExtractionResult)` or `error_type`/`error`) | `ingest._extract_isolated` | `ok` · `result` · `error` — `error` is the extractor's `str(exc)`, re-raised unchanged because it becomes `sources.error` | `test_isolated_result_equals_in_process_result`, `test_extractor_error_message_survives_the_process_boundary` |
 
 Two rules that follow from the table:
@@ -334,7 +334,7 @@ An uploaded document. `notebook_id` is nullable for legacy rows (backfilled by t
 | `error` | TEXT DEFAULT `''` | failure message (truncated to 500 chars); also carries the `stale_embedding` explanation, which the source row renders. For an HTTP failure this now includes the provider's own response body (bounded by `[llm_retry].error_body_chars`) — the sentence explaining *why*, e.g. an embedding endpoint naming the token limit the input exceeded, which previously existed only in that service's own log |
 | `summary` / `summary_at` | TEXT DEFAULT `''` | per-source TL;DR generated after indexing |
 | `structured_output_enabled` | INTEGER NOT NULL DEFAULT 0 | O5b admin opt-in for schema-constrained output. Deliberately **not** in `llm_settings_fingerprint`: that identifies what the probe measured, and flipping a toggle does not change it |
-| `diagnostics_json` | TEXT NOT NULL DEFAULT `'{}'` | A6a ingestion diagnostics: `extractor`, `chars`, `sections`, `chunks`, `section_kinds`, `warnings[]`, bounded `preview`, and `failed_stage` on failure, plus `failed_reason` when the isolated extraction child timed out or crashed; `extract_duration_s` on every run that reached extraction. Written by `process_source` (`app/ingest.py`) and **replaced** on every re-ingest. Same scope as the source itself — the text preview must not be copied into audit/governance rows |
+| `diagnostics_json` | TEXT NOT NULL DEFAULT `'{}'` | A6a ingestion diagnostics: `extractor`, `chars`, `sections`, `chunks`, `section_kinds`, `warnings[]`, bounded `preview`, and `failed_stage` on failure, plus `failed_reason` when the isolated extraction child timed out, crashed or hit the memory cap; `extract_duration_s` on every run that reached extraction; `extract_peak_rss_mb` (the child's own VmHWM) whenever the child returned a result, including an extractor error. Written by `process_source` (`app/ingest.py`) and **replaced** on every re-ingest. Same scope as the source itself — the text preview must not be copied into audit/governance rows |
 | `created_at` / `updated_at` | TEXT | |
 
 ## `chunks`
@@ -432,12 +432,12 @@ Admin overrides of operational tunables, edited on `/settings` and read **at the
 
 | Column | Type | Notes |
 |---|---|---|
-| `key` | TEXT **PK** | Must be registered in `system_settings.SETTINGS`; anything else is refused. Today only `jobs.extract_timeout_s` |
+| `key` | TEXT **PK** | Must be registered in `system_settings.SETTINGS`; anything else is refused. Today `jobs.extract_timeout_s` and `jobs.extract_memory_limit_mb` |
 | `value` | TEXT NOT NULL | The validated value as text (`repr(float)`). An unparseable value is ignored with a warning and the deployment value applies, so the reader (ingest) never fails on it |
 | `updated_by` | INTEGER FK → `users.id` ON DELETE SET NULL | Admin who last saved it |
 | `updated_at` | TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP | |
 
-Range rules live in the registry, not in SQL. `jobs.extract_timeout_s` accepts 30s up to 90% of `[jobs].visibility_timeout_s`, the same ceiling `ingest._extract_timeout_s` clamps to, so a saved value is never silently changed. Every save and reset is audited (`ingest_settings_updated` / `ingest_settings_reset`, with before/after values and the before-source).
+Range rules live in the registry, not in SQL. `jobs.extract_timeout_s` accepts 30s up to 90% of `[jobs].visibility_timeout_s`, the same ceiling `ingest._extract_timeout_s` clamps to, so a saved value is never silently changed. `jobs.extract_memory_limit_mb` accepts 0 (no cap) or 256–16384 MB. Saving the form stores only the fields whose value differs from the one in effect, so an untouched deployment default is never pinned as an override. Every save and reset is audited (`ingest_settings_updated` / `ingest_settings_reset`, with before/after values and the before-source).
 
 ## `retrieval_profiles`
 Admin-created retrieval parameter snapshots for the in-deployment eval workbench (E1). Profiles are audit/history records **and** applyable: the `is_active` row seeds the live `ACTIVE_RETRIEVAL_PARAMS` in `app/retrieval.py` at startup (E1c apply/rollback).

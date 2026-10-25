@@ -317,3 +317,154 @@ def test_timeout_is_kept_below_the_job_visibility_timeout(fresh_modules, monkeyp
 
     monkeypatch.setattr(ingest.config.jobs, "extract_timeout_s", 5000.0)
     assert ingest._extract_timeout_s() == 1620.0
+
+
+# -------------------- memory cap (RLIMIT_DATA) --------------------
+
+linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="RLIMIT_DATA is enforced on Linux only")
+
+
+def _docx_bomb(directory: Path, paragraphs: int = 400_000) -> Path:
+    """A real decompression bomb: ~0.4 MB on disk, ~90 MB of document.xml that
+    python-docx/lxml expand to several hundred MB in memory."""
+    import zipfile
+
+    import docx
+
+    base = directory / "bomb_base.docx"
+    docx.Document().save(base)
+    bomb = directory / "bomb.docx"
+    paragraph = b"<w:p><w:r><w:t>" + b"A" * 200 + b"</w:t></w:r></w:p>"
+    with zipfile.ZipFile(base) as zin, zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "word/document.xml":
+                head, _, tail = data.partition(b"<w:body>")
+                data = head + b"<w:body>" + paragraph * paragraphs + tail[tail.rfind(b"<w:sectPr"):]
+            zout.writestr(item, data)
+    return bomb
+
+
+@linux_only
+def test_decompression_bomb_fails_under_the_cap_and_the_queue_moves_on(fresh_modules, local_embed, tmp_path, monkeypatch):
+    """Real child, real bomb: the cap fails that source fast; the next one indexes."""
+    import app.jobs as jobs
+    import app.worker as worker
+
+    db, ingest = fresh_modules.db, fresh_modules.ingest
+    monkeypatch.setattr(ingest.config.jobs, "extract_memory_limit_mb", 256)
+    bomb_id = _insert_source(db, _docx_bomb(tmp_path))
+    good_id = _insert_source(db, _write_fixture("txt", tmp_path))
+    jobs.enqueue_source(bomb_id)
+    jobs.enqueue_source(good_id)
+
+    async def drive():
+        stop = asyncio.Event()
+        loop_task = asyncio.create_task(worker.run_worker_loop(poll_interval=0.05, stop_event=stop))
+        deadline = time.monotonic() + 60
+        while _source(db, good_id)["status"] != "indexed" and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        stop.set()
+        await asyncio.wait_for(loop_task, timeout=30)
+
+    asyncio.run(drive())
+
+    assert _source(db, good_id)["status"] == "indexed"
+    bomb = _source(db, bomb_id)
+    diagnostics = json.loads(bomb["diagnostics_json"])
+    assert bomb["status"] == "failed"
+    assert diagnostics["failed_reason"] == ingest.EXTRACT_FAILED_MEMORY
+    # Stopped near the cap rather than after expanding (uncapped, this bomb
+    # peaks well above 400 MB). RSS also counts code and shared-library pages,
+    # which RLIMIT_DATA does not, hence the allowance over 256.
+    assert diagnostics["extract_peak_rss_mb"] < 256 + 100
+    assert "256 MB" in bomb["error"]
+
+
+@linux_only
+def test_child_runs_under_the_cap_with_oom_preference(fresh_modules, tmp_path, monkeypatch):
+    ingest = fresh_modules.ingest
+    path = _write_fixture("txt", tmp_path)
+
+    monkeypatch.setattr(ingest.config.jobs, "extract_memory_limit_mb", 512)
+    telemetry = {}
+    asyncio.run(ingest._extract_isolated(path, telemetry))
+    assert telemetry["runtime"]["data_limit_mb"] == 512
+    assert telemetry["runtime"]["oom_score_adj"] == 1000
+    assert telemetry["peak_rss_mb"] > 0
+
+    monkeypatch.setattr(ingest.config.jobs, "extract_memory_limit_mb", 0)
+    telemetry = {}
+    asyncio.run(ingest._extract_isolated(path, telemetry))
+    assert telemetry["runtime"]["data_limit_mb"] == 0
+
+
+def test_child_pins_numeric_thread_pools_to_one(fresh_modules):
+    env = fresh_modules.ingest._child_env()
+    assert env["OPENBLAS_NUM_THREADS"] == "1"
+    assert env["OMP_NUM_THREADS"] == "1"
+
+
+@linux_only
+def test_xlsx_fits_a_tight_cap_once_thread_pools_are_pinned(fresh_modules, tmp_path, monkeypatch):
+    """openpyxl imports numpy; unpinned, OpenBLAS's per-core reservations alone
+    pushed the data segment to 193 MB on 4 cores for this kind of file."""
+    import openpyxl
+
+    ingest = fresh_modules.ingest
+    path = tmp_path / "big.xlsx"
+    book = openpyxl.Workbook()
+    sheet = book.active
+    for i in range(20_000):
+        sheet.append([f"row{i}", i, "北區分公司", i * 1.5])
+    book.save(path)
+    monkeypatch.setattr(ingest.config.jobs, "extract_memory_limit_mb", 150)
+
+    assert asyncio.run(ingest._extract_isolated(path)).sections
+
+
+def test_successful_parse_records_peak_memory(fresh_modules, local_embed, tmp_path):
+    db, ingest = fresh_modules.db, fresh_modules.ingest
+    source_id = _insert_source(db, _write_fixture("txt", tmp_path))
+
+    asyncio.run(ingest.process_source(source_id))
+
+    row = _source(db, source_id)
+    assert row["status"] == "indexed"
+    assert json.loads(row["diagnostics_json"])["extract_peak_rss_mb"] > 0
+
+
+@pytest.mark.parametrize("limit_mb, expected", [(512, "extract_memory"), (0, "extract_crashed")])
+def test_c_library_out_of_memory_exit_is_classified_only_under_a_cap(fresh_modules, tmp_path, monkeypatch, limit_mb, expected):
+    """A C library that exits without a result after an allocation failure."""
+    ingest = fresh_modules.ingest
+    monkeypatch.setattr(ingest.config.jobs, "extract_memory_limit_mb", limit_mb)
+    script = "import sys; sys.stderr.write('OpenBLAS error: Memory allocation still failed after 10 retries, giving up.\\n'); sys.exit(1)"
+    monkeypatch.setattr(ingest, "_extract_child_argv", lambda *a: [sys.executable, "-c", script])
+
+    with pytest.raises(ingest.ExtractionFailed) as failure:
+        asyncio.run(ingest._extract_isolated(tmp_path / "any.txt"))
+    assert failure.value.reason == expected
+
+
+def test_memory_classification_rules(fresh_modules):
+    looks = fresh_modules.ingest._looks_like_memory_exhaustion
+    assert looks("MemoryError", None, 0)                   # explicit, even uncapped
+    assert looks("XMLSyntaxError", 240.0, 256)             # lxml's disguise, at the cap
+    assert not looks("XMLSyntaxError", 60.0, 256)          # a real parse error, far below
+    assert not looks("XMLSyntaxError", 240.0, 0)           # no cap, no inference
+
+
+@linux_only
+def test_peak_memory_is_the_childs_own_not_inherited_from_a_fat_parent(fresh_modules, tmp_path):
+    """ru_maxrss survives execve; a 300 MB parent must not show up as the child's peak."""
+    ingest = fresh_modules.ingest
+    ballast = bytearray(300 * 1024 * 1024)
+    for offset in range(0, len(ballast), 4096):
+        ballast[offset] = 1
+    telemetry = {}
+
+    asyncio.run(ingest._extract_isolated(_write_fixture("txt", tmp_path), telemetry))
+
+    del ballast
+    assert telemetry["peak_rss_mb"] < 150, telemetry

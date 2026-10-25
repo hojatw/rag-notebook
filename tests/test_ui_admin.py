@@ -1897,4 +1897,74 @@ def test_timed_out_parses_do_not_count_as_observed_durations(monkeypatch, tmp_pa
             )
 
     stats = system_settings.recent_extract_stats()
-    assert stats == {"count": 2, "max_s": 50.0, "p95_s": 50.0, "timeouts": 1}
+    assert stats["count"] == 2
+    assert (stats["max_s"], stats["p95_s"], stats["timeouts"]) == (50.0, 50.0, 1)
+
+
+def test_memory_limit_is_admin_adjustable_and_zero_switches_it_off(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.ingest as ingest
+
+    assert ingest._extract_memory_limit_mb() == 2048
+    with TestClient(main.app) as client:
+        _login(client)
+        saved = client.post("/settings/ingest", data={"extract_timeout_s": "300", "extract_memory_limit_mb": "512"})
+        assert saved.status_code == 200
+        assert "目前生效：512 MB" in saved.text
+        assert ingest._extract_memory_limit_mb() == 512
+
+        off = client.post("/settings/ingest", data={"extract_timeout_s": "300", "extract_memory_limit_mb": "0"})
+        assert off.status_code == 200
+        assert "目前生效：不限制" in off.text
+        assert ingest._extract_memory_limit_mb() == 0
+
+        for bad in ("100", "20000", "-1", ""):
+            rejected = client.post("/settings/ingest", data={"extract_timeout_s": "300", "extract_memory_limit_mb": bad})
+            assert rejected.status_code == 400, bad
+        assert ingest._extract_memory_limit_mb() == 0
+
+        reset = client.post("/settings/ingest/reset", data={"key": "jobs.extract_memory_limit_mb"})
+        assert reset.status_code == 200
+        assert ingest._extract_memory_limit_mb() == 2048
+        assert client.post("/settings/ingest/reset", data={"key": "auth.anything"}).status_code == 400
+
+
+def test_saving_one_field_does_not_pin_the_other_to_an_admin_override(monkeypatch, tmp_path):
+    """The form always posts both fields; an untouched one must stay on the deployment value."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        page = client.post("/settings/ingest", data={"extract_timeout_s": "120", "extract_memory_limit_mb": "2048"})
+        assert page.status_code == 200
+
+    with db.connect() as conn:
+        keys = [row["key"] for row in conn.execute("SELECT key FROM system_settings")]
+        actions = conn.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE action = 'ingest_settings_updated'"
+        ).fetchone()[0]
+    assert keys == ["jobs.extract_timeout_s"]
+    assert actions == 1
+
+
+def test_memory_stats_exclude_parses_stopped_by_the_cap(monkeypatch, tmp_path):
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.system_settings as system_settings
+
+    db.init_db()
+    rows = [
+        {"extract_duration_s": 1.0, "extract_peak_rss_mb": 60.0},
+        {"extract_duration_s": 2.0, "extract_peak_rss_mb": 180.0},
+        {"extract_duration_s": 0.3, "extract_peak_rss_mb": 288.0, "failed_stage": "extract", "failed_reason": "extract_memory"},
+    ]
+    with db.connect() as conn:
+        for diagnostics in rows:
+            conn.execute(
+                "INSERT INTO sources (user_id, filename, stored_path, content_type, status, diagnostics_json) "
+                "VALUES (1, 'f', '/nonexistent', 'application/pdf', 'indexed', ?)",
+                (json.dumps(diagnostics),),
+            )
+
+    stats = system_settings.recent_extract_stats()
+    assert (stats["rss_count"], stats["rss_max_mb"], stats["memory_failures"]) == (2, 180.0, 1)
+    assert (stats["count"], stats["max_s"]) == (2, 2.0)

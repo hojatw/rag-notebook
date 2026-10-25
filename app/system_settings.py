@@ -27,6 +27,7 @@ SOURCE_ADMIN = "admin"
 SOURCE_DEPLOYMENT = "deployment"
 
 EXTRACT_TIMEOUT_KEY = "jobs.extract_timeout_s"
+EXTRACT_MEMORY_LIMIT_KEY = "jobs.extract_memory_limit_mb"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -34,6 +35,10 @@ class SettingSpec:
     default: Callable[[], float]
     minimum: Callable[[], float]
     maximum: Callable[[], float]
+    #: i18n key for the out-of-range message; receives ``low`` and ``high``.
+    out_of_range_message: str = "settings.ingest_out_of_range"
+    #: True when 0 is accepted outside [minimum, maximum] and means "off".
+    zero_disables: bool = False
 
 
 def _jobs():
@@ -50,6 +55,15 @@ SETTINGS: dict[str, SettingSpec] = {
         default=lambda: float(_jobs().extract_timeout_s),
         minimum=lambda: 30.0,
         maximum=lambda: float(_jobs().visibility_timeout_s) * 0.9,
+    ),
+    # Floor: the child needs ~40 MB just to import its parsers, and a cap near
+    # that turns ordinary files into failures. 0 switches the cap off.
+    EXTRACT_MEMORY_LIMIT_KEY: SettingSpec(
+        default=lambda: float(_jobs().extract_memory_limit_mb),
+        minimum=lambda: 256.0,
+        maximum=lambda: 16384.0,
+        out_of_range_message="settings.ingest_memory_out_of_range",
+        zero_disables=True,
     ),
 }
 
@@ -95,8 +109,10 @@ def validate(key: str, raw: Any) -> float:
         value = float(str(raw).strip())
     except ValueError:
         raise ValueError(i18n.t("settings.ingest_invalid_number")) from None
+    if spec.zero_disables and value == 0:
+        return value
     if not math.isfinite(value) or value < low or value > high:
-        raise ValueError(i18n.t("settings.ingest_out_of_range", low=int(low), high=int(high)))
+        raise ValueError(i18n.t(spec.out_of_range_message, low=int(low), high=int(high)))
     return value
 
 
@@ -124,14 +140,17 @@ def clear_override(key: str) -> None:
 def recent_extract_stats(limit: int = 200) -> dict[str, Any]:
     """Parse durations of the most recent sources, to choose a timeout from data.
 
-    ``max_s`` / ``p95_s`` cover parses that completed; timed-out parses are
-    counted separately in ``timeouts``.
+    ``max_s`` / ``p95_s`` and ``rss_max_mb`` / ``rss_p95_mb`` cover parses
+    that ran to the end; parses stopped by the timeout or the memory cap are
+    counted separately in ``timeouts`` / ``memory_failures``, because what they
+    recorded is the limit in force, not what the file needs.
 
-    Reads `extract_duration_s` / `failed_reason` from `sources.diagnostics_json`
+    Reads `extract_duration_s` / `extract_peak_rss_mb` / `failed_reason` from
+    `sources.diagnostics_json`
     (written by `ingest.process_source`). Sources ingested before that field
     existed simply don't count.
     """
-    from .ingest import EXTRACT_FAILED_TIMEOUT  # local: ingest imports this module
+    from .ingest import EXTRACT_FAILED_MEMORY, EXTRACT_FAILED_TIMEOUT  # local: ingest imports this module
 
     with connect() as conn:
         rows = conn.execute(
@@ -140,7 +159,9 @@ def recent_extract_stats(limit: int = 200) -> dict[str, Any]:
             (limit,),
         ).fetchall()
     durations: list[float] = []
+    peaks: list[float] = []
     timeouts = 0
+    memory_failures = 0
     for row in rows:
         try:
             diagnostics = loads(row["diagnostics_json"])
@@ -153,14 +174,29 @@ def recent_extract_stats(limit: int = 200) -> dict[str, Any]:
             # needs — counting it would pass a lower bound off as a measurement.
             timeouts += 1
             continue
+        if diagnostics.get("failed_reason") == EXTRACT_FAILED_MEMORY:
+            memory_failures += 1
+            continue
         duration = diagnostics.get("extract_duration_s")
         if isinstance(duration, (int, float)):
             durations.append(float(duration))
-    durations.sort()
-    p95 = durations[min(len(durations) - 1, math.ceil(0.95 * len(durations)) - 1)] if durations else None
+        peak = diagnostics.get("extract_peak_rss_mb")
+        if isinstance(peak, (int, float)):
+            peaks.append(float(peak))
     return {
         "count": len(durations),
-        "max_s": durations[-1] if durations else None,
-        "p95_s": p95,
+        "max_s": max(durations, default=None),
+        "p95_s": _p95(durations),
         "timeouts": timeouts,
+        "rss_count": len(peaks),
+        "rss_max_mb": max(peaks, default=None),
+        "rss_p95_mb": _p95(peaks),
+        "memory_failures": memory_failures,
     }
+
+
+def _p95(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1)]

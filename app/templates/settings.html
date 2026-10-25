@@ -185,54 +185,95 @@
 
   {# ===== Ingest (file parsing) — its own form, see the nav comment above ===== #}
   {% set stats = ingest.stats %}
+  {% set timeout = ingest.timeout %}
+  {% set memory = ingest.memory %}
   <div class="settings-grid" x-show="tab === 'ingest'" x-cloak
-       x-data='{ value: {{ ingest.timeout_input | tojson }}, observedMax: {{ (stats.max_s or 0) | tojson }} }'>
+       x-data='{ timeout: {{ timeout.input | tojson }}, observedMax: {{ (stats.max_s or 0) | tojson }},
+                 memory: {{ memory.input | tojson }}, observedRss: {{ (stats.rss_max_mb or 0) | tojson }} }'>
     <section class="settings-section">
       <h2>{{ t('settings.ingest_title') }}</h2>
       <p class="muted">{{ t('settings.ingest_intro') }}</p>
       {% if ingest_notice %}<div class="notice">{{ ingest_notice }}</div>{% endif %}
       {% if ingest_error %}<div class="alert" role="alert">{{ ingest_error }}</div>{% endif %}
 
-      <p>
-        <strong>{{ t('settings.ingest_effective', seconds='%g'|format(ingest.timeout_s)) }}</strong><br>
-        <span class="muted small">
-          {%- if ingest.source == 'admin' -%}{{ t('settings.ingest_source_admin', default='%g'|format(ingest.deployment_default_s)) }}
-          {%- else -%}{{ t('settings.ingest_source_deployment') }}{% endif -%}
-        </span>
-      </p>
-
       <form method="post" action="/settings/ingest" id="ingest-settings-form">
         {{ csrf_input() }}
+
+        {# --- timeout --- #}
+        <p>
+          <strong>{{ t('settings.ingest_effective', seconds='%g'|format(timeout.value)) }}</strong><br>
+          <span class="muted small">
+            {%- if timeout.source == 'admin' -%}{{ t('settings.ingest_source_admin', default='%g'|format(timeout.default)) }}
+            {%- else -%}{{ t('settings.ingest_source_deployment') }}{% endif -%}
+          </span>
+        </p>
         <label>
           {{ t('settings.ingest_timeout_label') }}
           <input name="extract_timeout_s" type="number" inputmode="numeric" step="1"
-                 min="{{ '%d'|format(ingest.min_s) }}" max="{{ '%d'|format(ingest.max_s) }}"
-                 x-model="value" value="{{ ingest.timeout_input }}" required
-                 {% if ingest_error %}aria-invalid="true"{% endif %}>
+                 min="{{ '%d'|format(timeout.min) }}" max="{{ '%d'|format(timeout.max) }}"
+                 x-model="timeout" value="{{ timeout.input }}" required>
         </label>
-        <p class="hint">{{ t('settings.ingest_range_hint', low='%d'|format(ingest.min_s), high='%d'|format(ingest.max_s)) }}</p>
+        <p class="hint">{{ t('settings.ingest_range_hint', low='%d'|format(timeout.min), high='%d'|format(timeout.max)) }}</p>
         {% if stats.max_s %}
-          <p class="hint" role="status" x-show="Number(value) > 0 && Number(value) < observedMax" x-cloak>
+          <p class="hint" role="status" x-show="Number(timeout) > 0 && Number(timeout) < observedMax" x-cloak>
             {{ t('settings.ingest_below_observed', max='%g'|format(stats.max_s)) }}
           </p>
         {% endif %}
-      </form>
+        <p class="muted small">
+          {%- if stats.count -%}
+            {{ t('settings.ingest_stats', count=stats.count, max='%g'|format(stats.max_s), p95='%g'|format(stats.p95_s), timeouts=stats.timeouts) }}
+          {%- else -%}
+            {{ t('settings.ingest_stats_empty') }}
+          {%- endif -%}
+        </p>
 
-      <p class="muted small">
-        {%- if stats.count -%}
-          {{ t('settings.ingest_stats', count=stats.count, max='%g'|format(stats.max_s), p95='%g'|format(stats.p95_s), timeouts=stats.timeouts) }}
-        {%- else -%}
-          {{ t('settings.ingest_stats_empty') }}
-        {%- endif -%}
-      </p>
+        {# --- memory cap --- #}
+        <p>
+          <strong>
+            {%- if memory.value -%}{{ t('settings.ingest_memory_effective', mb='%g'|format(memory.value)) }}
+            {%- else -%}{{ t('settings.ingest_memory_effective_off') }}{% endif -%}
+          </strong><br>
+          <span class="muted small">
+            {%- if memory.source == 'admin' -%}{{ t('settings.ingest_memory_source_admin', default='%g'|format(memory.default)) }}
+            {%- else -%}{{ t('settings.ingest_source_deployment') }}{% endif -%}
+          </span>
+        </p>
+        <label>
+          {{ t('settings.ingest_memory_label') }}
+          <input name="extract_memory_limit_mb" type="number" inputmode="numeric" step="1"
+                 min="0" max="{{ '%d'|format(memory.max) }}"
+                 x-model="memory" value="{{ memory.input }}" required>
+        </label>
+        <p class="hint">{{ t('settings.ingest_memory_range_hint', low='%d'|format(memory.min), high='%d'|format(memory.max)) }}</p>
+        {% if stats.rss_max_mb %}
+          <p class="hint" role="status" x-show="Number(memory) > 0 && Number(memory) < observedRss" x-cloak>
+            {{ t('settings.ingest_memory_below_observed', max='%g'|format(stats.rss_max_mb)) }}
+          </p>
+        {% endif %}
+        <p class="muted small">
+          {%- if stats.rss_count -%}
+            {{ t('settings.ingest_memory_stats', count=stats.rss_count, max='%g'|format(stats.rss_max_mb), p95='%g'|format(stats.rss_p95_mb), failures=stats.memory_failures) }}
+          {%- else -%}
+            {{ t('settings.ingest_memory_stats_empty') }}
+          {%- endif -%}
+        </p>
+      </form>
     </section>
 
     <div class="settings-foot">
       <button type="submit" form="ingest-settings-form">{{ t('settings.ingest_save') }}</button>
-      {% if ingest.source == 'admin' %}
+      {% if timeout.source == 'admin' %}
         <form method="post" action="/settings/ingest/reset">
           {{ csrf_input() }}
-          <button type="submit" class="secondary">{{ t('settings.ingest_reset', default='%g'|format(ingest.deployment_default_s)) }}</button>
+          <input type="hidden" name="key" value="{{ timeout.key }}">
+          <button type="submit" class="secondary">{{ t('settings.ingest_reset_label_seconds', default='%g'|format(timeout.default)) }}</button>
+        </form>
+      {% endif %}
+      {% if memory.source == 'admin' %}
+        <form method="post" action="/settings/ingest/reset">
+          {{ csrf_input() }}
+          <input type="hidden" name="key" value="{{ memory.key }}">
+          <button type="submit" class="secondary">{{ t('settings.ingest_reset_label_mb', default='%g'|format(memory.default)) }}</button>
         </form>
       {% endif %}
       <a href="/notebooks" class="ghost">返回筆記本</a>
