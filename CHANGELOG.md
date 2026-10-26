@@ -11,7 +11,7 @@
 
 ### 文件
 
-- A12 Phase 0 量測：新增一次性腳本 `tests/measure_heading_structure.py`，結果寫回 `docs/ROADMAP.md` A12（跨章節 chunk 22–35%，結論是繼續 Phase 1）。
+- A12 Phase 0 量測：新增一次性腳本 `tests/measure_heading_structure.py`，結果寫回 `docs/ROADMAP.md` A12（本機語料 22–35%、R1 仿單 9.8%；結論待 R2 語料量測）。
 
 ## [0.11.0] - 2026-10-25
 
