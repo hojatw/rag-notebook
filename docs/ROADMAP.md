@@ -487,7 +487,7 @@ Measured on *Test embedding model* and read back by `llm.embedding_window_budget
 - **Reassessed 2026-08-24:** `A6b` Phase 1 and `A6c` have landed, so the original format prerequisite is satisfied and aggregate warning data can now be meaningful. This remains unscheduled because no operator has yet asked for a deployment-wide view; the per-source owner-only diagnostics remain the current troubleshooting path.
 - **Restart condition:** prioritize when an operator asks "is ingestion healthy across this deployment?" and the per-source drawer cannot answer it. If a future need requires per-source admin access to another user's extracted text, that is a **separate privacy decision** — it needs an explicit policy call plus an audit event, not a quiet extension of this item.
 
-#### [ ] A12 · Document structure extraction (heading tree)
+#### [~] A12 · Document structure extraction (heading tree)
 - **What:** detect a document's heading hierarchy at ingest and carry it as an **ancestor path** (`heading_path: list[str]`) on every chunk, plus a page range per node. Cross-format like `A6a` — this is not a new file format, it is a signal every existing extractor can emit.
 - **Why:** today the structural signal is **zero**. `_extract_docx` flattens the whole body into one `"document"` section and never reads `paragraph.style.name`; `_extract_html` runs `soup.get_text()` so `h1`–`h6` become plain lines; the PDF path emits positional labels (`page N paragraph K`) with no heading detection. `chunk_sections` then *deliberately* packs sentences **across** section boundaries, and `_section_kind` only blocks merges across a *register* change (table/header/footer/footnote), never a *topic* change — so a chunk can straddle "3.2 研究限制" and "4. 結論". For hundreds-of-page research reports this is the most-cited structural weakness in the pipeline.
 - **Payoff, in the order it arrives:** (1) chunk boundaries stop straddling sections; (2) the ancestor path prefixed into the embedded text gives contextual retrieval (cheap, well-established); (3) citations read `3.2 研究限制 (p.47)` instead of `page 47 paragraph 3`, which serves the traceability requirement directly; (4) it unlocks [`QUALITY.md`](QUALITY.md) `Q1-7`. **Note that (1)–(3) need only a heading *path*, not a traversable tree.**
@@ -534,12 +534,18 @@ Measured on *Test embedding model* and read back by `llm.embedding_window_budget
       - R2 的 12 份文件全部帶有結構訊號，沒有一份落在 none 層，這和「廠商文件結構難以預測」的風險假設不同。
       - 結構訊號以 TOC 頁與編號樣式為主；字級訊號依然接近零。
 
-      **結論：待 Philip 判斷（2026-10-26）。** 建議進 Phase 1，理由有三：
+      **結論：進 Phase 1（Philip 2026-10-26 裁決）。** 當時的建議與理由如下：進 Phase 1，理由有三：
       1. R2 的 PDF 研究報告與指引量到 10–25%，逐份中位數在三批語料都落在 16–19%，高於 10% 門檻。只有長章節的仿單偏低（2–10%）。
       2. Phase 1 只做偵測、寫進 A6a 診斷，不改 chunk、不重建索引，成本低，可以隨時退回。
       3. 這次量測本身就顯示偵測精度（目錄型 chunk 與條文粒度的判定）是讓數字可信的前提，而這正好是 Phase 1 的產出。
 
       仿單的比例偏低，代表 Phase 2 的效益會因文件類型而不同，應在 Phase 1 的診斷中逐份觀察。重跑指令：`PYTHONPATH=. .venv/bin/python -m tests.measure_heading_structure <語料目錄>`
+  - **Phase 1 狀態（2026-10-26）：已實作。** `app/heading_detect.py` 的 `detect_structure` 依 outline → 目錄頁 → 編號樣式的順序判斷，每一層各自吞掉錯誤再往下一層；只寫進 `details.structure`（層級、標題數、層數、目錄頁頁碼），診斷面板會顯示。sections 與 chunk 和偵測前完全相同，有測試把關。與原計畫的差異有三點：
+    - 回報的是「不同層級數」（`levels`），不是最大深度：`一、`→`（一）` 只有兩層，對應的 depth 卻是 2 與 3。
+    - 目錄頁的續頁只要 2 行就合併。
+    - 目錄頁目前只標記頁碼，「不要索引」留到 Phase 2 才做。
+
+    下一步：在真實語料上（含 R2 第一批）用診斷面板抽查偵測精度。Phase 0 抽查已看到兩種誤判：目錄中列出的表格標題，以及 DOCX 把長句套上 Heading 樣式。精度夠了才進 Phase 2。
   - **Phase 1 — detection only; no chunking change, no re-index.** `detect_headings(path) -> list[Heading] | None` with the cascade above; each layer must fail independently and fall through, and the `D` case must leave behaviour bit-identical. Feed the result **only** into the `A6a` diagnostics panel ("detected N sections, max depth M") so detection accuracy can be validated against real files **without paying the re-index cost**. Two known traps: a detected TOC page must be flagged *not to index* (or it pollutes retrieval with its own entries), and consecutive TOC pages must be merged. Heading depth is derivable from the numbering itself (`5.2.1.1` → 4; `三、` → 1; `51.` → 2); the zh-TW convention (`壹、` → `一、` → `（一）` → `1.` → `（1）`) is a published standard, so the patterns target a spec rather than guesswork. `ExtractionResult.details` is already documented as "free-form so a new format adds signals **without a schema change**" — the landing spot exists.
   - **Phase 2 — boundaries + ancestor path (requires re-index).** Only after Phase 1 shows detection is accurate enough: `chunk_sections` respects heading boundaries, `heading_path` lands in the chunk row, Chroma metadata, and the citation label. Touches `citation_payload`, the UI citation rendering, and eval `expected_evidence` matching — plan those together.
 - **Per-source structure flag (decided 2026-08-22):** record on each source whether a usable structure signal was found, and **which tier produced it** (`outline` / `toc_page` / `numbering` / `none`). It belongs in the `A6a` diagnostics payload (`sources.diagnostics_json`) — the panel already exists and this is exactly the kind of extractor-known fact it was built for. Its job is **index-time gating**: a `none` source must not spend LLM tokens on `Q1-7`'s section summaries. It is *not* needed as a query-time filter — a source with no detected nodes contributes nothing to the section arm automatically.

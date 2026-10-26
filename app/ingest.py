@@ -13,6 +13,7 @@ from typing import Any
 from . import i18n, system_settings
 from .config import config
 from .db import connect, dumps, load_llm_settings
+from .heading_detect import detect_structure
 from .llm import embed_texts, summarize_source
 from .vector_store import delete_source as delete_source_vectors
 from .vector_store import upsert_chunks
@@ -70,6 +71,9 @@ class ExtractionResult:
     pre_chunked: bool = False
 
 
+_STRUCTURE_SUFFIXES = {".pdf", ".docx", ".html", ".htm"}
+
+
 def extract_sections(path: Path) -> ExtractionResult:
     """Extract text sections from a supported source file.
 
@@ -112,10 +116,15 @@ def extract_sections(path: Path) -> ExtractionResult:
     else:
         sections = [("document", path.read_text(encoding="utf-8", errors="ignore"))]
         extractor = "plain_text"
+    details: dict[str, Any] = {}
+    if suffix in _STRUCTURE_SUFFIXES and sections:
+        # A12 Phase 1: diagnostics only — sections are passed in read-only and
+        # never changed, so chunking and the index stay exactly as before.
+        details["structure"] = detect_structure(path, sections).summary()
     logger.info(
         "extract_completed path=%s sections=%s extractor=%s", path.name, len(sections), extractor
     )
-    return ExtractionResult(sections=sections, extractor=extractor, notes=notes)
+    return ExtractionResult(sections=sections, extractor=extractor, notes=notes, details=details)
 
 
 def _cue_start_label(cue_line: str) -> str:

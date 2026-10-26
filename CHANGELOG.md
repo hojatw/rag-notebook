@@ -14,10 +14,11 @@
 - **`tests.eval_retrieval` 可指定題集與 notebook**（`--questions`、`--notebook-id`），
   用來跑放在 `local/` 的 Q1-3 R1 題集，不必改 `tests/eval_questions.json`。
 - P3-3 量測工具：`scripts/usage_percentiles.py` 唯讀彙總 `llm_usage_events` 各 `call_type`／chat 主機的 `prompt_tokens` 與延遲 p50/p95（不輸出任何內容）；`retrieve` 每題多記一行 `retrieve_stage_timings`（rewrite／embedding／Chroma／keyword／merge／rerank 各段 ms）。
+- A12 Phase 1：攝取 PDF／DOCX／HTML 時偵測標題結構（作者大綱 → 目錄頁 → 編號樣式），結果顯示在來源的萃取診斷面板（「文件結構」一行）。只做診斷：切塊、索引與引用都不變，所以不需要重新索引；既有來源要重新索引後才會顯示這一行。
 
 ### 文件
 
-- A12 Phase 0 量測：新增一次性腳本 `tests/measure_heading_structure.py`，結果寫回 `docs/ROADMAP.md` A12，並以 R1/R2 語料重跑（PDF/DOCX/HTML 分列，逐份中位數 16–19%；結論待 Philip 判斷，建議進 Phase 1）。
+- A12 Phase 0 量測：新增一次性腳本 `tests/measure_heading_structure.py`，結果寫回 `docs/ROADMAP.md` A12，並以 R1/R2 語料重跑（PDF/DOCX/HTML 分列，逐份中位數 16–19%；已裁決進 Phase 1）。
 
 ## [0.11.0] - 2026-10-25
 
