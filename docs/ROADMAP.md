@@ -515,7 +515,31 @@ Measured on *Test embedding model* and read back by `llm.embedding_window_budget
 
       (b) 跨章節 chunk：在 17 份有結構的文件裡，用現行 `extract_sections` + `chunk_sections` 切出的 chunk，**下限 22.2%**（623/2807，排除含 ≥3 個標題、看起來像目錄頁的 chunk），**上限約 35%**（把那些 chunk 也算進去；短的會議紀錄裡，一個 chunk 常常真的橫跨好幾節）。兩個數字都遠高於 10% 的停止門檻。抽查確認了真實的跨越案例，例如 `…Study CT-P39 1.1.` 後面緊接 `5.2.2 Treatment-Emergent…`、`…safety profile.` 後面緊接 `6.3 Benefit-Risk Assessment`。抽查也看到兩種誤判，會讓數字偏高：目錄中列出的表格標題，以及 DOCX 把長句套上 Heading 樣式。這兩種剛好是 Phase 1 必須處理的偵測精度問題。字級訊號再次接近零：多數 PDF 大字比例 0–3%，只有一份達 31%。
       **Q1-3 R1 補量（2026-10-26）：** 兩份仿單 PDF，FDA Keytruda 185 頁、TFDA 119 頁。兩份都只到「編號樣式」這一層，沒有 outline，也沒有目錄頁。跨章節比例 **9.8%（146/1492），剛好落在 10% 門檻上**：FDA 12.5%，TFDA 7.0%。仿單的章節長，切出來的 chunk 大多落在單一章節內，所以跨章節的情況比研究報告與會議紀錄少。編號樣式偵測可能漏抓標題，這個數字應視為下限。
-      **結論：待定（2026-10-26）。** 本機 uploads 量到 22–35%，R1 藥品仿單量到 9.8%，但兩批都不是客戶語料。要不要進 Phase 1，等 R2 第一批語料（由 q13-eval-set session 整理）量測後再判斷。重跑指令如下：`PYTHONPATH=. .venv/bin/python -m tests.measure_heading_structure <R2 語料目錄>`
+      **R2 第一批補量（2026-10-26）：** 語料是 q13-eval-set 整理的 `local/q1_3_r1/corpus_r2/`（5 份）與 `corpus_r2_web/`（7 份，含 ICH 指引、TFDA 須知、藥事法等 HTML 法規）。這次量測前，腳本做了兩處修改：一是支援 HTML，以 `h1`–`h6` 當作 outline 層；二是編號樣式加入「第 N 條」，並容許字間空白。腳本另外新增逐份比例的中位數。原因是 chunk 加權的總數會被單一超大文件主導：加入「條」之後，本機的 `city_knowledge_base_120_pages.pdf`（3601 chunks，只有 1 個跨越）從 none 變成 numbering，本機的 chunk 加權總數就從 22.2% 掉到 9.7%。
+
+      | 語料 | 份數 | outline / TOC 頁 / 編號 / 無 | 跨章節（chunk 加權） | 逐份中位數 |
+      |---|---|---|---|---|
+      | 本機 uploads（重跑） | 30 | 10 / 4 / 4 / 12 | 9.7%（排除 city 檔為 22.2%） | 18.5% |
+      | R1 藥品仿單 | 2 | 0 / 0 / 2 / 0 | 9.8% | — |
+      | R2 `corpus_r2` 合計 | 5 | 0 / 3 / 2 / 0 | 20.3% | 18.0% |
+      | 　其中 PDF | 4 | 0 / 3 / 1 / 0 | 24.9% | |
+      | 　其中 DOCX（吉舒達仿單） | 1 | 0 / 0 / 1 / 0 | 2.2% | |
+      | R2 `corpus_r2_web` 合計 | 7 | 2 / 2 / 3 / 0 | 12.1% | 15.9% |
+      | 　其中 PDF（ICH ×3、TFDA 須知） | 4 | 2 / 2 / 0 / 0 | 10.3% | |
+      | 　其中 HTML（法規 ×3） | 3 | 0 / 0 / 3 / 0 | 20.3% | |
+
+      解讀時有四點要注意：
+      - `corpus_r2` 的 5 份與本機 uploads 是同樣的檔案，不是獨立樣本。
+      - HTML 法規沒有任何 `h` 標籤，結構完全靠「第 N 條」。條文很短，一個 chunk 常同時含好幾條，所以大量 chunk 被歸為目錄型（藥事法 44/65）而排除在外，跨章節比例因此偏低估。
+      - R2 的 12 份文件全部帶有結構訊號，沒有一份落在 none 層，這和「廠商文件結構難以預測」的風險假設不同。
+      - 結構訊號以 TOC 頁與編號樣式為主；字級訊號依然接近零。
+
+      **結論：待 Philip 判斷（2026-10-26）。** 建議進 Phase 1，理由有三：
+      1. R2 的 PDF 研究報告與指引量到 10–25%，逐份中位數在三批語料都落在 16–19%，高於 10% 門檻。只有長章節的仿單偏低（2–10%）。
+      2. Phase 1 只做偵測、寫進 A6a 診斷，不改 chunk、不重建索引，成本低，可以隨時退回。
+      3. 這次量測本身就顯示偵測精度（目錄型 chunk 與條文粒度的判定）是讓數字可信的前提，而這正好是 Phase 1 的產出。
+
+      仿單的比例偏低，代表 Phase 2 的效益會因文件類型而不同，應在 Phase 1 的診斷中逐份觀察。重跑指令：`PYTHONPATH=. .venv/bin/python -m tests.measure_heading_structure <語料目錄>`
   - **Phase 1 — detection only; no chunking change, no re-index.** `detect_headings(path) -> list[Heading] | None` with the cascade above; each layer must fail independently and fall through, and the `D` case must leave behaviour bit-identical. Feed the result **only** into the `A6a` diagnostics panel ("detected N sections, max depth M") so detection accuracy can be validated against real files **without paying the re-index cost**. Two known traps: a detected TOC page must be flagged *not to index* (or it pollutes retrieval with its own entries), and consecutive TOC pages must be merged. Heading depth is derivable from the numbering itself (`5.2.1.1` → 4; `三、` → 1; `51.` → 2); the zh-TW convention (`壹、` → `一、` → `（一）` → `1.` → `（1）`) is a published standard, so the patterns target a spec rather than guesswork. `ExtractionResult.details` is already documented as "free-form so a new format adds signals **without a schema change**" — the landing spot exists.
   - **Phase 2 — boundaries + ancestor path (requires re-index).** Only after Phase 1 shows detection is accurate enough: `chunk_sections` respects heading boundaries, `heading_path` lands in the chunk row, Chroma metadata, and the citation label. Touches `citation_payload`, the UI citation rendering, and eval `expected_evidence` matching — plan those together.
 - **Per-source structure flag (decided 2026-08-22):** record on each source whether a usable structure signal was found, and **which tier produced it** (`outline` / `toc_page` / `numbering` / `none`). It belongs in the `A6a` diagnostics payload (`sources.diagnostics_json`) — the panel already exists and this is exactly the kind of extractor-known fact it was built for. Its job is **index-time gating**: a `none` source must not spend LLM tokens on `Q1-7`'s section summaries. It is *not* needed as a query-time filter — a source with no detected nodes contributes nothing to the section arm automatically.
