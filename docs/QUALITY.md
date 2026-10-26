@@ -223,7 +223,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **R1 題集草稿完成，待人工確認。** 兩份文件是同一藥品（Keytruda）的美國 FDA 仿單
   （英文，185 頁）與 TFDA 核准仿單（繁中，119 頁）。共 36 題，各 18 題，表格題 25 題，
   其餘是跨段落、數值、中英混用題。比對字串都已逐條和抽出文字比對過。題集和原檔放在
-  `local/q1_3_r1/`（不入版控）；是否搬進 `tests/` 待 Philip 決定。
+  `local/q1_3_r1/`（不入版控）；人工確認完成前留在 `local/`，之後再決定是否搬進 `tests/`（2026-10-26 決定）。
 - **harness 支援外部題集：** `tests.eval_retrieval` 新增 `--questions` 與 `--notebook-id`。
   執行前要先把兩份 PDF 上傳到一個 notebook 並等它索引完成。**尚未實跑**：需要有
   embedding 連線的環境。
