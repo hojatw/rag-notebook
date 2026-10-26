@@ -13,6 +13,7 @@
 
 - **`tests.eval_retrieval` 可指定題集與 notebook**（`--questions`、`--notebook-id`），
   用來跑放在 `local/` 的 Q1-3 R1 題集，不必改 `tests/eval_questions.json`。
+- P3-3 量測工具：`scripts/usage_percentiles.py` 唯讀彙總 `llm_usage_events` 各 `call_type`／chat 主機的 `prompt_tokens` 與延遲 p50/p95（不輸出任何內容）；`retrieve` 每題多記一行 `retrieve_stage_timings`（rewrite／embedding／Chroma／keyword／merge／rerank 各段 ms）。
 
 ## [0.11.0] - 2026-10-25
 

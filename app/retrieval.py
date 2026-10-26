@@ -73,6 +73,31 @@ CANDIDATE_POOL_SIZE = config.retrieval.candidate_pool_size
 FINAL_CHUNK_COUNT = config.retrieval.final_chunk_count
 
 
+STAGE_TIMING_FIELDS = ("rewrite", "embed", "vector", "keyword", "search", "merge", "rerank")
+
+
+def _elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000
+
+
+def _timed_call(stage_ms: dict[str, float], stage: str, fn, *args, **kwargs):
+    started = time.perf_counter()
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        stage_ms[stage] = _elapsed_ms(started)
+
+
+def _log_stage_timings(mode: str, stage_ms: dict[str, float]) -> None:
+    """One structured line per question (P3-3). A stage that did not run on
+    this path (vector/keyword/search on the fallback) is logged as ``-``."""
+    fields = " ".join(
+        f"{name}_ms={stage_ms[name]:.1f}" if name in stage_ms else f"{name}_ms=-"
+        for name in STAGE_TIMING_FIELDS
+    )
+    logger.info("retrieve_stage_timings mode=%s %s", mode, fields)
+
+
 async def retrieve(
     question: str,
     rows,
@@ -109,6 +134,11 @@ async def retrieve(
     keyword_weight = float(p["keyword_weight"])
     rerank_weight = float(p["rerank_weight"])
     rerank_base_weight = float(p["rerank_base_weight"])
+    # P3-3: per-stage wall-clock (ms) for the non-LLM stages, emitted as one
+    # ``retrieve_stage_timings`` line. Counts and durations only -- never the
+    # question, queries or chunk text.
+    stage_ms: dict[str, float] = {}
+    stage_started = time.perf_counter()
     queries = await rewrite_search_queries(
         question,
         history or [],
@@ -117,26 +147,45 @@ async def retrieve(
         domain_hints=domain_hints,
         domain_limits=domain_limits,
     )
+    stage_ms["rewrite"] = _elapsed_ms(stage_started)
+    stage_started = time.perf_counter()
     query_embeddings = await embed_texts(queries, settings, role="query", usage_context=usage_context)
+    stage_ms["embed"] = _elapsed_ms(stage_started)
     if user_id is not None:
         try:
             # Vector (Chroma) and keyword (SQLite) search are independent — run
             # them concurrently in threads so their I/O overlaps instead of
             # adding up (P2-2). Both are sync; to_thread releases the event loop.
+            # Each side is timed inside its own thread, so vector_ms and
+            # keyword_ms are individual durations; search_ms is the overlapped
+            # wall-clock the question actually waited.
+            stage_started = time.perf_counter()
             vector_candidates, keyword_candidates = await asyncio.gather(
-                asyncio.to_thread(query_vectors, query_embeddings, user_id, source_ids, n_results=pool_size),
-                asyncio.to_thread(keyword_candidates_from_sqlite, user_id, source_ids or [], queries, limit=pool_size),
+                asyncio.to_thread(
+                    _timed_call, stage_ms, "vector",
+                    query_vectors, query_embeddings, user_id, source_ids, n_results=pool_size,
+                ),
+                asyncio.to_thread(
+                    _timed_call, stage_ms, "keyword",
+                    keyword_candidates_from_sqlite, user_id, source_ids or [], queries, limit=pool_size,
+                ),
             )
+            stage_ms["search"] = _elapsed_ms(stage_started)
+            stage_started = time.perf_counter()
             candidates = merge_candidates(vector_candidates, keyword_candidates, queries, params=p)
             ranked = diversify_candidates(
                 sorted(candidates.values(), key=lambda item: item["score"], reverse=True),
                 limit=pool_size,
             )
+            stage_ms["merge"] = _elapsed_ms(stage_started)
+            stage_started = time.perf_counter()
             retrieved = await rerank_chunks(
                 question, ranked, settings, limit=final_count,
                 rerank_weight=rerank_weight, rerank_base_weight=rerank_base_weight,
                 usage_context=usage_context,
             )
+            stage_ms["rerank"] = _elapsed_ms(stage_started)
+            _log_stage_timings("chroma", stage_ms)
             _VECTOR_HEALTH["consecutive_failures"] = 0
             _VECTOR_HEALTH["last_success_at"] = time.time()
             elapsed_ms = (time.perf_counter() - started) * 1000
@@ -169,6 +218,7 @@ async def retrieve(
     if not rows:
         logger.info("retrieve_skipped reason=no_candidate_rows")
         return []
+    stage_started = time.perf_counter()
     candidates = {}
     for row in rows:
         embedding = loads(row["embedding_json"])
@@ -191,11 +241,15 @@ async def retrieve(
         sorted(candidates.values(), key=lambda item: item["score"], reverse=True),
         limit=pool_size,
     )
+    stage_ms["merge"] = _elapsed_ms(stage_started)
+    stage_started = time.perf_counter()
     retrieved = await rerank_chunks(
         question, ranked, settings, limit=final_count,
         rerank_weight=rerank_weight, rerank_base_weight=rerank_base_weight,
         usage_context=usage_context,
     )
+    stage_ms["rerank"] = _elapsed_ms(stage_started)
+    _log_stage_timings("sqlite_fallback" if user_id is not None else "preloaded_rows", stage_ms)
     elapsed_ms = (time.perf_counter() - started) * 1000
     logger.info(
         "retrieve_completed mode=%s source_rows=%s rewritten_queries=%s candidates=%s reranked=%s elapsed_ms=%.1f",
