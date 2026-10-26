@@ -15,6 +15,10 @@
   用來跑放在 `local/` 的 Q1-3 R1 題集，不必改 `tests/eval_questions.json`。
 - P3-3 量測工具：`scripts/usage_percentiles.py` 唯讀彙總 `llm_usage_events` 各 `call_type`／chat 主機的 `prompt_tokens` 與延遲 p50/p95（不輸出任何內容）；`retrieve` 每題多記一行 `retrieve_stage_timings`（rewrite／embedding／Chroma／keyword／merge／rerank 各段 ms）。
 
+### 文件
+
+- A12 Phase 0 量測：新增一次性腳本 `tests/measure_heading_structure.py`，結果寫回 `docs/ROADMAP.md` A12，並以 R1/R2 語料重跑（PDF/DOCX/HTML 分列，逐份中位數 16–19%；結論待 Philip 判斷，建議進 Phase 1）。
+
 ## [0.11.0] - 2026-10-25
 
 ### 升級注意事項
