@@ -159,6 +159,13 @@ MESSAGES: dict[str, dict[str, str]] = {
         ),
         "diag.transcript": "逐字稿",
         "diag.transcript_stats": "{cues} 段字幕 · {timed_cues} 段有時間碼 · {speaker_labels} 處發言者標記",
+        "diag.structure": "文件結構",
+        "diag.structure_stats": "{tier} · 偵測到 {headings} 個標題 · {levels} 層",
+        "diag.structure_toc_pages": "目錄頁：第 {pages} 頁",
+        "diag.structure_tier_outline": "作者標記的大綱",
+        "diag.structure_tier_toc_page": "解析目錄頁",
+        "diag.structure_tier_numbering": "編號樣式",
+        "diag.structure_none": "沒有偵測到可用的標題結構（引用位置維持頁碼／段落）",
         "diag.csv_encoding": "CSV 編碼",
         "diag.csv_delimiter": "分隔符號",
         # --- Outputs shelf · entry type badges (U16 Phase 2) ------------------
