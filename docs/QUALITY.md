@@ -196,6 +196,28 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 **永遠無法滿足**——屆時要調整的是條件的措辭（改為可達成、且同樣能證明「調整有效」
 的證據形式），而不是降低標準或宣稱已達成。這個決定尚未做出。
 
+
+#### 鬆綁方案：先做 R1＋R2＋R3（2026-10-26 決定）
+
+前提不變：客戶資料是內部資料，不能帶出客戶環境。在這個限制下，拆成三條可以並行的路：
+
+- **R1 · 用兩份可公開文件建第一版題集（易）。** 就是上面第 4 點，至今還沒做。在自己的
+  環境建立，讓 eval 脫離 demo notebook。
+- **R2 · 公開的同類型文件當代理語料（中，成本主要在人工標註）。** 挑選和客戶文件型態
+  相近的公開資料（表格密集的中文研究報告、政府或產業報告、年報，含中英混排），由我們
+  出題並標註正確答案與出處段落。它只代表「文件型態相近」，**不是客戶認可的答案**。
+- **R3 · 在客戶環境內用回饋蒐集（中）。** 接續已上線的 E3a，完成 `ROADMAP.md`
+  `E3b`（選填更正與證據指認）與 `E3c`（經管理員核准轉成 eval 題目）。評分與比較在環境內
+  用 E1 完成，只帶走不含內容的指標。
+
+**R1＋R2 能解開什麼、不能解開什麼：** 可以用來調整不改變檢索行為的參數，例如
+`Q0-2` 門檻、`Q1-9` 截斷；也可以先看 `Q1-1`／`Q1-2` 的方向。**會改變檢索結果的決策**
+（`Q1-1` RRF、`Q1-2`／`P1-2` FTS5）上線前仍要用 R3 在客戶環境內驗證，沿用上面的
+「界線」。
+
+**刻意暫緩：** R5（題目由我們擬、客戶抽查 10–20 題）先不做。重啟條件：客戶願意撥出
+幾分鐘抽查。
+
 ### [ ] Q1-4 · Cross-lingual retrieval (e.g. Chinese question ↔ English sources)
 - **Issue:** A query only retrieves cross-language content through the **vector** arm (multilingual embedding); the **keyword** arm (`LIKE` on tokens) is dead across scripts, and cross-lingual cosine scores run lower — so a Chinese question against English-only sources retrieves fewer/weaker chunks (some trimmed by the `0.25` abstain threshold), yielding thin answers. Confirmed on a real notebook: the same Chinese questions answered richly once a same-language source was added. Same drug in EN (FDA label) + zh (仿單) is a ready-made test case.
 - **Impact:** Mixed-language notebooks under-serve questions asked in the "other" language — a likely real usage pattern for this deployment.
