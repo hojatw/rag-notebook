@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import re
+import statistics
 import sys
 from collections import Counter
 from pathlib import Path
@@ -42,7 +43,7 @@ FONT_SAMPLE_PAGES = 20
 _CN_NUM = "一二三四五六七八九十百"
 _NUMBERED_HEADING_RE = re.compile(
     r"^\s*("
-    rf"第[{_CN_NUM}\d]+[章節篇部]"
+    rf"第\s*[{_CN_NUM}\d]+\s*(-\s*\d+\s*)?[章節篇部條]"
     r"|[壹貳參叁肆伍陸柒捌玖拾]+[、．.]"
     rf"|[{_CN_NUM}]+[、．]"
     rf"|[（(][{_CN_NUM}]+[）)]"
@@ -88,6 +89,12 @@ def outline_titles(path: Path) -> list[str]:
             if (style.startswith("Heading") or style.startswith("標題")) and para.text.strip():
                 titles.append(para.text.strip())
         return titles
+    if path.suffix.lower() in {".html", ".htm"}:
+        # HTML 的對應物是 h1–h6；_extract_html 用 get_text() 把它們攤平成一般行。
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(path.read_bytes(), "html.parser")
+        return [h.get_text(" ", strip=True) for h in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]) if h.get_text(strip=True)]
     return []
 
 
@@ -197,7 +204,7 @@ def main() -> int:
     args = parser.parse_args()
     files: list[Path] = []
     for p in args.paths:
-        files.extend(sorted(f for f in p.rglob("*") if f.suffix.lower() in {".pdf", ".docx"}) if p.is_dir() else [p])
+        files.extend(sorted(f for f in p.rglob("*") if f.suffix.lower() in {".pdf", ".docx", ".html", ".htm"}) if p.is_dir() else [p])
     rows, seen = [], set()
     for f in files:
         digest = hashlib.sha256(f.read_bytes()).hexdigest()
@@ -215,10 +222,21 @@ def main() -> int:
         print(f"| {r['file'][-40:]} | {r['tier']} | {r['outline_nodes']} | {r['headings']} | {fs} | {r['chunks']} | {r['toc_like']} | {r['straddle']} |")
     tiers = Counter(r["tier"] for r in rows)
     print(f"\n(a) n={len(rows)}: " + ", ".join(f"{t} {tiers[t]} ({tiers[t] / len(rows):.0%})" for t in ("outline", "toc_page", "numbering", "none")))
+    for ext in sorted({Path(r["file"]).suffix.lower() for r in rows}):
+        sub = [r for r in rows if r["file"].lower().endswith(ext)]
+        st = [r for r in sub if r["tier"] != "none"]
+        tot = sum(r["chunks"] - r["toc_like"] for r in st)
+        sc = sum(r["straddle"] for r in st)
+        tc = Counter(r["tier"] for r in sub)
+        rate = f"{sc}/{tot} ({sc / tot:.1%})" if tot else "-"
+        print(f"  {ext}: n={len(sub)} " + " ".join(f"{t}={tc[t]}" for t in ("outline", "toc_page", "numbering", "none")) + f" | straddle {rate}")
     structured = [r for r in rows if r["tier"] != "none"]
     total = sum(r["chunks"] - r["toc_like"] for r in structured)
     straddle = sum(r["straddle"] for r in structured)
     if total:
+        # chunk 加權會被單一超大文件主導，另列逐份比例的中位數。
+        per_doc = sorted(r["straddle"] / max(1, r["chunks"] - r["toc_like"]) for r in structured)
+        print(f"(b') 逐份跨章節比例中位數 {statistics.median(per_doc):.1%}")
         print(f"(b) 有結構的 {len(structured)} 份文件：{straddle}/{total} chunks 跨章節（已排除目錄型 chunk）({straddle / total:.1%})")
     return 0
 
