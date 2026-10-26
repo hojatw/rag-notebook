@@ -91,6 +91,21 @@
              speaker_labels=source.diagnostics.details.speaker_labels) }}
       </p>
     {% endif %}
+    {# A12 Phase 1: detected heading structure, diagnostics only — nothing in
+       chunking or citations reads it yet. #}
+    {% set structure = source.diagnostics.details.structure if source.diagnostics.details else None %}
+    {% if structure %}
+      <p class="muted small">
+        {{ t('diag.structure') }}：
+        {%- if structure.tier == 'none' %}{{ t('diag.structure_none') }}
+        {%- else %}{{ t('diag.structure_stats',
+             tier=t('diag.structure_tier_' ~ structure.tier),
+             headings=structure.headings,
+             levels=structure.levels) }}
+          {%- if structure.toc_pages %} · {{ t('diag.structure_toc_pages', pages=structure.toc_pages|join('、')) }}{% endif %}
+        {%- endif %}
+      </p>
+    {% endif %}
     {% if source.diagnostics.details and source.diagnostics.details.encoding %}
       <p class="muted small">
         {{ t('diag.csv_encoding') }}：{{ source.diagnostics.details.encoding.encoding }}

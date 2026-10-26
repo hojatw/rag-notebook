@@ -657,3 +657,34 @@ def _seed_two_sources(db, user, notebook_id):
                     "VALUES (?, ?, ?, ?, ?, '[]')",
                     (user["id"], source_id, index, f"page {index}", f"{marker} 第 {index} 段"),
                 )
+
+
+def test_source_preview_shows_detected_heading_structure(monkeypatch, tmp_path):
+    """A12 Phase 1：診斷面板顯示偵測到的標題結構（用真正的 extract_sections 產生）。"""
+    from docx import Document
+
+    from app import ingest
+
+    docx_path = tmp_path / "report.docx"
+    doc = Document()
+    for text, style in [("緒論", "Heading 1"), ("方法", "Heading 1"), ("樣本", "Heading 2")]:
+        doc.add_paragraph(text, style=style)
+    doc.save(str(docx_path))
+    extraction = ingest.extract_sections(docx_path)
+    diagnostics = ingest.collect_ingest_diagnostics(extraction, ingest.chunk_sections(extraction.sections))
+
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, diagnostics_json) "
+                "VALUES (?, ?, 'report.docx', ?, 'indexed', ?)",
+                (user_id, nb_id, str(docx_path), json.dumps(diagnostics)),
+            ).lastrowid
+
+        preview = client.get(f"/notebooks/{nb_id}/sources/{source_id}/preview")
+        assert preview.status_code == 200
+        assert "文件結構：作者標記的大綱 · 偵測到 3 個標題 · 2 層" in preview.text
