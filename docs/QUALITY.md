@@ -218,6 +218,22 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 **刻意暫緩：** R5（題目由我們擬、客戶抽查 10–20 題）先不做。重啟條件：客戶願意撥出
 幾分鐘抽查。
 
+#### R1／R2 進度（2026-10-26）
+
+- **R1 題集草稿完成，待人工確認。** 兩份文件是同一藥品（Keytruda）的美國 FDA 仿單
+  （英文，185 頁）與 TFDA 核准仿單（繁中，119 頁）。共 36 題，各 18 題，表格題 25 題，
+  其餘是跨段落、數值、中英混用題。比對字串都已逐條和抽出文字比對過。題集和原檔放在
+  `local/q1_3_r1/`（不入版控）；是否搬進 `tests/` 待 Philip 決定。
+- **harness 支援外部題集：** `tests.eval_retrieval` 新增 `--questions` 與 `--notebook-id`。
+  執行前要先把兩份 PDF 上傳到一個 notebook 並等它索引完成。**尚未實跑**：需要有
+  embedding 連線的環境。
+- **R2 候選清單已產出，尚未選定、未下載。** 清單在 `local/q1_3_r1/r2_corpus_candidates.md`，
+  A12 Phase 0 也用它。授權最乾淨的是 OGDL 政府報告和美國 FDA 標籤；年報授權不明，只能
+  內部評估。直連多半被 403 擋下，頁數和文字層都要在瀏覽器人工確認。
+- **出題時發現的抽取問題（待用 app 的抽取器驗證，可能另立項）：** TFDA 仿單用 pypdf
+  抽出的文字裡，有約 1,370 行含康熙部首等相容字元（例如「⼀」不是「一」），用標準字
+  打的查詢關鍵字比對會失敗。兩份文件的表格都被攤成每列一行、沒有欄分隔。
+
 ### [ ] Q1-4 · Cross-lingual retrieval (e.g. Chinese question ↔ English sources)
 - **Issue:** A query only retrieves cross-language content through the **vector** arm (multilingual embedding); the **keyword** arm (`LIKE` on tokens) is dead across scripts, and cross-lingual cosine scores run lower — so a Chinese question against English-only sources retrieves fewer/weaker chunks (some trimmed by the `0.25` abstain threshold), yielding thin answers. Confirmed on a real notebook: the same Chinese questions answered richly once a same-language source was added. Same drug in EN (FDA label) + zh (仿單) is a ready-made test case.
 - **Impact:** Mixed-language notebooks under-serve questions asked in the "other" language — a likely real usage pattern for this deployment.
