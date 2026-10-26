@@ -9,6 +9,11 @@
 
 ## [未發布]
 
+### 新增
+
+- **`tests.eval_retrieval` 可指定題集與 notebook**（`--questions`、`--notebook-id`），
+  用來跑放在 `local/` 的 Q1-3 R1 題集，不必改 `tests/eval_questions.json`。
+
 ## [0.11.0] - 2026-10-25
 
 ### 升級注意事項

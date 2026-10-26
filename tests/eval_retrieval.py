@@ -5,8 +5,11 @@ Run against the live SQLite + Chroma data:
     .venv/bin/python -m tests.eval_retrieval
     .venv/bin/python -m tests.eval_retrieval --no-rerank
     .venv/bin/python -m tests.eval_retrieval --top-k 10
+    .venv/bin/python -m tests.eval_retrieval --questions local/q1_3_r1/eval_questions_r1.json --notebook-id 7
 
-Reads ``tests/eval_questions.json`` (one fixture file per project), calls the
+Reads ``tests/eval_questions.json`` by default (``--questions`` points at another
+set with the same shape, e.g. the Q1-3 R1 set kept under ``local/``; ``--notebook-id``
+overrides the file's ``notebook_id``), calls the
 real ``retrieve()`` for each question against the configured notebook, then
 prints per-question hits and overall recall@k + MRR.
 
@@ -56,7 +59,12 @@ def reciprocal_rank(retrieved: list[dict], expected_filename: str, expected_subs
     return 0.0
 
 
-async def run(top_k: int, disable_rerank: bool) -> int:
+async def run(
+    top_k: int,
+    disable_rerank: bool,
+    questions_path: Path = FIXTURES,
+    notebook_id_override: int | None = None,
+) -> int:
     from app.db import connect, load_llm_settings
     from app.main import retrieve
 
@@ -72,14 +80,14 @@ async def run(top_k: int, disable_rerank: bool) -> int:
         # Strip chat model so rewrite/rerank both fall back to no-LLM paths.
         settings = {**settings, "chat_model": ""}
 
-    fixtures = json.loads(FIXTURES.read_text(encoding="utf-8"))
-    notebook_id = fixtures["notebook_id"]
+    fixtures = json.loads(questions_path.read_text(encoding="utf-8"))
+    notebook_id = notebook_id_override if notebook_id_override is not None else fixtures["notebook_id"]
     questions = fixtures["questions"]
 
     with connect() as conn:
         notebook = conn.execute("SELECT * FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
         if notebook is None:
-            print(f"Notebook id={notebook_id} not found in this database. Edit tests/eval_questions.json.")
+            print(f"Notebook id={notebook_id} not found in this database. Edit {questions_path.name} or pass --notebook-id.")
             return 2
         user_id = notebook["user_id"]
         source_ids = [
@@ -152,8 +160,22 @@ def main() -> int:
         action="store_true",
         help="disable query rewrite and LLM rerank to measure the production hybrid fallback",
     )
+    parser.add_argument(
+        "--questions",
+        type=Path,
+        default=FIXTURES,
+        help="question-set JSON (default: tests/eval_questions.json)",
+    )
+    parser.add_argument("--notebook-id", type=int, default=None, help="override the set's notebook_id")
     args = parser.parse_args()
-    return asyncio.run(run(top_k=args.top_k, disable_rerank=args.no_rerank))
+    return asyncio.run(
+        run(
+            top_k=args.top_k,
+            disable_rerank=args.no_rerank,
+            questions_path=args.questions,
+            notebook_id_override=args.notebook_id,
+        )
+    )
 
 
 if __name__ == "__main__":
