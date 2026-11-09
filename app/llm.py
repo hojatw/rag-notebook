@@ -13,7 +13,14 @@ import httpx
 
 from .config import config
 from .domain_policy import deterministic_hint_queries, query_rewrite_hint_context
-from .governance import count_cjk_chars, estimate_tokens, normalize_usage, record_llm_usage_event
+from .governance import (
+    count_cjk_chars,
+    estimate_tokens,
+    normalize_usage,
+    record_llm_usage_event,
+    record_output_scan_events,
+    record_rerank_outliers,
+)
 
 
 ABSTAIN_MARKER = "[[RAG_ABSTAIN]]"
@@ -2392,7 +2399,54 @@ async def rerank_chunks(
     ranked.sort(key=lambda item: item[0], reverse=True)
     reranked = [chunk for score, chunk in ranked[:limit] if score > 0]
     logger.info("rerank_completed candidates=%s scored=%s returned=%s", len(candidates), len(ranked), len(reranked))
+    pool = candidates[:RERANK_INPUT_SIZE]
+    outliers = rerank_outliers(pool, reranked)
+    if outliers:
+        logger.warning(
+            "rerank_outliers count=%s candidates=%s hybrid_ranks=%s",
+            len(outliers), len(pool), ",".join(str(item["hybrid_rank"]) for item in outliers),
+        )
+        record_rerank_outliers(outliers, candidate_count=len(pool), usage_context=usage_context)
     return reranked
+
+
+def rerank_outliers(
+    candidates: list[dict[str, Any]],
+    reranked: list[dict[str, Any]],
+    *,
+    min_score: float | None = None,
+    min_hybrid_rank: int | None = None,
+) -> list[dict[str, Any]]:
+    """Returned chunks the reranker scored near the top that hybrid ranked low.
+
+    Telemetry only -- ranking is already decided. Rank, not score, is compared
+    on the hybrid side because hybrid scores have no calibrated scale here,
+    while "the reranker pulled a bottom-half candidate to the top with a
+    near-maximal score" is scale-free. Legitimate reranks do this too, which is
+    why it is a low-severity signal; a source that keeps producing it *and*
+    carries an ingest-scan warning is the combination worth looking at.
+    """
+    min_score = config.retrieval.rerank_outlier_min_score if min_score is None else min_score
+    min_hybrid_rank = (
+        config.retrieval.rerank_outlier_min_hybrid_rank if min_hybrid_rank is None else min_hybrid_rank
+    )
+    if min_hybrid_rank <= 0:
+        return []
+    by_hybrid = sorted(candidates, key=lambda item: item["score"], reverse=True)
+    hybrid_rank = {chunk.get("id"): rank for rank, chunk in enumerate(by_hybrid, start=1)}
+    outliers = []
+    for returned_rank, chunk in enumerate(reranked, start=1):
+        rank = hybrid_rank.get(chunk.get("id"))
+        if rank is None or chunk.get("id") is None:
+            continue
+        if float(chunk.get("rerank_score") or 0.0) >= min_score and rank > min_hybrid_rank:
+            outliers.append({
+                "source_id": chunk.get("source_id"),
+                "rerank_score": round(float(chunk["rerank_score"]), 3),
+                "hybrid_rank": rank,
+                "returned_rank": returned_rank,
+            })
+    return outliers
 
 
 async def generate_starter_questions(
@@ -3233,6 +3287,9 @@ async def chat_completion(
         metadata=_usage_metadata({"temperature": request["json"].get("temperature")}, retry_stats),
         model_key="chat_model",
     )
+    # Warn-only: an answer, briefing or tool output shaped by an injected
+    # instruction (docs/SECURITY.md -> "Rendering LLM output").
+    record_output_scan_events(content, user_prompt, call_type=call_type, usage_context=usage_context)
     # Use the same dependency-free CJK-aware fallback as persisted telemetry.
     # 誤報："prompt_tokens_est" 是估算的 token 數，不是憑證。
     # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
@@ -3276,6 +3333,9 @@ async def chat_completion_stream(
     input_cjk_chars = count_cjk_chars(system_prompt) + count_cjk_chars(user_prompt)
     chars = 0
     cjk_chars = 0
+    # Kept for the output scan at completion. The answer path already buffers
+    # the whole completion (bounded by MAX_STREAM_BUFFER_CHARS) before parsing.
+    output_parts: list[str] = []
     usage: dict[str, Any] | None = None
     retry_stats: dict[str, Any] = {}
     stream_usage_requested = True
@@ -3315,6 +3375,7 @@ async def chat_completion_stream(
                     if delta:
                         chars += len(delta)
                         cjk_chars += count_cjk_chars(delta)
+                        output_parts.append(delta)
                         yield delta
             break
         except httpx.HTTPStatusError as exc:
@@ -3421,6 +3482,9 @@ async def chat_completion_stream(
             usage=usage,
         ),
         model_key="chat_model",
+    )
+    record_output_scan_events(
+        "".join(output_parts), user_prompt, call_type=call_type, usage_context=usage_context
     )
     logger.info(
         "chat_stream_completed provider=%s model=%s prompt_chars=%s response_chars=%s elapsed_ms=%.1f",

@@ -21,6 +21,12 @@ low_confidence_threshold = 0.25  # top score below this -> the answer abstains
 candidate_pool_size = 20      # vector n_results / keyword limit / pre-rerank cap
 final_chunk_count = 6         # chunks kept after rerank, fed to the answer
 fallback_max_chunks = 2000    # cap on the degraded Chroma-down SQLite scan
+# Telemetry only, never changes ranking: record an ai_safety_events row when a
+# returned chunk got a rerank score >= min_score although hybrid search ranked
+# it below min_hybrid_rank (a chunk telling the reranker to score it highly).
+# Uncalibrated starting values; set min_hybrid_rank = 0 to turn it off.
+rerank_outlier_min_score = 0.9
+rerank_outlier_min_hybrid_rank = 10
 
 # --- Chunking (CHANGING THESE REQUIRES RE-INDEXING existing sources) --------
 [chunking]

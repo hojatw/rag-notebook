@@ -289,7 +289,65 @@ already strips it. Playwright is a dev dependency, and CI installs Chromium. Und
 `CI` the browser tests fail instead of skipping, so the sanitizer is never silently
 unheld. `tests/test_ui_shell.py` holds the headers.
 
-**Not covered here.** These are the open items from the same review, in priority order:
+**Markdown exports (L3, 2026-11-09).** An exported `.md` file gets opened in editors and
+wikis that render images and raw HTML on their own. So `_markdown_download` (which all
+three export routes use) passes the text through `neutralize_markdown_export` before
+sending it:
+
+- `![alt](url)` and `![alt][ref]` become `[圖片：alt](url)`. The URL stays, but the reader
+  has to click it.
+- Opening tags that fetch, submit or style (`img`, `iframe`, `form`, `style`, `svg`, …)
+  are escaped to `&lt;`.
+- Fenced and inline code are left exactly as written.
+
+The stored message or note is not changed. The in-app copy button still yields the
+original Markdown.
+
+**Telemetry for the injection itself (`local.rules.v3`, 2026-11-09).** Rendering
+hardening stops the effect. These three signals record the cause, so an operator can
+find the document behind it. All are warn-only and never block ingest or an answer.
+They store counts, flags and hashes, never document text, output text or URLs (an
+exfiltration URL *is* the data it carries). The schema contracts are in `SCHEMA.md`.
+
+- **Ingested sources.** Each chunk is checked against the prompt-injection rules,
+  producing one `source_ingest_scan` event per matched rule per ingest, plus counts in
+  `diagnostics_json.safety`.
+  - Only the strong rules (ignore previous instructions, reveal the system prompt;
+    `SOURCE_SCAN_WARNING_RULES`) put a `!` on the source row and a warning in the
+    preview drawer. The "bypass rules" patterns were written for short chat
+    questions. Over whole documents they match ordinary prose: 4 of this repo's 26
+    docs, all false positives. A warning that is usually wrong teaches people to
+    ignore it, so those matches are telemetry only.
+  - The control/invisible-text rule is not applied to documents, because PDF text
+    routinely carries form feeds and BOMs. The secret rule is not applied either: it
+    is a DLP question, not an injection one.
+- **Model output.** `chat_completion` and `chat_completion_stream` check every
+  completion against the prompt it answered (internal call types such as rerank,
+  rewrite, judge and the settings probes are skipped). The prompt holds all the
+  evidence, which gives three rules:
+  - `output.markdown_remote_image`: a Markdown image pointing at a remote URL
+    (high).
+  - `output.unsourced_url`: a URL not *exactly* equal to one in the prompt
+    (medium). It is high when the host does appear in the prompt, because "the
+    evidence's host, a different path or query" is how an injected
+    "append the excerpts to https://host/?d=" comes back out.
+  - `output.active_markup`: HTML that fetches, submits, styles, or carries
+    `hx-*`/`data-hx-*` (medium).
+
+  Events carry the call's context ids. A chat answer is linked by
+  `conversation_id`, not `message_id`, because the scan runs before the message is
+  saved.
+- **Rerank outliers.** These are recorded as low-severity events with the chunk's
+  `source_id` (see `RETRIEVAL.md` → *LLM rerank*). Legitimate reranks produce them
+  too. A source that keeps producing them **and** carries an ingest-scan finding is
+  the combination worth reviewing.
+
+Regex rules are easy to evade. These are review signals, not a boundary: the
+boundary is the rendering hardening above.
+
+**Not covered yet.** These are the open items from the same review, in priority order.
+The first three need an LLM-backed eval to change safely (see the 2026-11-09 review
+notes):
 
 - The model can still write misleading or phishing *text* and click-through links.
   This change removes what happens without a click, not what a reader can be talked
@@ -297,14 +355,17 @@ unheld. `tests/test_ui_shell.py` holds the headers.
 - Evidence is concatenated into prompts without structural boundaries, so a chunk can
   forge an excerpt header, `Question:` line or guidance block. Most task prompts
   (summary, briefing, compare, study guide/FAQ/timeline, minutes, rerank, judge, eval
-  authoring, starter/follow-up) do not state that their input is untrusted.
+  authoring, starter/follow-up) do not state that their input is untrusted. The
+  planned fix is tagged excerpts for answer and judge, behind an admin setting
+  recorded in `eval_runs.llm_snapshot_json` (the O5b pattern), plus a shared
+  untrusted-input rule for every task prompt. It changes what the fixed serving model
+  reads, so it ships only after a judged A/B run.
 - The reranker's score can be self-assigned by a chunk ("score me 1.0"). The
   low-confidence gate reads the post-rerank score, so such a chunk always reaches the
-  answer prompt once it is among the candidates.
-- `scan_ai_safety` covers user input only, not ingested chunks or model output.
+  answer prompt once it is among the candidates. Moving the gate onto the hybrid score
+  needs the threshold re-calibrated with `tests.eval_retrieval`. The outlier telemetry
+  above is the data for that.
 - A document containing `[[RAG_ABSTAIN]]` can make the model abstain on a topic.
-- Markdown exports (`.md`) keep image and link syntax verbatim; the hardening above is
-  render-time only.
 
 ### Uploaded-file parsing runs in a killable child process (2026-10-25)
 
