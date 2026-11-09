@@ -9,6 +9,19 @@
 
 ## [未發布]
 
+### 升級注意事項
+
+- **使用者會看到的變化**：回答與筆記裡的 Markdown 圖片改為「圖片：說明（網域）」連結，
+  點了才開啟；Markdown 匯出也同樣改寫（見下方「安全性」）。若使用者習慣在筆記裡嵌圖，
+  建議事先告知。
+- **既有來源要重新索引，才會有 prompt injection 掃描結果**（來源列「!」與預覽面板的警告）。
+  不重新索引不會壞，只是舊來源沒有掃描紀錄。schema 不變。
+- 新增設定鍵 `[retrieval] rerank_outlier_min_score`、`rerank_outlier_min_hybrid_rank`
+  （只影響紀錄，不影響排序；後者設 0 即關閉）。
+- 所有回應新增 `Content-Security-Policy`、`Referrer-Policy`、`X-DNS-Prefetch-Control`。
+  若前端反向代理本身也設了 `Content-Security-Policy`，瀏覽器會同時套用兩者（取交集），
+  上線後請確認 SSO 登入與各頁面正常。
+
 ### 新增
 
 - **`tests.eval_retrieval` 可指定題集與 notebook**（`--questions`、`--notebook-id`），
@@ -47,9 +60,6 @@
     門檻為未校準的起始值，可在 `[retrieval] rerank_outlier_*` 調整，設為 0 即關閉。
 
   所有紀錄只存數量、旗標與雜湊，不存文件內容、模型輸出或網址。
-- 升級不需重新索引，schema 不變；既有來源的注入掃描結果要重新索引後才會出現。新增兩個設定鍵
-  `[retrieval] rerank_outlier_min_score`、`rerank_outlier_min_hybrid_rank`（只影響紀錄，不影響排序）。
-  若前端反向代理本身也設了 `Content-Security-Policy`，瀏覽器會同時套用兩者（取交集）。
 
 ### 內部
 
