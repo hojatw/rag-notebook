@@ -836,6 +836,11 @@ MESSAGES: dict[str, dict[str, str]] = {
         "js.role_you": "你",
         "js.role_assistant": "助理",
         "js.copied": "✓ 已複製",
+        # Rendered Markdown never loads images; it shows this link instead
+        # (docs/SECURITY.md -> "Rendering LLM output").
+        "js.markdown_image": "圖片：{label}",
+        "js.markdown_image_host": "圖片：{label}（{host}）",
+        "js.markdown_image_untitled": "未命名",
         # upload widget (Phase 1c) — {max}/{count}/{size} filled by tr()/t()
         "js.upload_too_many": "一次最多上傳 {max} 個檔案，已保留前 {max} 個。",
         "js.upload_hint": "拖曳最多 {max} 個檔案到此，或點擊選擇",

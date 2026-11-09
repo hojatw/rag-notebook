@@ -129,9 +129,15 @@ Python 3.12——**但只改文件的變更會跳過**：若一次變更的所�
 
 ```text
 pip install -r requirements.txt -r requirements-dev.txt   # 命中 venv 快取時跳過
+python -m playwright install --with-deps chromium         # 每次都跑，見下
 python -m py_compile app/*.py tests/*.py
 pytest -q            # 帶 NOTEBOOKLM_SECRET=ci-test-secret，預設 -n auto 並行
 ```
+
+**Chromium 每次都裝**，因為瀏覽器不在 `.venv` 裡，venv 快取蓋不到它。它只服務
+`tests/test_markdown_render.py`：前端 Markdown 渲染的防護（`docs/SECURITY.md` →
+*Rendering LLM output*）只存在於瀏覽器裡，Python 測不到。這組測試在 `CI` 環境變數
+存在時，缺瀏覽器會**失敗而不是略過**——否則安裝步驟一壞，防護就在綠燈下變成沒人守。
 
 **CI 會快取整個 `.venv`**（`actions/cache`，鍵含 runner OS、**完整**的 Python 版本、
 以及 `requirements.txt` + `requirements-dev.txt` 的雜湊）。命中時整個安裝步驟跳過。
@@ -171,7 +177,7 @@ workflow 不啟動，GitHub 就永遠等不到那個必要檢查，純文件 PR 
 `if: steps.filter.outputs.code == 'true'`。這樣 required check 永遠會回報，
 純文件變更時它只是很快地以成功結束。
 
-CI **不會**做的事（需要人）：瀏覽器走查、檢索 eval（`tests.eval_retrieval` 需要
+CI **不會**做的事（需要人）：瀏覽器走查（上面那組瀏覽器測試只驗 Markdown 渲染，不是頁面走查）、檢索 eval（`tests.eval_retrieval` 需要
 已設定 embedding model；chat model 與 API key 選填）、Docker build 煙霧測試。這些的判準見
 [`AGENTS.md`](../AGENTS.md) 的 Verification 段落。
 

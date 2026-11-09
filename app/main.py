@@ -482,6 +482,53 @@ async def csrf_protection(request: Request, call_next):
     return response
 
 
+# Second layer behind the Markdown sanitizer in app.js (docs/SECURITY.md ->
+# "Rendering LLM output"): stop rendered LLM output from making the browser fetch
+# from anywhere but this app, which is how an injected instruction would carry
+# notebook content out without anyone clicking. Every directive is one this app's
+# own pages were checked against, which is why some are deliberately absent:
+#   - no `script-src` / `default-src`: base.html has inline <script>, templates use
+#     inline handlers, and Alpine's standard build needs eval;
+#   - no `form-action`: browsers apply it to the redirect after a form submit, and
+#     the OIDC and trusted-header login buttons are forms that redirect to the IdP;
+#   - no `frame-ancestors`: clickjacking policy, not this concern, and changing it
+#     could break a deployment that embeds the app.
+# `style-src` keeps 'unsafe-inline' (templates use style=, HTMX injects <style>);
+# what it adds is that no stylesheet or @import can come from another origin.
+CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "img-src 'self' data:",
+        "style-src 'self' 'unsafe-inline'",
+        "font-src 'self' data:",
+        "media-src 'self'",
+        "object-src 'none'",
+        "base-uri 'self'",
+    )
+)
+SECURITY_HEADERS: dict[str, str] = {
+    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+    # `same-origin`, not `no-referrer`: the latter also turns a POST's Origin
+    # header into `null`, which nothing here needs to risk.
+    "Referrer-Policy": "same-origin",
+    # A link's host can itself carry data (`<secret>.attacker.example`); keep the
+    # browser from resolving hosts of links nobody clicked.
+    "X-DNS-Prefetch-Control": "off",
+}
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Attach SECURITY_HEADERS to every response, including CSRF/size rejections.
+
+    Registered after ``csrf_protection`` so it wraps it: that middleware returns
+    its 403/411/413 responses directly, and those pages render too.
+    """
+    response = await call_next(request)
+    for name, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    return response
+
+
 @app.middleware("http")
 async def request_logger(request: Request, call_next):
     """Log each HTTP request with status and elapsed time."""

@@ -16,6 +16,31 @@
 - P3-3 量測工具：`scripts/usage_percentiles.py` 唯讀彙總 `llm_usage_events` 各 `call_type`／chat 主機的 `prompt_tokens` 與延遲 p50/p95（不輸出任何內容）；`retrieve` 每題多記一行 `retrieve_stage_timings`（rewrite／embedding／Chroma／keyword／merge／rerank 各段 ms）。
 - A12 Phase 1：攝取 PDF／DOCX／HTML 時偵測標題結構（作者大綱 → 目錄頁 → 編號樣式），結果顯示在來源的萃取診斷面板（「文件結構」一行）。只做診斷：切塊、索引與引用都不變，所以不需要重新索引；既有來源要重新索引後才會顯示這一行。
 
+### 安全性
+
+- **模型輸出不再能讓瀏覽器自動對外連線或代為送出請求（間接 prompt injection）。**
+  上傳的文件若藏有指令，先前可以讓回答、簡報（briefing）或筆記：
+  - 夾帶外部圖片網址。畫面一渲染，瀏覽器就把同一 notebook 其他文件的內容送出去，
+    不需要任何點擊；簡報在開啟 notebook 時自動產生，所以連問題都不用問。
+  - 夾帶 `data-hx-post` 屬性。經 HTMX 載入的內容會讓瀏覽器帶著 CSRF token 送出該請求。
+  - 夾帶假的登入表單或全版面覆蓋層。
+
+  現在 Markdown 渲染一律不產生圖片、表單、樣式與 `data-*` 屬性，HTMX 不處理回答內容，
+  外部連結以新分頁、`noreferrer` 開啟。另外，所有回應都加上限制圖片／樣式／字型來源的
+  `Content-Security-Policy`，以及 `Referrer-Policy: same-origin`、`X-DNS-Prefetch-Control: off`。
+  細節與刻意不加的指令（`form-action` 會擋掉 SSO 登入）見 `docs/SECURITY.md` →
+  *Rendering LLM output*。
+- **行為變更：Markdown 裡的圖片改顯示為「圖片：說明（網域）」連結**，點了才開啟；
+  使用者手寫筆記裡的圖片也一樣。原本的 Markdown 原文不變，複製與匯出都保留原樣。
+- 不需重新索引；資料、設定鍵與 schema 都不變。若前端反向代理本身也設了
+  `Content-Security-Policy`，瀏覽器會同時套用兩者（取交集）。
+
+### 內部
+
+- 開發相依新增 `playwright`（`requirements-dev.txt`），CI 每次安裝 Chromium，
+  用來在真瀏覽器裡驗證前端 Markdown 渲染的防護（`tests/test_markdown_render.py`）。
+  本機沒有瀏覽器時這組測試會略過並說明原因；在 CI 裡則直接失敗。
+
 ### 文件
 
 - A12 Phase 0 量測：新增一次性腳本 `tests/measure_heading_structure.py`，結果寫回 `docs/ROADMAP.md` A12，並以 R1/R2 語料重跑（PDF/DOCX/HTML 分列，逐份中位數 16–19%；已裁決進 Phase 1）。
