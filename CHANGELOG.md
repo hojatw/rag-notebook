@@ -9,12 +9,63 @@
 
 ## [未發布]
 
+### 升級注意事項
+
+- **使用者會看到的變化**：回答與筆記裡的 Markdown 圖片改為「圖片：說明（網域）」連結，
+  點了才開啟；Markdown 匯出也同樣改寫（見下方「安全性」）。若使用者習慣在筆記裡嵌圖，
+  建議事先告知。
+- **既有來源要重新索引，才會有 prompt injection 掃描結果**（來源列「!」與預覽面板的警告）。
+  不重新索引不會壞，只是舊來源沒有掃描紀錄。schema 不變。
+- 新增設定鍵 `[retrieval] rerank_outlier_min_score`、`rerank_outlier_min_hybrid_rank`
+  （只影響紀錄，不影響排序；後者設 0 即關閉）。
+- 所有回應新增 `Content-Security-Policy`、`Referrer-Policy`、`X-DNS-Prefetch-Control`。
+  若前端反向代理本身也設了 `Content-Security-Policy`，瀏覽器會同時套用兩者（取交集），
+  上線後請確認 SSO 登入與各頁面正常。
+
 ### 新增
 
 - **`tests.eval_retrieval` 可指定題集與 notebook**（`--questions`、`--notebook-id`），
   用來跑放在 `local/` 的 Q1-3 R1 題集，不必改 `tests/eval_questions.json`。
 - P3-3 量測工具：`scripts/usage_percentiles.py` 唯讀彙總 `llm_usage_events` 各 `call_type`／chat 主機的 `prompt_tokens` 與延遲 p50/p95（不輸出任何內容）；`retrieve` 每題多記一行 `retrieve_stage_timings`（rewrite／embedding／Chroma／keyword／merge／rerank 各段 ms）。
 - A12 Phase 1：攝取 PDF／DOCX／HTML 時偵測標題結構（作者大綱 → 目錄頁 → 編號樣式），結果顯示在來源的萃取診斷面板（「文件結構」一行）。只做診斷：切塊、索引與引用都不變，所以不需要重新索引；既有來源要重新索引後才會顯示這一行。
+
+### 安全性
+
+- **模型輸出不再能讓瀏覽器自動對外連線或代為送出請求（間接 prompt injection）。**
+  上傳的文件若藏有指令，先前可以讓回答、簡報（briefing）或筆記：
+  - 夾帶外部圖片網址。畫面一渲染，瀏覽器就把同一 notebook 其他文件的內容送出去，
+    不需要任何點擊；簡報在開啟 notebook 時自動產生，所以連問題都不用問。
+  - 夾帶 `data-hx-post` 屬性。經 HTMX 載入的內容會讓瀏覽器帶著 CSRF token 送出該請求。
+  - 夾帶假的登入表單或全版面覆蓋層。
+
+  現在 Markdown 渲染一律不產生圖片、表單、樣式與 `data-*` 屬性，HTMX 不處理回答內容，
+  外部連結以新分頁、`noreferrer` 開啟。另外，所有回應都加上限制圖片／樣式／字型來源的
+  `Content-Security-Policy`，以及 `Referrer-Policy: same-origin`、`X-DNS-Prefetch-Control: off`。
+  細節與刻意不加的指令（`form-action` 會擋掉 SSO 登入）見 `docs/SECURITY.md` →
+  *Rendering LLM output*。
+- **行為變更：Markdown 裡的圖片改顯示為「圖片：說明（網域）」連結**，點了才開啟；
+  使用者手寫筆記裡的圖片也一樣。資料庫裡的原文不變，「複製」按鈕仍取得原始 Markdown。
+- **行為變更：Markdown 匯出（對話、全部筆記、單筆筆記）改為不會自動載入外部資源。**
+  `.md` 檔常在會自行渲染圖片與 HTML 的編輯器或 wiki 裡開啟，所以匯出時：
+  - `![說明](網址)` 改寫成 `[圖片：說明](網址)`；
+  - 會載入外部資源、送出表單或改樣式的 HTML 標籤（`<img>`、`<iframe>`、`<form>` 等）改為純文字；
+  - 程式碼區塊與行內程式碼原樣保留。
+- **新增間接 prompt injection 的偵測紀錄**（只記錄、不阻擋，偵測器版本 `local.rules.v3`）：
+  - 上傳的文件逐段比對注入特徵。命中「忽略先前指示」「要求揭露系統提示」這類強訊號時，
+    來源列會出現「!」，預覽面板會說明原因；較寬鬆的規則只寫進 `ai_safety_events`，
+    避免一般文件被誤標。
+  - 回答、簡報與各項工具的輸出，會和模型收到的內容比對：遠端圖片語法、輸入中沒有的網址
+    （同網域但路徑不同時列為高風險）、會載入或觸發行為的 HTML。
+  - LLM rerank 把混合檢索排名很後面的段落拉到前面、又給接近滿分時，記錄為低風險事件。
+    門檻為未校準的起始值，可在 `[retrieval] rerank_outlier_*` 調整，設為 0 即關閉。
+
+  所有紀錄只存數量、旗標與雜湊，不存文件內容、模型輸出或網址。
+
+### 內部
+
+- 開發相依新增 `playwright`（`requirements-dev.txt`），CI 每次安裝 Chromium，
+  用來在真瀏覽器裡驗證前端 Markdown 渲染的防護（`tests/test_markdown_render.py`）。
+  本機沒有瀏覽器時這組測試會略過並說明原因；在 CI 裡則直接失敗。
 
 ### 文件
 

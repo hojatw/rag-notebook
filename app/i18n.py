@@ -127,6 +127,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.warn_pdf_structure_fallback": "這份 PDF 無法解析段落與表格結構，已退回逐頁純文字。引用位置只會精確到頁，表格內容可能變得難以閱讀。",
         "diag.warn_chunk_over_token_budget": "有 {count} 個分塊可能超過 embedding 模型的輸入上限（約 {budget} tokens）。依端點行為而定：有些會靜默截斷（尾端檢索不到），有些會直接拒絕整批請求而導致索引失敗。此為估算值，非實際量測。",
         "diag.warn_empty_sections": "有 {count} 個分段是空白的，已略過。",
+        "diag.warn_instruction_like_text": "有 {count} 個分塊含有類似對 AI 下指令的文字（例如要求忽略先前指示）。這可能是文件本身在討論這類手法，也可能是刻意藏入、想影響回答的內容。來源仍已索引；若不確定文件出處，建議先確認內容再使用。",
         # A6b PPTX
         "diag.warn_pptx_visual_only_slides": "有 {count} 張投影片只有圖片、圖表或 SmartArt，沒有可讀取的文字，因此沒有被索引。目前的簡報支援只讀文字；圖像內容需要 OCR 或影像理解能力才能處理。",
         "diag.slides": "投影片",
@@ -477,6 +478,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         # --- Markdown export headings (Phase 1a) -----------------------------
         "export.citations": "引用來源：",
         "export.notes_suffix": "筆記",
+        "export.image_label": "圖片：{label}",
+        "export.image_untitled": "未命名",
         # --- User-facing server errors (Phase 1b) ----------------------------
         # friendly_error_message body templates ({action} is filled in)
         "error.timeout": "{action}逾時，請稍後再試。",
@@ -836,6 +839,11 @@ MESSAGES: dict[str, dict[str, str]] = {
         "js.role_you": "你",
         "js.role_assistant": "助理",
         "js.copied": "✓ 已複製",
+        # Rendered Markdown never loads images; it shows this link instead
+        # (docs/SECURITY.md -> "Rendering LLM output").
+        "js.markdown_image": "圖片：{label}",
+        "js.markdown_image_host": "圖片：{label}（{host}）",
+        "js.markdown_image_untitled": "未命名",
         # upload widget (Phase 1c) — {max}/{count}/{size} filled by tr()/t()
         "js.upload_too_many": "一次最多上傳 {max} 個檔案，已保留前 {max} 個。",
         "js.upload_hint": "拖曳最多 {max} 個檔案到此，或點擊選擇",

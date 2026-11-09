@@ -178,3 +178,64 @@ def test_theme_rejects_values_outside_the_allowlist(monkeypatch, tmp_path):
         with db.connect() as conn:
             row = conn.execute("SELECT theme FROM users WHERE username = 'admin'").fetchone()
         assert row["theme"] == "system"
+
+
+def _csp_directives(response) -> dict[str, str]:
+    header = response.headers.get("content-security-policy", "")
+    directives = {}
+    for part in header.split(";"):
+        name, _, value = part.strip().partition(" ")
+        if name:
+            directives[name] = value.strip()
+    return directives
+
+
+def test_security_headers_cover_pages_rejections_and_static(monkeypatch, tmp_path):
+    """Second layer behind the Markdown sanitizer (docs/SECURITY.md ->
+    "Rendering LLM output"): every response tells the browser not to load
+    images, styles, fonts or media from another origin, so rendered LLM output
+    cannot carry notebook content out by making the browser fetch it."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        responses = {"login": client.get("/login")}
+        # A rejection returned by csrf_protection itself, before any route runs.
+        with FastAPITestClient(main.app) as bare:
+            responses["csrf_reject"] = bare.post("/notebooks/new", data={"title": "x"})
+        responses["not_found"] = client.get("/this-route-does-not-exist")
+        responses["static"] = client.get("/static/app.js")
+        _login(client)
+        created = client.post(
+            "/notebooks/new",
+            data={"title": "CSP", "emoji": "📓", "description": ""},
+            follow_redirects=False,
+        )
+        responses["notebook"] = client.get(created.headers["location"])
+
+    assert responses["csrf_reject"].status_code == 403
+    assert responses["notebook"].status_code == 200
+    for name, response in responses.items():
+        directives = _csp_directives(response)
+        assert directives.get("img-src") == "'self' data:", name
+        assert directives.get("style-src") == "'self' 'unsafe-inline'", name
+        assert directives.get("font-src") == "'self' data:", name
+        assert directives.get("media-src") == "'self'", name
+        assert directives.get("object-src") == "'none'", name
+        assert directives.get("base-uri") == "'self'", name
+        assert response.headers.get("referrer-policy") == "same-origin", name
+        assert response.headers.get("x-dns-prefetch-control") == "off", name
+
+
+def test_security_headers_leave_login_redirects_and_scripts_alone(monkeypatch, tmp_path):
+    """The directives deliberately left out, pinned so nobody "completes" the
+    policy and breaks login. `form-action` is enforced by browsers on the
+    redirect that follows a form submit, and the OIDC / trusted-header buttons
+    on /login are forms that redirect to the IdP. `script-src` / `default-src`
+    would block base.html's inline scripts and Alpine's eval-based build."""
+    main, _db = _fresh_app(monkeypatch, tmp_path)
+
+    with FastAPITestClient(main.app) as client:
+        directives = _csp_directives(client.get("/login"))
+
+    for absent in ("form-action", "script-src", "default-src", "frame-ancestors"):
+        assert absent not in directives, absent

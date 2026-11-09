@@ -13,6 +13,7 @@ from typing import Any
 from . import i18n, system_settings
 from .config import config
 from .db import connect, dumps, load_llm_settings
+from .governance import SOURCE_SCAN_WARNING_CODE, record_source_scan_events, scan_source_chunks
 from .heading_detect import detect_structure
 from .llm import embed_texts, summarize_source
 from .vector_store import delete_source as delete_source_vectors
@@ -2243,6 +2244,39 @@ async def run_extraction(path: Path, telemetry: dict[str, Any] | None = None) ->
     return await asyncio.to_thread(extract_sections, path)
 
 
+def _scan_source_for_injection(
+    source: Any, records: list[tuple[str, str]], diagnostics: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Warn-only prompt-injection scan of the chunks about to be indexed.
+
+    The summary lands in `diagnostics["safety"]` (content-free counts) and, when
+    anything matched, as an ingest warning, so the source row shows its `!` and
+    the preview drawer says why. Events are written by the caller only once the
+    source is indexed, so a failed ingest leaves no orphan finding. A scanner
+    error must never fail the ingest.
+    """
+    try:
+        summary = scan_source_chunks([text for _location, text in records])
+    except Exception:
+        logger.warning("source_scan_failed source_id=%s", source["id"], exc_info=True)
+        return None
+    diagnostics["safety"] = {
+        key: summary[key]
+        for key in ("detector_version", "chunks_scanned", "chunks_flagged", "chunks_warned", "rules")
+    }
+    if summary["chunks_warned"]:
+        diagnostics["warnings"].append(
+            {"code": SOURCE_SCAN_WARNING_CODE, "count": summary["chunks_warned"]}
+        )
+    if summary["chunks_flagged"]:
+        logger.warning(
+            "source_scan_flagged source_id=%s chunks_flagged=%s chunks_scanned=%s rules=%s",
+            source["id"], summary["chunks_flagged"], summary["chunks_scanned"],
+            ",".join(sorted(summary["rules"])),
+        )
+    return summary
+
+
 async def process_source(source_id: int) -> None:
     """Extract, chunk, embed, and persist vectors for one source record."""
     with connect() as conn:
@@ -2302,6 +2336,7 @@ async def process_source(source_id: int) -> None:
             diagnostics["extract_peak_rss_mb"] = extract_telemetry["peak_rss_mb"]
         if not records:
             raise ValueError("No extractable text found.")
+        source_scan = _scan_source_for_injection(source, records, diagnostics)
 
         logger.info(
             "ingest_chunked source_id=%s sections=%s chunks=%s extractor=%s warnings=%s",
@@ -2361,6 +2396,11 @@ async def process_source(source_id: int) -> None:
             ]
         )
         logger.info("ingest_completed source_id=%s chunks=%s", source_id, len(records))
+        if source_scan and source_scan.get("rules"):
+            record_source_scan_events(
+                source_scan,
+                context={"user_id": source["user_id"], "notebook_id": source["notebook_id"], "source_id": source_id},
+            )
         # Best-effort per-source summary. Runs AFTER status='indexed' so a
         # summarization failure leaves the source fully usable for retrieval.
         await _generate_source_summary(source_id)

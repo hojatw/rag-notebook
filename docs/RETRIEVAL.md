@@ -133,6 +133,8 @@ The active `final_chunk_count` (default 6) by `combined` is returned. Graceful f
 - No chat model → return hybrid top-6 directly (a blank API key is valid for local services).
 - HTTP / parse / empty-scores failure → return hybrid top-6 directly.
 
+**Outlier telemetry (2026-11-09, never changes ranking).** A returned chunk with `rerank_score >= [retrieval].rerank_outlier_min_score` (0.9) that hybrid search ranked below `rerank_outlier_min_hybrid_rank` (10) is logged as `rerank_outliers` and recorded as a low-severity `ai_safety_events` row (`rerank_outlier`, with its `source_id`). That is the shape of a chunk telling the reranker to score it highly (`docs/SECURITY.md` → *Rendering LLM output*). Legitimate reranks produce it too; the starting values are uncalibrated, and the row stores both ranks so they can be calibrated against real traffic. `rerank_outlier_min_hybrid_rank = 0` turns it off.
+
 Full chunk text is sent (no `text[:900]` truncation) because chunks are already bounded by `chunk_text()` and tail-of-chunk truncation previously dropped answer evidence. Cost stays controlled by the configured chunk-size targets (defaults: ~400 CJK / ~800 Latin chars).
 
 

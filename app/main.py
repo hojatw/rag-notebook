@@ -482,6 +482,53 @@ async def csrf_protection(request: Request, call_next):
     return response
 
 
+# Second layer behind the Markdown sanitizer in app.js (docs/SECURITY.md ->
+# "Rendering LLM output"): stop rendered LLM output from making the browser fetch
+# from anywhere but this app, which is how an injected instruction would carry
+# notebook content out without anyone clicking. Every directive is one this app's
+# own pages were checked against, which is why some are deliberately absent:
+#   - no `script-src` / `default-src`: base.html has inline <script>, templates use
+#     inline handlers, and Alpine's standard build needs eval;
+#   - no `form-action`: browsers apply it to the redirect after a form submit, and
+#     the OIDC and trusted-header login buttons are forms that redirect to the IdP;
+#   - no `frame-ancestors`: clickjacking policy, not this concern, and changing it
+#     could break a deployment that embeds the app.
+# `style-src` keeps 'unsafe-inline' (templates use style=, HTMX injects <style>);
+# what it adds is that no stylesheet or @import can come from another origin.
+CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "img-src 'self' data:",
+        "style-src 'self' 'unsafe-inline'",
+        "font-src 'self' data:",
+        "media-src 'self'",
+        "object-src 'none'",
+        "base-uri 'self'",
+    )
+)
+SECURITY_HEADERS: dict[str, str] = {
+    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+    # `same-origin`, not `no-referrer`: the latter also turns a POST's Origin
+    # header into `null`, which nothing here needs to risk.
+    "Referrer-Policy": "same-origin",
+    # A link's host can itself carry data (`<secret>.attacker.example`); keep the
+    # browser from resolving hosts of links nobody clicked.
+    "X-DNS-Prefetch-Control": "off",
+}
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Attach SECURITY_HEADERS to every response, including CSRF/size rejections.
+
+    Registered after ``csrf_protection`` so it wraps it: that middleware returns
+    its 403/411/413 responses directly, and those pages render too.
+    """
+    response = await call_next(request)
+    for name, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    return response
+
+
 @app.middleware("http")
 async def request_logger(request: Request, call_next):
     """Log each HTTP request with status and elapsed time."""
@@ -4438,10 +4485,59 @@ def _save_followups(message_id: int, user_id: int, questions: list[str]) -> None
         )
 
 
+# L3 (docs/SECURITY.md -> "Rendering LLM output"): an exported .md is opened in
+# editors and wikis that render images and raw HTML on their own, so the
+# in-app rule "rendered Markdown fetches nothing" has to travel with the file.
+# Images keep their URL but become a link that must be clicked; raw HTML tags
+# that fetch, submit or style are escaped to literal text. Code is left alone.
+_EXPORT_IMAGE_RE = re.compile(r"!\[([^\]\n]*)\](?=[(\[])")
+_EXPORT_ACTIVE_TAG_RE = re.compile(
+    r"<(?=\s*/?\s*(?:img|picture|source|video|audio|iframe|frame|object|embed|form|input|"
+    r"button|textarea|select|script|style|link|meta|base|svg)\b)",
+    re.IGNORECASE,
+)
+_EXPORT_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+_EXPORT_INLINE_CODE_RE = re.compile(r"(`+)(?:.+?)\1")
+
+
+def _neutralize_export_text(text: str) -> str:
+    def image_link(match: re.Match) -> str:
+        label = match.group(1).strip() or i18n.t("export.image_untitled")
+        return "[" + i18n.t("export.image_label", label=label) + "]"
+
+    text = _EXPORT_IMAGE_RE.sub(image_link, text)
+    return _EXPORT_ACTIVE_TAG_RE.sub("&lt;", text)
+
+
+def neutralize_markdown_export(markdown: str) -> str:
+    """Make exported Markdown safe to open in a renderer that fetches."""
+    out: list[str] = []
+    fence: str | None = None
+    for line in markdown.split("\n"):
+        opener = _EXPORT_FENCE_RE.match(line)
+        if fence is not None:
+            out.append(line)
+            if opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= len(fence):
+                fence = None
+            continue
+        if opener:
+            fence = opener.group(1)
+            out.append(line)
+            continue
+        pieces, last = [], 0
+        for code in _EXPORT_INLINE_CODE_RE.finditer(line):
+            pieces.append(_neutralize_export_text(line[last:code.start()]))
+            pieces.append(code.group(0))
+            last = code.end()
+        pieces.append(_neutralize_export_text(line[last:]))
+        out.append("".join(pieces))
+    return "\n".join(out)
+
+
 def _markdown_download(markdown: str, filename: str) -> Response:
     """Wrap markdown text as a UTF-8 file download (RFC 5987 filename)."""
     return Response(
-        content=markdown,
+        content=neutralize_markdown_export(markdown),
         media_type="text/markdown; charset=utf-8",
         headers={
             "Content-Disposition": f"attachment; filename=\"export.md\"; filename*=UTF-8''{quote(filename)}",

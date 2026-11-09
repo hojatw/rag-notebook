@@ -17,6 +17,8 @@ def test_defaults_match_the_previously_hardcoded_values(tmp_path, monkeypatch):
     assert c.retrieval.candidate_pool_size == 20
     assert c.retrieval.final_chunk_count == 6
     assert c.retrieval.fallback_max_chunks == 2000
+    assert c.retrieval.rerank_outlier_min_score == 0.9
+    assert c.retrieval.rerank_outlier_min_hybrid_rank == 10
 
     assert c.chunking.latin_target_chars == 800
     assert c.chunking.cjk_target_chars == 400

@@ -49,7 +49,7 @@ SAFE_AGGREGATE_METADATA_KEYS = {
     "policy_chars",
     "policy_tokens_est",
 }
-SAFETY_DETECTOR_VERSION = "local.rules.v2"
+SAFETY_DETECTOR_VERSION = "local.rules.v3"
 SAFETY_MAX_INPUT_CHARS = 12000
 SAFETY_BLOCK_CANDIDATE_CHARS = 24000
 CONTROL_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b\u200c\u200d\ufeff]")
@@ -338,8 +338,21 @@ def record_ai_safety_events(
 ) -> list[dict[str, Any]]:
     """Scan and persist local safety findings without blocking the caller."""
     findings = scan_ai_safety(text, event_type=event_type, surface=surface)
+    _insert_safety_findings(findings, event_type=event_type, surface=surface, context=context, metadata=metadata)
+    return findings
+
+
+def _insert_safety_findings(
+    findings: list[dict[str, Any]],
+    *,
+    event_type: str,
+    surface: str,
+    context: dict[str, Any] | None,
+    metadata: dict[str, Any] | None,
+) -> None:
+    """Persist findings as `ai_safety_events` rows; never raises."""
     if not findings:
-        return []
+        return
     context = _clean_context(context or {})
     base_metadata = _clean_metadata(metadata or {})
     try:
@@ -378,7 +391,238 @@ def record_ai_safety_events(
                 )
     except Exception:
         logger.warning("ai_safety_event_record_failed event_type=%s surface=%s", event_type, surface, exc_info=True)
+
+
+# --- Indirect prompt injection: ingested sources and model output -----------
+#
+# The attacker these two scanners watch for is the author of an uploaded
+# document, not the user (docs/SECURITY.md -> "Rendering LLM output"). Both are
+# warn-only telemetry: they never block ingest or an answer, and they persist
+# counts, booleans and hashes only -- never document text, output text or URLs,
+# because an exfiltration URL *is* the data it is carrying out.
+
+SOURCE_SCAN_EVENT_TYPE = "source_ingest_scan"
+SOURCE_SCAN_SURFACE = "ingest.source"
+#: Ingest warning code (sources.diagnostics_json.warnings[].code). The copy is
+#: `diag.warn_<code>` in app/i18n.py.
+SOURCE_SCAN_WARNING_CODE = "instruction_like_text"
+#: Rules strong enough to put a user-visible warning on a source row. The
+#: "bypass" rules were written for short chat questions; over whole documents
+#: they match ordinary prose ("覆寫變數值；元件規則", "繞過網站存取限制" -- 3 of
+#: this repo's own docs, all false positives), and a `!` that is usually wrong
+#: teaches people to ignore it. They still count in diagnostics and events.
+SOURCE_SCAN_WARNING_RULES = frozenset({
+    "prompt_injection.ignore_previous_instructions",
+    "prompt_injection.reveal_system_prompt",
+    "prompt_injection.zh_ignore_previous_instructions",
+    "prompt_injection.zh_reveal_system_prompt",
+})
+
+
+def scan_source_chunks(texts: list[str]) -> dict[str, Any]:
+    """Count chunks of one source matching the prompt-injection rules.
+
+    Only `PROMPT_INJECTION_PATTERNS` apply to documents. The other input rules
+    would drown the signal: PDF text routinely carries form feeds and BOMs (the
+    control-text rule), credential-looking strings are a DLP question rather
+    than an injection one, and chunks are already length-bounded.
+    """
+    rules: dict[str, int] = {}
+    first_chunk: dict[str, int] = {}
+    flagged: set[int] = set()
+    warned: set[int] = set()
+    for index, text in enumerate(texts):
+        for rule_id, pattern in PROMPT_INJECTION_PATTERNS:
+            if pattern.search(text or ""):
+                key = f"prompt_injection.{rule_id}"
+                rules[key] = rules.get(key, 0) + 1
+                first_chunk.setdefault(key, index)
+                flagged.add(index)
+                if key in SOURCE_SCAN_WARNING_RULES:
+                    warned.add(index)
+    return {
+        "detector_version": SAFETY_DETECTOR_VERSION,
+        "chunks_scanned": len(texts),
+        "chunks_flagged": len(flagged),
+        "chunks_warned": len(warned),
+        "rules": rules,
+        "first_chunk": first_chunk,
+    }
+
+
+def record_source_scan_events(summary: dict[str, Any], *, context: dict[str, Any]) -> None:
+    """One `ai_safety_events` row per matched rule per ingest (not per chunk:
+    a long report would otherwise write hundreds of rows for one document)."""
+    findings = [
+        {
+            "category": "prompt_injection",
+            "severity": "medium",
+            "decision": "warn",
+            "rule_id": rule_id,
+            "redacted_summary": f"Ingested source has {count} chunk(s) matching a prompt-injection pattern.",
+            "metadata": {
+                "chunks_matched": count,
+                "chunks_scanned": summary.get("chunks_scanned", 0),
+                "first_chunk_index": summary.get("first_chunk", {}).get(rule_id),
+            },
+        }
+        for rule_id, count in sorted((summary.get("rules") or {}).items())
+    ]
+    _insert_safety_findings(
+        findings,
+        event_type=SOURCE_SCAN_EVENT_TYPE,
+        surface=SOURCE_SCAN_SURFACE,
+        context=context,
+        metadata=None,
+    )
+
+
+OUTPUT_SCAN_EVENT_TYPE = "output_scan"
+#: Call types whose output is never rendered or stored as user-facing text.
+OUTPUT_SCAN_SKIP_CALL_TYPES = frozenset({"query_rewrite", "rerank", "eval_judge"})
+_URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"'`]+", re.IGNORECASE)
+_URL_TRAILING = ".,;:!?/。，；：！？、」』）】"
+_MARKDOWN_REMOTE_IMAGE_RE = re.compile(r"!\[[^\]\n]*\]\(\s*<?https?://", re.IGNORECASE)
+_ACTIVE_MARKUP_RE = re.compile(
+    r"<\s*(?:img|picture|source|video|audio|iframe|frame|object|embed|form|input|button|"
+    r"textarea|select|script|style|link|meta|base|svg)\b"
+    r"|\b(?:data-)?hx-[a-z-]+\s*=",
+    re.IGNORECASE,
+)
+
+
+def _normalized_urls(text: str) -> list[tuple[str, str]]:
+    """(normalized url, lower-cased host) for each http(s) URL in `text`."""
+    found = []
+    for match in _URL_RE.finditer(text or ""):
+        url = match.group(0).rstrip(_URL_TRAILING)
+        scheme, _, rest = url.partition("://")
+        host, sep, path = rest.partition("/")
+        host = host.lower()
+        found.append((f"{scheme.lower()}://{host}{sep}{path}", host))
+    return found
+
+
+def scan_model_output(output: str, prompt: str) -> list[dict[str, Any]]:
+    """Find the shapes an injected instruction gives model output.
+
+    `prompt` is everything the model was shown, so it contains every piece of
+    evidence. A URL the model emits that is not *exactly* one of the prompt's
+    URLs did not come from the evidence. The sharpest form is a URL on a host
+    the evidence does mention but with a different path or query: that is how
+    an injected "append the other excerpts to https://host/?d=" comes back out.
+    """
+    output = output or ""
+    findings: list[dict[str, Any]] = []
+
+    images = len(_MARKDOWN_REMOTE_IMAGE_RE.findall(output))
+    if images:
+        findings.append({
+            "category": "output_exfiltration",
+            "severity": "high",
+            "decision": "warn",
+            "rule_id": "output.markdown_remote_image",
+            "redacted_summary": "Model output contains Markdown image syntax pointing at a remote URL.",
+            "metadata": {"match_count": images},
+        })
+
+    output_urls = _normalized_urls(output)
+    if output_urls:
+        prompt_urls = _normalized_urls(prompt)
+        known_urls = {url for url, _host in prompt_urls}
+        known_hosts = {host for _url, host in prompt_urls}
+        unsourced = [(url, host) for url, host in output_urls if url not in known_urls]
+        if unsourced:
+            on_known_host = sum(1 for _url, host in unsourced if host in known_hosts)
+            findings.append({
+                "category": "output_unsourced_url",
+                "severity": "high" if on_known_host else "medium",
+                "decision": "warn",
+                "rule_id": "output.unsourced_url",
+                "redacted_summary": "Model output contains a URL that does not appear in its input.",
+                "metadata": {
+                    "url_count": len(output_urls),
+                    "unsourced_count": len(unsourced),
+                    "unsourced_on_known_host_count": on_known_host,
+                },
+            })
+
+    markup = len(_ACTIVE_MARKUP_RE.findall(output))
+    if markup:
+        findings.append({
+            "category": "output_active_markup",
+            "severity": "medium",
+            "decision": "warn",
+            "rule_id": "output.active_markup",
+            "redacted_summary": "Model output contains HTML that fetches, submits, styles or binds behaviour.",
+            "metadata": {"match_count": markup},
+        })
     return findings
+
+
+def record_output_scan_events(
+    output: str,
+    prompt: str,
+    *,
+    call_type: str,
+    usage_context: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Scan one completion against its prompt and persist findings. Never raises."""
+    if call_type in OUTPUT_SCAN_SKIP_CALL_TYPES or call_type.startswith("settings_"):
+        return []
+    try:
+        findings = scan_model_output(output, prompt)
+    except Exception:
+        logger.warning("output_scan_failed call_type=%s", call_type, exc_info=True)
+        return []
+    if findings:
+        content_hash = _content_hash(output)
+        for finding in findings:
+            finding["content_hash"] = content_hash
+        logger.warning(
+            "output_scan_findings call_type=%s rules=%s",
+            call_type, ",".join(finding["rule_id"] for finding in findings),
+        )
+        _insert_safety_findings(
+            findings,
+            event_type=OUTPUT_SCAN_EVENT_TYPE,
+            surface=f"llm.{call_type}"[:120],
+            context=usage_context,
+            metadata=None,
+        )
+    return findings
+
+
+RERANK_OUTLIER_EVENT_TYPE = "rerank_outlier"
+
+
+def record_rerank_outliers(
+    outliers: list[dict[str, Any]],
+    *,
+    candidate_count: int,
+    usage_context: dict[str, Any] | None,
+) -> None:
+    """One row per promoted chunk's source; see `llm.rerank_outliers`."""
+    for outlier in outliers:
+        _insert_safety_findings(
+            [{
+                "category": "retrieval_anomaly",
+                "severity": "low",
+                "decision": "warn",
+                "rule_id": "rerank.promoted_from_low_hybrid_rank",
+                "redacted_summary": "Reranker gave a near-maximal score to a chunk hybrid search ranked low.",
+                "metadata": {
+                    "rerank_score": outlier["rerank_score"],
+                    "hybrid_rank": outlier["hybrid_rank"],
+                    "returned_rank": outlier["returned_rank"],
+                    "candidate_count": candidate_count,
+                },
+            }],
+            event_type=RERANK_OUTLIER_EVENT_TYPE,
+            surface="retrieval.rerank",
+            context={**(usage_context or {}), "source_id": outlier.get("source_id")},
+            metadata=None,
+        )
 
 
 def _optional_int(value: Any) -> int | None:
