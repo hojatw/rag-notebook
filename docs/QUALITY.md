@@ -311,7 +311,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - **Impact:** A **quality** problem, not only a speed one: on a large corpus an older chunk with a much better keyword match can be dropped before it is ever scored, so the keyword arm of hybrid retrieval quietly favours recently indexed sources. Independent of `P1-2` in `PERFORMANCE.md` (FTS5 + BM25) and fixable before it — e.g. rank the pre-cut by number of matched terms instead of by id.
 - **Blocked on:** `Q1-3`. The fix is intuitively right but changes retrieval results, so it needs a representative eval set to show it helps rather than merely changes rankings.
 
-### [ ] Q1-10 · Rerank 只評部分候選時，未評分的候選被整個丟掉（草稿，2026-11-10；方向待 Philip 裁決）
+### [ ] Q1-10 · Rerank 只評部分候選時，未評分的候選被整個丟掉（2026-11-10 記錄；Philip 決定先記錄、之後再做）
 - **Issue：** `rerank_chunks`（`../app/llm.py`）對模型沒給分的候選是 `if rerank_score is None: continue`——不是「少一個分數、排序稍差」，而是直接從結果消失，也不會用 hybrid 名次補回 `final_chunk_count`。這不是刻意設計：[`RETRIEVAL.md`](RETRIEVAL.md) §5 只寫了「全部失敗 → 退回 hybrid top-6」，`parse_rerank_scores` 的 docstring 還假設少一個分數的代價只是「a slightly worse order」；沒有任何測試釘住這個行為。`RERANK_PROMPT` 寫的是 "Score each candidate"，但沒有東西驗證模型照做（與 `Q0-7` 同一類問題）。
 - **同一件事目前有三種處理方式**（模型都是在表達「這段不相關」）：
   | 模型的輸出 | 結果 | 低信心門檻比的分數 |
@@ -327,7 +327,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - 同一題在不同次之間會在「評 20 個」與「評 1 個」之間跳動，所以證據段數本身就不穩定（`Q1-6` 記過同類變異）。
   - 限制：這份題集在該資料副本上有 15 題的預期來源每次都找不到（Recall@5 36–40%），推測是該 notebook 沒有那些來源，未另行查證；能代表「可回答題」的只有 10 題、同一批性質相近的會議記錄。
 - **Impact：** 回答的證據段數取決於模型的**輸出習慣**（全列或只列相關的），而不是相關性。單一事實題拿 1 段通常夠；需要綜合多段的題目、或模型挑錯段落時，就沒有備援。對間接 prompt injection 也是放大器：一個成功讓 reranker「只評我」的段落會變成唯一證據（W1 量測中 `gpt-4.1-mini` 沒有被誘導，這點是推論，不是觀察到的事件）。**Gemma 4 31B 上是否發生尚未確認**——地端目前沒有 Gemma，可能完全不同。
-- **選項（待裁決）：**
+- **選項（尚未選定，重啟時再裁決）：**
   - **A 維持現狀，只補文件與觀測。** 把行為寫進 `RETRIEVAL.md`，並把「只評部分」的比率併入 `Q0-7` 的訊號彙總（`rerank_completed` 已有 `scored=`）。零風險，但問題還在。
   - **B 未評分的候選用 hybrid 名次補到 `final_chunk_count`（建議）。** 有評分的排前面、順序不變；補上的排在後面，不帶 `rerank_score`，分數為 `rerank_base_weight·hybrid`（等同明確給 0 分的現行處理）。
     - 低信心門檻：預設參數下**判定不變**。`top_score` 只會是「原本的最高分」或「`0.2·hybrid` ≤ 0.2」兩者取大，而 0.2 < 門檻 0.25。若 profile 把 `rerank_base_weight` 調高或門檻調到 ≤ `rerank_base_weight`，這個保證就不成立，要在實作時明確處理（例如門檻只看有評分的候選）。
@@ -336,7 +336,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - **C 改 prompt 要求每個候選都給分。** 不保證模型照做（正是 `Q0-7` 的問題），而且每個模型要各自確認。分數分布會變，低信心門檻（`Q0-2`）與 `rerank_outlier` 的門檻都要重新校準。延遲也會上升：這批量測中評滿 20 個的 rerank 呼叫中位數 2.7 秒，只評 1–2 個的是 1.0 秒（`PERFORMANCE.md` P3-2 的三段序列呼叫）。可用 O5b 的 schema 加 `minItems` 強制，但 O5b 預設關閉且各端點支援度不一。
   - B 與 C 不互斥；C 可以之後當獨立的 A/B。`[]` 的處理（表中第三列）要不要一併拉齊是另一個決定。
 - **Fix（方向確認後）：** 先寫會失敗的測試（部分評分 → 仍回 `limit` 段、有評分的順序不變、門檻與 outlier 不受影響），再改 `rerank_chunks`；改動前後各跑 `tests.eval_retrieval`（含 `--no-rerank` 對照）多次比較 Recall／MRR 與每題段落數，並同步更新 `RETRIEVAL.md` §5。
-- **Blocked on：** Philip 裁決方向。Gemma 上的行為要等拿得到 Gemma 端點時補量（`rerank_completed … scored=` 一行即可統計，不需新增程式）。
+- **狀態（2026-11-10）：** 刻意延後。當下的工作重心是間接 prompt injection 防護（W1–W5），這個行為與 W1 無關，不併進同一輪。**重啟條件：** (a) 拿得到 Gemma 端點時先補量（`rerank_completed … scored=` 一行即可統計，不需新增程式）——Gemma 若都評滿 20 個，這項可降為只補文件；(b) 或做 W3（低信心門檻與 rerank 封裝）時一併裁決，因為兩者改的是同一段程式與同一個門檻。
 
 ## P2 — minor / known nuances
 
