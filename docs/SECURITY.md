@@ -374,14 +374,26 @@ on Azure `gpt-4.1-mini`, with and without the rule (2026-11-10):
 - **Injection.** The probe's fixtures carry an injected instruction. The model
   followed it 0/30 times both ways. So this model shows no format cost, and cannot
   show a benefit either: the baseline was not fooled.
-- **Retrieval.** `tests.eval_retrieval`, default 25-question set, two runs each way.
-  Recall@5 was 9/25 and 10/25 without the rule, 9/25 and 9/25 with it. MRR was
-  0.333 and 0.373 without, 0.313 and 0.320 with. 22 of 25 questions scored the same
-  in all four runs. One question's expected document moved from rank 1 to rank 2 in
-  both runs with the rule. One was a hit in a single baseline run only. The absolute
-  numbers are low because the local notebook held 7 of the set's 10 documents. The
-  reranker returned an empty array (falling back to hybrid order) 2 and 1 times
-  without the rule, and 0 and 0 with it.
+- **Retrieval.** `tests.eval_retrieval`, default 25-question set, six runs each way.
+  Recall@5 averaged 9.17/25 on both sides (9 in five runs, 10 in one). MRR averaged
+  0.340 without the rule and 0.321 with it. 22 of 25 questions scored the same in all
+  twelve runs. The absolute numbers are low because the local notebook held 7 of the
+  set's 10 documents.
+  - The whole MRR difference is one question, whose expected chunk was rank 1 in all
+    six runs without the rule and rank 2 in all six with it. Reranking one fixed
+    candidate set five times each way showed why. Without the rule the model scored
+    only the expected chunk. With it the model scored five candidates and gave 1.00
+    both to the expected chunk and to a chunk of `CDE 會議記錄_Cray.docx`, the
+    document this same set expects for the sibling question about those interview
+    dates. The hybrid score broke the tie. Both chunks reach the answer prompt, so
+    this is a tie between two relevant chunks, not lost evidence.
+  - The reranker returned an empty array (falling back to hybrid order) 8 times in
+    150 calls without the rule and 0 times in 150 with it.
+  - The rule changes how many of the 20 candidates this model scores: 11.3 on
+    average without it, 13.1 with it, moving in both directions on individual
+    questions. Candidates the model leaves unscored are dropped by `rerank_chunks`,
+    with or without the rule, so the answer prompt sometimes holds a single chunk.
+    That behaviour predates this change and is tracked separately.
 - **Not confirmed on the serving model.** Format compliance is model-specific, and
   the deployment serves Gemma, which was not available. Run the probe both ways on
   the deployment before relying on these numbers.
