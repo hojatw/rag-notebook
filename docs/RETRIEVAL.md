@@ -2,7 +2,7 @@
 
 This doc explains how the NotebookLM-style POC turns a user question into the chunks the answer LLM sees. It is the canonical retrieval reference; [`README.md`](../README.md) describes the user-facing feature set and operational workflow.
 
-Last updated: 2026-08-24. Pipeline lives in [app/retrieval.py](../app/retrieval.py) (`retrieve()`, hybrid search, scoring, `ACTIVE_RETRIEVAL_PARAMS`), [app/domain_policy.py](../app/domain_policy.py) (E2 matching/expansion/snapshots), [app/main.py](../app/main.py) (`ask()` — low-confidence gate + citation filtering), [app/llm.py](../app/llm.py) (rewrite / rerank / embedding / grounded answer), [app/ingest.py](../app/ingest.py) (chunking), and [app/vector_store.py](../app/vector_store.py) (Chroma).
+Last updated: 2026-11-10. Pipeline lives in [app/retrieval.py](../app/retrieval.py) (`retrieve()`, hybrid search, scoring, `ACTIVE_RETRIEVAL_PARAMS`), [app/domain_policy.py](../app/domain_policy.py) (E2 matching/expansion/snapshots), [app/main.py](../app/main.py) (`ask()` — low-confidence gate + citation filtering), [app/llm.py](../app/llm.py) (rewrite / rerank / embedding / grounded answer), [app/ingest.py](../app/ingest.py) (chunking), and [app/vector_store.py](../app/vector_store.py) (Chroma).
 
 ## Pipeline at a glance
 
@@ -132,6 +132,8 @@ The active `final_chunk_count` (default 6) by `combined` is returned. Graceful f
 
 - No chat model → return hybrid top-6 directly (a blank API key is valid for local services).
 - HTTP / parse / empty-scores failure → return hybrid top-6 directly.
+
+**Known gap — partially scored replies (recorded 2026-11-10, not yet changed).** The fallbacks above only cover the reranker returning *nothing*. When it scores some candidates and omits the rest, the omitted ones are dropped rather than back-filled from hybrid order, so fewer than `final_chunk_count` chunks can reach the answer prompt — on Azure `gpt-4.1-mini`, 32% of measured retrievals returned only 1–2 chunks. Not yet measured on Gemma. Numbers, options and the conditions for picking this up: [`QUALITY.md`](QUALITY.md) `Q1-10`.
 
 **Outlier telemetry (2026-11-09, never changes ranking).** A returned chunk with `rerank_score >= [retrieval].rerank_outlier_min_score` (0.9) that hybrid search ranked below `rerank_outlier_min_hybrid_rank` (10) is logged as `rerank_outliers` and recorded as a low-severity `ai_safety_events` row (`rerank_outlier`, with its `source_id`). That is the shape of a chunk telling the reranker to score it highly (`docs/SECURITY.md` → *Rendering LLM output*). Legitimate reranks produce it too; the starting values are uncalibrated, and the row stores both ranks so they can be calibrated against real traffic. `rerank_outlier_min_hybrid_rank = 0` turns it off.
 
