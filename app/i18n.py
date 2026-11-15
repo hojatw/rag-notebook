@@ -713,6 +713,12 @@ MESSAGES: dict[str, dict[str, str]] = {
         "settings.structured_output": "限定 JSON 輸出格式",
         "settings.structured_output_hint": "開啟後，rerank 與查詢改寫等會解析 JSON 的呼叫會要求模型只能產生符合格式的輸出，從源頭避免格式錯誤。需要先「測試對話模型」確認端點支援才能開啟。注意：對 reasoning 模型而言，限制輸出格式有可能反而降低內容品質，建議用評測工作台開關各跑一次比較 Recall/MRR 再決定。",
         "settings.cap_structured_output": "Structured output（限定輸出格式）",
+        # W2: tagged excerpt format. Each hint says what must be checked before
+        # turning it on, because neither switch is validated by a probe.
+        "settings.answer_excerpt_tags": "回答的摘錄用標籤封裝",
+        "settings.answer_excerpt_tags_hint": "開啟後，問答送給模型的每段摘錄、問題與 Notebook 指引會各自包在標籤內，文件內容無法偽造摘錄標頭、問題或指引。這會改變模型讀到的結構，開啟前請先在實際的對話模型上用評測比較開啟與關閉的結果（引用格式與拒答率）。",
+        "settings.judge_excerpt_tags": "評審的摘錄用標籤封裝",
+        "settings.judge_excerpt_tags_hint": "只影響評測的評審，與上一項互不連動。開啟後評審改用標籤版 prompt，之後的評審分數不能和開啟前的直接比較；比較回答格式時，兩次評測請維持這個選項相同。",
         "settings.cap_context_window": "輸入視窗上限（對話）",
         "settings.embedding_window_tokens": "{tokens} tokens",
         "settings.embedding_window_at_least": "至少 {tokens} tokens",

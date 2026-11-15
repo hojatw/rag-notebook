@@ -231,6 +231,14 @@ User prompt is `"Source excerpts:\n{numbered chunks}"`, followed when needed by
 an explicitly labelled untrusted JSON object containing `answer_policy` and
 `matched_answer_notes`, then `"Question: {question}"`.
 
+That is the plain format and the default. With the admin switch
+`answer_excerpt_tags_enabled` on, the same content in the same order is wrapped in
+tags instead: each chunk in `<excerpt index="N" source="…" location="…">`, the
+guidance JSON in `<notebook_guidance>`, the question in `<question>`, and the system
+prompt explains the tags. Numbering is identical in both formats. The switch is off
+until it has been A/B-tested on the serving model; see `SECURITY.md` →
+*Rendering LLM output* for what it defends and how to run that test.
+
 Eval runs store an immutable domain snapshot. A snapshot is used only after
 raw-size, exact schema/prompt-version, opaque-token, per-field, list-count, token
 budget, and static hard-ceiling validation succeeds as one unit. The frozen
