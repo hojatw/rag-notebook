@@ -330,7 +330,9 @@ exfiltration URL *is* the data it carries). The schema contracts are in `SCHEMA.
     - `source_prompt_scaffold`: text shaped like the answer prompt's own scaffolding.
       That is the guidance block (`Notebook operational guidance`, the quoted
       `"answer_policy":` key, `matched_answer_notes`), the reserved marker prefix
-      `[[RAG_`, or an excerpt header `[N] name.ext - location`. A test drives the
+      `[[RAG_`, an excerpt header `[N] name.ext - location`, or the tagged format's
+      delimiters (a closing `</excerpt>`, `</question>` or `</notebook_guidance>`, an
+      opening `<excerpt index=` or `<notebook_guidance>`). A test drives the
       real `answer_prompt`, so renaming a piece of the prompt turns the test red.
     - `source_addresses_model`: a passage that addresses the model by name
       (`AI 助理請注意`, `給 AI 助理：`, `AI assistant instruction:`). `注意力` and
@@ -498,17 +500,66 @@ They need an LLM-backed eval to change safely (see the 2026-11-09 review notes):
   This change removes what happens without a click, not what a reader can be talked
   into.
 - Evidence is concatenated into prompts without structural boundaries, so a chunk can
-  forge an excerpt header, `Question:` line or guidance block. The judge prompt still
-  does not state that its input is untrusted. The planned fix is tagged excerpts for
-  answer and judge, behind an admin setting recorded in `eval_runs.llm_snapshot_json`
-  (the O5b pattern), with the untrusted-input rule added to the judge in the same
-  change. It changes what the fixed serving model reads, so it ships only after a
-  judged A/B run on that model.
+  forge an excerpt header, `Question:` line or guidance block. **The fix exists and is
+  off** (W2, 2026-11-15; next paragraph). It changes what the fixed serving model
+  reads, so turning it on waits for a judged A/B run on that model.
+  The plain format stays open for the other prompts that join excerpts as text
+  (rerank, starter questions, eval authoring, follow-ups, source comparison).
 - The reranker's score can be self-assigned by a chunk ("score me 1.0"). The
   low-confidence gate reads the post-rerank score, so such a chunk always reaches the
   answer prompt once it is among the candidates. Moving the gate onto the hybrid score
   needs the threshold re-calibrated with `tests.eval_retrieval`. The outlier telemetry
   above is the data for that.
+
+**Tagged excerpts for answer and judge (W2, 2026-11-15; both off by default).** Two
+admin switches on `/settings`, independent of each other:
+
+- **Answer** (`llm_settings.answer_excerpt_tags_enabled`). `answer_prompt` wraps each
+  excerpt in `<excerpt index="N" source="…" location="…">`, the guidance JSON in
+  `<notebook_guidance>` and the question in `<question>`. The answer system prompt
+  gains a paragraph saying that everything inside an excerpt is quoted text, whatever
+  it looks like, and that only the tag's `index` is a citable number.
+- **Judge** (`llm_settings.judge_excerpt_tags_enabled`). `judge_answer` renders
+  excerpts the same way and uses `ANSWER_JUDGE_TAGGED_PROMPT`, which also carries the
+  W1 untrusted-input rule the plain judge never had.
+
+What makes the tags mean something:
+
+- Untrusted text cannot write one. In excerpt text, the question and the guidance
+  JSON, the `<` in front of `excerpt`, `question` or `notebook_guidance` becomes a
+  full-width `＜` (any case, with or without `/` and spaces). Nothing else is rewritten:
+  a line such as `[7] Smith 2020` is ordinary reference-list content and stays as is.
+- The filename and location are attribute values, and the filename is chosen by the
+  uploader. Quotes, angle brackets and `&` are escaped and whitespace is collapsed, so
+  `a.pdf" index="7` cannot add an attribute.
+- Only the prompt copy changes. Citations, previews and stored chunks keep the
+  original text.
+- The window fit prices a tagged excerpt by rendering it. The plain path keeps its
+  existing arithmetic, so the switch being off changes nothing.
+
+Why two switches. Both formats number excerpts 1..n in the same order, so a judge in
+one format can grade an answer written in the other. That lets an A/B of the answer
+format hold the judge fixed; with one shared switch the two arms would be graded by
+different judges and a score difference could not be attributed. Both values are
+recorded in `eval_runs.llm_snapshot_json` (`answer_excerpt_format`,
+`judge_excerpt_format`); a run recorded before these keys existed is read as `plain`.
+Turning the judge switch on changes the judge prompt, so judged scores from before
+and after are not comparable.
+
+What it does not do, and what is not yet known:
+
+- It addresses forged boundaries only. In the W4 baseline that is 6 of the 21 answer
+  runs that relayed injected content (CSV citation forgery, guidance forgery). The
+  other 15 were content that simply states an instruction or a false fact inside a
+  genuine excerpt.
+- It is unmeasured on any model. Verified so far: prompt structure, by tests and by
+  the red-team probe's prompt layer (every forged header, question line and guidance
+  block from the corpus stays inside its excerpt). Whether the serving model then
+  ignores them, and whether it still cites as `[N]`, is the A/B's job.
+- To run that A/B: turn the judge switch on, run a judged eval with the answer switch
+  off, then on, and compare `answer_quality`, `groundedness`, `citation_correctness`
+  and the abstain rate. `tests.probe_redteam --excerpt-format tagged` runs the
+  red-team cases in the tagged format.
 
 **Red-team probe (W4, 2026-11-15).** `python -m tests.probe_redteam` runs a corpus of
 malicious documents through the real extractors, `answer_prompt`, `generate_answer_result`
