@@ -33,6 +33,12 @@
   「輸入不可信」規則的基準，`--runs`、`--only`、`--out` 分別控制重複次數、篩選案例與輸出 JSON。
   需要真實模型，不在 CI 裡跑。
 
+- **`tests.probe_redteam`**：把紅隊語料（惡意文件）送過真正的擷取器、`answer_prompt`、回答與 rerank，
+  用字串規則判定是否中招。四層可分開跑（`--layers ingest,prompt,answer,rerank`）：前兩層不呼叫模型、
+  不花 token，是預設值。語料與題集含攻擊手法，不在 repo 裡，用 `--corpus`、`--cases` 指向 `local/`；
+  題集格式見檔頭說明。`--without-rule` 是不含「輸入不可信」規則的基準（只影響 rerank 層）。
+  需要真實模型的兩層不在 CI 裡跑。
+
 - **`tests.eval_retrieval` 可指定題集與 notebook**（`--questions`、`--notebook-id`），
   用來跑放在 `local/` 的 Q1-3 R1 題集，不必改 `tests/eval_questions.json`。
 - P3-3 量測工具：`scripts/usage_percentiles.py` 唯讀彙總 `llm_usage_events` 各 `call_type`／chat 主機的 `prompt_tokens` 與延遲 p50/p95（不輸出任何內容）；`retrieve` 每題多記一行 `retrieve_stage_timings`（rewrite／embedding／Chroma／keyword／merge／rerank 各段 ms）。
