@@ -366,6 +366,20 @@ exceptions with stack traces.
 git diff --check
 ```
 
+### 瀏覽器測試（`tests/test_markdown_render.py`）
+
+前端 Markdown 渲染的防護（見 `docs/SECURITY.md` → *Rendering LLM output*）只能在
+瀏覽器裡驗證，所以這個檔案用 Playwright 開 Chromium 載入真的 `app.js`。`./setup.sh`
+會裝好 `playwright` 套件，但瀏覽器要另外裝一次：
+
+```bash
+.venv/bin/python -m playwright install chromium
+```
+
+沒裝時這組測試在本機會略過並寫明原因，其餘測試照跑；CI 會安裝瀏覽器，且在 CI 裡
+缺瀏覽器會直接失敗。改到 `renderMarkdown()`、`MARKDOWN_*` 設定或 vendor 的
+`marked` / `purify` / `htmx` 時，請在本機裝好瀏覽器再跑。
+
 ### 測試為什麼是並行的
 
 `pytest.ini` 設了 `addopts = -n auto --maxprocesses=8`（pytest-xdist），本機

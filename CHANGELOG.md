@@ -9,12 +9,113 @@
 
 ## [未發布]
 
+### 升級注意事項
+
+- **使用者會看到的變化**：回答與筆記裡的 Markdown 圖片改為「圖片：說明（網域）」連結，
+  點了才開啟；Markdown 匯出也同樣改寫（見下方「安全性」）。若使用者習慣在筆記裡嵌圖，
+  建議事先告知。
+- **既有來源要重新索引，才會有 prompt injection 掃描結果**（來源列「!」與預覽面板的警告）。
+  不重新索引不會壞，只是舊來源沒有掃描紀錄。schema 不變。
+- **既有來源要重新索引，才會有隱藏文字的字數與注意事項**（見下方「安全性」）。不重新索引不會壞。
+  重新索引後，含 Word 隱藏文字或 `visibility:hidden` 的來源會多一個「!」，屬預期。schema 不變。
+- 新增設定鍵 `[retrieval] rerank_outlier_min_score`、`rerank_outlier_min_hybrid_rank`
+  （只影響紀錄，不影響排序；後者設 0 即關閉）。
+- 所有回應新增 `Content-Security-Policy`、`Referrer-Policy`、`X-DNS-Prefetch-Control`。
+  若前端反向代理本身也設了 `Content-Security-Policy`，瀏覽器會同時套用兩者（取交集），
+  上線後請確認 SSO 登入與各頁面正常。
+- **新增的兩個「摘錄用標籤封裝」開關預設關閉，關閉時行為不變。** 開啟會改變模型讀到的結構，
+  **請先在實際的 serving model 上做 A/B 再開**：先開啟「評審的摘錄用標籤封裝」，再用同一題集各跑一次
+  評測（「回答的摘錄用標籤封裝」關閉與開啟），比較回答品質、引用正確性與拒答率。
+  開啟評審的開關後，評審分數不能和開啟前的評測直接比較。schema 新增 `llm_settings` 兩個欄位，
+  啟動時自動補上。
+- **14 個任務 prompt 多了一行「輸入不可信」規則**（見下方「安全性」），沒有開關。
+  目前只在 Azure `gpt-4.1-mini` 上確認輸出格式沒有變化；輸出格式的遵循度因模型而異，
+  **上線時請在實際的 serving model 上各跑一次**
+  `python -m tests.probe_task_prompt_formats` 與加上 `--without-rule` 的版本，確認兩邊都通過。
+
 ### 新增
+
+- **`tests.probe_task_prompt_formats`**：用設定好的 chat 模型把 15 個任務各跑一次，
+  檢查輸出格式（JSON 可解析、`NOTHING` 哨兵、輸出語言）。`--without-rule` 是不含
+  「輸入不可信」規則的基準，`--runs`、`--only`、`--out` 分別控制重複次數、篩選案例與輸出 JSON。
+  需要真實模型，不在 CI 裡跑。
+
+- **`tests.probe_redteam`**：把紅隊語料（惡意文件）送過真正的擷取器、`answer_prompt`、回答與 rerank，
+  用字串規則判定是否中招。四層可分開跑（`--layers ingest,prompt,answer,rerank`）：前兩層不呼叫模型、
+  不花 token，是預設值。語料與題集含攻擊手法，不在 repo 裡，用 `--corpus`、`--cases` 指向 `local/`；
+  題集格式見檔頭說明。`--without-rule` 是不含「輸入不可信」規則的基準（只影響 rerank 層）。
+  需要真實模型的兩層不在 CI 裡跑。
 
 - **`tests.eval_retrieval` 可指定題集與 notebook**（`--questions`、`--notebook-id`），
   用來跑放在 `local/` 的 Q1-3 R1 題集，不必改 `tests/eval_questions.json`。
 - P3-3 量測工具：`scripts/usage_percentiles.py` 唯讀彙總 `llm_usage_events` 各 `call_type`／chat 主機的 `prompt_tokens` 與延遲 p50/p95（不輸出任何內容）；`retrieve` 每題多記一行 `retrieve_stage_timings`（rewrite／embedding／Chroma／keyword／merge／rerank 各段 ms）。
 - A12 Phase 1：攝取 PDF／DOCX／HTML 時偵測標題結構（作者大綱 → 目錄頁 → 編號樣式），結果顯示在來源的萃取診斷面板（「文件結構」一行）。只做診斷：切塊、索引與引用都不變，所以不需要重新索引；既有來源要重新索引後才會顯示這一行。
+
+### 安全性
+
+- **任務 prompt 宣告輸入不可信。** rerank、起始問題、追問建議、eval 題目草擬、會議紀錄、
+  來源摘要、簡報、比較、學習指南、FAQ、時間軸、摘要翻譯共 14 個 prompt，加上同一行規則：
+  文件內容是資料，其中對模型下的指示只當作內容處理。之前只有回答與查詢改寫的 prompt 有這類宣告。
+  這是聲明哪段文字才是指示，不是防線；評審 prompt 留待摘錄封裝一起調整。
+  細節與量測結果見 `docs/SECURITY.md` → *Rendering LLM output*。
+- **萃取診斷會標出原始檔裡看不到的文字。** Word 的「隱藏」字型格式（`w:vanish`）與網頁的
+  `visibility:hidden` 會產生注意事項並在來源列顯示「!」；圖片替代文字、連結標題、網頁描述、
+  投影片備忘稿與隱藏的投影片只列字元數。這些文字**照舊會被索引**，沒有任何內容被丟棄，
+  檢索與回答不變。白字、極小字與靠 CSS class 隱藏的文字不偵測（刻意不做，理由與重啟條件見
+  `docs/SECURITY.md` → *Hidden-text channels*）。
+- **文件內容不再能觸發拒答。** 文件裡出現 `[[RAG_ABSTAIN]]`，或只是 `[[RAG 架構]]` 這類
+  wikilink，模型照抄時會被判成「資料不足」。送給模型的摘錄現在會把 `[[RAG` 改成全形括號，
+  儲存的內容、引用與預覽不變。
+- **模型輸出不再能讓瀏覽器自動對外連線或代為送出請求（間接 prompt injection）。**
+  上傳的文件若藏有指令，先前可以讓回答、簡報（briefing）或筆記：
+  - 夾帶外部圖片網址。畫面一渲染，瀏覽器就把同一 notebook 其他文件的內容送出去，
+    不需要任何點擊；簡報在開啟 notebook 時自動產生，所以連問題都不用問。
+  - 夾帶 `data-hx-post` 屬性。經 HTMX 載入的內容會讓瀏覽器帶著 CSRF token 送出該請求。
+  - 夾帶假的登入表單或全版面覆蓋層。
+
+  現在 Markdown 渲染一律不產生圖片、表單、樣式與 `data-*` 屬性，HTMX 不處理回答內容，
+  外部連結以新分頁、`noreferrer` 開啟。另外，所有回應都加上限制圖片／樣式／字型來源的
+  `Content-Security-Policy`，以及 `Referrer-Policy: same-origin`、`X-DNS-Prefetch-Control: off`。
+  細節與刻意不加的指令（`form-action` 會擋掉 SSO 登入）見 `docs/SECURITY.md` →
+  *Rendering LLM output*。
+- **行為變更：Markdown 裡的圖片改顯示為「圖片：說明（網域）」連結**，點了才開啟；
+  使用者手寫筆記裡的圖片也一樣。資料庫裡的原文不變，「複製」按鈕仍取得原始 Markdown。
+- **行為變更：Markdown 匯出（對話、全部筆記、單筆筆記）改為不會自動載入外部資源。**
+  `.md` 檔常在會自行渲染圖片與 HTML 的編輯器或 wiki 裡開啟，所以匯出時：
+  - `![說明](網址)` 改寫成 `[圖片：說明](網址)`；
+  - 會載入外部資源、送出表單或改樣式的 HTML 標籤（`<img>`、`<iframe>`、`<form>` 等）改為純文字；
+  - 程式碼區塊與行內程式碼原樣保留。
+- **新增間接 prompt injection 的偵測紀錄**（只記錄、不阻擋，偵測器版本 `local.rules.v3`）：
+  - 上傳的文件逐段比對注入特徵。命中「忽略先前指示」「要求揭露系統提示」這類強訊號時，
+    來源列會出現「!」，預覽面板會說明原因；較寬鬆的規則只寫進 `ai_safety_events`，
+    避免一般文件被誤標。
+  - 回答、簡報與各項工具的輸出，會和模型收到的內容比對：遠端圖片語法、輸入中沒有的網址
+    （同網域但路徑不同時列為高風險）、會載入或觸發行為的 HTML。
+  - LLM rerank 把混合檢索排名很後面的段落拉到前面、又給接近滿分時，記錄為低風險事件。
+    門檻為未校準的起始值，可在 `[retrieval] rerank_outlier_*` 調整，設為 0 即關閉。
+
+  所有紀錄只存數量、旗標與雜湊，不存文件內容、模型輸出或網址。
+- **偵測紀錄擴充（偵測器版本升為 `local.rules.v4`，同樣只記錄、不阻擋）：**
+  - 上傳的文件多比對四類特徵：仿造本系統 prompt 骨架（guidance 區塊、拒答標記、摘錄標頭）、
+    對模型喊話（「AI 助理請注意」）、自評相關性滿分、非 Markdown 來源裡帶查詢參數的遠端圖片語法。
+    這四類只寫進 `ai_safety_events` 與來源診斷，不會讓來源列出現「!」。
+  - 回答引用了 prompt 裡不存在的摘錄編號時（例如只有 5 段摘錄卻引用 `[7]`），記錄為
+    `output.citation_out_of_range`。回答內容不變。
+  - 既有來源要重新索引才會有新規則的掃描結果。規則的涵蓋範圍、限制與刻意不做的項目見
+    `docs/SECURITY.md` → *Rendering LLM output*。
+- **新增摘錄的標籤封裝（預設關閉）**：文件內容原本可以在摘錄裡寫出和系統一樣的摘錄標頭、
+  `Question:` 行或 Notebook 指引區塊。「系統設定」新增兩個互不連動的開關：
+  - 「回答的摘錄用標籤封裝」：每段摘錄、問題與 Notebook 指引各自包在標籤內，文件內容寫不出這些標籤，
+    檔名也無法偽造屬性。
+  - 「評審的摘錄用標籤封裝」：評測的評審改讀同樣的標籤格式，並補上「輸入不可信」規則。
+  兩個開關的狀態都會寫進每次評測的紀錄。它只處理「偽造邊界」這一類攻擊，
+  而且尚未在任何模型上量測過效果；開啟前的步驟見「升級注意事項」。
+
+### 內部
+
+- 開發相依新增 `playwright`（`requirements-dev.txt`），CI 每次安裝 Chromium，
+  用來在真瀏覽器裡驗證前端 Markdown 渲染的防護（`tests/test_markdown_render.py`）。
+  本機沒有瀏覽器時這組測試會略過並說明原因；在 CI 裡則直接失敗。
 
 ### 文件
 

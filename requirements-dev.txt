@@ -3,3 +3,6 @@
 pytest==9.1.1
 pytest-xdist==3.8.0
 uvicorn[standard]==0.54.0
+# Drives tests/test_markdown_render.py: the rendered-Markdown hardening in
+# app/static/app.js only exists in a browser. CI runs `playwright install chromium`.
+playwright==1.63.0
