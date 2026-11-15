@@ -83,6 +83,18 @@
         {{ t('settings.structured_output') }}
         <small>{{ t('settings.structured_output_hint') }}</small>
       </label>
+      <label>
+        <input type="checkbox" name="answer_excerpt_tags_enabled" value="1"
+               {% if settings.answer_excerpt_tags_enabled %}checked{% endif %}>
+        {{ t('settings.answer_excerpt_tags') }}
+        <small>{{ t('settings.answer_excerpt_tags_hint') }}</small>
+      </label>
+      <label>
+        <input type="checkbox" name="judge_excerpt_tags_enabled" value="1"
+               {% if settings.judge_excerpt_tags_enabled %}checked{% endif %}>
+        {{ t('settings.judge_excerpt_tags') }}
+        <small>{{ t('settings.judge_excerpt_tags_hint') }}</small>
+      </label>
 
       <div class="diagnostic-action-head">
         <div>

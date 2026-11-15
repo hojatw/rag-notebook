@@ -106,6 +106,16 @@
         {%- endif %}
       </p>
     {% endif %}
+    {# W5: text the reader of the original file cannot easily see but that was
+       indexed anyway. Counts only — the two channels that are truly invisible
+       also raise a warning above. #}
+    {% set hidden_text = source.diagnostics.details.hidden_text if source.diagnostics.details else None %}
+    {% if hidden_text %}
+      <p class="muted small">
+        {{ t('diag.hidden_text') }}：
+        {%- for channel, chars in hidden_text.items() %}{% if not loop.first %} · {% endif %}{{ t('diag.hidden_channel_' ~ channel, chars=chars) }}{% endfor %}
+      </p>
+    {% endif %}
     {% if source.diagnostics.details and source.diagnostics.details.encoding %}
       <p class="muted small">
         {{ t('diag.csv_encoding') }}：{{ source.diagnostics.details.encoding.encoding }}
