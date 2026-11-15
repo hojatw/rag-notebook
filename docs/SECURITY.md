@@ -464,6 +464,31 @@ They need an LLM-backed eval to change safely (see the 2026-11-09 review notes):
   needs the threshold re-calibrated with `tests.eval_retrieval`. The outlier telemetry
   above is the data for that.
 
+**Red-team probe (W4, 2026-11-15).** `python -m tests.probe_redteam` runs a corpus of
+malicious documents through the real extractors, `answer_prompt`, `generate_answer_result`
+and `rerank_chunks`, and checks the results with string rules. The harness is in the
+repository; the corpus and the case file are not (this repository is public and they
+describe attacks), so they are passed in with `--corpus` / `--cases` and live under
+`local/`. The module docstring documents the case-file format. It is the before/after
+measurement for the open items above. Its first run recorded these, none of which
+depends on the model:
+
+- **Prose formats cannot forge a line-start header; spreadsheets can.** The chunker
+  joins a prose section's sentences with spaces, so a forged `[7] file.pdf - p3` or
+  `Question:` line from a TXT / Markdown / DOCX / PDF source lands mid-paragraph. A
+  spreadsheet row keeps the newlines inside a cell, so the same text from a CSV / XLSX
+  cell appears as `\n\n[7] file.pdf - p3\n`, byte-identical to a real excerpt boundary.
+  Tagged excerpts (the first open item) have to hold for that carrier.
+- **The ingest scan's rules match the classic phrasings only.** They flagged the one
+  document that says "ignore the previous instructions" (in a hidden DOCX run, so the
+  scan does read hidden text) and none of the documents that phrase the instruction as
+  a citation rule, a system notice or a note to the assistant. The scan is telemetry for
+  the obvious case, not a detector to rely on.
+- **The corpus discriminates where the W1 fixture did not.** On Azure `gpt-4.1-mini`
+  about half of the answer runs relayed injected content, against 0/30 for the W1
+  fixture. Per-case results stay out of the repository. They are a baseline for that
+  model only; the serving model needs its own run before and after W2 / W3.
+
 ### Uploaded-file parsing runs in a killable child process (2026-10-25)
 
 A crafted upload can make a parser loop forever, crash, or allocate without bound. The `pypdf` advisories triaged on 2026-10-25 were all of the first kind. Before this change extraction ran via `asyncio.to_thread`, and a thread cannot be stopped. One hung parse therefore never returned, and because the worker handles one job at a time, **every user's later uploads waited behind it** until the process was restarted. With the inline worker the spinning thread also lived inside the web process.
