@@ -9,6 +9,7 @@ E1e-2 答案品質評分層、/admin/index 的向量索引與 O0 維度遷移閘
 """
 
 import json
+import re
 
 import httpx
 
@@ -1571,6 +1572,8 @@ def test_an_eval_run_records_the_llm_settings_it_ran_under(monkeypatch, tmp_path
     assert snapshot["chat_model"] == "model-under-test"
     assert snapshot["embedding_model"] == "embed-under-test"
     assert snapshot["structured_output"] == ""      # off by default
+    assert snapshot["answer_excerpt_format"] == "plain"   # W2: both off by default
+    assert snapshot["judge_excerpt_format"] == "plain"
     assert set(snapshot) >= set(evals.LLM_SNAPSHOT_LABELS)
     assert llm.capability_snapshot({"chat_model": "x"})["chat_model"] == "x"
 
@@ -1969,3 +1972,92 @@ def test_memory_stats_exclude_parses_stopped_by_the_cap(monkeypatch, tmp_path):
     stats = system_settings.recent_extract_stats()
     assert (stats["rss_count"], stats["rss_max_mb"], stats["memory_failures"]) == (2, 180.0, 1)
     assert (stats["count"], stats["max_s"]) == (2, 2.0)
+
+
+def test_excerpt_tag_switches_round_trip_from_the_settings_form_to_the_snapshot(monkeypatch, tmp_path):
+    """W2: the form, the columns, `load_llm_settings` and the snapshot agree on both switches."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    import app.llm as llm
+
+    form = {
+        "provider": "openai_compatible", "base_url": "http://model/v1", "api_key": "",
+        "chat_model": "chat-candidate", "api_version": "2024-02-15-preview", "temperature": "0.2",
+        "reasoning_effort_mode": "auto", "reasoning_effort": "medium",
+        "embedding_provider": "openai_compatible", "embedding_base_url": "", "embedding_api_key": "",
+        "embedding_model": "", "embedding_query_prefix": "", "embedding_passage_prefix": "",
+        "embedding_api_version": "2024-02-15-preview", "timeout_seconds": "60",
+    }
+
+    def formats():
+        with db.connect() as conn:
+            snapshot = llm.capability_snapshot(db.load_llm_settings(conn))
+        return snapshot["answer_excerpt_format"], snapshot["judge_excerpt_format"]
+
+    with TestClient(main.app) as client:
+        _login(client)
+        page = client.get("/settings")
+        for name in ("answer_excerpt_tags_enabled", "judge_excerpt_tags_enabled"):
+            assert re.search(rf'name="{name}" value="1"\s*>', page.text), name  # present, unchecked
+        assert formats() == ("plain", "plain")
+
+        assert client.post("/settings", data={**form, "answer_excerpt_tags_enabled": "1"}).status_code == 200
+        assert formats() == ("tagged", "plain")
+        page = client.get("/settings")
+        assert re.search(r'name="answer_excerpt_tags_enabled" value="1"\s*checked', page.text)
+        assert re.search(r'name="judge_excerpt_tags_enabled" value="1"\s*>', page.text)
+
+        assert client.post("/settings", data={**form, "judge_excerpt_tags_enabled": "1"}).status_code == 200
+        assert formats() == ("plain", "tagged")
+
+        # An unchecked checkbox sends nothing: saving the bare form turns both off.
+        assert client.post("/settings", data=form).status_code == 200
+        assert formats() == ("plain", "plain")
+
+    with db.connect() as conn:
+        audit = conn.execute(
+            "SELECT metadata_json FROM audit_events WHERE action = 'llm_settings_updated' ORDER BY id"
+        ).fetchall()
+    first = db.loads(audit[0]["metadata_json"])
+    assert first["answer_excerpt_tags_enabled"] == {"before": False, "after": True}
+
+
+def test_compare_treats_runs_from_before_the_excerpt_switch_as_plain(monkeypatch, tmp_path):
+    """W2: a run recorded before the snapshot had these keys was using the plain format.
+    Comparing it with a new plain run must not flag a difference; a tagged run must."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        _login(client)
+        admin_user, notebook_id = _seed_notebook(db)
+        with db.connect() as conn:
+            set_id = conn.execute(
+                "INSERT INTO eval_sets (name, target_user_id, notebook_id, created_by)"
+                " VALUES ('Cmp', ?, ?, ?)",
+                (admin_user["id"], notebook_id, admin_user["id"]),
+            ).lastrowid
+            params = main.current_retrieval_profile_params()
+            metrics = {"recall_at_k": 0.5, "mrr": 0.5, "hits": 1, "avg_latency_ms": 10,
+                       "avg_top_score": 0.4, "low_confidence_rate": 0.2}
+
+            def mk_run(llm_snapshot):
+                return conn.execute(
+                    "INSERT INTO eval_runs (eval_set_id, created_by, status, progress_total,"
+                    " progress_current, profile_snapshot_json, metrics_json, llm_snapshot_json)"
+                    " VALUES (?, ?, 'succeeded', 1, 1, ?, ?, ?)",
+                    (set_id, admin_user["id"], db.dumps(params), db.dumps(metrics),
+                     db.dumps(llm_snapshot)),
+                ).lastrowid
+
+            old_run = mk_run({"chat_model": "same-model", "structured_output": ""})
+            plain_run = mk_run({"chat_model": "same-model", "structured_output": "",
+                                "answer_excerpt_format": "plain", "judge_excerpt_format": "plain"})
+            tagged_run = mk_run({"chat_model": "same-model", "structured_output": "",
+                                 "answer_excerpt_format": "tagged", "judge_excerpt_format": "plain"})
+
+        same = client.get(f"/admin/evals/compare?base={old_run}&candidate={plain_run}")
+        flipped = client.get(f"/admin/evals/compare?base={old_run}&candidate={tagged_run}")
+
+    assert same.status_code == 200 and flipped.status_code == 200
+    assert "回答的摘錄格式" in same.text
+    assert 'class="diff-changed"' not in same.text
+    assert 'class="diff-changed"' in flipped.text and "tagged" in flipped.text

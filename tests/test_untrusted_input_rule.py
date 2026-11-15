@@ -11,11 +11,12 @@ import app.llm as llm
 EXEMPT_PROMPTS = {
     "SYSTEM_PROMPT": "有自己的宣告，措辭和 E2 的優先序規則綁在一起",
     "QUERY_REWRITE_PROMPT": "有自己的宣告（domain hints）",
-    "ANSWER_JUDGE_PROMPT": "留到 W2 和摘錄封裝一起改；評審改動要有 A/B（2026-11-10 決策）",
+    "ANSWER_JUDGE_PROMPT": "評審開關關閉時要與已記錄的評分逐字相同；帶規則的是 ANSWER_JUDGE_TAGGED_PROMPT（W2）",
+    "SYSTEM_TAGGED_PROMPT": "SYSTEM_PROMPT 加上標籤說明，沿用它自己的宣告（W2）",
     "DIAGNOSTIC_SYSTEM_PROMPT": "設定頁探測，輸入是寫死的字串，沒有文件內容",
 }
 # 這兩個靠自己的措辭宣告，所以至少要守住那句話還在。
-SELF_DECLARING_PROMPTS = ("SYSTEM_PROMPT", "QUERY_REWRITE_PROMPT")
+SELF_DECLARING_PROMPTS = ("SYSTEM_PROMPT", "SYSTEM_TAGGED_PROMPT", "QUERY_REWRITE_PROMPT")
 
 
 def _prompt_constants() -> dict[str, str]:

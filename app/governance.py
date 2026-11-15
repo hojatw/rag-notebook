@@ -118,6 +118,10 @@ SOURCE_INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"|matched_answer_notes"
             r"|\"answer_policy\"\s*:"
             r"|\[\[RAG_"
+            # W2 tagged format: a closing tag is what a forgery needs to break out.
+            r"|</\s*(?:excerpt|question|notebook_guidance)\s*>"
+            r"|<\s*excerpt\s+index\s*="
+            r"|<\s*notebook_guidance\s*>"
             r"|\[\d{1,3}\] [^\[\]\n]{1,120}?\.(?i:" + "|".join(SOURCE_HEADER_EXTENSIONS) + r") - \S",
         ),
     ),

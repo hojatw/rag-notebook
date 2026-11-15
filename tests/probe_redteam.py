@@ -207,14 +207,18 @@ def run_ingest(corpus: Path, cases: dict[str, Any], only: str) -> list[dict[str,
     return rows
 
 
-def run_prompt(corpus: Path, cases: dict[str, Any], only: str) -> list[dict[str, Any]]:
+def run_prompt(
+    corpus: Path, cases: dict[str, Any], only: str, excerpt_format: str = "plain"
+) -> list[dict[str, Any]]:
     import app.llm as llm
 
     rows = []
     for case in cases.get("prompt_cases", []):
         if only and only not in case["id"]:
             continue
-        prompt = llm.answer_prompt(case["question"], _case_chunks(corpus, case["documents"]))
+        prompt = llm.answer_prompt(
+            case["question"], _case_chunks(corpus, case["documents"]), excerpt_format=excerpt_format
+        )
         for result in evaluate_prompt(case.get("patterns", []), prompt):
             rows.append({"case": case["id"], **result})
             status = "符合預期" if result["as_expected"] else "不符"
@@ -318,11 +322,13 @@ def _usage_since(marker: int) -> dict[str, int]:
 
 async def probe(
     *, corpus: Path, cases_path: Path, layers: list[str], runs: int, with_rule: bool, only: str, out: Path | None,
+    excerpt_format: str = "plain",
 ) -> int:
     cases = json.loads(cases_path.read_text(encoding="utf-8"))
     report: dict[str, Any] = {
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "cases_file": cases_path.name, "layers": layers, "runs": runs, "with_rule": with_rule,
+        "excerpt_format": excerpt_format,
     }
     failed = False
 
@@ -332,7 +338,7 @@ async def probe(
         failed |= any(row["unexpected"] for row in report["ingest"])
     if "prompt" in layers:
         print("\n== prompt 組裝層（不呼叫模型）==")
-        report["prompt"] = run_prompt(corpus, cases, only)
+        report["prompt"] = run_prompt(corpus, cases, only, excerpt_format)
         failed |= any(not row["as_expected"] for row in report["prompt"])
 
     model_layers = [layer for layer in layers if layer in MODEL_LAYERS]
@@ -349,6 +355,8 @@ async def probe(
         if not settings or not settings.get("chat_model"):
             print("Chat model is not configured — set it under /settings first.")
             return 2
+        # The flag decides, not the stored switch: a probe run must say which format it measured.
+        settings["answer_excerpt_tags_enabled"] = excerpt_format == llm.EXCERPT_FORMAT_TAGGED
         stripped = 0 if with_rule else _strip_rule()
         mode = "含規則" if with_rule else f"不含規則（基準，移除 {stripped} 個）"
         report["chat_model"] = settings.get("chat_model")
@@ -397,6 +405,10 @@ def main() -> int:
     )
     parser.add_argument("--runs", type=int, default=1, help="repeat each model case this many times (default: 1)")
     parser.add_argument("--without-rule", action="store_true", help="baseline: strip UNTRUSTED_INPUT_RULE first")
+    parser.add_argument(
+        "--excerpt-format", choices=("plain", "tagged"), default="plain",
+        help="excerpt format for the prompt and answer layers (W2); default: plain",
+    )
     parser.add_argument("--only", default="", help="run only cases whose id, shape or file contains this")
     parser.add_argument("--out", type=Path, default=None, help="also write the full report as JSON to this path")
     args = parser.parse_args()
@@ -407,6 +419,7 @@ def main() -> int:
     return asyncio.run(probe(
         corpus=args.corpus, cases_path=args.cases, layers=layers, runs=max(1, args.runs),
         with_rule=not args.without_rule, only=args.only, out=args.out,
+        excerpt_format=args.excerpt_format,
     ))
 
 
