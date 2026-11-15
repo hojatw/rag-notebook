@@ -13,7 +13,12 @@ from typing import Any
 from . import i18n, system_settings
 from .config import config
 from .db import connect, dumps, load_llm_settings
-from .governance import SOURCE_SCAN_WARNING_CODE, record_source_scan_events, scan_source_chunks
+from .governance import (
+    SOURCE_SCAN_WARNING_CODE,
+    is_markdown_source,
+    record_source_scan_events,
+    scan_source_chunks,
+)
 from .heading_detect import detect_structure
 from .llm import embed_texts, summarize_source
 from .vector_store import delete_source as delete_source_vectors
@@ -2429,7 +2434,10 @@ def _scan_source_for_injection(
     error must never fail the ingest.
     """
     try:
-        summary = scan_source_chunks([text for _location, text in records])
+        summary = scan_source_chunks(
+            [text for _location, text in records],
+            markdown_source=is_markdown_source(source["filename"]),
+        )
     except Exception:
         logger.warning("source_scan_failed source_id=%s", source["id"], exc_info=True)
         return None

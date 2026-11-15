@@ -47,7 +47,7 @@ from .domain_policy import (
     update_domain_hint,
 )
 from . import feedback as feedback_lib
-from .governance import record_ai_safety_events
+from .governance import CITATION_MARKER_RE, record_ai_safety_events
 from .ingest import supported, upload_limit_for
 from .jobs import enqueue_source
 from .worker import run_worker_loop
@@ -4017,7 +4017,7 @@ async def _answer_question(
 
 def _referenced_citations(answer: str, retrieved: list[dict]) -> list[dict]:
     all_citations = citation_payload(retrieved)
-    referenced = {int(m.group(1)) for m in re.finditer(r"\[(\d+)\]", answer)}
+    referenced = {int(m.group(1)) for m in CITATION_MARKER_RE.finditer(answer)}
     return [c for c in all_citations if c["index"] in referenced] if referenced else all_citations
 
 

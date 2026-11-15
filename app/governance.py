@@ -49,7 +49,7 @@ SAFE_AGGREGATE_METADATA_KEYS = {
     "policy_chars",
     "policy_tokens_est",
 }
-SAFETY_DETECTOR_VERSION = "local.rules.v3"
+SAFETY_DETECTOR_VERSION = "local.rules.v4"
 SAFETY_MAX_INPUT_CHARS = 12000
 SAFETY_BLOCK_CANDIDATE_CHARS = 24000
 CONTROL_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b\u200c\u200d\ufeff]")
@@ -89,6 +89,68 @@ PROMPT_INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
 )
+
+
+#: File types `[N] filename - location` headers can name. Kept equal to
+#: `ingest.ALLOWED_EXTENSIONS` by test (ingest imports this module, so the set
+#: cannot be imported the other way).
+SOURCE_HEADER_EXTENSIONS = (
+    "pdf", "txt", "md", "markdown", "docx", "html", "htm", "srt", "vtt", "xlsx", "csv", "pptx",
+)
+_MODEL_ADDRESSEE = (
+    r"(?:AI\s*(?:助理|助手|模型|機器人|机器人|系統|系统)|語言模型|语言模型|聊天機器人|聊天机器人)"
+)
+_SCORE_ONE = r"1(?:\.0+)?(?!\.?\d)"
+#: Rules for ingested documents only (`local.rules.v4`). They describe what a
+#: document *author* writes to steer the model, which a chat question never
+#: needs to, so `scan_ai_safety` does not apply them. All four are telemetry:
+#: none is in `SOURCE_SCAN_WARNING_RULES`. They were written against this
+#: project's own red-team corpus, so they catch copied attacks, not rephrased
+#: ones, and nothing that only *states* a false fact.
+SOURCE_INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        # Text shaped like the answer prompt's own scaffolding: the guidance
+        # block, the reserved abstain marker, or an excerpt header. Held to the
+        # real producer by `test_source_scaffold_rule_tracks_the_answer_prompt`.
+        "source_prompt_scaffold",
+        re.compile(
+            r"Notebook operational guidance"
+            r"|matched_answer_notes"
+            r"|\"answer_policy\"\s*:"
+            r"|\[\[RAG_"
+            r"|\[\d{1,3}\] [^\[\]\n]{1,120}?\.(?i:" + "|".join(SOURCE_HEADER_EXTENSIONS) + r") - \S",
+        ),
+    ),
+    (
+        # A passage that addresses the model by name. `注意力` (attention, the
+        # mechanism) and `注意事項` (a heading) are the ordinary uses.
+        "source_addresses_model",
+        re.compile(
+            _MODEL_ADDRESSEE + r"\s*(?:請|请)?\s*注意(?!力|事項|事项)"
+            r"|(?:給|给|致)\s*" + _MODEL_ADDRESSEE + r"\s*[:：]"
+            r"|(?i:\b(?:AI|LLM)\s+(?:assistant|model|agent|chatbot)s?\s+(?:instructions?|notice|note)\s*[:：])"
+            r"|(?i:\b(?:attention|note|instructions?)\s+(?:to|for)\s+(?:the\s+)?(?:AI|LLM)\s+(?:assistant|model|agent|chatbot)\b)",
+        ),
+    ),
+    (
+        # A passage that scores its own relevance at the maximum (rerank bait).
+        "source_self_relevance_score",
+        re.compile(
+            r"(?i:\brelevance\s+score\s*[:：=]\s*" + _SCORE_ONE + r")"
+            r"|(?:相關性|相关性|相關度|相关度|相關分數|相关分数).{0,12}?(?:為|为|是|[:：=])\s*" + _SCORE_ONE
+            + r"|(?:評|评)(?:為|为)\s*1\.0+(?!\d)",
+        ),
+    ),
+)
+#: A Markdown image pointing at a remote URL that carries a query string. In a
+#: Markdown source that is ordinary content, so the rule is skipped there.
+SOURCE_REMOTE_IMAGE_RULE = "source_remote_image_query"
+_SOURCE_REMOTE_IMAGE_QUERY_RE = re.compile(r"!\[[^\]\n]*\]\(\s*<?https?://[^\s)>]*\?[^\s)>]+", re.IGNORECASE)
+MARKDOWN_SOURCE_EXTENSIONS = (".md", ".markdown")
+
+
+def is_markdown_source(filename: str | None) -> bool:
+    return str(filename or "").lower().endswith(MARKDOWN_SOURCE_EXTENSIONS)
 
 
 def count_cjk_chars(text: str | None) -> int:
@@ -419,20 +481,25 @@ SOURCE_SCAN_WARNING_RULES = frozenset({
 })
 
 
-def scan_source_chunks(texts: list[str]) -> dict[str, Any]:
+def scan_source_chunks(texts: list[str], *, markdown_source: bool = False) -> dict[str, Any]:
     """Count chunks of one source matching the prompt-injection rules.
 
-    Only `PROMPT_INJECTION_PATTERNS` apply to documents. The other input rules
-    would drown the signal: PDF text routinely carries form feeds and BOMs (the
-    control-text rule), credential-looking strings are a DLP question rather
-    than an injection one, and chunks are already length-bounded.
+    `PROMPT_INJECTION_PATTERNS` and the document-only `SOURCE_INJECTION_PATTERNS`
+    apply. The other input rules would drown the signal: PDF text routinely
+    carries form feeds and BOMs (the control-text rule), credential-looking
+    strings are a DLP question rather than an injection one, and chunks are
+    already length-bounded. `markdown_source` turns the remote-image rule off,
+    because an image with a query string is ordinary Markdown.
     """
+    patterns = [*PROMPT_INJECTION_PATTERNS, *SOURCE_INJECTION_PATTERNS]
+    if not markdown_source:
+        patterns.append((SOURCE_REMOTE_IMAGE_RULE, _SOURCE_REMOTE_IMAGE_QUERY_RE))
     rules: dict[str, int] = {}
     first_chunk: dict[str, int] = {}
     flagged: set[int] = set()
     warned: set[int] = set()
     for index, text in enumerate(texts):
-        for rule_id, pattern in PROMPT_INJECTION_PATTERNS:
+        for rule_id, pattern in patterns:
             if pattern.search(text or ""):
                 key = f"prompt_injection.{rule_id}"
                 rules[key] = rules.get(key, 0) + 1
@@ -591,6 +658,67 @@ def record_output_scan_events(
             metadata=None,
         )
     return findings
+
+
+#: The `[N]` citation marker. `main._referenced_citations` reads the same
+#: pattern, so "cited" means one thing on both sides.
+CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
+CITATION_OUT_OF_RANGE_RULE = "output.citation_out_of_range"
+
+
+def citation_out_of_range_finding(output: str, excerpt_count: int) -> dict[str, Any] | None:
+    """A finding when `output` cites an excerpt number the prompt never had.
+
+    The prompt numbers its excerpts 1..`excerpt_count`. A marker outside that
+    range points at nothing: the model invented it, or copied a header a
+    document forged (`[7] 官方規章.pdf - p3` inside an excerpt). An answer that
+    quotes a document's own reference list (`[12] Smith 2020`) matches too,
+    which is why this is telemetry and changes nothing the user sees.
+    """
+    cited = {int(match.group(1)) for match in CITATION_MARKER_RE.finditer(output or "")}
+    out_of_range = {index for index in cited if index < 1 or index > excerpt_count}
+    if not out_of_range:
+        return None
+    return {
+        "category": "output_citation",
+        "severity": "medium",
+        "decision": "warn",
+        "rule_id": CITATION_OUT_OF_RANGE_RULE,
+        "redacted_summary": "Model output cites an excerpt number that was not in its input.",
+        "metadata": {
+            "cited_count": len(cited),
+            "out_of_range_count": len(out_of_range),
+            "excerpt_count": int(excerpt_count),
+        },
+    }
+
+
+def record_citation_out_of_range(
+    output: str,
+    excerpt_count: int,
+    *,
+    call_type: str,
+    usage_context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Check one grounded answer's citation markers and persist a finding. Never raises."""
+    try:
+        finding = citation_out_of_range_finding(output, excerpt_count)
+    except Exception:
+        logger.warning("citation_scan_failed call_type=%s", call_type, exc_info=True)
+        return None
+    if finding:
+        finding["content_hash"] = _content_hash(output)
+        logger.warning(
+            "output_scan_findings call_type=%s rules=%s", call_type, finding["rule_id"],
+        )
+        _insert_safety_findings(
+            [finding],
+            event_type=OUTPUT_SCAN_EVENT_TYPE,
+            surface=f"llm.{call_type}"[:120],
+            context=usage_context,
+            metadata=None,
+        )
+    return finding
 
 
 RERANK_OUTLIER_EVENT_TYPE = "rerank_outlier"

@@ -193,7 +193,10 @@ def run_ingest(corpus: Path, cases: dict[str, Any], only: str) -> list[dict[str,
         if only and only not in spec["file"] and only not in spec.get("shape", ""):
             continue
         extraction, chunks = load_chunks(corpus, spec["file"])
-        scan = governance.scan_source_chunks([chunk["text"] for chunk in chunks])
+        scan = governance.scan_source_chunks(
+            [chunk["text"] for chunk in chunks],
+            markdown_source=governance.is_markdown_source(spec["file"]),
+        )
         row = evaluate_document(spec, extraction, chunks, scan)
         rows.append(row)
         marks = "、".join(f"{m['text']}{'✓' if m['in_chunks'] else '✗'}" for m in row["markers"]) or "—"
