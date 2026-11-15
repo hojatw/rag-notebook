@@ -84,6 +84,15 @@ jobs:
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 
+      # tests/test_markdown_render.py drives app/static/app.js in Chromium: the
+      # rendered-Markdown hardening (docs/SECURITY.md -> "Rendering LLM output")
+      # only exists in a browser. The browser lives outside .venv, so this runs on
+      # every job, venv-cache hit or not. Under CI those tests fail rather than
+      # skip when the browser is missing, so the sanitizer is never silently unheld.
+      - name: Install Chromium for browser tests
+        run: |
+          .venv/bin/python -m playwright install --with-deps chromium
+
       - name: Compile Python files
         run: |
           .venv/bin/python -m py_compile app/*.py tests/*.py

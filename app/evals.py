@@ -40,10 +40,16 @@ from .llm import capability_snapshot, generate_eval_candidates, judge_answer
 #: answered*, which no profile diff can account for.
 COMPARABILITY_CRITICAL_KEYS = ("chat_model", "embedding_model")
 
+#: What a run recorded before a snapshot key existed was actually using. The
+#: tagged format did not exist then, so an absent key is "plain", not a change.
+LLM_SNAPSHOT_DEFAULTS = {"answer_excerpt_format": "plain", "judge_excerpt_format": "plain"}
+
 LLM_SNAPSHOT_LABELS = {
     "chat_model": "對話模型",
     "embedding_model": "Embedding 模型",
     "structured_output": "限定 JSON 輸出格式",
+    "answer_excerpt_format": "回答的摘錄格式",
+    "judge_excerpt_format": "評審的摘錄格式",
     "temperature_sent": "送出 temperature",
     "max_tokens_field": "輸出上限欄位",
     "reasoning_effort_mode": "Reasoning effort policy",
@@ -1999,9 +2005,12 @@ def compare_runs_context(base_id: int, candidate_id: int) -> dict[str, Any]:
         {
             "key": key,
             "label": LLM_SNAPSHOT_LABELS.get(key, key),
-            "base": base_llm.get(key),
-            "candidate": cand_llm.get(key),
-            "changed": base_llm.get(key) != cand_llm.get(key),
+            "base": base_llm.get(key, LLM_SNAPSHOT_DEFAULTS.get(key)),
+            "candidate": cand_llm.get(key, LLM_SNAPSHOT_DEFAULTS.get(key)),
+            "changed": (
+                base_llm.get(key, LLM_SNAPSHOT_DEFAULTS.get(key))
+                != cand_llm.get(key, LLM_SNAPSHOT_DEFAULTS.get(key))
+            ),
         }
         for key in LLM_SNAPSHOT_LABELS
         if key in base_llm or key in cand_llm

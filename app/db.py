@@ -111,7 +111,9 @@ def init_db() -> None:
                 reasoning_effort TEXT NOT NULL DEFAULT 'medium',
                 timeout_seconds REAL NOT NULL DEFAULT 60,
                 diagnostics_json TEXT NOT NULL DEFAULT '{}',
-                structured_output_enabled INTEGER NOT NULL DEFAULT 0
+                structured_output_enabled INTEGER NOT NULL DEFAULT 0,
+                answer_excerpt_tags_enabled INTEGER NOT NULL DEFAULT 0,
+                judge_excerpt_tags_enabled INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS external_identities (
@@ -630,6 +632,11 @@ def init_db() -> None:
         # identifies what the probe measured, and flipping a toggle does not
         # change that, so including it would discard a valid probe on every flip.
         _ensure_column(conn, "llm_settings", "structured_output_enabled", "INTEGER NOT NULL DEFAULT 0")
+        # W2: tagged excerpt format for grounded answers and for the eval judge,
+        # switched independently (an A/B of the answer format holds the judge
+        # fixed). Not in the fingerprint for the same reason as the toggle above.
+        _ensure_column(conn, "llm_settings", "answer_excerpt_tags_enabled", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "llm_settings", "judge_excerpt_tags_enabled", "INTEGER NOT NULL DEFAULT 0")
         # U16 Phase 2: what produced an outputs-shelf entry ('pinned', 'note', or
         # a Studio tool kind — allowlist NOTE_KINDS in app/main.py). Drives the
         # type badge and the shelf filter. '' means "not yet classified" and is

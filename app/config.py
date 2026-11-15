@@ -37,6 +37,12 @@ class RetrievalConfig:
     candidate_pool_size: int = 20       # vector n_results / keyword limit / pre-rerank cap
     final_chunk_count: int = 6          # chunks kept after rerank, fed to the answer
     fallback_max_chunks: int = 2000     # cap on the Chroma-down SQLite scan
+    # Telemetry only (never changes ranking): flag a returned chunk the reranker
+    # scored >= min_score although hybrid search ranked it below
+    # min_hybrid_rank -- the shape of a chunk that tells the reranker to score
+    # it highly. Uncalibrated heuristics; 0 for min_hybrid_rank turns it off.
+    rerank_outlier_min_score: float = 0.9
+    rerank_outlier_min_hybrid_rank: int = 10
 
 
 @dataclasses.dataclass
