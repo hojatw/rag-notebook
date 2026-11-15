@@ -408,6 +408,43 @@ and previews keep the original. The neutralizer and the classifier read the same
 `ABSTAIN_PROTOCOL_MIN_PREFIX`, so they cannot drift. The question and the notebook
 guidance are not rewritten: the asker and the notebook owner write those.
 
+**Hidden-text channels (W5, 2026-11-15).** A document can carry text its reader never
+sees, and extraction reads all of it. What was verified against the real extractors:
+
+| Channel | Reaches chunks? | Diagnostics |
+|---|---|---|
+| DOCX hidden font (`w:vanish`), direct or through a character/paragraph style | yes | counted, **warning** |
+| HTML inline `visibility:hidden` | yes | counted, **warning** |
+| HTML `img alt`, `a title`, `input value`, meta / `og:description` | yes, labelled `[image: …]` / `[link: …]` / `[input: …]` | counted |
+| PPTX speaker notes | yes, as `slide N notes` | counted |
+| PPTX hidden slides (`show="0"`) | yes | counted |
+| HTML `hidden` attribute, inline `display:none`, `<script>` / `<style>` / `<template>` | no, removed | none |
+| DOCX white or 1pt text; PDF white or tiny text; HTML white text, `aria-hidden`, or hidden by a CSS class, `font-size:0`, `opacity:0`, off-screen positioning | yes | **none** |
+
+Nothing is dropped. Alt text, speaker notes and collapsed sections are mostly
+legitimate and dropping them costs recall; the point is that the reader of the
+*answer* can find out the file held text the reader of the *file* could not see.
+`extract_sections` writes each channel's character count to
+`details.hidden_text` (keys are the `HIDDEN_*` constants in `app/ingest.py`), and the
+preview drawer lists them. The two channels a reader genuinely cannot see also raise
+a warning (`docx_hidden_text`, `html_hidden_text`), which puts the `!` on the source
+row. The other three are counted without a warning: they are common, and their text is
+already labelled where it is cited.
+
+The counts are structural, not a judgement about the content. Whether hidden text
+*says* something instruction-like is the ingest scan's job (`local.rules.v3`, above),
+which reads chunks and so already covers every channel that reaches them.
+
+**Deliberately not detected: text hidden by appearance** (white-on-white, tiny fonts,
+class-based CSS, off-screen positioning; the last table row). Each needs a rendering
+judgement rather than a structural fact: white text is correct on a dark table header,
+PDF fill colour must be read per character against whatever is painted underneath, and
+class-based hiding needs the stylesheet. The false-positive rate would teach users to
+ignore the warning. `tests/test_hidden_text.py` pins the current behaviour for DOCX and
+PDF so that adding detection later turns a test red. **Restart condition:**
+`ai_safety_events` (or a reported incident) shows an injection that arrived through one
+of these and that the ingest scan did not flag.
+
 **Not covered yet.** These are the open items from the same review, in priority order.
 They need an LLM-backed eval to change safely (see the 2026-11-09 review notes):
 

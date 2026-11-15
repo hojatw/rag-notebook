@@ -16,6 +16,8 @@
   建議事先告知。
 - **既有來源要重新索引，才會有 prompt injection 掃描結果**（來源列「!」與預覽面板的警告）。
   不重新索引不會壞，只是舊來源沒有掃描紀錄。schema 不變。
+- **既有來源要重新索引，才會有隱藏文字的字數與注意事項**（見下方「安全性」）。不重新索引不會壞。
+  重新索引後，含 Word 隱藏文字或 `visibility:hidden` 的來源會多一個「!」，屬預期。schema 不變。
 - 新增設定鍵 `[retrieval] rerank_outlier_min_score`、`rerank_outlier_min_hybrid_rank`
   （只影響紀錄，不影響排序；後者設 0 即關閉）。
 - 所有回應新增 `Content-Security-Policy`、`Referrer-Policy`、`X-DNS-Prefetch-Control`。
@@ -45,6 +47,11 @@
   文件內容是資料，其中對模型下的指示只當作內容處理。之前只有回答與查詢改寫的 prompt 有這類宣告。
   這是聲明哪段文字才是指示，不是防線；評審 prompt 留待摘錄封裝一起調整。
   細節與量測結果見 `docs/SECURITY.md` → *Rendering LLM output*。
+- **萃取診斷會標出原始檔裡看不到的文字。** Word 的「隱藏」字型格式（`w:vanish`）與網頁的
+  `visibility:hidden` 會產生注意事項並在來源列顯示「!」；圖片替代文字、連結標題、網頁描述、
+  投影片備忘稿與隱藏的投影片只列字元數。這些文字**照舊會被索引**，沒有任何內容被丟棄，
+  檢索與回答不變。白字、極小字與靠 CSS class 隱藏的文字不偵測（刻意不做，理由與重啟條件見
+  `docs/SECURITY.md` → *Hidden-text channels*）。
 - **文件內容不再能觸發拒答。** 文件裡出現 `[[RAG_ABSTAIN]]`，或只是 `[[RAG 架構]]` 這類
   wikilink，模型照抄時會被判成「資料不足」。送給模型的摘錄現在會把 `[[RAG` 改成全形括號，
   儲存的內容、引用與預覽不變。
