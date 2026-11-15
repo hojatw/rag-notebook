@@ -441,6 +441,47 @@ def test_source_preview_shows_ingestion_diagnostics(monkeypatch, tmp_path):
         assert "表格" in preview.text                  # section-kind breakdown
 
 
+def test_source_preview_shows_hidden_text_channels(monkeypatch, tmp_path):
+    """W5: the drawer warns about text a reader cannot see, and lists every channel's count.
+
+    The diagnostics come from the real extractor, so the template is pinned to
+    the shape `extract_sections` actually produces.
+    """
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    from app import ingest as ingest_module
+
+    page = tmp_path / "page.html"
+    page.write_text(
+        '<html><body><p>VISIBLE</p><p style="visibility:hidden">UNSEEN</p>'
+        '<img src="x.png" alt="ALT_TEXT"></body></html>',
+        encoding="utf-8",
+    )
+    extraction = ingest_module.extract_sections(page)
+    diagnostics = ingest_module.collect_ingest_diagnostics(
+        extraction, ingest_module.chunk_sections(extraction.sections)
+    )
+
+    with TestClient(main.app) as client:
+        _login(client)
+        nb_id, _msg_id = _make_notebook(db)
+        with db.connect() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
+            source_id = conn.execute(
+                "INSERT INTO sources (user_id, notebook_id, filename, stored_path, status, diagnostics_json) "
+                "VALUES (?, ?, 'page.html', ?, 'indexed', ?)",
+                (user_id, nb_id, str(page), json.dumps(diagnostics)),
+            ).lastrowid
+
+        preview = client.get(f"/notebooks/{nb_id}/sources/{source_id}/preview")
+
+        assert preview.status_code == 200
+        assert "約 6 個字元被設為不顯示" in preview.text              # warning, with the real count
+        assert "原始檔中不易看見的文字" in preview.text
+        assert "網頁不顯示的元素 6 字元" in preview.text
+        assert "圖片替代文字與連結標題 8 字元" in preview.text
+        assert "diag.hidden_channel_" not in preview.text             # no raw keys leaked
+
+
 def _failed_extract_diagnostics() -> dict:
     """The diagnostics blob ingest persists when extraction yields nothing.
 
