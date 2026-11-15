@@ -127,10 +127,20 @@ MESSAGES: dict[str, dict[str, str]] = {
         "diag.warn_pdf_structure_fallback": "這份 PDF 無法解析段落與表格結構，已退回逐頁純文字。引用位置只會精確到頁，表格內容可能變得難以閱讀。",
         "diag.warn_chunk_over_token_budget": "有 {count} 個分塊可能超過 embedding 模型的輸入上限（約 {budget} tokens）。依端點行為而定：有些會靜默截斷（尾端檢索不到），有些會直接拒絕整批請求而導致索引失敗。此為估算值，非實際量測。",
         "diag.warn_empty_sections": "有 {count} 個分段是空白的，已略過。",
+        "diag.warn_instruction_like_text": "有 {count} 個分塊含有類似對 AI 下指令的文字（例如要求忽略先前指示）。這可能是文件本身在討論這類手法，也可能是刻意藏入、想影響回答的內容。來源仍已索引；若不確定文件出處，建議先確認內容再使用。",
         # A6b PPTX
         "diag.warn_pptx_visual_only_slides": "有 {count} 張投影片只有圖片、圖表或 SmartArt，沒有可讀取的文字，因此沒有被索引。目前的簡報支援只讀文字；圖像內容需要 OCR 或影像理解能力才能處理。",
         "diag.slides": "投影片",
         "diag.slide_stats": "{slides} 張 · 表格 {tables} · 備忘稿 {notes} · 圖片 {images}",
+        "diag.warn_docx_hidden_text": "這份 Word 文件有約 {chars} 個字元套用了「隱藏」字型格式，在 Word 的一般檢視與列印中都看不到。這些文字仍會被索引，也可能出現在回答與引用中；如果不是你預期的內容，請檢查原始檔（Word：常用 → 顯示／隱藏編輯標記）。",
+        "diag.warn_html_hidden_text": "這份網頁有約 {chars} 個字元被設為不顯示（visibility:hidden），用瀏覽器開啟時看不到。這些文字仍會被索引，也可能出現在回答與引用中；如果不是你預期的內容，請檢查原始檔。",
+        "diag.hidden_text": "原始檔中不易看見的文字",
+        "diag.hidden_channel_docx_vanish": "Word 隱藏文字 {chars} 字元",
+        "diag.hidden_channel_html_visibility_hidden": "網頁不顯示的元素 {chars} 字元",
+        "diag.hidden_channel_html_attribute_text": "圖片替代文字與連結標題 {chars} 字元",
+        "diag.hidden_channel_html_meta_description": "網頁描述（meta）{chars} 字元",
+        "diag.hidden_channel_pptx_notes": "投影片備忘稿 {chars} 字元",
+        "diag.hidden_channel_pptx_hidden_slides": "隱藏的投影片 {chars} 字元",
         # A6c spreadsheet warnings
         "diag.warn_spreadsheet_generic_records": "沒有偵測到問答（Q&A）欄位，因此整份試算表以「一般資料列」方式切塊。語意搜尋仍可用，但精確的篩選、計數與加總不在目前支援範圍。",
         "diag.warn_spreadsheet_hidden_sheets_skipped": "已略過隱藏的工作表：{sheets}。隱藏表通常是暫存或過期資料，預設不索引。",
@@ -477,6 +487,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         # --- Markdown export headings (Phase 1a) -----------------------------
         "export.citations": "引用來源：",
         "export.notes_suffix": "筆記",
+        "export.image_label": "圖片：{label}",
+        "export.image_untitled": "未命名",
         # --- User-facing server errors (Phase 1b) ----------------------------
         # friendly_error_message body templates ({action} is filled in)
         "error.timeout": "{action}逾時，請稍後再試。",
@@ -701,6 +713,12 @@ MESSAGES: dict[str, dict[str, str]] = {
         "settings.structured_output": "限定 JSON 輸出格式",
         "settings.structured_output_hint": "開啟後，rerank 與查詢改寫等會解析 JSON 的呼叫會要求模型只能產生符合格式的輸出，從源頭避免格式錯誤。需要先「測試對話模型」確認端點支援才能開啟。注意：對 reasoning 模型而言，限制輸出格式有可能反而降低內容品質，建議用評測工作台開關各跑一次比較 Recall/MRR 再決定。",
         "settings.cap_structured_output": "Structured output（限定輸出格式）",
+        # W2: tagged excerpt format. Each hint says what must be checked before
+        # turning it on, because neither switch is validated by a probe.
+        "settings.answer_excerpt_tags": "回答的摘錄用標籤封裝",
+        "settings.answer_excerpt_tags_hint": "開啟後，問答送給模型的每段摘錄、問題與 Notebook 指引會各自包在標籤內，文件內容無法偽造摘錄標頭、問題或指引。這會改變模型讀到的結構，開啟前請先在實際的對話模型上用評測比較開啟與關閉的結果（引用格式與拒答率）。",
+        "settings.judge_excerpt_tags": "評審的摘錄用標籤封裝",
+        "settings.judge_excerpt_tags_hint": "只影響評測的評審，與上一項互不連動。開啟後評審改用標籤版 prompt，之後的評審分數不能和開啟前的直接比較；比較回答格式時，兩次評測請維持這個選項相同。",
         "settings.cap_context_window": "輸入視窗上限（對話）",
         "settings.embedding_window_tokens": "{tokens} tokens",
         "settings.embedding_window_at_least": "至少 {tokens} tokens",
@@ -836,6 +854,11 @@ MESSAGES: dict[str, dict[str, str]] = {
         "js.role_you": "你",
         "js.role_assistant": "助理",
         "js.copied": "✓ 已複製",
+        # Rendered Markdown never loads images; it shows this link instead
+        # (docs/SECURITY.md -> "Rendering LLM output").
+        "js.markdown_image": "圖片：{label}",
+        "js.markdown_image_host": "圖片：{label}（{host}）",
+        "js.markdown_image_untitled": "未命名",
         # upload widget (Phase 1c) — {max}/{count}/{size} filled by tr()/t()
         "js.upload_too_many": "一次最多上傳 {max} 個檔案，已保留前 {max} 個。",
         "js.upload_hint": "拖曳最多 {max} 個檔案到此，或點擊選擇",

@@ -742,20 +742,105 @@ function bindProviderNotes() {
 }
 
 // ---- Markdown rendering + inline citation links --------------------------
+//
+// Almost everything rendered here is LLM output, and the LLM reads uploaded
+// documents that someone outside the deployment may have written. DOMPurify's
+// defaults stop script execution, not what an injected instruction can do with
+// plain HTML: an <img src> fetches the moment it is inserted (zero-click
+// exfiltration of whatever the answer was told to put in the URL), a <form>
+// posts off-site, <style> or style= restyles the whole page, and data-*
+// attributes would be picked up by bindAll() and HTMX's data-hx-* aliases.
+// So the policy below is "no fetch, no form, no styling, no behaviour" for
+// rendered Markdown. Markdown images become a link the reader has to click.
+// docs/SECURITY.md -> "Rendering LLM output" records why each entry exists.
+const MARKDOWN_FORBID_TAGS = [
+  "img", "picture", "source", "video", "audio", "track",
+  "form", "button", "textarea", "select", "option",
+  "style", "iframe", "frame", "frameset", "object", "embed",
+  "svg", "math", "link", "meta", "base",
+];
+const MARKDOWN_FORBID_ATTR = ["style", "srcset", "action", "formaction", "background", "poster", "ping"];
+const MARKDOWN_PURIFY_CONFIG = {
+  FORBID_TAGS: MARKDOWN_FORBID_TAGS,
+  FORBID_ATTR: MARKDOWN_FORBID_ATTR,
+  ALLOW_DATA_ATTR: false,
+};
+const MARKDOWN_LINK_PROTOCOLS = ["http:", "https:", "mailto:"];
+let markdownRendererConfigured = false;
+
+function resolveMarkdownUrl(href) {
+  try {
+    return new URL(href, window.location.href);
+  } catch (e) {
+    return null;
+  }
+}
+
+// marked v12 renderer signature: (href, title, text). `text` (the alt) arrives
+// already HTML-escaped; `href` arrives raw and is escaped here.
+function renderMarkdownImageAsLink(href, title, text) {
+  const label = text || escapeHtml(tr("markdown_image_untitled", "未命名"));
+  const url = resolveMarkdownUrl(href || "");
+  if (!url || !/^https?:$/.test(url.protocol)) {
+    return `<span class="md-image-link">${tr("markdown_image", "圖片：{label}", { label })}</span>`;
+  }
+  const linkText = url.origin === window.location.origin
+    ? tr("markdown_image", "圖片：{label}", { label })
+    : tr("markdown_image_host", "圖片：{label}（{host}）", { label, host: escapeHtml(url.host) });
+  return `<a class="md-image-link" href="${escapeHtml(url.href)}">${linkText}</a>`;
+}
+
+function hardenSanitizedMarkdownNode(node) {
+  if (node.tagName === "A" && node.hasAttribute("href")) {
+    const url = resolveMarkdownUrl(node.getAttribute("href"));
+    if (!url || !MARKDOWN_LINK_PROTOCOLS.includes(url.protocol)) {
+      node.removeAttribute("href");
+      return;
+    }
+    if (/^https?:$/.test(url.protocol) && url.origin !== window.location.origin) {
+      node.setAttribute("target", "_blank");
+      node.setAttribute("rel", "noopener noreferrer nofollow");
+    }
+  } else if (node.tagName === "INPUT") {
+    // GFM task lists render as <input type=checkbox disabled>; nothing else may
+    // survive, and the checkbox stays inert.
+    if ((node.getAttribute("type") || "").toLowerCase() !== "checkbox") {
+      node.remove();
+      return;
+    }
+    ["name", "value", "form", "formaction"].forEach((attr) => node.removeAttribute(attr));
+    node.setAttribute("disabled", "");
+  }
+}
+
+// Registered once: marked.use() stacks renderers and DOMPurify hooks are global
+// (this is the app's only DOMPurify.sanitize call site).
+function configureMarkdownRenderer() {
+  if (markdownRendererConfigured) return;
+  markdownRendererConfigured = true;
+  marked.setOptions({ breaks: true, gfm: true });
+  marked.use({ renderer: { image: renderMarkdownImageAsLink } });
+  DOMPurify.addHook("afterSanitizeAttributes", hardenSanitizedMarkdownNode);
+}
 
 function renderMarkdown(root) {
   if (typeof window.marked === "undefined" || typeof window.DOMPurify === "undefined") {
     console.warn("[notebook] marked or DOMPurify missing; skipping Markdown render");
     return;
   }
-  marked.setOptions({ breaks: true, gfm: true });
+  configureMarkdownRenderer();
   root.querySelectorAll("[data-markdown]:not([data-markdown-rendered])").forEach((node) => {
     node.dataset.markdownRendered = "1";
+    // Second layer behind ALLOW_DATA_ATTR: false. Markdown that arrives through
+    // an HTMX swap is rendered in htmx:afterSwap, and HTMX then initialises the
+    // settled content -- so a surviving data-hx-post would fire, CSRF header
+    // included. hx-disable makes HTMX skip this whole subtree.
+    node.setAttribute("hx-disable", "");
     const raw = node.textContent || "";
     node.dataset.rawMarkdown = raw; // kept for the copy button (U7)
     let html = "";
     try {
-      html = DOMPurify.sanitize(marked.parse(raw));
+      html = DOMPurify.sanitize(marked.parse(raw), MARKDOWN_PURIFY_CONFIG);
     } catch (e) {
       console.error("[notebook] markdown render failed", e);
       return;

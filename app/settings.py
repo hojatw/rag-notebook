@@ -196,6 +196,8 @@ def candidate_settings_from_form(
     embedding_api_key: str,
     embedding_api_version: str,
     structured_output_enabled: bool = False,
+    answer_excerpt_tags_enabled: bool = False,
+    judge_excerpt_tags_enabled: bool = False,
 ) -> dict[str, Any]:
     if provider not in {"openai_compatible", "azure_openai"}:
         raise HTTPException(status_code=400, detail=i18n.t("error.unsupported_llm_provider"))
@@ -224,6 +226,8 @@ def candidate_settings_from_form(
         "embedding_api_key": embedding_api_key.strip() or existing_decrypted.get("embedding_api_key", ""),
         "embedding_api_version": embedding_api_version.strip(),
         "structured_output_enabled": bool(structured_output_enabled),
+        "answer_excerpt_tags_enabled": bool(answer_excerpt_tags_enabled),
+        "judge_excerpt_tags_enabled": bool(judge_excerpt_tags_enabled),
         # Saving fixed mode must evaluate the real probe result already stored
         # for this candidate. This metadata is never sent to a provider.
         "diagnostics": existing_decrypted.get("diagnostics") or {},
@@ -586,6 +590,10 @@ async def update_settings(
     embedding_api_version: str = Form("2024-02-15-preview"),
     # O5b: an unchecked checkbox sends nothing, so absent means off.
     structured_output_enabled: bool = Form(False),
+    # W2: tagged excerpt format. No probe gates these: they change prompt text,
+    # not a request field an endpoint could reject.
+    answer_excerpt_tags_enabled: bool = Form(False),
+    judge_excerpt_tags_enabled: bool = Form(False),
 ):
     """Validate and save global LLM provider settings.
 
@@ -646,6 +654,8 @@ async def update_settings(
         embedding_api_key=embedding_api_key,
         embedding_api_version=embedding_api_version,
         structured_output_enabled=structured_output_enabled,
+        answer_excerpt_tags_enabled=answer_excerpt_tags_enabled,
+        judge_excerpt_tags_enabled=judge_excerpt_tags_enabled,
     )
     # O5b, same fail-closed rule as fixed reasoning effort: a positive probe only
     # permits the feature. Turning it on against an endpoint that never proved it
@@ -703,7 +713,8 @@ async def update_settings(
                 api_version = ?, temperature = ?, reasoning_effort_mode = ?,
                 reasoning_effort = ?, timeout_seconds = ?,
                 embedding_provider = ?, embedding_api_key = ?, embedding_api_version = ?,
-                structured_output_enabled = ?
+                structured_output_enabled = ?,
+                answer_excerpt_tags_enabled = ?, judge_excerpt_tags_enabled = ?
             WHERE id = 1
             """,
             (
@@ -726,6 +737,8 @@ async def update_settings(
                 stored_embedding_key,
                 embedding_api_version.strip(),
                 1 if structured_output_enabled else 0,
+                1 if answer_excerpt_tags_enabled else 0,
+                1 if judge_excerpt_tags_enabled else 0,
             ),
         )
         settings = load_llm_settings_for_display(conn)
@@ -762,6 +775,14 @@ async def update_settings(
         },
         "embedding_api_key_changed": bool(embedding_api_key.strip()),
         "embedding_changed": embedding_changed,
+        "answer_excerpt_tags_enabled": {
+            "before": bool(existing.get("answer_excerpt_tags_enabled")),
+            "after": bool(answer_excerpt_tags_enabled),
+        },
+        "judge_excerpt_tags_enabled": {
+            "before": bool(existing.get("judge_excerpt_tags_enabled")),
+            "after": bool(judge_excerpt_tags_enabled),
+        },
     }
     record_audit_event(
         request,

