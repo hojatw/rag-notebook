@@ -74,6 +74,41 @@ class ExtractionResult:
 
 _STRUCTURE_SUFFIXES = {".pdf", ".docx", ".html", ".htm"}
 
+# W5: text a reader of the original file cannot (easily) see but extraction
+# carries into chunks. It is **kept** — dropping it costs recall, and alt text,
+# speaker notes and the like are mostly legitimate — but each channel's character
+# count goes into ``details["hidden_text"]`` so the diagnostics panel can show it.
+# Only the two channels a reader genuinely never sees also raise a warning
+# (``NOTE_*``); the rest are already labelled in the extracted text
+# (``[image: …]``, ``slide N notes``). White-on-white and tiny fonts are
+# deliberately not detected; see docs/SECURITY.md → *Hidden-text channels*.
+HIDDEN_DOCX_VANISH = "docx_vanish"
+HIDDEN_HTML_VISIBILITY = "html_visibility_hidden"
+HIDDEN_HTML_ATTRIBUTE_TEXT = "html_attribute_text"
+HIDDEN_HTML_META_DESCRIPTION = "html_meta_description"
+HIDDEN_PPTX_NOTES = "pptx_notes"
+HIDDEN_PPTX_HIDDEN_SLIDES = "pptx_hidden_slides"
+HIDDEN_TEXT_CHANNELS = (
+    HIDDEN_DOCX_VANISH,
+    HIDDEN_HTML_VISIBILITY,
+    HIDDEN_HTML_ATTRIBUTE_TEXT,
+    HIDDEN_HTML_META_DESCRIPTION,
+    HIDDEN_PPTX_NOTES,
+    HIDDEN_PPTX_HIDDEN_SLIDES,
+)
+NOTE_DOCX_HIDDEN_TEXT = "docx_hidden_text"
+NOTE_HTML_HIDDEN_TEXT = "html_hidden_text"
+#: warning note -> the ``hidden_text`` channel whose count it reports.
+HIDDEN_TEXT_NOTE_CHANNELS = {
+    NOTE_DOCX_HIDDEN_TEXT: HIDDEN_DOCX_VANISH,
+    NOTE_HTML_HIDDEN_TEXT: HIDDEN_HTML_VISIBILITY,
+}
+
+
+def _nonzero(counts: dict[str, int]) -> dict[str, int]:
+    """Keep only the channels that actually carried text."""
+    return {key: value for key, value in counts.items() if value}
+
 
 def extract_sections(path: Path) -> ExtractionResult:
     """Extract text sections from a supported source file.
@@ -86,6 +121,7 @@ def extract_sections(path: Path) -> ExtractionResult:
     suffix = path.suffix.lower()
     logger.info("extract_started path=%s suffix=%s", path.name, suffix)
     notes: list[str] = []
+    hidden: dict[str, int] = {}
     if suffix == ".pdf":
         # Structured first; note the degradation explicitly when falling back,
         # because "why are this file's citations only page-level?" is otherwise
@@ -98,10 +134,10 @@ def extract_sections(path: Path) -> ExtractionResult:
             extractor = "pdf_pypdf"
             notes.append("pdf_structure_fallback")
     elif suffix == ".docx":
-        sections = _extract_docx(path)
+        sections, hidden = _extract_docx_with_hidden(path)
         extractor = "docx"
     elif suffix in {".html", ".htm"}:
-        sections = _extract_html(path)
+        sections, hidden = _extract_html_with_hidden(path)
         extractor = "html"
     elif suffix in {".srt", ".vtt"}:
         # Returns a full result: the subtitle path now reports its own speaker /
@@ -122,6 +158,9 @@ def extract_sections(path: Path) -> ExtractionResult:
         # A12 Phase 1: diagnostics only — sections are passed in read-only and
         # never changed, so chunking and the index stay exactly as before.
         details["structure"] = detect_structure(path, sections).summary()
+    if hidden:
+        details["hidden_text"] = hidden
+        notes.extend(note for note, channel in HIDDEN_TEXT_NOTE_CHANNELS.items() if hidden.get(channel))
     logger.info(
         "extract_completed path=%s sections=%s extractor=%s", path.name, len(sections), extractor
     )
@@ -479,6 +518,11 @@ def _render_pdf_table(rows: list[list[Any]]) -> str:
 
 
 def _extract_docx(path: Path) -> list[tuple[str, str]]:
+    """The sections of :func:`_extract_docx_with_hidden`, without the counts."""
+    return _extract_docx_with_hidden(path)[0]
+
+
+def _extract_docx_with_hidden(path: Path) -> tuple[list[tuple[str, str]], dict[str, int]]:
     """Extract paragraphs, tables, headers, footers, text boxes, footnotes.
 
     The historical implementation only walked ``doc.paragraphs``, silently
@@ -493,6 +537,8 @@ def _extract_docx(path: Path) -> list[tuple[str, str]]:
 
     doc = Document(str(path))
     sections: list[tuple[str, str]] = []
+    # Every XML root whose text ends up in a section; scanned for hidden runs below.
+    roots = [doc.element]
 
     body_text = _render_docx_container(doc)
     if body_text.strip():
@@ -503,6 +549,7 @@ def _extract_docx(path: Path) -> list[tuple[str, str]]:
     for section in doc.sections:
         h = _render_docx_container(section.header)
         f = _render_docx_container(section.footer)
+        roots.extend([section.header._element, section.footer._element])
         if h.strip():
             header_chunks.append(h)
         if f.strip():
@@ -532,13 +579,91 @@ def _extract_docx(path: Path) -> list[tuple[str, str]]:
                 root = rel.target_part.element
             except AttributeError:
                 continue
+            roots.append(root)
             text = " ".join(t.text for t in root.iter(qn("w:t")) if t.text)
             if text.strip():
                 note_chunks.append(text)
     if note_chunks:
         sections.append(("footnotes", "\n\n".join(note_chunks)))
 
-    return sections
+    return sections, _nonzero({HIDDEN_DOCX_VANISH: _docx_hidden_chars(doc, roots)})
+
+
+def _docx_flag(element) -> bool | None:
+    """Tri-state value of an on/off property such as ``<w:vanish/>``."""
+    from docx.oxml.ns import qn
+
+    if element is None:
+        return None
+    return (element.get(qn("w:val")) or "true").lower() not in {"0", "false", "off"}
+
+
+def _docx_hidden_styles(doc) -> dict[str, bool]:
+    """Style id -> whether text in that style is hidden, following ``basedOn``."""
+    from docx.oxml.ns import qn
+
+    own: dict[str, bool | None] = {}
+    parent: dict[str, str] = {}
+    for style in doc.styles.element.iter(qn("w:style")):
+        style_id = style.get(qn("w:styleId"))
+        if not style_id:
+            continue
+        rpr = style.find(qn("w:rPr"))
+        own[style_id] = _docx_flag(rpr.find(qn("w:vanish"))) if rpr is not None else None
+        based_on = style.find(qn("w:basedOn"))
+        if based_on is not None and based_on.get(qn("w:val")):
+            parent[style_id] = based_on.get(qn("w:val"))
+
+    resolved: dict[str, bool] = {}
+    for style_id in own:
+        seen: set[str] = set()
+        current: str | None = style_id
+        value: bool | None = None
+        while current and current not in seen and value is None:
+            seen.add(current)  # guards a basedOn cycle in a malformed file
+            value = own.get(current)
+            current = parent.get(current)
+        resolved[style_id] = bool(value)
+    return resolved
+
+
+def _docx_hidden_chars(doc, roots: list) -> int:
+    """Characters in runs Word does not display (``w:vanish``).
+
+    Resolution order matches Word's: the run's own property, then its character
+    style, then the paragraph's style. An explicit ``<w:vanish w:val="0"/>`` on
+    the run switches a style's hiding back off. Document defaults and
+    white/tiny text are not considered.
+    """
+    from docx.oxml.ns import qn
+
+    style_hidden = _docx_hidden_styles(doc)
+
+    def style_of(element, properties_tag: str, style_tag: str) -> str | None:
+        properties = element.find(qn(properties_tag))
+        style = properties.find(qn(style_tag)) if properties is not None else None
+        return style.get(qn("w:val")) if style is not None else None
+
+    total = 0
+    scanned: set[int] = set()
+    for root in roots:
+        if id(root) in scanned:  # a header linked to the previous section is the same part
+            continue
+        scanned.add(id(root))
+        for run in root.iter(qn("w:r")):
+            rpr = run.find(qn("w:rPr"))
+            hidden = _docx_flag(rpr.find(qn("w:vanish"))) if rpr is not None else None
+            if hidden is None:
+                hidden = style_hidden.get(style_of(run, "w:rPr", "w:rStyle") or "") or None
+            if hidden is None:
+                paragraph = run.getparent()
+                while paragraph is not None and paragraph.tag != qn("w:p"):
+                    paragraph = paragraph.getparent()
+                if paragraph is not None:
+                    hidden = style_hidden.get(style_of(paragraph, "w:pPr", "w:pStyle") or "")
+            if hidden:
+                total += sum(len(t.text or "") for t in run.iter(qn("w:t")))
+    return total
 
 
 def _iter_docx_block_items(parent):
@@ -624,8 +749,14 @@ def _render_docx_table(table) -> str:
 
 
 def _extract_html(path: Path) -> list[tuple[str, str]]:
+    """The sections of :func:`_extract_html_with_hidden`, without the counts."""
+    return _extract_html_with_hidden(path)[0]
+
+
+def _extract_html_with_hidden(path: Path) -> tuple[list[tuple[str, str]], dict[str, int]]:
     """Strip noise + recover alt / title / meta-description text BeautifulSoup
-    would otherwise drop. Returns a single section.
+    would otherwise drop. Returns a single section, plus the W5 hidden-text
+    character counts.
 
     What changed vs the naive ``soup.get_text``:
       - script / style / noscript / template removed (noise).
@@ -652,32 +783,57 @@ def _extract_html(path: Path) -> list[tuple[str, str]]:
         if "display:none" in style:
             element.decompose()
 
+    # W5: inline ``visibility:hidden`` stays in the text (see above) but is
+    # counted. Only the outermost hidden element counts, so nesting is not
+    # double-counted. Class-based hiding would need the stylesheet and is not seen.
+    hidden_elements = [
+        element for element in soup.find_all(style=True)
+        if "visibility:hidden" in element.get("style", "").lower().replace(" ", "")
+    ]
+    hidden_ids = {id(element) for element in hidden_elements}
+    visibility_chars = sum(
+        len("".join(element.get_text().split()))
+        for element in hidden_elements
+        if not any(id(ancestor) in hidden_ids for ancestor in element.parents)
+    )
+
     extras: list[str] = []
+    meta_chars = 0
+    attribute_chars = 0
     meta_desc = soup.find("meta", attrs={"name": "description"})
     if meta_desc and meta_desc.get("content"):
         extras.append(meta_desc["content"].strip())
+        meta_chars += len(extras[-1])
     og_desc = soup.find("meta", attrs={"property": "og:description"})
     if og_desc and og_desc.get("content"):
         extras.append(og_desc["content"].strip())
+        meta_chars += len(extras[-1])
     for img in soup.find_all("img", alt=True):
         alt = (img.get("alt") or "").strip()
         if alt:
             extras.append(f"[image: {alt}]")
+            attribute_chars += len(alt)
     for anchor in soup.find_all("a", title=True):
         title = (anchor.get("title") or "").strip()
         if title:
             extras.append(f"[link: {title}]")
+            attribute_chars += len(title)
     for inp in soup.find_all("input", value=True):
         if inp.get("type") in {"hidden", "password", "submit", "button"}:
             continue
         value = (inp.get("value") or "").strip()
         if value:
             extras.append(f"[input: {value}]")
+            attribute_chars += len(value)
 
     body_text = soup.get_text("\n")
     if extras:
         body_text = body_text + "\n\n" + "\n".join(extras)
-    return [("html", body_text)]
+    return [("html", body_text)], _nonzero({
+        HIDDEN_HTML_VISIBILITY: visibility_chars,
+        HIDDEN_HTML_ATTRIBUTE_TEXT: attribute_chars,
+        HIDDEN_HTML_META_DESCRIPTION: meta_chars,
+    })
 
 
 # Sentence boundary regex. Matches the END position after a terminator:
@@ -799,9 +955,14 @@ def _extract_pptx(path: Path) -> ExtractionResult:
         "images": 0,
     }
     notes_list: list[str] = []
+    hidden = {HIDDEN_PPTX_NOTES: 0, HIDDEN_PPTX_HIDDEN_SLIDES: 0}
 
     for index, slide in enumerate(presentation.slides, start=1):
         details["slides"] += 1
+        # ``show="0"`` is PowerPoint's "Hide Slide": skipped when presenting, but
+        # still read here (W5 counts it; nothing is dropped).
+        slide_hidden = slide._element.get("show") in {"0", "false"}
+        sections_before = len(sections)
         title_shape = slide.shapes.title
         lines: list[str] = []
         table_sections: list[tuple[str, str]] = []
@@ -848,7 +1009,15 @@ def _extract_pptx(path: Path) -> ExtractionResult:
             if note_text:
                 details["notes"] += 1
                 sections.append((f"slide {index} notes", note_text))
+                if not slide_hidden:
+                    hidden[HIDDEN_PPTX_NOTES] += len(note_text)
+        if slide_hidden:
+            hidden[HIDDEN_PPTX_HIDDEN_SLIDES] += sum(
+                len(text) for _, text in sections[sections_before:]
+            )
 
+    if _nonzero(hidden):
+        details["hidden_text"] = _nonzero(hidden)
     if details["slides_without_text"]:
         notes_list.append("pptx_visual_only_slides")
     logger.info(
@@ -1961,6 +2130,10 @@ def collect_ingest_diagnostics(
             payload["count"] = extraction.details.get("uncached_formulas", 0)
         elif note == "pptx_visual_only_slides":
             payload["count"] = extraction.details.get("slides_without_text", 0)
+        elif note in HIDDEN_TEXT_NOTE_CHANNELS:
+            payload["chars"] = extraction.details.get("hidden_text", {}).get(
+                HIDDEN_TEXT_NOTE_CHANNELS[note], 0
+            )
         elif note == "csv_encoding_fallback":
             encoding = extraction.details.get("encoding", {})
             payload["encoding"] = encoding.get("encoding", "?")
