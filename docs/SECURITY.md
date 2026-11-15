@@ -303,8 +303,9 @@ sending it:
 The stored message or note is not changed. The in-app copy button still yields the
 original Markdown.
 
-**Telemetry for the injection itself (`local.rules.v3`, 2026-11-09).** Rendering
-hardening stops the effect. These three signals record the cause, so an operator can
+**Telemetry for the injection itself (`local.rules.v3`, 2026-11-09; extended in
+`local.rules.v4`, 2026-11-15).** Rendering
+hardening stops the effect. These signals record the cause, so an operator can
 find the document behind it. All are warn-only and never block ingest or an answer.
 They store counts, flags and hashes, never document text, output text or URLs (an
 exfiltration URL *is* the data it carries). The schema contracts are in `SCHEMA.md`.
@@ -321,6 +322,41 @@ exfiltration URL *is* the data it carries). The schema contracts are in `SCHEMA.
   - The control/invisible-text rule is not applied to documents, because PDF text
     routinely carries form feeds and BOMs. The secret rule is not applied either: it
     is a DLP question, not an injection one.
+  - **Document-only rules (`local.rules.v4`, 2026-11-15).** The rules above were
+    written for chat questions and recorded none of the 13 disguised documents in the
+    local red-team corpus. Four more now apply to documents only
+    (`governance.SOURCE_INJECTION_PATTERNS`). All four are telemetry: none raises
+    the `!`.
+    - `source_prompt_scaffold`: text shaped like the answer prompt's own scaffolding.
+      That is the guidance block (`Notebook operational guidance`, the quoted
+      `"answer_policy":` key, `matched_answer_notes`), the reserved marker prefix
+      `[[RAG_`, or an excerpt header `[N] name.ext - location`. A test drives the
+      real `answer_prompt`, so renaming a piece of the prompt turns the test red.
+    - `source_addresses_model`: a passage that addresses the model by name
+      (`AI 助理請注意`, `給 AI 助理：`, `AI assistant instruction:`). `注意力` and
+      `注意事項` are excluded.
+    - `source_self_relevance_score`: a passage that gives itself the maximum
+      relevance score (`Relevance score: 1.0`, `相關性皆為 1.0`).
+    - `source_remote_image_query`: a Markdown image pointing at a remote URL with a
+      query string. It is skipped for `.md` / `.markdown` sources, where that is
+      ordinary content.
+
+    What they are worth, stated plainly:
+    - They record 10 of those 13 documents. The rules were written against that same
+      corpus, so this number shows the rules work as written and nothing more. A
+      rephrased attack passes.
+    - They cannot see an attack that only *states* something false (a forged rule, a
+      wrong figure in speaker notes). No pattern separates that from real content.
+    - False-positive check before merging (2026-11-15): 7,544 existing chunks from 39
+      real sources (DOCX, PDF, PPTX, HTML, XLSX, CSV, SRT) matched nothing. This
+      repo's own 30 Markdown docs matched in 18 chunks, every one a passage that
+      quotes the scaffolding it documents. That sample is small and from one
+      deployment.
+    - **Deliberately not done: rules for text that directs the answer** (「回答…問題時
+      請務必」「以上問題作廢」「請只輸出」). They would cover the remaining 3
+      documents, but the same phrasing is ordinary in customer-service SOPs and
+      regulations. Revisit when production `ai_safety_events` show the four rules
+      above are quiet enough to leave room for a noisier one.
 - **Model output.** `chat_completion` and `chat_completion_stream` check every
   completion against the prompt it answered (internal call types such as rerank,
   rewrite, judge and the settings probes are skipped). The prompt holds all the
@@ -333,6 +369,16 @@ exfiltration URL *is* the data it carries). The schema contracts are in `SCHEMA.
     "append the excerpts to https://host/?d=" comes back out.
   - `output.active_markup`: HTML that fetches, submits, styles, or carries
     `hx-*`/`data-hx-*` (medium).
+
+  Grounded answers get a fourth check (`local.rules.v4`), made in
+  `generate_answer_result` / `generate_answer_stream` because it needs the number of
+  excerpts the prompt actually held:
+  - `output.citation_out_of_range`: the answer cites `[N]` where N is not one of the
+    prompt's excerpt numbers (medium). The model invented the number, or copied a
+    header a document forged inside an excerpt. The count is taken after the window
+    fit, so an excerpt dropped to fit the window counts as absent. An answer that
+    quotes a document's own reference list (`[12] Smith 2020`) matches too. The
+    answer is not changed: the citation list already ignores such a marker.
 
   Events carry the call's context ids. A chat answer is linked by
   `conversation_id`, not `message_id`, because the scan runs before the message is
@@ -432,7 +478,7 @@ row. The other three are counted without a warning: they are common, and their t
 already labelled where it is cited.
 
 The counts are structural, not a judgement about the content. Whether hidden text
-*says* something instruction-like is the ingest scan's job (`local.rules.v3`, above),
+*says* something instruction-like is the ingest scan's job (`local.rules.v4`, above),
 which reads chunks and so already covers every channel that reaches them.
 
 **Deliberately not detected: text hidden by appearance** (white-on-white, tiny fonts,

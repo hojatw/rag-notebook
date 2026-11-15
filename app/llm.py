@@ -17,6 +17,7 @@ from .governance import (
     count_cjk_chars,
     estimate_tokens,
     normalize_usage,
+    record_citation_out_of_range,
     record_llm_usage_event,
     record_output_scan_events,
     record_rerank_outliers,
@@ -1933,7 +1934,13 @@ async def generate_answer_result(
         call_type=call_type,
         usage_context=usage_context,
     )
-    return parse_answer_result(content)
+    result = parse_answer_result(content)
+    if not result.abstained:
+        # `chunks` is what survived the window fit, i.e. the numbers the prompt had.
+        record_citation_out_of_range(
+            result.text, len(chunks), call_type=call_type, usage_context=usage_context
+        )
+    return result
 
 
 async def generate_answer_stream(
@@ -2039,6 +2046,9 @@ async def generate_answer_stream(
         if abstain_text:
             yield abstain_text
     elif result.text:
+        record_citation_out_of_range(
+            result.text, len(chunks), call_type="answer_stream", usage_context=usage_context
+        )
         # Everything emitted so far is a prefix of result.text, in order.
         remainder = result.text[emitted_chars:]
         if remainder:
