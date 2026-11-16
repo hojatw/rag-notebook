@@ -125,9 +125,12 @@
 
 - `joserfc` 1.7.5 → 1.8.0（#190）、`pypdf` 6.21.2 → 6.21.4（#194）、
   `python-multipart` 0.0.32 → 0.0.33（#193）、`pytest` 9.1.1 → 9.2.0（#195）、
-  `actions/setup-python` 7.0.0 → 7.1.0（#192）。合併前都在最新的 `main` 上跑過 CI。
-  只需重建 image 或重跑 `./setup.sh`，不必重新索引。`fastapi` 0.143.0 → 0.162.0（#191）因跨度大，
-  另行驗證，未包含在內。
+  `actions/setup-python` 7.0.0 → 7.1.0（#192）、`fastapi` 0.143.0 → 0.162.0（#191）。
+  合併前都在最新的 `main` 上跑過 CI。只需重建 image 或重跑 `./setup.sh`，不必重新索引。
+- **`fastapi` 跨 19 個版本**，release notes 有兩項 Breaking Changes（省略的布林表單欄位的預設處理、
+  參數模型的 `extra` 設定）。合併前另外驗證：全套測試通過，`/settings` 的開關在勾選、只勾一個、
+  欄位省略時都正確存檔，聊天串流與上傳在真實 uvicorn 上正常；程式不需修改。
+  瀏覽器的桌機與手機寬度沒有另外檢查。
 - **`joserfc` 1.8.0 的 JWT 驗證變嚴**：`exp` 等於目前時間的 token 現在會被拒絕，`exp`／`nbf`／`iat`
   為 NaN、Infinity、True／False 也會被拒絕；並要求 Python 3.11 以上（本專案用 3.12）。
   只影響 OIDC SSO 登入；上線後請走一次真實 SSO 確認。
